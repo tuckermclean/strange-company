@@ -246,6 +246,9 @@ upstream Vikunja chart does not run `tpl` over secretKeyRef names, so its
 database Secret reference is a literal that has to agree with ours.
 */}}
 {{- define "strange-company.validate" -}}
+{{- if hasKey .Values.vikunja "ingress" -}}
+{{- fail "vikunja.ingress is not supported: every key under `vikunja:` other than `vikunja.vikunja` is merged into the upstream chart's root values, where `ingress` must be a map of named ingresses. Configure the Vikunja Ingress at vikunja.vikunja.ingress.main instead." -}}
+{{- end -}}
 {{- if and .Values.postgresql.enabled .Values.vikunja.enabled -}}
 {{- $ref := dig "vikunja" "env" "VIKUNJA_DATABASE_PASSWORD" "valueFrom" "secretKeyRef" "name" "" .Values.vikunja -}}
 {{- if and $ref (ne $ref .Values.vikunja.databaseSecretName) -}}

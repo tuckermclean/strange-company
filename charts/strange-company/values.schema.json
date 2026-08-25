@@ -143,7 +143,6 @@
         "enabled": { "type": "boolean" },
         "databaseSecretName": { "type": "string", "minLength": 1 },
         "token": { "type": "string" },
-        "ingress": { "type": "object" },
         "external": {
           "type": "object",
           "properties": {

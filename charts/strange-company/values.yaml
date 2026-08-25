@@ -137,10 +137,11 @@ vikunja:
   # Keep the two in sync -- the chart fails the render if they disagree.
   databaseSecretName: vikunja-db
 
-  ingress:
-    # -- Vikunja's own Ingress is configured through the upstream chart, at
-    # `vikunja.vikunja.ingress.main`. This flag only reports intent for NOTES.txt.
-    enabled: false
+  # NOTE: do not add a `vikunja.ingress` key here. Everything under `vikunja:`
+  # that is not `vikunja.vikunja` is merged into the upstream chart's own root
+  # values, and it iterates `ingress` as a map of named ingresses -- a plain
+  # `enabled:` boolean there crashes its renderer. Configure Vikunja's Ingress at
+  # `vikunja.vikunja.ingress.main` instead. The chart enforces this.
 
   # Used only when `vikunja.enabled: false`.
   external:
