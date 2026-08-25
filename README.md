@@ -28,6 +28,9 @@ Each dependency is independently switchable between **bundled** and **external**
 
 The control plane receives the same environment contract in every combination.
 
-See [docs/USAGE.md](docs/USAGE.md) for external, hybrid, and parent-chart usage,
+See [docs/deployment-prompt.md](docs/deployment-prompt.md) for a self-contained
+deployment brief (cluster prerequisites, PodSecurity requirements, credentials,
+and verification steps),
+[docs/USAGE.md](docs/USAGE.md) for external, hybrid, and parent-chart usage,
 and [docs/specs/strange-company-helm-chart.md](docs/specs/strange-company-helm-chart.md)
 for the build specification.
