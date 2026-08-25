@@ -219,6 +219,21 @@ jobs:
           grep -qx "strange-company" /tmp/dbs.txt || { echo "::error::strange-company database missing"; exit 1; }
           grep -qx "vikunja" /tmp/dbs.txt || { echo "::error::vikunja database missing"; exit 1; }
 
+      - name: Assert bundled Vikunja actually used the bundled database
+        run: |
+          set -euo pipefail
+          POD="$FULLNAME-postgresql-0"
+          # Vikunja migrates its schema on first start. Tables in the bundled
+          # server prove it connected here, not merely that the pod is up.
+          for i in $(seq 1 30); do
+            n=$(kubectl -n "$NS" exec "$POD" -- psql -U strange-company -d vikunja -tAc \
+                  "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'" | tr -d '[:space:]')
+            [ "${n:-0}" -gt 0 ] && break
+            sleep 5
+          done
+          [ "${n:-0}" -gt 0 ] || { echo "::error::Vikunja created no tables in the bundled database"; exit 1; }
+          echo "bundled Vikunja is using the bundled PostgreSQL ($n tables)"
+
       - name: helm test
         run: helm test "$RELEASE" -n "$NS" --logs --timeout 5m
 
