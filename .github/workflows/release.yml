@@ -1,0 +1,81 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Chart version to package and push
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  CHART: charts/strange-company
+  HELM_VERSION: v3.21.4
+  OCI_REGISTRY: oci://ghcr.io/${{ github.repository_owner }}/charts
+
+jobs:
+  publish:
+    name: package and push to GHCR
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Verify the tag matches the chart version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          chart=$(helm show chart "$CHART" | awk '/^version:/ {print $2}')
+          if [ "$tag" != "$chart" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match Chart.yaml version $chart"
+            exit 1
+          fi
+          echo "releasing $chart"
+
+      - name: Resolve dependencies
+        run: helm dependency build "$CHART"
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          helm package "$CHART" -d dist
+          ls -la dist
+
+      - name: Log in to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" \
+            | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Push
+        run: |
+          set -euo pipefail
+          for tgz in dist/*.tgz; do
+            helm push "$tgz" "$OCI_REGISTRY"
+          done
+
+      - name: Verify the published artifact is consumable
+        run: |
+          set -euo pipefail
+          version=$(helm show chart "$CHART" | awk '/^version:/ {print $2}')
+          helm show chart "${OCI_REGISTRY}/strange-company" --version "$version"
+          # Prove it renders straight from the registry, the way a consumer or a
+          # parent chart would pull it.
+          helm template strange-company "${OCI_REGISTRY}/strange-company" \
+            --version "$version" \
+            -f "$CHART/ci/values-external.yaml" > /tmp/from-oci.yaml
+          test -s /tmp/from-oci.yaml
+          echo "published and verified: ${OCI_REGISTRY}/strange-company:$version"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: strange-company-release
+          path: dist/*.tgz
