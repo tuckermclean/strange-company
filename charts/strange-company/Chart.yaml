@@ -1,0 +1,23 @@
+apiVersion: v2
+name: strange-company
+description: Batteries-optional infrastructure for the Strange Company autonomous engineering system
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.25.0-0"
+home: https://github.com/tuckermclean/strange-company
+sources:
+  - https://github.com/tuckermclean/strange-company
+keywords:
+  - strange-company
+  - vikunja
+  - hermes
+  - postgresql
+  - control-plane
+maintainers:
+  - name: Tucker McLean
+dependencies:
+  - name: vikunja
+    repository: oci://ghcr.io/go-vikunja/helm-chart
+    version: "2.2.1"
+    condition: vikunja.enabled
