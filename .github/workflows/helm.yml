@@ -81,6 +81,20 @@ jobs:
             echo "::endgroup::"
           done
 
+      - name: Schema rejects materially invalid configuration
+        run: |
+          set -euo pipefail
+          fail=0
+          for f in "$CHART"/tests/invalid-values/*.yaml; do
+            if helm template "$RELEASE" "$CHART" -n "$NS" -f "$f" >/dev/null 2>&1; then
+              echo "::error::values.schema.json accepted invalid values: $f"
+              fail=1
+            else
+              echo "rejected as expected: $(basename "$f")"
+            fi
+          done
+          [ "$fail" -eq 0 ]
+
       - name: Render and schema-validate every fixture
         run: |
           set -euo pipefail

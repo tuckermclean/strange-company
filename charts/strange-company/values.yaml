@@ -1,0 +1,348 @@
+# strange-company
+#
+# Batteries-optional infrastructure. Each dependency below can be either
+# *bundled* (rendered by this chart) or *external* (an endpoint you already run).
+# The switches are independent: `postgresql.enabled` says nothing about
+# `vikunja.enabled`. There is deliberately no global "mode" flag.
+#
+# Whatever you choose, the control plane always receives the same environment
+# contract (see docs/USAGE.md):
+#
+#   DATABASE_HOST  DATABASE_PORT  DATABASE_NAME  DATABASE_USER  DATABASE_PASSWORD
+#   VIKUNJA_URL    VIKUNJA_TOKEN
+#   HERMES_GATEWAY_URL  HERMES_API_KEY  [HERMES_DASHBOARD_URL]
+
+# -- Settings shared by every chart-owned workload.
+global:
+  # -- Pull secrets applied to all chart-owned pods.
+  imagePullSecrets: []
+
+# -- Override the generated chart name (affects every resource name).
+nameOverride: ""
+# -- Override the generated release fullname (affects every resource name).
+fullnameOverride: ""
+
+# -- Common labels/annotations added to every chart-owned resource.
+commonLabels: {}
+commonAnnotations: {}
+
+serviceAccount:
+  # -- Create a ServiceAccount for the control plane. No RBAC is attached: the
+  # control plane does not talk to the Kubernetes API in this phase.
+  create: true
+  # -- Use an existing ServiceAccount instead of creating one.
+  name: ""
+  annotations: {}
+
+# -- Optional, default-off NetworkPolicy that confines chart-owned pods.
+networkPolicy:
+  enabled: false
+  # -- Extra ingress rules appended to the generated policy.
+  extraIngress: []
+  # -- Extra egress rules appended to the generated policy.
+  extraEgress: []
+
+# ---------------------------------------------------------------------------
+# PostgreSQL
+# ---------------------------------------------------------------------------
+# Bundled PostgreSQL is a single StatefulSet running the official image. It is
+# meant for CI, development, demos, homelabs and small single-cluster installs.
+# It is NOT highly available. Point `postgresql.external` at a managed database
+# for anything that matters.
+postgresql:
+  # -- Render a chart-owned PostgreSQL StatefulSet, Service and Secret.
+  enabled: true
+
+  image:
+    repository: postgres
+    # -- Pinned. Do not float this to `latest`.
+    tag: "17.11"
+    pullPolicy: IfNotPresent
+
+  auth:
+    # -- Application user created by the container entrypoint.
+    username: strange-company
+    # -- Primary application database.
+    database: strange-company
+    # -- Explicit password. Leave empty to generate one on first install; the
+    # generated value is then preserved across upgrades via a Secret lookup.
+    password: ""
+    # -- Use a pre-existing Secret instead of a chart-created one.
+    existingSecret: ""
+    usernameKey: username
+    passwordKey: password
+
+  # -- Second logical database created at init time so Vikunja does not share
+  # schemas with the control plane. One server, two databases (spec §11).
+  vikunjaDatabase: vikunja
+
+  service:
+    port: 5432
+
+  persistence:
+    # -- When false, PostgreSQL uses an emptyDir. Suitable only for CI.
+    enabled: true
+    size: 8Gi
+    # -- Empty means "use the cluster default StorageClass". Never hard-coded.
+    storageClass: ""
+    accessModes:
+      - ReadWriteOnce
+
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+  # -- uid/gid 999 is `postgres` in the official Debian-based image.
+  podSecurityContext:
+    fsGroup: 999
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    runAsUser: 999
+    runAsGroup: 999
+    runAsNonRoot: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: ["ALL"]
+
+  # Used only when `postgresql.enabled: false`.
+  external:
+    host: ""
+    port: 5432
+    database: strange-company
+    # -- Secret holding the credentials for the external server. Required.
+    existingSecret: ""
+    usernameKey: username
+    passwordKey: password
+
+# ---------------------------------------------------------------------------
+# Vikunja (Kanban)
+# ---------------------------------------------------------------------------
+# Bundled Vikunja comes from the official upstream chart, declared as a
+# conditional dependency in Chart.yaml. Note the doubled key: `vikunja.enabled`
+# and `vikunja.external` belong to THIS chart, while `vikunja.vikunja.*` is
+# passed through to the upstream chart.
+vikunja:
+  # -- Render the upstream Vikunja dependency.
+  enabled: true
+
+  # -- Name of the Secret holding Vikunja's database password.
+  #
+  # This must be a literal: the upstream chart does not run `tpl` over
+  # `secretKeyRef` names, so it cannot be templated per-release. When PostgreSQL
+  # is bundled this chart creates the Secret for you. When PostgreSQL is
+  # external, point this AND the `secretKeyRef` below at your own Secret.
+  # Keep the two in sync -- the chart fails the render if they disagree.
+  databaseSecretName: vikunja-db
+
+  ingress:
+    # -- Vikunja's own Ingress is configured through the upstream chart, at
+    # `vikunja.vikunja.ingress.main`. This flag only reports intent for NOTES.txt.
+    enabled: false
+
+  # Used only when `vikunja.enabled: false`.
+  external:
+    url: ""
+    existingSecret: ""
+    tokenKey: token
+
+  # -- API token handed to the control plane as VIKUNJA_TOKEN. Vikunja has no
+  # bootstrap-token API, so a bundled install starts without one; create a token
+  # in the UI and set it here (or supply `controlPlane.existingSecret`).
+  token: ""
+
+  # ---- values below are passed verbatim to the upstream Vikunja chart ----
+  vikunja:
+    image:
+      repository: vikunja/vikunja
+      tag: "2.5.0"
+
+    # Point Vikunja at whichever PostgreSQL this release resolved to.
+    # String values here ARE templated by the upstream chart, so the helpers
+    # below resolve correctly for any release name.
+    env:
+      VIKUNJA_DATABASE_TYPE: postgres
+      VIKUNJA_DATABASE_HOST: '{{ include "strange-company.postgresql.address" . }}'
+      VIKUNJA_DATABASE_USER: strange-company
+      VIKUNJA_DATABASE_DATABASE: vikunja
+      VIKUNJA_DATABASE_SSLMODE: disable
+      VIKUNJA_DATABASE_PASSWORD:
+        valueFrom:
+          secretKeyRef:
+            name: vikunja-db
+            key: password
+      VIKUNJA_SERVICE_PUBLICURL: '{{ printf "http://%s-vikunja:3456" .Release.Name }}'
+
+    persistence:
+      # Uploaded files.
+      data:
+        enabled: true
+        size: 2Gi
+      # SQLite database volume -- not needed, we use PostgreSQL.
+      database:
+        enabled: false
+
+    ingress:
+      main:
+        enabled: false
+
+    # Vikunja does not need Kubernetes API access.
+    automountServiceAccountToken: false
+
+    resources: {}
+
+# ---------------------------------------------------------------------------
+# Hermes Agent
+# ---------------------------------------------------------------------------
+hermes:
+  # -- Render a chart-owned Hermes Deployment, Service and PVC.
+  enabled: true
+
+  image:
+    repository: nousresearch/hermes-agent
+    # -- Pinned. Do not float this to `latest`.
+    tag: "v2026.8.19"
+    pullPolicy: IfNotPresent
+
+  gateway:
+    port: 8642
+  dashboard:
+    enabled: true
+    port: 9119
+
+  persistence:
+    # -- Hermes state lives at /opt/data (HERMES_HOME in the upstream image).
+    enabled: true
+    size: 2Gi
+    storageClass: ""
+    accessModes:
+      - ReadWriteOnce
+
+  # -- Secret providing AI provider credentials, mounted with envFrom.
+  # Strongly preferred over `hermes.secrets` for real installs. No credentials
+  # of any kind are required to render or to pass CI.
+  existingSecret: ""
+
+  # -- Non-secret environment variables.
+  env: {}
+  # -- Secret environment variables. Rendering these creates a chart-owned
+  # Secret; prefer `existingSecret` outside of development.
+  secrets: {}
+
+  command: []
+  args: []
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+  # -- The upstream Hermes image declares USER root and manages /opt/data
+  # itself, so runAsNonRoot is NOT forced here. Privilege escalation is still
+  # denied and all capabilities dropped.
+  podSecurityContext: {}
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: ["ALL"]
+
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    # -- Single host shortcut; `hosts` takes precedence when both are set.
+    host: ""
+    hosts: []
+    tls: []
+
+  # Used only when `hermes.enabled: false`.
+  external:
+    gatewayUrl: ""
+    dashboardUrl: ""
+    existingSecret: ""
+    apiKeyKey: api-key
+
+  # -- API key handed to the control plane as HERMES_API_KEY when no external
+  # or existing Secret supplies one.
+  apiKey: ""
+
+# ---------------------------------------------------------------------------
+# Control plane
+# ---------------------------------------------------------------------------
+# This chart deploys the control-plane image; it does not implement it.
+controlPlane:
+  enabled: true
+
+  image:
+    repository: ghcr.io/tuckermclean/strange-company-control-plane
+    # -- Empty falls back to .Chart.appVersion, so no release ever ships
+    # `latest`. Override with a fixture image in CI.
+    tag: ""
+    pullPolicy: IfNotPresent
+
+  replicas: 1
+
+  service:
+    type: ClusterIP
+    port: 8080
+
+  # -- Extra Secret merged in with envFrom. The nine contract variables are
+  # resolved by the chart and are not overridden by this Secret.
+  existingSecret: ""
+
+  # -- Non-secret environment variables, added on top of the contract.
+  env: {}
+
+  command: []
+  args: []
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    fsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+
+  probes:
+    liveness:
+      enabled: true
+      path: /healthz
+      initialDelaySeconds: 10
+      periodSeconds: 10
+      timeoutSeconds: 2
+      failureThreshold: 3
+    readiness:
+      enabled: true
+      path: /readyz
+      initialDelaySeconds: 5
+      periodSeconds: 5
+      timeoutSeconds: 2
+      failureThreshold: 3
+
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    host: ""
+    hosts: []
+    tls: []
+
+# ---------------------------------------------------------------------------
+# Helm test pod
+# ---------------------------------------------------------------------------
+tests:
+  image:
+    repository: busybox
+    tag: "1.37.0"
+    pullPolicy: IfNotPresent

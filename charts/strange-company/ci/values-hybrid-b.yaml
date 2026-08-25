@@ -1,0 +1,46 @@
+# PostgreSQL external, Vikunja bundled, Hermes bundled.
+#
+# Because PostgreSQL is external, the Secret holding Vikunja's database password
+# is one this chart does not own. The upstream Vikunja chart cannot template a
+# secretKeyRef name, so both the reference and `databaseSecretName` are pointed
+# at the external Secret explicitly.
+postgresql:
+  enabled: false
+  external:
+    host: external-postgres.external-deps.svc.cluster.local
+    port: 5432
+    database: strange-company
+    existingSecret: external-postgres
+    usernameKey: username
+    passwordKey: password
+
+vikunja:
+  enabled: true
+  databaseSecretName: external-postgres
+  vikunja:
+    env:
+      VIKUNJA_DATABASE_HOST: external-postgres.external-deps.svc.cluster.local:5432
+      VIKUNJA_DATABASE_PASSWORD:
+        valueFrom:
+          secretKeyRef:
+            name: external-postgres
+            key: password
+    persistence:
+      data:
+        enabled: true
+        size: 1Gi
+
+hermes:
+  enabled: true
+  # Proves Hermes runs on ephemeral storage (spec §17, DoD 25).
+  persistence:
+    enabled: false
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+
+controlPlane:
+  enabled: true
+  image:
+    repository: traefik/whoami
+    tag: "v1.12.0"
+  args: ["--port", "8080"]

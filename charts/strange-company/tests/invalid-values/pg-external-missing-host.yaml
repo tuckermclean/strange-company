@@ -1,0 +1,4 @@
+postgresql:
+  enabled: false
+  external:
+    existingSecret: some-secret

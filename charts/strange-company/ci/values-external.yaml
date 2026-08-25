@@ -1,0 +1,34 @@
+# Nothing bundled. Dummy-but-valid external endpoints, sufficient to render and
+# to unit-test the configuration contract. These endpoints are not reachable and
+# are not expected to be.
+postgresql:
+  enabled: false
+  external:
+    host: postgres.database.svc
+    port: 5432
+    database: strange-company
+    existingSecret: strange-company-db
+    usernameKey: username
+    passwordKey: password
+
+vikunja:
+  enabled: false
+  external:
+    url: https://kanban.example.com
+    existingSecret: strange-company-vikunja
+    tokenKey: token
+
+hermes:
+  enabled: false
+  external:
+    gatewayUrl: http://hermes.ai.svc:8642
+    dashboardUrl: https://hermes.example.com
+    existingSecret: strange-company-hermes
+    apiKeyKey: api-key
+
+controlPlane:
+  enabled: true
+  image:
+    repository: traefik/whoami
+    tag: "v1.12.0"
+  args: ["--port", "8080"]
