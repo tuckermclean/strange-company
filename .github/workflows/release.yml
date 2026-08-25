@@ -75,6 +75,20 @@ jobs:
           test -s /tmp/from-oci.yaml
           echo "published and verified: ${OCI_REGISTRY}/strange-company:$version"
 
+      - name: Verify a parent chart can consume it as a dependency
+        run: |
+          set -euo pipefail
+          version=$(helm show chart "$CHART" | awk '/^version:/ {print $2}')
+          # Point the example parent at the version just published, then resolve
+          # it the way a real consumer would.
+          sed -i "s|version: \".*\"|version: \"$version\"|" examples/parent-chart/Chart.yaml
+          helm dependency build examples/parent-chart
+          ls -la examples/parent-chart/charts
+          test -f "examples/parent-chart/charts/strange-company-$version.tgz"
+          helm template acme examples/parent-chart > /tmp/parent.yaml
+          grep -q "kind: Deployment" /tmp/parent.yaml
+          echo "parent chart resolved and rendered strange-company $version from OCI"
+
       - uses: actions/upload-artifact@v4
         with:
           name: strange-company-release
