@@ -1,0 +1,82 @@
+{{- /*
+  Plumbing validation only: resolve each bundled Service and open a connection
+  to it. No model request is ever made, and no provider credential is required.
+  Checks for externally-provided dependencies are omitted, because this chart
+  does not promise those endpoints are reachable from the cluster.
+*/ -}}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "strange-company.fullname" . }}-test-connections
+  labels:
+    {{- include "strange-company.labels" (dict "ctx" $ "component" "test") | nindent 4 }}
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    seccompProfile:
+      type: RuntimeDefault
+  {{- include "strange-company.imagePullSecrets" . | nindent 2 }}
+  containers:
+    - name: test-connections
+      image: "{{ .Values.tests.image.repository }}:{{ .Values.tests.image.tag }}"
+      imagePullPolicy: {{ .Values.tests.image.pullPolicy }}
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      command:
+        - /bin/sh
+        - -c
+        - |
+          set -eu
+
+          resolve() {
+            echo "==> resolving $1"
+            nslookup "$1" >/dev/null 2>&1 || { echo "FAIL: cannot resolve $1"; exit 1; }
+          }
+          tcp() {
+            echo "==> connecting to $1:$2"
+            nc -z -w 10 "$1" "$2" || { echo "FAIL: cannot connect to $1:$2"; exit 1; }
+          }
+          http() {
+            echo "==> GET $1"
+            wget -q -T 15 -O /dev/null "$1" || { echo "FAIL: GET $1"; exit 1; }
+          }
+
+          {{- if .Values.postgresql.enabled }}
+          resolve {{ include "strange-company.postgresql.fullname" . | quote }}
+          tcp {{ include "strange-company.postgresql.fullname" . | quote }} {{ .Values.postgresql.service.port }}
+          {{- end }}
+
+          {{- if .Values.hermes.enabled }}
+          resolve {{ include "strange-company.hermes.fullname" . | quote }}
+          tcp {{ include "strange-company.hermes.fullname" . | quote }} {{ .Values.hermes.gateway.port }}
+          {{- if .Values.hermes.dashboard.enabled }}
+          tcp {{ include "strange-company.hermes.fullname" . | quote }} {{ .Values.hermes.dashboard.port }}
+          {{- end }}
+          {{- end }}
+
+          {{- if .Values.vikunja.enabled }}
+          resolve {{ include "strange-company.vikunja.fullname" . | quote }}
+          tcp {{ include "strange-company.vikunja.fullname" . | quote }} 3456
+          http {{ printf "http://%s:3456/api/v1/info" (include "strange-company.vikunja.fullname" .) | quote }}
+          {{- end }}
+
+          {{- if .Values.controlPlane.enabled }}
+          resolve {{ include "strange-company.controlPlane.fullname" . | quote }}
+          http {{ printf "http://%s:%v/healthz" (include "strange-company.controlPlane.fullname" .) .Values.controlPlane.service.port | quote }}
+          {{- end }}
+
+          echo "all connectivity checks passed"
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi

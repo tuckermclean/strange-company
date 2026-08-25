@@ -1,0 +1,23 @@
+{{- if .Values.hermes.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "strange-company.hermes.fullname" . }}
+  labels:
+    {{- include "strange-company.labels" (dict "ctx" $ "component" "hermes") | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: gateway
+      port: {{ .Values.hermes.gateway.port }}
+      targetPort: gateway
+      protocol: TCP
+    {{- if .Values.hermes.dashboard.enabled }}
+    - name: dashboard
+      port: {{ .Values.hermes.dashboard.port }}
+      targetPort: dashboard
+      protocol: TCP
+    {{- end }}
+  selector:
+    {{- include "strange-company.selectorLabels" (dict "ctx" $ "component" "hermes") | nindent 4 }}
+{{- end }}

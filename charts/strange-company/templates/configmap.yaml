@@ -1,0 +1,23 @@
+{{- /* Rendered unconditionally so seam validation always runs. */ -}}
+{{- include "strange-company.validate" . -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "strange-company.configMapName" . }}
+  labels:
+    {{- include "strange-company.labels" (dict "ctx" $ "component" "control-plane") | nindent 4 }}
+  {{- with (include "strange-company.annotations" .) }}
+  annotations:
+    {{- . | nindent 4 }}
+  {{- end }}
+data:
+  # Non-secret half of the control-plane contract. Identical keys in every
+  # deployment topology; only the values differ.
+  DATABASE_HOST: {{ include "strange-company.databaseHost" . | quote }}
+  DATABASE_PORT: {{ include "strange-company.databasePort" . | quote }}
+  DATABASE_NAME: {{ include "strange-company.databaseName" . | quote }}
+  VIKUNJA_URL: {{ include "strange-company.vikunjaUrl" . | quote }}
+  HERMES_GATEWAY_URL: {{ include "strange-company.hermesGatewayUrl" . | quote }}
+  {{- with (include "strange-company.hermesDashboardUrl" .) }}
+  HERMES_DASHBOARD_URL: {{ . | quote }}
+  {{- end }}

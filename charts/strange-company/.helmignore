@@ -4,5 +4,6 @@
 *.tmproj
 .idea/
 .vscode/
-ci/
-tests/
+# Anchored: must not match templates/tests/
+/ci/
+/tests/

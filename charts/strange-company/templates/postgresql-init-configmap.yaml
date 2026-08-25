@@ -1,0 +1,20 @@
+{{- if .Values.postgresql.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "strange-company.postgresql.fullname" . }}-init
+  labels:
+    {{- include "strange-company.labels" (dict "ctx" $ "component" "postgresql") | nindent 4 }}
+data:
+  # Mounted at /docker-entrypoint-initdb.d and run once, on an empty data
+  # directory, by the official image's entrypoint. One server, two databases.
+  10-create-vikunja-db.sh: |
+    #!/bin/sh
+    set -eu
+    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-'SQL'
+      SELECT 'CREATE DATABASE {{ .Values.postgresql.vikunjaDatabase }} OWNER {{ .Values.postgresql.auth.username | quote }}'
+      WHERE NOT EXISTS (
+        SELECT FROM pg_database WHERE datname = '{{ .Values.postgresql.vikunjaDatabase }}'
+      )\gexec
+    SQL
+{{- end }}

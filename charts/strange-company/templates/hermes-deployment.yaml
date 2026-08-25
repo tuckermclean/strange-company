@@ -1,0 +1,116 @@
+{{- if .Values.hermes.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "strange-company.hermes.fullname" . }}
+  labels:
+    {{- include "strange-company.labels" (dict "ctx" $ "component" "hermes") | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    # Single writer to a ReadWriteOnce volume: never run two at once.
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "strange-company.selectorLabels" (dict "ctx" $ "component" "hermes") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "strange-company.labels" (dict "ctx" $ "component" "hermes") | nindent 8 }}
+    spec:
+      {{- include "strange-company.imagePullSecrets" . | nindent 6 }}
+      # Hermes has no business talking to the Kubernetes API.
+      automountServiceAccountToken: false
+      {{- with .Values.hermes.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: hermes
+          image: "{{ .Values.hermes.image.repository }}:{{ .Values.hermes.image.tag }}"
+          imagePullPolicy: {{ .Values.hermes.image.pullPolicy }}
+          {{- with .Values.hermes.command }}
+          command:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.hermes.args }}
+          args:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.hermes.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          env:
+            # Upstream image default; restated so the mount path and the app
+            # agree even if the image default changes.
+            - name: HERMES_HOME
+              value: /opt/data
+            {{- range $k, $v := .Values.hermes.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          {{- $envFrom := list }}
+          {{- if .Values.hermes.existingSecret }}
+          {{- $envFrom = append $envFrom (dict "secretRef" (dict "name" .Values.hermes.existingSecret)) }}
+          {{- end }}
+          {{- if .Values.hermes.secrets }}
+          {{- $envFrom = append $envFrom (dict "secretRef" (dict "name" (printf "%s-env" (include "strange-company.hermes.fullname" .)))) }}
+          {{- end }}
+          {{- with $envFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: gateway
+              containerPort: {{ .Values.hermes.gateway.port }}
+              protocol: TCP
+            {{- if .Values.hermes.dashboard.enabled }}
+            - name: dashboard
+              containerPort: {{ .Values.hermes.dashboard.port }}
+              protocol: TCP
+            {{- end }}
+          # The gateway exposes no documented health endpoint, so this is a
+          # plain TCP check rather than an invented HTTP path.
+          readinessProbe:
+            tcpSocket:
+              port: gateway
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 30
+          livenessProbe:
+            tcpSocket:
+              port: gateway
+            initialDelaySeconds: 120
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 6
+          volumeMounts:
+            - name: data
+              mountPath: /opt/data
+          {{- with .Values.hermes.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: data
+          {{- if .Values.hermes.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "strange-company.hermes.fullname" . }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+      {{- with .Values.hermes.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.hermes.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.hermes.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

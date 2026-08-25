@@ -160,11 +160,15 @@ vikunja:
       tag: "2.5.0"
 
     # Point Vikunja at whichever PostgreSQL this release resolved to.
-    # String values here ARE templated by the upstream chart, so the helpers
-    # below resolve correctly for any release name.
+    #
+    # String values here are run through `tpl` by the upstream chart, but that
+    # happens in the SUBCHART's template scope: this chart's helpers are not
+    # reachable from here. The release-name logic is therefore inlined using
+    # built-ins only. This chart re-derives the same string at render time and
+    # fails the render if the two disagree, so the duplication cannot rot.
     env:
       VIKUNJA_DATABASE_TYPE: postgres
-      VIKUNJA_DATABASE_HOST: '{{ include "strange-company.postgresql.address" . }}'
+      VIKUNJA_DATABASE_HOST: '{{ if contains "strange-company" .Release.Name }}{{ .Release.Name }}{{ else }}{{ printf "%s-strange-company" .Release.Name }}{{ end }}-postgresql:5432'
       VIKUNJA_DATABASE_USER: strange-company
       VIKUNJA_DATABASE_DATABASE: vikunja
       VIKUNJA_DATABASE_SSLMODE: disable
@@ -173,7 +177,7 @@ vikunja:
           secretKeyRef:
             name: vikunja-db
             key: password
-      VIKUNJA_SERVICE_PUBLICURL: '{{ printf "http://%s-vikunja:3456" .Release.Name }}'
+      VIKUNJA_SERVICE_PUBLICURL: 'http://{{ if contains "vikunja" .Release.Name }}{{ .Release.Name }}{{ else }}{{ printf "%s-vikunja" .Release.Name }}{{ end }}:3456'
 
     persistence:
       # Uploaded files.
@@ -224,6 +228,9 @@ hermes:
   # Strongly preferred over `hermes.secrets` for real installs. No credentials
   # of any kind are required to render or to pass CI.
   existingSecret: ""
+  # -- Key within `existingSecret` holding the value passed to the control plane
+  # as HERMES_API_KEY.
+  apiKeyKey: api-key
 
   # -- Non-secret environment variables.
   env: {}
