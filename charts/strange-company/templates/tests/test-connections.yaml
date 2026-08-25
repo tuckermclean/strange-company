@@ -12,7 +12,10 @@ metadata:
     {{- include "strange-company.labels" (dict "ctx" $ "component" "test") | nindent 4 }}
   annotations:
     helm.sh/hook: test
-    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+    # Deliberately NOT hook-succeeded: `helm test --logs` reads the pod's logs
+    # after it finishes, and deleting on success makes that fail. The pod is
+    # replaced before each subsequent run instead.
+    helm.sh/hook-delete-policy: before-hook-creation
 spec:
   restartPolicy: Never
   automountServiceAccountToken: false

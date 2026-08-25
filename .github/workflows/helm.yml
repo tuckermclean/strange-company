@@ -259,14 +259,18 @@ jobs:
           set -euo pipefail
           helm uninstall "$RELEASE" -n "$NS" --wait --timeout 5m
           sleep 10
-          echo "--- remaining workloads ---"
-          kubectl -n "$NS" get deploy,statefulset,svc,pod 2>&1 | tee /tmp/left.txt
-          if grep -qE "^(deployment|statefulset|service)\.|^pod/" /tmp/left.txt; then
-            if kubectl -n "$NS" get deploy,statefulset -o name | grep -q .; then
-              echo "::error::chart-owned workloads survived uninstall"; exit 1
-            fi
+          echo "--- anything left in the namespace ---"
+          kubectl -n "$NS" get all || true
+          # Chart-owned workloads and services must be gone. The helm test pod
+          # is a hook, not part of the release manifest, so it is not counted.
+          left=$(kubectl -n "$NS" get deploy,statefulset,svc \
+                   -l app.kubernetes.io/instance="$RELEASE" -o name | wc -l)
+          if [ "$left" -ne 0 ]; then
+            echo "::error::$left chart-owned resources survived uninstall"
+            kubectl -n "$NS" get deploy,statefulset,svc -l app.kubernetes.io/instance="$RELEASE"
+            exit 1
           fi
-          echo "uninstall clean"
+          echo "uninstall clean: no chart-owned workloads or services remain"
 
       - name: Diagnostics on failure
         if: failure()
