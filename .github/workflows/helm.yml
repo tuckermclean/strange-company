@@ -286,10 +286,114 @@ jobs:
         if: always()
         run: k3d cluster delete strange-company-ci || true
 
+  integration-hybrid:
+    name: hybrid B against an external database
+    runs-on: ubuntu-latest
+    needs: [lint, unit]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Install k3d
+        run: |
+          set -euo pipefail
+          curl -sSfL "https://raw.githubusercontent.com/k3d-io/k3d/${K3D_VERSION}/install.sh" | TAG="${K3D_VERSION}" bash
+
+      - name: Create K3s cluster
+        run: |
+          set -euo pipefail
+          k3d cluster create strange-company-hybrid \
+            --image "$K3S_IMAGE" \
+            --k3s-arg "--disable=traefik@server:0" \
+            --k3s-arg "--disable=metrics-server@server:0" \
+            --wait --timeout 300s
+
+      - name: Deploy a PostgreSQL this chart does not own
+        run: |
+          set -euo pipefail
+          kubectl apply -f .github/ci/external-postgres.yaml
+          kubectl -n external-deps rollout status statefulset/external-postgres --timeout=300s
+          kubectl -n external-deps exec external-postgres-0 -- \
+            psql -U strange-company -d strange-company -tAc "SELECT datname FROM pg_database ORDER BY 1"
+
+      - name: Mirror the external credentials into the release namespace
+        run: |
+          set -euo pipefail
+          kubectl create namespace "$NS"
+          kubectl -n "$NS" create secret generic external-postgres \
+            --from-literal=username=strange-company \
+            --from-literal=password=ci-external-password
+
+      - name: Resolve dependencies
+        run: helm dependency build "$CHART"
+
+      - name: Install hybrid B
+        run: |
+          set -euo pipefail
+          helm install "$RELEASE" "$CHART" \
+            -n "$NS" \
+            -f "$CHART/ci/values-hybrid-b.yaml" \
+            --wait --timeout 15m
+
+      - name: Assert no chart-owned PostgreSQL exists
+        run: |
+          set -euo pipefail
+          if kubectl -n "$NS" get statefulset "$FULLNAME-postgresql" 2>/dev/null; then
+            echo "::error::external mode still rendered a bundled PostgreSQL"; exit 1
+          fi
+          echo "no bundled PostgreSQL, as expected"
+
+      - name: Assert bundled Vikunja actually used the external database
+        run: |
+          set -euo pipefail
+          kubectl -n "$NS" wait --for=condition=Available deployment --all --timeout=300s
+          # Vikunja creates its schema on first start; its tables must appear in
+          # the external server, not in any chart-owned one.
+          kubectl -n external-deps exec external-postgres-0 -- \
+            psql -U strange-company -d vikunja -tAc \
+            "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'" | tee /tmp/tables.txt
+          n=$(tr -d '[:space:]' < /tmp/tables.txt)
+          [ "$n" -gt 0 ] || { echo "::error::Vikunja created no tables in the external database"; exit 1; }
+          echo "bundled Vikunja is using the external PostgreSQL ($n tables)"
+
+      - name: Assert Hermes runs without a PVC
+        run: |
+          set -euo pipefail
+          if kubectl -n "$NS" get pvc "$FULLNAME-hermes" 2>/dev/null; then
+            echo "::error::hermes PVC rendered despite persistence being disabled"; exit 1
+          fi
+          kubectl -n "$NS" get deployment "$FULLNAME-hermes" \
+            -o jsonpath='{.spec.template.spec.volumes[0].emptyDir}' | grep -q '{}'
+          echo "hermes is running on ephemeral storage"
+
+      - name: helm test
+        run: helm test "$RELEASE" -n "$NS" --logs --timeout 5m
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          kubectl -n "$NS" get all -o wide || true
+          kubectl -n external-deps get all -o wide || true
+          kubectl -n "$NS" describe pods || true
+          for p in $(kubectl -n "$NS" get pods -o name); do
+            echo "::group::logs $p"
+            kubectl -n "$NS" logs "$p" --all-containers --tail=200 || true
+            echo "::endgroup::"
+          done
+          kubectl -n "$NS" get events --sort-by=.lastTimestamp || true
+
+      - name: Delete cluster
+        if: always()
+        run: k3d cluster delete strange-company-hybrid || true
+
   package:
     name: package and install the tarball
     runs-on: ubuntu-latest
-    needs: [integration]
+    needs: [integration, integration-hybrid]
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4

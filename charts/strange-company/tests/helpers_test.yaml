@@ -61,11 +61,13 @@ tests:
       - equal: { path: data.HERMES_GATEWAY_URL, value: http://hermes.ai.svc:8642 }
       - equal: { path: data.HERMES_DASHBOARD_URL, value: https://hermes.example.com }
 
-  - it: fails clearly when an external dependency endpoint is missing
+  # values.schema.json rejects this before the template's own `required` guard
+  # is reached, which is the point: bad external configuration fails early.
+  - it: rejects an external database with no host
     set:
       postgresql.enabled: false
       postgresql.external.host: ""
       postgresql.external.existingSecret: some-secret
     asserts:
       - failedTemplate:
-          errorMessage: "postgresql.external.host is required when postgresql.enabled is false"
+          errorPattern: "postgresql/external/host"
