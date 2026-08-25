@@ -545,7 +545,16 @@
       ]
     },
     "tests": {
-      "type": "object"
+      "type": "object",
+      "properties": {
+        "image": {
+          "type": "object"
+        },
+        "clusterDomain": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
     }
   }
 }

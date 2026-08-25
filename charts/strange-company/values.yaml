@@ -385,3 +385,6 @@ tests:
     repository: busybox
     tag: "1.37.0"
     pullPolicy: IfNotPresent
+  # -- Cluster DNS domain, used to build fully qualified Service names in the
+  # helm test pod. Only override this on clusters not using cluster.local.
+  clusterDomain: cluster.local

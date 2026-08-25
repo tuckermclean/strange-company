@@ -38,9 +38,14 @@ spec:
         - |
           set -eu
 
+          # BusyBox's nslookup does not honour the `search` list in
+          # /etc/resolv.conf, so short Service names must be qualified here.
+          # nc/wget below use the musl resolver and do honour it, which is why
+          # they are given the short name on purpose.
+          DOMAIN="{{ .Release.Namespace }}.svc.{{ .Values.tests.clusterDomain }}"
           resolve() {
-            echo "==> resolving $1"
-            nslookup "$1" >/dev/null 2>&1 || { echo "FAIL: cannot resolve $1"; exit 1; }
+            echo "==> resolving $1.$DOMAIN"
+            nslookup "$1.$DOMAIN" >/dev/null 2>&1 || { echo "FAIL: cannot resolve $1.$DOMAIN"; exit 1; }
           }
           tcp() {
             echo "==> connecting to $1:$2"
