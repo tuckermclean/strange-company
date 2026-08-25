@@ -1,0 +1,29 @@
+# PostgreSQL bundled, Vikunja bundled, Hermes external.
+postgresql:
+  enabled: true
+  persistence:
+    enabled: true
+    size: 1Gi
+
+vikunja:
+  enabled: true
+  vikunja:
+    persistence:
+      data:
+        enabled: true
+        size: 1Gi
+
+hermes:
+  enabled: false
+  external:
+    gatewayUrl: http://hermes.ai.svc:8642
+    dashboardUrl: https://hermes.example.com
+    existingSecret: strange-company-hermes
+    apiKeyKey: api-key
+
+controlPlane:
+  enabled: true
+  image:
+    repository: traefik/whoami
+    tag: "v1.12.0"
+  args: ["--port", "8080"]

@@ -1,0 +1,17 @@
+{{- if .Values.postgresql.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "strange-company.postgresql.fullname" . }}
+  labels:
+    {{- include "strange-company.labels" (dict "ctx" $ "component" "postgresql") | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: postgresql
+      port: {{ .Values.postgresql.service.port }}
+      targetPort: postgresql
+      protocol: TCP
+  selector:
+    {{- include "strange-company.selectorLabels" (dict "ctx" $ "component" "postgresql") | nindent 4 }}
+{{- end }}

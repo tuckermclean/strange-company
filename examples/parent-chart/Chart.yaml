@@ -1,0 +1,13 @@
+apiVersion: v2
+name: acme-platform
+description: Example parent chart consuming strange-company from an OCI registry
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+dependencies:
+  - name: strange-company
+    repository: oci://ghcr.io/tuckermclean/charts
+    version: "0.1.0"
+    # The condition is a PARENT-level value, deliberately outside the
+    # `strange-company:` block. Helm evaluates it against the parent's values.
+    condition: strangeCompany.enabled

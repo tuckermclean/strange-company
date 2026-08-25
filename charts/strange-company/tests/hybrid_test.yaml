@@ -1,0 +1,83 @@
+suite: hybrid composition
+release:
+  name: strange-company
+  namespace: strange-company
+tests:
+  # ---- Hybrid A: postgresql bundled, vikunja bundled, hermes external ----
+  - it: hybrid A renders postgresql but no hermes
+    values: [../ci/values-hybrid-a.yaml]
+    templates:
+      - templates/hermes-deployment.yaml
+      - templates/hermes-service.yaml
+      - templates/hermes-pvc.yaml
+    asserts:
+      - hasDocuments: { count: 0 }
+
+  - it: hybrid A keeps the bundled postgresql statefulset
+    values: [../ci/values-hybrid-a.yaml]
+    template: templates/postgresql-statefulset.yaml
+    asserts:
+      - hasDocuments: { count: 1 }
+
+  - it: hybrid A resolves postgres internally and hermes externally
+    values: [../ci/values-hybrid-a.yaml]
+    template: templates/configmap.yaml
+    asserts:
+      - equal: { path: data.DATABASE_HOST, value: strange-company-postgresql }
+      - equal: { path: data.VIKUNJA_URL, value: "http://strange-company-vikunja:3456" }
+      - equal: { path: data.HERMES_GATEWAY_URL, value: http://hermes.ai.svc:8642 }
+      - equal: { path: data.HERMES_DASHBOARD_URL, value: https://hermes.example.com }
+
+  # ---- Hybrid B: postgresql external, vikunja bundled, hermes bundled ----
+  - it: hybrid B renders no postgresql workloads
+    values: [../ci/values-hybrid-b.yaml]
+    templates:
+      - templates/postgresql-statefulset.yaml
+      - templates/postgresql-service.yaml
+      - templates/postgresql-init-configmap.yaml
+    asserts:
+      - hasDocuments: { count: 0 }
+
+  - it: hybrid B keeps the bundled hermes deployment
+    values: [../ci/values-hybrid-b.yaml]
+    template: templates/hermes-deployment.yaml
+    asserts:
+      - hasDocuments: { count: 1 }
+
+  - it: hybrid B omits the hermes pvc because persistence is disabled
+    values: [../ci/values-hybrid-b.yaml]
+    template: templates/hermes-pvc.yaml
+    asserts:
+      - hasDocuments: { count: 0 }
+
+  - it: hybrid B uses an emptyDir for hermes state
+    values: [../ci/values-hybrid-b.yaml]
+    template: templates/hermes-deployment.yaml
+    asserts:
+      - exists: { path: "spec.template.spec.volumes[0].emptyDir" }
+      - equal:
+          path: spec.template.spec.containers[0].volumeMounts[0].mountPath
+          value: /opt/data
+
+  - it: hybrid B resolves postgres externally and hermes internally
+    values: [../ci/values-hybrid-b.yaml]
+    template: templates/configmap.yaml
+    asserts:
+      - equal:
+          path: data.DATABASE_HOST
+          value: external-postgres.external-deps.svc.cluster.local
+      - equal: { path: data.VIKUNJA_URL, value: "http://strange-company-vikunja:3456" }
+      - equal: { path: data.HERMES_GATEWAY_URL, value: "http://strange-company-hermes:8642" }
+
+  - it: hybrid B takes the database password from the external secret
+    values: [../ci/values-hybrid-b.yaml]
+    template: templates/control-plane-deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DATABASE_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: external-postgres
+                key: password

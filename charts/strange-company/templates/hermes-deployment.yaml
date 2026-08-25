@@ -1,0 +1,155 @@
+{{- if .Values.hermes.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "strange-company.hermes.fullname" . }}
+  labels:
+    {{- include "strange-company.labels" (dict "ctx" $ "component" "hermes") | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    # Single writer to a ReadWriteOnce volume: never run two at once.
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "strange-company.selectorLabels" (dict "ctx" $ "component" "hermes") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "strange-company.labels" (dict "ctx" $ "component" "hermes") | nindent 8 }}
+    spec:
+      {{- include "strange-company.imagePullSecrets" . | nindent 6 }}
+      # Hermes has no business talking to the Kubernetes API.
+      automountServiceAccountToken: false
+      {{- with .Values.hermes.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: hermes
+          image: "{{ .Values.hermes.image.repository }}:{{ .Values.hermes.image.tag }}"
+          imagePullPolicy: {{ .Values.hermes.image.pullPolicy }}
+          {{- with .Values.hermes.command }}
+          command:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.hermes.args }}
+          args:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.hermes.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          env:
+            # Upstream image default; restated so the mount path and the app
+            # agree even if the image default changes.
+            - name: HERMES_HOME
+              value: /opt/data
+            # The API server binds loopback by default, which a Service cannot
+            # reach.
+            - name: API_SERVER_HOST
+              value: "0.0.0.0"
+            - name: API_SERVER_PORT
+              value: {{ .Values.hermes.gateway.port | quote }}
+            # Required for every deployment; the API server refuses to start
+            # without it. Same Secret and key the control plane reads as
+            # HERMES_API_KEY, so the two never disagree.
+            - name: API_SERVER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "strange-company.hermesSecretName" . }}
+                  key: {{ include "strange-company.hermesApiKeyKey" . }}
+            {{- if .Values.hermes.dashboard.enabled }}
+            - name: HERMES_DASHBOARD
+              value: "1"
+            - name: HERMES_DASHBOARD_HOST
+              value: "0.0.0.0"
+            - name: HERMES_DASHBOARD_PORT
+              value: {{ .Values.hermes.dashboard.port | quote }}
+            {{- if not .Values.hermes.existingSecret }}
+            # The dashboard's auth gate fails closed on non-loopback binds, so
+            # without a provider it never listens at all.
+            - name: HERMES_DASHBOARD_BASIC_AUTH_USERNAME
+              value: {{ .Values.hermes.dashboard.username | quote }}
+            - name: HERMES_DASHBOARD_BASIC_AUTH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "strange-company.secretName" . }}
+                  key: hermes-dashboard-password
+            {{- end }}
+            {{- end }}
+            {{- range $k, $v := .Values.hermes.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          {{- $envFrom := list }}
+          {{- if .Values.hermes.existingSecret }}
+          {{- $envFrom = append $envFrom (dict "secretRef" (dict "name" .Values.hermes.existingSecret)) }}
+          {{- end }}
+          {{- if .Values.hermes.secrets }}
+          {{- $envFrom = append $envFrom (dict "secretRef" (dict "name" (printf "%s-env" (include "strange-company.hermes.fullname" .)))) }}
+          {{- end }}
+          {{- with $envFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: gateway
+              containerPort: {{ .Values.hermes.gateway.port }}
+              protocol: TCP
+            {{- if .Values.hermes.dashboard.enabled }}
+            - name: dashboard
+              containerPort: {{ .Values.hermes.dashboard.port }}
+              protocol: TCP
+            {{- end }}
+          # Plain TCP checks: the gateway exposes no documented health path, and
+          # inventing one would be guessing. First start does a fair amount of
+          # setup work, so the startup probe carries the long grace period and
+          # liveness stays tight afterwards.
+          startupProbe:
+            tcpSocket:
+              port: gateway
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 60
+          readinessProbe:
+            tcpSocket:
+              port: gateway
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            tcpSocket:
+              port: gateway
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 6
+          volumeMounts:
+            - name: data
+              mountPath: /opt/data
+          {{- with .Values.hermes.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: data
+          {{- if .Values.hermes.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "strange-company.hermes.fullname" . }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+      {{- with .Values.hermes.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.hermes.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.hermes.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

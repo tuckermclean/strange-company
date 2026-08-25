@@ -1,0 +1,118 @@
+{{- if .Values.controlPlane.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "strange-company.controlPlane.fullname" . }}
+  labels:
+    {{- include "strange-company.labels" (dict "ctx" $ "component" "control-plane") | nindent 4 }}
+spec:
+  replicas: {{ .Values.controlPlane.replicas }}
+  selector:
+    matchLabels:
+      {{- include "strange-company.selectorLabels" (dict "ctx" $ "component" "control-plane") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "strange-company.labels" (dict "ctx" $ "component" "control-plane") | nindent 8 }}
+    spec:
+      {{- include "strange-company.imagePullSecrets" . | nindent 6 }}
+      serviceAccountName: {{ include "strange-company.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- with .Values.controlPlane.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: control-plane
+          image: "{{ .Values.controlPlane.image.repository }}:{{ .Values.controlPlane.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.controlPlane.image.pullPolicy }}
+          {{- with .Values.controlPlane.command }}
+          command:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.controlPlane.args }}
+          args:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.controlPlane.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          # ---- stable configuration contract ----
+          # Non-secret endpoints come from the ConfigMap; credentials are
+          # referenced from whichever Secret each dependency resolved to.
+          envFrom:
+            - configMapRef:
+                name: {{ include "strange-company.configMapName" . }}
+            {{- with .Values.controlPlane.existingSecret }}
+            - secretRef:
+                name: {{ . }}
+            {{- end }}
+          env:
+            - name: DATABASE_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "strange-company.databaseSecretName" . }}
+                  key: {{ include "strange-company.databaseUserKey" . }}
+            - name: DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "strange-company.databaseSecretName" . }}
+                  key: {{ include "strange-company.databasePasswordKey" . }}
+            - name: VIKUNJA_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "strange-company.vikunjaSecretName" . }}
+                  key: {{ include "strange-company.vikunjaTokenKey" . }}
+                  optional: true
+            - name: HERMES_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "strange-company.hermesSecretName" . }}
+                  key: {{ include "strange-company.hermesApiKeyKey" . }}
+                  optional: true
+            {{- range $k, $v := .Values.controlPlane.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.controlPlane.service.port }}
+              protocol: TCP
+          {{- if .Values.controlPlane.probes.liveness.enabled }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.controlPlane.probes.liveness.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.controlPlane.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.controlPlane.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.controlPlane.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.controlPlane.probes.liveness.failureThreshold }}
+          {{- end }}
+          {{- if .Values.controlPlane.probes.readiness.enabled }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.controlPlane.probes.readiness.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.controlPlane.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.controlPlane.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.controlPlane.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.controlPlane.probes.readiness.failureThreshold }}
+          {{- end }}
+          {{- with .Values.controlPlane.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with .Values.controlPlane.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.controlPlane.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.controlPlane.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

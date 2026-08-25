@@ -1,0 +1,68 @@
+strange-company {{ .Chart.Version }} installed as release {{ .Release.Name }} in namespace {{ .Release.Namespace }}.
+
+Resolved endpoints
+------------------
+  Control Plane    {{ if .Values.controlPlane.enabled }}http://{{ include "strange-company.controlPlane.fullname" . }}:{{ .Values.controlPlane.service.port }}{{ else }}(disabled){{ end }}
+  Vikunja          {{ include "strange-company.vikunjaUrl" . }}{{ if not .Values.vikunja.enabled }}  (external){{ end }}
+  Hermes Gateway   {{ include "strange-company.hermesGatewayUrl" . }}{{ if not .Values.hermes.enabled }}  (external){{ end }}
+  Hermes Dashboard {{ with (include "strange-company.hermesDashboardUrl" .) }}{{ . }}{{ else }}(disabled){{ end }}
+  Database         {{ include "strange-company.databaseHost" . }}:{{ include "strange-company.databasePort" . }}/{{ include "strange-company.databaseName" . }}{{ if not .Values.postgresql.enabled }}  (external){{ end }}
+
+Components
+----------
+  postgresql    {{ if .Values.postgresql.enabled }}bundled{{ else }}external{{ end }}
+  vikunja       {{ if .Values.vikunja.enabled }}bundled{{ else }}external{{ end }}
+  hermes        {{ if .Values.hermes.enabled }}bundled{{ else }}external{{ end }}
+  controlPlane  {{ if .Values.controlPlane.enabled }}enabled{{ else }}disabled{{ end }}
+
+Verify the deployment
+---------------------
+  helm test {{ .Release.Name }} --namespace {{ .Release.Namespace }}
+  kubectl --namespace {{ .Release.Namespace }} get pods
+
+Reach the services
+------------------
+{{- if and .Values.controlPlane.enabled (not .Values.controlPlane.ingress.enabled) }}
+  kubectl --namespace {{ .Release.Namespace }} port-forward \
+    svc/{{ include "strange-company.controlPlane.fullname" . }} {{ .Values.controlPlane.service.port }}:{{ .Values.controlPlane.service.port }}
+{{- end }}
+{{- if and .Values.hermes.enabled .Values.hermes.dashboard.enabled (not .Values.hermes.ingress.enabled) }}
+  kubectl --namespace {{ .Release.Namespace }} port-forward \
+    svc/{{ include "strange-company.hermes.fullname" . }} {{ .Values.hermes.dashboard.port }}:{{ .Values.hermes.dashboard.port }}
+{{- end }}
+{{- if .Values.vikunja.enabled }}
+  kubectl --namespace {{ .Release.Namespace }} port-forward \
+    svc/{{ include "strange-company.vikunja.fullname" . }} 3456:3456
+{{- end }}
+{{- if .Values.controlPlane.ingress.enabled }}
+
+  The control plane Ingress is enabled. Point DNS at your ingress controller.
+{{- end }}
+
+Credentials
+-----------
+{{- if and .Values.postgresql.enabled (not .Values.postgresql.auth.existingSecret) }}
+  A database password was generated and stored in Secret
+  {{ include "strange-company.postgresql.fullname" . }}. It is preserved across
+  upgrades. Read it with:
+
+    kubectl --namespace {{ .Release.Namespace }} get secret {{ include "strange-company.postgresql.fullname" . }} \
+      -o jsonpath='{.data.{{ .Values.postgresql.auth.passwordKey }}}' | base64 -d
+{{- end }}
+{{- if and .Values.vikunja.enabled (not .Values.vikunja.token) }}
+
+  No VIKUNJA_TOKEN is set. Vikunja has no bootstrap-token API, so create an API
+  token in the Vikunja UI and supply it with --set vikunja.token=... (or via
+  controlPlane.existingSecret) before the control plane needs it.
+{{- end }}
+{{- if and .Values.hermes.enabled .Values.hermes.dashboard.enabled (not .Values.hermes.existingSecret) }}
+
+  The Hermes dashboard requires basic auth to listen at all. Username is
+  {{ .Values.hermes.dashboard.username | quote }}; the password is stored in Secret
+  {{ include "strange-company.secretName" . }} under hermes-dashboard-password.
+{{- end }}
+{{- if and .Values.hermes.enabled (not .Values.hermes.existingSecret) (not .Values.hermes.secrets) }}
+
+  Hermes started without AI provider credentials. That is fine for connectivity
+  testing. For real use, set hermes.existingSecret to a Secret holding them.
+{{- end }}

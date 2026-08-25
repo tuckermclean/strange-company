@@ -1,0 +1,68 @@
+suite: no batteries
+release:
+  name: strange-company
+  namespace: strange-company
+values:
+  - ../ci/values-external.yaml
+tests:
+  - it: renders no bundled postgresql workloads
+    templates:
+      - templates/postgresql-statefulset.yaml
+      - templates/postgresql-service.yaml
+      - templates/postgresql-init-configmap.yaml
+    asserts:
+      - hasDocuments: { count: 0 }
+
+  - it: renders no bundled hermes workloads
+    templates:
+      - templates/hermes-deployment.yaml
+      - templates/hermes-service.yaml
+      - templates/hermes-pvc.yaml
+    asserts:
+      - hasDocuments: { count: 0 }
+
+  - it: still renders the control plane
+    template: templates/control-plane-deployment.yaml
+    asserts:
+      - hasDocuments: { count: 1 }
+      - isKind: { of: Deployment }
+
+  - it: publishes the supplied external endpoints to the control plane
+    template: templates/configmap.yaml
+    asserts:
+      - equal: { path: data.DATABASE_HOST, value: postgres.database.svc }
+      - equal: { path: data.DATABASE_PORT, value: "5432" }
+      - equal: { path: data.DATABASE_NAME, value: strange-company }
+      - equal: { path: data.VIKUNJA_URL, value: https://kanban.example.com }
+      - equal: { path: data.HERMES_GATEWAY_URL, value: http://hermes.ai.svc:8642 }
+      - equal: { path: data.HERMES_DASHBOARD_URL, value: https://hermes.example.com }
+
+  - it: sources credentials from the user supplied secrets
+    template: templates/control-plane-deployment.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DATABASE_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: strange-company-db
+                key: password
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: VIKUNJA_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: strange-company-vikunja
+                key: token
+                optional: true
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: HERMES_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: strange-company-hermes
+                key: api-key
+                optional: true

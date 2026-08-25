@@ -1,0 +1,135 @@
+suite: batteries included
+release:
+  name: strange-company
+  namespace: strange-company
+values:
+  - ../ci/values-batteries.yaml
+tests:
+  - it: renders the postgresql statefulset with the pinned image
+    template: templates/postgresql-statefulset.yaml
+    asserts:
+      - hasDocuments: { count: 1 }
+      - isKind: { of: StatefulSet }
+      - equal: { path: metadata.name, value: strange-company-postgresql }
+      - equal: { path: spec.serviceName, value: strange-company-postgresql }
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: postgres:17.11
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.exec.command[0]
+          value: pg_isready
+      - equal: { path: "spec.volumeClaimTemplates[0].spec.resources.requests.storage", value: 1Gi }
+      - notExists: { path: "spec.volumeClaimTemplates[0].spec.storageClassName" }
+
+  - it: renders the postgresql service
+    template: templates/postgresql-service.yaml
+    asserts:
+      - hasDocuments: { count: 1 }
+      - isKind: { of: Service }
+      - equal: { path: metadata.name, value: strange-company-postgresql }
+      - equal: { path: spec.type, value: ClusterIP }
+      - equal: { path: "spec.ports[0].port", value: 5432 }
+
+  - it: renders the postgresql secret and the vikunja database secret
+    template: templates/postgresql-secret.yaml
+    asserts:
+      - hasDocuments: { count: 2 }
+
+  - it: renders an init configmap that creates the separate vikunja database
+    template: templates/postgresql-init-configmap.yaml
+    asserts:
+      - hasDocuments: { count: 1 }
+      - isKind: { of: ConfigMap }
+      - matchRegex:
+          path: data["10-create-vikunja-db.sh"]
+          pattern: "CREATE DATABASE"
+
+  - it: renders the hermes deployment with both ports
+    template: templates/hermes-deployment.yaml
+    asserts:
+      - hasDocuments: { count: 1 }
+      - isKind: { of: Deployment }
+      - equal: { path: metadata.name, value: strange-company-hermes }
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: nousresearch/hermes-agent:v2026.8.19
+      - contains:
+          path: spec.template.spec.containers[0].ports
+          content: { name: gateway, containerPort: 8642, protocol: TCP }
+      - contains:
+          path: spec.template.spec.containers[0].ports
+          content: { name: dashboard, containerPort: 9119, protocol: TCP }
+      - equal:
+          path: spec.template.spec.containers[0].volumeMounts[0].mountPath
+          value: /opt/data
+      - equal: { path: spec.template.spec.automountServiceAccountToken, value: false }
+      # The container CMD is the main program; `gateway` is what keeps it alive
+      # and serves the API. Bare `hermes` is an interactive TUI that exits.
+      - equal:
+          path: spec.template.spec.containers[0].args
+          value: ["gateway"]
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: API_SERVER_HOST
+            value: "0.0.0.0"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: API_SERVER_KEY
+            valueFrom:
+              secretKeyRef:
+                name: strange-company-secrets
+                key: hermes-api-key
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: HERMES_DASHBOARD
+            value: "1"
+      # s6-overlay must chown /opt/data and drop to uid 10000.
+      - contains:
+          path: spec.template.spec.containers[0].securityContext.capabilities.add
+          content: SETGID
+
+  - it: renders the hermes service
+    template: templates/hermes-service.yaml
+    asserts:
+      - hasDocuments: { count: 1 }
+      - equal: { path: metadata.name, value: strange-company-hermes }
+      - contains:
+          path: spec.ports
+          content: { name: gateway, port: 8642, targetPort: gateway, protocol: TCP }
+
+  - it: renders the hermes pvc when persistence is enabled
+    template: templates/hermes-pvc.yaml
+    asserts:
+      - hasDocuments: { count: 1 }
+      - isKind: { of: PersistentVolumeClaim }
+      - equal: { path: metadata.name, value: strange-company-hermes }
+      - equal: { path: spec.resources.requests.storage, value: 1Gi }
+
+  - it: renders the control plane deployment and service
+    templates:
+      - templates/control-plane-deployment.yaml
+      - templates/control-plane-service.yaml
+    asserts:
+      - hasDocuments: { count: 1 }
+
+  - it: points the control plane at internal endpoints
+    template: templates/configmap.yaml
+    asserts:
+      - equal: { path: data.DATABASE_HOST, value: strange-company-postgresql }
+      - equal: { path: data.VIKUNJA_URL, value: "http://strange-company-vikunja:3456" }
+      - equal: { path: data.HERMES_GATEWAY_URL, value: "http://strange-company-hermes:8642" }
+
+  - it: creates a service account without api access
+    template: templates/serviceaccount.yaml
+    asserts:
+      - hasDocuments: { count: 1 }
+      - isKind: { of: ServiceAccount }
+      - equal: { path: automountServiceAccountToken, value: false }
+
+  - it: renders no ingress by default
+    template: templates/ingress.yaml
+    asserts:
+      - hasDocuments: { count: 0 }

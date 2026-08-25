@@ -1,0 +1,71 @@
+{{- /*
+  One Ingress per chart-owned, externally reachable service. Each is
+  independently switchable and uses only standard fields -- no ingress-controller
+  specific annotations are assumed.
+
+  Vikunja's Ingress is not rendered here: it belongs to the upstream dependency
+  and is configured at `vikunja.vikunja.ingress.main`. See docs/USAGE.md.
+*/ -}}
+{{- define "strange-company.ingress" -}}
+{{- $ctx := .ctx -}}
+{{- $ing := .ingress -}}
+{{- $hosts := $ing.hosts -}}
+{{- if and (not $hosts) $ing.host -}}
+{{- $hosts = list (dict "host" $ing.host) -}}
+{{- end }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .name }}
+  labels:
+    {{- include "strange-company.labels" (dict "ctx" $ctx "component" .component) | nindent 4 }}
+  {{- with $ing.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with $ing.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- with $ing.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    {{- range $hosts }}
+    - {{- with .host }}
+      host: {{ . | quote }}
+      {{- end }}
+      http:
+        paths:
+          {{- range (default (list (dict "path" "/" "pathType" "Prefix")) .paths) }}
+          - path: {{ default "/" .path }}
+            pathType: {{ default "Prefix" .pathType }}
+            backend:
+              service:
+                name: {{ $.serviceName }}
+                port:
+                  number: {{ $.servicePort }}
+          {{- end }}
+    {{- end }}
+{{- end -}}
+
+{{- if and .Values.controlPlane.enabled .Values.controlPlane.ingress.enabled }}
+{{- include "strange-company.ingress" (dict
+      "ctx" $
+      "ingress" .Values.controlPlane.ingress
+      "component" "control-plane"
+      "name" (include "strange-company.controlPlane.fullname" .)
+      "serviceName" (include "strange-company.controlPlane.fullname" .)
+      "servicePort" .Values.controlPlane.service.port) }}
+{{- end }}
+{{- if and .Values.hermes.enabled .Values.hermes.dashboard.enabled .Values.hermes.ingress.enabled }}
+---
+{{- include "strange-company.ingress" (dict
+      "ctx" $
+      "ingress" .Values.hermes.ingress
+      "component" "hermes"
+      "name" (printf "%s-dashboard" (include "strange-company.hermes.fullname" .))
+      "serviceName" (include "strange-company.hermes.fullname" .)
+      "servicePort" .Values.hermes.dashboard.port) }}
+{{- end }}

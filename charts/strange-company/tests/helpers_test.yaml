@@ -1,0 +1,73 @@
+suite: endpoint resolution helpers
+release:
+  name: strange-company
+  namespace: strange-company
+templates:
+  - templates/configmap.yaml
+tests:
+  - it: resolves the internal database endpoint when postgresql is bundled
+    set:
+      postgresql.enabled: true
+    asserts:
+      - equal: { path: data.DATABASE_HOST, value: strange-company-postgresql }
+      - equal: { path: data.DATABASE_PORT, value: "5432" }
+      - equal: { path: data.DATABASE_NAME, value: strange-company }
+
+  - it: resolves the external database endpoint when postgresql is external
+    set:
+      postgresql.enabled: false
+      postgresql.external.host: postgres.database.svc
+      postgresql.external.port: 6432
+      postgresql.external.database: sc-prod
+      postgresql.external.existingSecret: strange-company-db
+    asserts:
+      - equal: { path: data.DATABASE_HOST, value: postgres.database.svc }
+      - equal: { path: data.DATABASE_PORT, value: "6432" }
+      - equal: { path: data.DATABASE_NAME, value: sc-prod }
+
+  - it: resolves the internal vikunja url when vikunja is bundled
+    set:
+      vikunja.enabled: true
+    asserts:
+      - equal: { path: data.VIKUNJA_URL, value: "http://strange-company-vikunja:3456" }
+
+  - it: resolves the external vikunja url when vikunja is external
+    set:
+      vikunja.enabled: false
+      vikunja.external.url: https://kanban.example.com
+    asserts:
+      - equal: { path: data.VIKUNJA_URL, value: https://kanban.example.com }
+
+  - it: resolves internal hermes endpoints when hermes is bundled
+    set:
+      hermes.enabled: true
+    asserts:
+      - equal: { path: data.HERMES_GATEWAY_URL, value: "http://strange-company-hermes:8642" }
+      - equal: { path: data.HERMES_DASHBOARD_URL, value: "http://strange-company-hermes:9119" }
+
+  - it: omits the dashboard url when the bundled dashboard is disabled
+    set:
+      hermes.enabled: true
+      hermes.dashboard.enabled: false
+    asserts:
+      - notExists: { path: data.HERMES_DASHBOARD_URL }
+
+  - it: resolves external hermes endpoints when hermes is external
+    set:
+      hermes.enabled: false
+      hermes.external.gatewayUrl: http://hermes.ai.svc:8642
+      hermes.external.dashboardUrl: https://hermes.example.com
+    asserts:
+      - equal: { path: data.HERMES_GATEWAY_URL, value: http://hermes.ai.svc:8642 }
+      - equal: { path: data.HERMES_DASHBOARD_URL, value: https://hermes.example.com }
+
+  # values.schema.json rejects this before the template's own `required` guard
+  # is reached, which is the point: bad external configuration fails early.
+  - it: rejects an external database with no host
+    set:
+      postgresql.enabled: false
+      postgresql.external.host: ""
+      postgresql.external.existingSecret: some-secret
+    asserts:
+      - failedTemplate:
+          errorPattern: "postgresql/external/host"

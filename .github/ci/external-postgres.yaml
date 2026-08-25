@@ -1,0 +1,101 @@
+# A PostgreSQL server that the chart does NOT own, used to prove that bundled
+# Vikunja works against an external database (spec §13, DoD 19/20).
+# CI only: the password is a fixed literal on purpose.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: external-deps
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: external-postgres
+  namespace: external-deps
+type: Opaque
+stringData:
+  username: strange-company
+  password: ci-external-password
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: external-postgres-init
+  namespace: external-deps
+data:
+  10-create-vikunja-db.sh: |
+    #!/bin/sh
+    set -eu
+    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-'SQL'
+      SELECT 'CREATE DATABASE vikunja OWNER "strange-company"'
+      WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'vikunja')\gexec
+    SQL
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: external-postgres
+  namespace: external-deps
+spec:
+  type: ClusterIP
+  ports:
+    - name: postgresql
+      port: 5432
+      targetPort: postgresql
+  selector:
+    app: external-postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: external-postgres
+  namespace: external-deps
+spec:
+  replicas: 1
+  serviceName: external-postgres
+  selector:
+    matchLabels:
+      app: external-postgres
+  template:
+    metadata:
+      labels:
+        app: external-postgres
+    spec:
+      securityContext:
+        fsGroup: 999
+      containers:
+        - name: postgresql
+          image: postgres:17.11
+          securityContext:
+            runAsUser: 999
+            runAsGroup: 999
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef: { name: external-postgres, key: username }
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: external-postgres, key: password }
+            - name: POSTGRES_DB
+              value: strange-company
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - name: postgresql
+              containerPort: 5432
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "strange-company"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: init
+          configMap:
+            name: external-postgres-init
+            defaultMode: 0555

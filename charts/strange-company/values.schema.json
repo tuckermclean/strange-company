@@ -1,0 +1,560 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "strange-company values",
+  "description": "Validates the integration seams between this chart and its bundled or external dependencies. Deliberately does not model every nested Vikunja dependency value.",
+  "type": "object",
+  "definitions": {
+    "port": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65535
+    },
+    "quantity": {
+      "type": "string",
+      "minLength": 1,
+      "description": "A Kubernetes storage quantity such as 8Gi. Must be a string."
+    },
+    "ingress": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "className": {
+          "type": "string"
+        },
+        "annotations": {
+          "type": "object"
+        },
+        "host": {
+          "type": "string"
+        },
+        "hosts": {
+          "type": "array"
+        },
+        "tls": {
+          "type": "array"
+        }
+      }
+    }
+  },
+  "properties": {
+    "global": {
+      "type": "object",
+      "properties": {
+        "imagePullSecrets": {
+          "type": "array"
+        }
+      }
+    },
+    "nameOverride": {
+      "type": "string"
+    },
+    "fullnameOverride": {
+      "type": "string"
+    },
+    "commonLabels": {
+      "type": "object"
+    },
+    "commonAnnotations": {
+      "type": "object"
+    },
+    "serviceAccount": {
+      "type": "object",
+      "properties": {
+        "create": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "annotations": {
+          "type": "object"
+        }
+      }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "extraIngress": {
+          "type": "array"
+        },
+        "extraEgress": {
+          "type": "array"
+        }
+      }
+    },
+    "postgresql": {
+      "type": "object",
+      "required": [
+        "enabled"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "vikunjaDatabase": {
+          "type": "string",
+          "minLength": 1
+        },
+        "image": {
+          "type": "object",
+          "properties": {
+            "repository": {
+              "type": "string",
+              "minLength": 1
+            },
+            "tag": {
+              "type": "string",
+              "minLength": 1
+            },
+            "pullPolicy": {
+              "enum": [
+                "Always",
+                "IfNotPresent",
+                "Never"
+              ]
+            }
+          }
+        },
+        "auth": {
+          "type": "object",
+          "properties": {
+            "username": {
+              "type": "string",
+              "minLength": 1
+            },
+            "database": {
+              "type": "string",
+              "minLength": 1
+            },
+            "password": {
+              "type": "string"
+            },
+            "existingSecret": {
+              "type": "string"
+            },
+            "usernameKey": {
+              "type": "string",
+              "minLength": 1
+            },
+            "passwordKey": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "service": {
+          "type": "object",
+          "properties": {
+            "port": {
+              "$ref": "#/definitions/port"
+            }
+          }
+        },
+        "persistence": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "size": {
+              "$ref": "#/definitions/quantity"
+            },
+            "storageClass": {
+              "type": "string"
+            },
+            "accessModes": {
+              "type": "array"
+            }
+          }
+        },
+        "resources": {
+          "type": "object"
+        },
+        "external": {
+          "type": "object",
+          "properties": {
+            "host": {
+              "type": "string"
+            },
+            "port": {
+              "$ref": "#/definitions/port"
+            },
+            "database": {
+              "type": "string"
+            },
+            "existingSecret": {
+              "type": "string"
+            },
+            "usernameKey": {
+              "type": "string"
+            },
+            "passwordKey": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "enabled": {
+                "const": false
+              }
+            },
+            "required": [
+              "enabled"
+            ]
+          },
+          "then": {
+            "required": [
+              "external"
+            ],
+            "properties": {
+              "external": {
+                "required": [
+                  "host",
+                  "port",
+                  "database",
+                  "existingSecret"
+                ],
+                "properties": {
+                  "host": {
+                    "minLength": 1,
+                    "description": "postgresql.external.host is required when postgresql.enabled is false"
+                  },
+                  "database": {
+                    "minLength": 1
+                  },
+                  "existingSecret": {
+                    "minLength": 1,
+                    "description": "postgresql.external.existingSecret is required when postgresql.enabled is false"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "vikunja": {
+      "type": "object",
+      "required": [
+        "enabled"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "databaseSecretName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "token": {
+          "type": "string"
+        },
+        "external": {
+          "type": "object",
+          "properties": {
+            "url": {
+              "type": "string"
+            },
+            "existingSecret": {
+              "type": "string"
+            },
+            "tokenKey": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "enabled": {
+                "const": false
+              }
+            },
+            "required": [
+              "enabled"
+            ]
+          },
+          "then": {
+            "required": [
+              "external"
+            ],
+            "properties": {
+              "external": {
+                "required": [
+                  "url"
+                ],
+                "properties": {
+                  "url": {
+                    "minLength": 1,
+                    "description": "vikunja.external.url is required when vikunja.enabled is false"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "hermes": {
+      "type": "object",
+      "required": [
+        "enabled"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "image": {
+          "type": "object",
+          "properties": {
+            "repository": {
+              "type": "string",
+              "minLength": 1
+            },
+            "tag": {
+              "type": "string",
+              "minLength": 1
+            },
+            "pullPolicy": {
+              "enum": [
+                "Always",
+                "IfNotPresent",
+                "Never"
+              ]
+            }
+          }
+        },
+        "gateway": {
+          "type": "object",
+          "properties": {
+            "port": {
+              "$ref": "#/definitions/port"
+            }
+          }
+        },
+        "dashboard": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "port": {
+              "$ref": "#/definitions/port"
+            },
+            "username": {
+              "type": "string"
+            },
+            "password": {
+              "type": "string"
+            }
+          }
+        },
+        "persistence": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "size": {
+              "$ref": "#/definitions/quantity"
+            },
+            "storageClass": {
+              "type": "string"
+            },
+            "accessModes": {
+              "type": "array"
+            }
+          }
+        },
+        "existingSecret": {
+          "type": "string"
+        },
+        "apiKey": {
+          "type": "string"
+        },
+        "env": {
+          "type": "object"
+        },
+        "secrets": {
+          "type": "object"
+        },
+        "resources": {
+          "type": "object"
+        },
+        "ingress": {
+          "$ref": "#/definitions/ingress"
+        },
+        "external": {
+          "type": "object",
+          "properties": {
+            "gatewayUrl": {
+              "type": "string"
+            },
+            "dashboardUrl": {
+              "type": "string"
+            },
+            "existingSecret": {
+              "type": "string"
+            },
+            "apiKeyKey": {
+              "type": "string"
+            }
+          }
+        },
+        "args": {
+          "type": "array"
+        },
+        "command": {
+          "type": "array"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "enabled": {
+                "const": false
+              }
+            },
+            "required": [
+              "enabled"
+            ]
+          },
+          "then": {
+            "required": [
+              "external"
+            ],
+            "properties": {
+              "external": {
+                "required": [
+                  "gatewayUrl"
+                ],
+                "properties": {
+                  "gatewayUrl": {
+                    "minLength": 1,
+                    "description": "hermes.external.gatewayUrl is required when hermes.enabled is false"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "controlPlane": {
+      "type": "object",
+      "required": [
+        "enabled"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "replicas": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "image": {
+          "type": "object",
+          "properties": {
+            "repository": {
+              "type": "string"
+            },
+            "tag": {
+              "type": "string"
+            },
+            "pullPolicy": {
+              "enum": [
+                "Always",
+                "IfNotPresent",
+                "Never"
+              ]
+            }
+          }
+        },
+        "service": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "enum": [
+                "ClusterIP",
+                "NodePort",
+                "LoadBalancer"
+              ]
+            },
+            "port": {
+              "$ref": "#/definitions/port"
+            }
+          }
+        },
+        "existingSecret": {
+          "type": "string"
+        },
+        "env": {
+          "type": "object"
+        },
+        "resources": {
+          "type": "object"
+        },
+        "ingress": {
+          "$ref": "#/definitions/ingress"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "enabled": {
+                "const": true
+              }
+            },
+            "required": [
+              "enabled"
+            ]
+          },
+          "then": {
+            "required": [
+              "image"
+            ],
+            "properties": {
+              "image": {
+                "required": [
+                  "repository"
+                ],
+                "properties": {
+                  "repository": {
+                    "minLength": 1,
+                    "description": "controlPlane.image.repository is required when the control plane is enabled"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "tests": {
+      "type": "object",
+      "properties": {
+        "image": {
+          "type": "object"
+        },
+        "clusterDomain": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

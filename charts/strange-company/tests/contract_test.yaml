@@ -1,0 +1,87 @@
+# The control plane must receive the same logical variables in every topology.
+# Only the values differ.
+suite: stable control-plane configuration contract
+release:
+  name: strange-company
+  namespace: strange-company
+templates:
+  - templates/control-plane-deployment.yaml
+tests:
+  - it: batteries mode wires the contract through configmap plus secret refs
+    values: [../ci/values-batteries.yaml]
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].envFrom
+          content:
+            configMapRef:
+              name: strange-company-config
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DATABASE_USER
+            valueFrom:
+              secretKeyRef:
+                name: strange-company-postgresql
+                key: username
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DATABASE_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: strange-company-postgresql
+                key: password
+
+  - it: external mode exposes the same variable names
+    values: [../ci/values-external.yaml]
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].envFrom
+          content:
+            configMapRef:
+              name: strange-company-config
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: DATABASE_USER
+            valueFrom:
+              secretKeyRef:
+                name: strange-company-db
+                key: username
+
+  - it: hybrid A exposes the same variable names
+    values: [../ci/values-hybrid-a.yaml]
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].envFrom
+          content:
+            configMapRef:
+              name: strange-company-config
+
+  - it: hybrid B exposes the same variable names
+    values: [../ci/values-hybrid-b.yaml]
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].envFrom
+          content:
+            configMapRef:
+              name: strange-company-config
+
+  - it: probes use the documented control plane paths
+    values: [../ci/values-batteries.yaml]
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].livenessProbe.httpGet.path
+          value: /healthz
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.httpGet.path
+          value: /readyz
+
+  - it: honours a replica count change
+    values: [../ci/values-batteries.yaml]
+    set:
+      controlPlane.replicas: 2
+    asserts:
+      - equal:
+          path: spec.replicas
+          value: 2

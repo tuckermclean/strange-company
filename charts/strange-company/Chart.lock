@@ -1,0 +1,6 @@
+dependencies:
+- name: vikunja
+  repository: oci://ghcr.io/go-vikunja/helm-chart
+  version: 2.2.1
+digest: sha256:8c214e02ab5db5ebbd9cc173e3db07801c769cb2a8bf861bc9fe62b4f9619ba6
+generated: "2026-08-25T20:53:18.599159942Z"

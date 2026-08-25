@@ -1,0 +1,9 @@
+.DS_Store
+.git/
+.gitignore
+*.tmproj
+.idea/
+.vscode/
+# Anchored: must not match templates/tests/
+/ci/
+/tests/

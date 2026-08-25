@@ -1,0 +1,58 @@
+# Parent value convention, as Helm requires it.
+#
+# Two separate things are going on, and mixing them up is the usual mistake:
+#
+#   1. `strangeCompany.enabled` is a PARENT value. It exists only to satisfy the
+#      `condition:` in Chart.yaml. Helm reads conditions from the parent's own
+#      value tree, so this key must NOT live under `strange-company:`.
+#
+#   2. `strange-company:` is the subchart's value block. Its key must match the
+#      dependency's `name` (or its `alias`, if one is set). Everything inside is
+#      passed to the subchart as that subchart's `.Values`.
+
+strangeCompany:
+  enabled: true
+
+strange-company:
+  # Bring your own database; let the chart run everything else.
+  postgresql:
+    enabled: false
+    external:
+      host: my-postgres.databases.svc.cluster.local
+      port: 5432
+      database: strange-company
+      existingSecret: acme-db-credentials
+      usernameKey: username
+      passwordKey: password
+
+  vikunja:
+    enabled: true
+    # PostgreSQL is external here, so the Secret holding Vikunja's database
+    # password is not one this chart creates. Point both at your own Secret.
+    databaseSecretName: acme-db-credentials
+    vikunja:
+      env:
+        VIKUNJA_DATABASE_HOST: my-postgres.databases.svc.cluster.local:5432
+        VIKUNJA_DATABASE_PASSWORD:
+          valueFrom:
+            secretKeyRef:
+              name: acme-db-credentials
+              key: password
+
+  hermes:
+    enabled: true
+    existingSecret: hermes-provider-credentials
+
+  controlPlane:
+    enabled: true
+    image:
+      repository: ghcr.io/tuckermclean/strange-company-control-plane
+      tag: "0.1.0"
+    ingress:
+      enabled: true
+      className: nginx
+      hosts:
+        - host: control-plane.acme.example
+          paths:
+            - path: /
+              pathType: Prefix

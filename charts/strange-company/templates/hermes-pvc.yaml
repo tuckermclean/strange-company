@@ -1,0 +1,17 @@
+{{- if and .Values.hermes.enabled .Values.hermes.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "strange-company.hermes.fullname" . }}
+  labels:
+    {{- include "strange-company.labels" (dict "ctx" $ "component" "hermes") | nindent 4 }}
+spec:
+  accessModes:
+    {{- toYaml .Values.hermes.persistence.accessModes | nindent 4 }}
+  resources:
+    requests:
+      storage: {{ .Values.hermes.persistence.size | quote }}
+  {{- with .Values.hermes.persistence.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+{{- end }}
