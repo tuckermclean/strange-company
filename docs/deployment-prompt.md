@@ -1,7 +1,9 @@
 # Deployment brief: strange-company Helm chart
 
 > Drop-in context for an agent or operator deploying this chart to a K3s
-> cluster. Everything below was verified in CI against k3d/K3s v1.34.10-k3s1.
+> cluster. Everything below was verified in CI against k3d/K3s v1.34.10-k3s1
+> for **chart 0.1.0**, published and publicly pullable at
+> `oci://ghcr.io/tuckermclean/charts/strange-company`.
 
 ## What you are deploying
 
@@ -70,27 +72,52 @@ chart runs non-root with all capabilities dropped.
 | Vikunja image         | `vikunja/vikunja:2.5.0`                    |
 | Hermes image          | `nousresearch/hermes-agent:v2026.8.19`     |
 | Helm                  | v3 (tested on v3.21.4)                     |
+| **This chart**        | `oci://ghcr.io/tuckermclean/charts/strange-company` `0.1.0` |
 
-`Chart.lock` is committed. Run `helm dependency build charts/strange-company`
-before installing from source.
+`Chart.lock` is committed. `helm dependency build` is only needed when
+installing from a source checkout; the published artifact already contains the
+Vikunja dependency.
 
 ## Install
+
+Prepare the namespace once (see the PodSecurity note above):
 
 ```bash
 kubectl create namespace strange-company
 kubectl label namespace strange-company \
   pod-security.kubernetes.io/enforce=baseline --overwrite
+```
 
-helm dependency build charts/strange-company
+### From the registry (normal path)
 
-helm install strange-company charts/strange-company \
+No checkout required:
+
+```bash
+helm install strange-company \
+  oci://ghcr.io/tuckermclean/charts/strange-company \
+  --version 0.1.0 \
   --namespace strange-company \
   --values my-values.yaml \
   --wait --timeout 20m
 ```
 
-You must supply a real control-plane image; the chart's default repository is a
-placeholder and its tag falls back to the chart `appVersion`:
+The package is public, so no `helm registry login` is needed to pull it.
+
+### From a source checkout (chart development)
+
+```bash
+helm dependency build charts/strange-company
+helm install strange-company charts/strange-company \
+  --namespace strange-company --values my-values.yaml \
+  --wait --timeout 20m
+```
+
+### You must supply a control-plane image
+
+**The chart's default `controlPlane.image.repository` is a placeholder that
+does not exist yet.** Installing without overriding it gives you three healthy
+services and a control-plane pod stuck in `ImagePullBackOff`. Point it at a
+real image:
 
 ```yaml
 # my-values.yaml
@@ -99,6 +126,24 @@ controlPlane:
     repository: ghcr.io/tuckermclean/strange-company-control-plane
     tag: "0.1.0"
 ```
+
+That image must serve `GET /healthz` and `GET /readyz` on port 8080.
+
+### Smoke-testing before the control plane exists
+
+To validate the substrate on its own, substitute the same fixture CI uses. It
+answers 200 on every path, which satisfies both probes:
+
+```yaml
+controlPlane:
+  image:
+    repository: traefik/whoami
+    tag: "v1.12.0"
+  args: ["--port", "8080"]
+```
+
+This is exactly `charts/strange-company/ci/values-batteries.yaml`, which is the
+configuration the integration job installs and `helm test`s on every commit.
 
 ## Credentials
 
@@ -160,6 +205,41 @@ those back the liveness and readiness probes.
    at your own Secret, and make sure the `vikunja` database already exists on
    that server.
 
+## Consuming it from another chart
+
+The published artifact resolves as a normal Helm dependency — the release
+workflow proves this by running `helm dependency build` against
+`examples/parent-chart` after every push.
+
+```yaml
+# parent Chart.yaml
+dependencies:
+  - name: strange-company
+    repository: oci://ghcr.io/tuckermclean/charts
+    version: "0.1.0"
+    condition: strangeCompany.enabled
+```
+
+```yaml
+# parent values.yaml
+strangeCompany:
+  enabled: true          # parent-level: satisfies `condition:` ONLY
+
+strange-company:         # must match the dependency name (or its alias)
+  postgresql:
+    enabled: false
+    external:
+      host: my-postgres.databases.svc.cluster.local
+      port: 5432
+      database: strange-company
+      existingSecret: acme-db-credentials
+```
+
+The `condition` key and the subchart value block are different things. Helm
+reads conditions from the parent's own values, so `strangeCompany.enabled` must
+sit **outside** the `strange-company:` block. Putting it inside silently
+disables the dependency.
+
 ## Verify
 
 ```bash
@@ -182,9 +262,19 @@ kubectl -n strange-company exec strange-company-postgresql-0 -- \
 
 ## Upgrades
 
+```bash
+helm upgrade strange-company \
+  oci://ghcr.io/tuckermclean/charts/strange-company \
+  --version 0.1.0 -n strange-company \
+  --values my-values.yaml --wait --timeout 20m
+```
+
 `helm upgrade` is safe to run: it does not rotate the database password or the
 Hermes credentials, and it does not replace the PostgreSQL PVC. CI asserts all
-three by comparing values and PVC UIDs before and after.
+three by comparing the stored values and the PVC UID before and after.
+
+Chart versions are immutable in the registry, so bump `--version` to move
+between releases rather than expecting `0.1.0` to change under you.
 
 ## Reaching the services without ingress
 
