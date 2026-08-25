@@ -55,6 +55,12 @@ Credentials
   token in the Vikunja UI and supply it with --set vikunja.token=... (or via
   controlPlane.existingSecret) before the control plane needs it.
 {{- end }}
+{{- if and .Values.hermes.enabled .Values.hermes.dashboard.enabled (not .Values.hermes.existingSecret) }}
+
+  The Hermes dashboard requires basic auth to listen at all. Username is
+  {{ .Values.hermes.dashboard.username | quote }}; the password is stored in Secret
+  {{ include "strange-company.secretName" . }} under hermes-dashboard-password.
+{{- end }}
 {{- if and .Values.hermes.enabled (not .Values.hermes.existingSecret) (not .Values.hermes.secrets) }}
 
   Hermes started without AI provider credentials. That is fine for connectivity

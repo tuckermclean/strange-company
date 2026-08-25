@@ -241,6 +241,26 @@ need it twice in one file must capture it in a variable, not call this twice.
 {{- end -}}
 
 {{/*
+A chart-owned credential that must stay stable across upgrades.
+
+Precedence: an explicit value, then whatever is already stored under that key in
+the chart's Secret, then a fresh random value. Call once per key per render.
+*/}}
+{{- define "strange-company.preserved" -}}
+{{- if .value -}}
+{{- .value -}}
+{{- else -}}
+{{- $ctx := .ctx -}}
+{{- $existing := lookup "v1" "Secret" $ctx.Release.Namespace (include "strange-company.secretName" $ctx) -}}
+{{- if and $existing $existing.data (hasKey $existing.data .key) -}}
+{{- index $existing.data .key | b64dec -}}
+{{- else -}}
+{{- randAlphaNum (default 32 .length) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 Guard rails for the one seam this chart cannot resolve automatically: the
 upstream Vikunja chart does not run `tpl` over secretKeyRef names, so its
 database Secret reference is a literal that has to agree with ours.

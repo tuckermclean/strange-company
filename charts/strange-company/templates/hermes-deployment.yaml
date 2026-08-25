@@ -46,6 +46,39 @@ spec:
             # agree even if the image default changes.
             - name: HERMES_HOME
               value: /opt/data
+            # The API server binds loopback by default, which a Service cannot
+            # reach.
+            - name: API_SERVER_HOST
+              value: "0.0.0.0"
+            - name: API_SERVER_PORT
+              value: {{ .Values.hermes.gateway.port | quote }}
+            # Required for every deployment; the API server refuses to start
+            # without it. Same Secret and key the control plane reads as
+            # HERMES_API_KEY, so the two never disagree.
+            - name: API_SERVER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "strange-company.hermesSecretName" . }}
+                  key: {{ include "strange-company.hermesApiKeyKey" . }}
+            {{- if .Values.hermes.dashboard.enabled }}
+            - name: HERMES_DASHBOARD
+              value: "1"
+            - name: HERMES_DASHBOARD_HOST
+              value: "0.0.0.0"
+            - name: HERMES_DASHBOARD_PORT
+              value: {{ .Values.hermes.dashboard.port | quote }}
+            {{- if not .Values.hermes.existingSecret }}
+            # The dashboard's auth gate fails closed on non-loopback binds, so
+            # without a provider it never listens at all.
+            - name: HERMES_DASHBOARD_BASIC_AUTH_USERNAME
+              value: {{ .Values.hermes.dashboard.username | quote }}
+            - name: HERMES_DASHBOARD_BASIC_AUTH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "strange-company.secretName" . }}
+                  key: hermes-dashboard-password
+            {{- end }}
+            {{- end }}
             {{- range $k, $v := .Values.hermes.env }}
             - name: {{ $k }}
               value: {{ $v | quote }}
@@ -70,19 +103,25 @@ spec:
               containerPort: {{ .Values.hermes.dashboard.port }}
               protocol: TCP
             {{- end }}
-          # The gateway exposes no documented health endpoint, so this is a
-          # plain TCP check rather than an invented HTTP path.
+          # Plain TCP checks: the gateway exposes no documented health path, and
+          # inventing one would be guessing. First start does a fair amount of
+          # setup work, so the startup probe carries the long grace period and
+          # liveness stays tight afterwards.
+          startupProbe:
+            tcpSocket:
+              port: gateway
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 60
           readinessProbe:
             tcpSocket:
               port: gateway
-            initialDelaySeconds: 15
             periodSeconds: 10
             timeoutSeconds: 3
-            failureThreshold: 30
+            failureThreshold: 3
           livenessProbe:
             tcpSocket:
               port: gateway
-            initialDelaySeconds: 120
             periodSeconds: 30
             timeoutSeconds: 5
             failureThreshold: 6

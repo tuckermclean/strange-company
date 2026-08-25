@@ -211,11 +211,27 @@ hermes:
     tag: "v2026.8.19"
     pullPolicy: IfNotPresent
 
+  # -- The container's CMD is the "main program": when it exits, the container
+  # exits. `hermes` with no arguments is the interactive TUI, which quits
+  # immediately without a TTY ("Input is not a terminal") and crash-loops.
+  # `gateway` runs the OpenAI-compatible API server instead.
+  args: ["gateway"]
+
   gateway:
+    # -- Bound as API_SERVER_PORT. The API server refuses to start without an
+    # API_SERVER_KEY, so the chart always supplies one; see `apiKey` below.
     port: 8642
   dashboard:
+    # -- Runs as a supervised service alongside the gateway, gated on
+    # HERMES_DASHBOARD.
     enabled: true
     port: 9119
+    # -- The dashboard's auth gate engages on any non-loopback bind and fails
+    # closed without an auth provider, so a basic-auth credential is required
+    # for it to listen at all. Leave the password empty to generate one and
+    # preserve it across upgrades.
+    username: hermes
+    password: ""
 
   persistence:
     # -- Hermes state lives at /opt/data (HERMES_HOME in the upstream image).
@@ -240,7 +256,6 @@ hermes:
   secrets: {}
 
   command: []
-  args: []
   resources: {}
   nodeSelector: {}
   tolerations: []
@@ -284,8 +299,11 @@ hermes:
     existingSecret: ""
     apiKeyKey: api-key
 
-  # -- API key handed to the control plane as HERMES_API_KEY when no external
-  # or existing Secret supplies one.
+  # -- Shared secret for the Hermes API server. It is both API_SERVER_KEY on
+  # the Hermes container and HERMES_API_KEY on the control plane, so the two
+  # always agree. This is a chart-owned credential, not an AI provider
+  # credential: nothing here requires an Anthropic/OpenAI/DeepSeek key.
+  # Leave empty to generate one and preserve it across upgrades.
   apiKey: ""
 
 # ---------------------------------------------------------------------------

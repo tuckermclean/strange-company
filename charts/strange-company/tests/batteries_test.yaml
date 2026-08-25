@@ -63,6 +63,33 @@ tests:
           path: spec.template.spec.containers[0].volumeMounts[0].mountPath
           value: /opt/data
       - equal: { path: spec.template.spec.automountServiceAccountToken, value: false }
+      # The container CMD is the main program; `gateway` is what keeps it alive
+      # and serves the API. Bare `hermes` is an interactive TUI that exits.
+      - equal:
+          path: spec.template.spec.containers[0].args
+          value: ["gateway"]
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: API_SERVER_HOST
+            value: "0.0.0.0"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: API_SERVER_KEY
+            valueFrom:
+              secretKeyRef:
+                name: strange-company-secrets
+                key: hermes-api-key
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: HERMES_DASHBOARD
+            value: "1"
+      # s6-overlay must chown /opt/data and drop to uid 10000.
+      - contains:
+          path: spec.template.spec.containers[0].securityContext.capabilities.add
+          content: SETGID
 
   - it: renders the hermes service
     template: templates/hermes-service.yaml

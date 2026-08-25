@@ -17,12 +17,24 @@
     "ingress": {
       "type": "object",
       "properties": {
-        "enabled": { "type": "boolean" },
-        "className": { "type": "string" },
-        "annotations": { "type": "object" },
-        "host": { "type": "string" },
-        "hosts": { "type": "array" },
-        "tls": { "type": "array" }
+        "enabled": {
+          "type": "boolean"
+        },
+        "className": {
+          "type": "string"
+        },
+        "annotations": {
+          "type": "object"
+        },
+        "host": {
+          "type": "string"
+        },
+        "hosts": {
+          "type": "array"
+        },
+        "tls": {
+          "type": "array"
+        }
       }
     }
   },
@@ -30,100 +42,195 @@
     "global": {
       "type": "object",
       "properties": {
-        "imagePullSecrets": { "type": "array" }
+        "imagePullSecrets": {
+          "type": "array"
+        }
       }
     },
-    "nameOverride": { "type": "string" },
-    "fullnameOverride": { "type": "string" },
-    "commonLabels": { "type": "object" },
-    "commonAnnotations": { "type": "object" },
-
+    "nameOverride": {
+      "type": "string"
+    },
+    "fullnameOverride": {
+      "type": "string"
+    },
+    "commonLabels": {
+      "type": "object"
+    },
+    "commonAnnotations": {
+      "type": "object"
+    },
     "serviceAccount": {
       "type": "object",
       "properties": {
-        "create": { "type": "boolean" },
-        "name": { "type": "string" },
-        "annotations": { "type": "object" }
+        "create": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "annotations": {
+          "type": "object"
+        }
       }
     },
-
     "networkPolicy": {
       "type": "object",
       "properties": {
-        "enabled": { "type": "boolean" },
-        "extraIngress": { "type": "array" },
-        "extraEgress": { "type": "array" }
+        "enabled": {
+          "type": "boolean"
+        },
+        "extraIngress": {
+          "type": "array"
+        },
+        "extraEgress": {
+          "type": "array"
+        }
       }
     },
-
     "postgresql": {
       "type": "object",
-      "required": ["enabled"],
+      "required": [
+        "enabled"
+      ],
       "properties": {
-        "enabled": { "type": "boolean" },
-        "vikunjaDatabase": { "type": "string", "minLength": 1 },
+        "enabled": {
+          "type": "boolean"
+        },
+        "vikunjaDatabase": {
+          "type": "string",
+          "minLength": 1
+        },
         "image": {
           "type": "object",
           "properties": {
-            "repository": { "type": "string", "minLength": 1 },
-            "tag": { "type": "string", "minLength": 1 },
-            "pullPolicy": { "enum": ["Always", "IfNotPresent", "Never"] }
+            "repository": {
+              "type": "string",
+              "minLength": 1
+            },
+            "tag": {
+              "type": "string",
+              "minLength": 1
+            },
+            "pullPolicy": {
+              "enum": [
+                "Always",
+                "IfNotPresent",
+                "Never"
+              ]
+            }
           }
         },
         "auth": {
           "type": "object",
           "properties": {
-            "username": { "type": "string", "minLength": 1 },
-            "database": { "type": "string", "minLength": 1 },
-            "password": { "type": "string" },
-            "existingSecret": { "type": "string" },
-            "usernameKey": { "type": "string", "minLength": 1 },
-            "passwordKey": { "type": "string", "minLength": 1 }
+            "username": {
+              "type": "string",
+              "minLength": 1
+            },
+            "database": {
+              "type": "string",
+              "minLength": 1
+            },
+            "password": {
+              "type": "string"
+            },
+            "existingSecret": {
+              "type": "string"
+            },
+            "usernameKey": {
+              "type": "string",
+              "minLength": 1
+            },
+            "passwordKey": {
+              "type": "string",
+              "minLength": 1
+            }
           }
         },
         "service": {
           "type": "object",
-          "properties": { "port": { "$ref": "#/definitions/port" } }
+          "properties": {
+            "port": {
+              "$ref": "#/definitions/port"
+            }
+          }
         },
         "persistence": {
           "type": "object",
           "properties": {
-            "enabled": { "type": "boolean" },
-            "size": { "$ref": "#/definitions/quantity" },
-            "storageClass": { "type": "string" },
-            "accessModes": { "type": "array" }
+            "enabled": {
+              "type": "boolean"
+            },
+            "size": {
+              "$ref": "#/definitions/quantity"
+            },
+            "storageClass": {
+              "type": "string"
+            },
+            "accessModes": {
+              "type": "array"
+            }
           }
         },
-        "resources": { "type": "object" },
+        "resources": {
+          "type": "object"
+        },
         "external": {
           "type": "object",
           "properties": {
-            "host": { "type": "string" },
-            "port": { "$ref": "#/definitions/port" },
-            "database": { "type": "string" },
-            "existingSecret": { "type": "string" },
-            "usernameKey": { "type": "string" },
-            "passwordKey": { "type": "string" }
+            "host": {
+              "type": "string"
+            },
+            "port": {
+              "$ref": "#/definitions/port"
+            },
+            "database": {
+              "type": "string"
+            },
+            "existingSecret": {
+              "type": "string"
+            },
+            "usernameKey": {
+              "type": "string"
+            },
+            "passwordKey": {
+              "type": "string"
+            }
           }
         }
       },
       "allOf": [
         {
           "if": {
-            "properties": { "enabled": { "const": false } },
-            "required": ["enabled"]
+            "properties": {
+              "enabled": {
+                "const": false
+              }
+            },
+            "required": [
+              "enabled"
+            ]
           },
           "then": {
-            "required": ["external"],
+            "required": [
+              "external"
+            ],
             "properties": {
               "external": {
-                "required": ["host", "port", "database", "existingSecret"],
+                "required": [
+                  "host",
+                  "port",
+                  "database",
+                  "existingSecret"
+                ],
                 "properties": {
                   "host": {
                     "minLength": 1,
                     "description": "postgresql.external.host is required when postgresql.enabled is false"
                   },
-                  "database": { "minLength": 1 },
+                  "database": {
+                    "minLength": 1
+                  },
                   "existingSecret": {
                     "minLength": 1,
                     "description": "postgresql.external.existingSecret is required when postgresql.enabled is false"
@@ -135,34 +242,58 @@
         }
       ]
     },
-
     "vikunja": {
       "type": "object",
-      "required": ["enabled"],
+      "required": [
+        "enabled"
+      ],
       "properties": {
-        "enabled": { "type": "boolean" },
-        "databaseSecretName": { "type": "string", "minLength": 1 },
-        "token": { "type": "string" },
+        "enabled": {
+          "type": "boolean"
+        },
+        "databaseSecretName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "token": {
+          "type": "string"
+        },
         "external": {
           "type": "object",
           "properties": {
-            "url": { "type": "string" },
-            "existingSecret": { "type": "string" },
-            "tokenKey": { "type": "string" }
+            "url": {
+              "type": "string"
+            },
+            "existingSecret": {
+              "type": "string"
+            },
+            "tokenKey": {
+              "type": "string"
+            }
           }
         }
       },
       "allOf": [
         {
           "if": {
-            "properties": { "enabled": { "const": false } },
-            "required": ["enabled"]
+            "properties": {
+              "enabled": {
+                "const": false
+              }
+            },
+            "required": [
+              "enabled"
+            ]
           },
           "then": {
-            "required": ["external"],
+            "required": [
+              "external"
+            ],
             "properties": {
               "external": {
-                "required": ["url"],
+                "required": [
+                  "url"
+                ],
                 "properties": {
                   "url": {
                     "minLength": 1,
@@ -175,67 +306,140 @@
         }
       ]
     },
-
     "hermes": {
       "type": "object",
-      "required": ["enabled"],
+      "required": [
+        "enabled"
+      ],
       "properties": {
-        "enabled": { "type": "boolean" },
+        "enabled": {
+          "type": "boolean"
+        },
         "image": {
           "type": "object",
           "properties": {
-            "repository": { "type": "string", "minLength": 1 },
-            "tag": { "type": "string", "minLength": 1 },
-            "pullPolicy": { "enum": ["Always", "IfNotPresent", "Never"] }
+            "repository": {
+              "type": "string",
+              "minLength": 1
+            },
+            "tag": {
+              "type": "string",
+              "minLength": 1
+            },
+            "pullPolicy": {
+              "enum": [
+                "Always",
+                "IfNotPresent",
+                "Never"
+              ]
+            }
           }
         },
         "gateway": {
           "type": "object",
-          "properties": { "port": { "$ref": "#/definitions/port" } }
+          "properties": {
+            "port": {
+              "$ref": "#/definitions/port"
+            }
+          }
         },
         "dashboard": {
           "type": "object",
           "properties": {
-            "enabled": { "type": "boolean" },
-            "port": { "$ref": "#/definitions/port" }
+            "enabled": {
+              "type": "boolean"
+            },
+            "port": {
+              "$ref": "#/definitions/port"
+            },
+            "username": {
+              "type": "string"
+            },
+            "password": {
+              "type": "string"
+            }
           }
         },
         "persistence": {
           "type": "object",
           "properties": {
-            "enabled": { "type": "boolean" },
-            "size": { "$ref": "#/definitions/quantity" },
-            "storageClass": { "type": "string" },
-            "accessModes": { "type": "array" }
+            "enabled": {
+              "type": "boolean"
+            },
+            "size": {
+              "$ref": "#/definitions/quantity"
+            },
+            "storageClass": {
+              "type": "string"
+            },
+            "accessModes": {
+              "type": "array"
+            }
           }
         },
-        "existingSecret": { "type": "string" },
-        "apiKey": { "type": "string" },
-        "env": { "type": "object" },
-        "secrets": { "type": "object" },
-        "resources": { "type": "object" },
-        "ingress": { "$ref": "#/definitions/ingress" },
+        "existingSecret": {
+          "type": "string"
+        },
+        "apiKey": {
+          "type": "string"
+        },
+        "env": {
+          "type": "object"
+        },
+        "secrets": {
+          "type": "object"
+        },
+        "resources": {
+          "type": "object"
+        },
+        "ingress": {
+          "$ref": "#/definitions/ingress"
+        },
         "external": {
           "type": "object",
           "properties": {
-            "gatewayUrl": { "type": "string" },
-            "dashboardUrl": { "type": "string" },
-            "existingSecret": { "type": "string" },
-            "apiKeyKey": { "type": "string" }
+            "gatewayUrl": {
+              "type": "string"
+            },
+            "dashboardUrl": {
+              "type": "string"
+            },
+            "existingSecret": {
+              "type": "string"
+            },
+            "apiKeyKey": {
+              "type": "string"
+            }
           }
+        },
+        "args": {
+          "type": "array"
+        },
+        "command": {
+          "type": "array"
         }
       },
       "allOf": [
         {
           "if": {
-            "properties": { "enabled": { "const": false } },
-            "required": ["enabled"]
+            "properties": {
+              "enabled": {
+                "const": false
+              }
+            },
+            "required": [
+              "enabled"
+            ]
           },
           "then": {
-            "required": ["external"],
+            "required": [
+              "external"
+            ],
             "properties": {
               "external": {
-                "required": ["gatewayUrl"],
+                "required": [
+                  "gatewayUrl"
+                ],
                 "properties": {
                   "gatewayUrl": {
                     "minLength": 1,
@@ -248,44 +452,86 @@
         }
       ]
     },
-
     "controlPlane": {
       "type": "object",
-      "required": ["enabled"],
+      "required": [
+        "enabled"
+      ],
       "properties": {
-        "enabled": { "type": "boolean" },
-        "replicas": { "type": "integer", "minimum": 0 },
+        "enabled": {
+          "type": "boolean"
+        },
+        "replicas": {
+          "type": "integer",
+          "minimum": 0
+        },
         "image": {
           "type": "object",
           "properties": {
-            "repository": { "type": "string" },
-            "tag": { "type": "string" },
-            "pullPolicy": { "enum": ["Always", "IfNotPresent", "Never"] }
+            "repository": {
+              "type": "string"
+            },
+            "tag": {
+              "type": "string"
+            },
+            "pullPolicy": {
+              "enum": [
+                "Always",
+                "IfNotPresent",
+                "Never"
+              ]
+            }
           }
         },
         "service": {
           "type": "object",
           "properties": {
-            "type": { "enum": ["ClusterIP", "NodePort", "LoadBalancer"] },
-            "port": { "$ref": "#/definitions/port" }
+            "type": {
+              "enum": [
+                "ClusterIP",
+                "NodePort",
+                "LoadBalancer"
+              ]
+            },
+            "port": {
+              "$ref": "#/definitions/port"
+            }
           }
         },
-        "existingSecret": { "type": "string" },
-        "env": { "type": "object" },
-        "resources": { "type": "object" },
-        "ingress": { "$ref": "#/definitions/ingress" }
+        "existingSecret": {
+          "type": "string"
+        },
+        "env": {
+          "type": "object"
+        },
+        "resources": {
+          "type": "object"
+        },
+        "ingress": {
+          "$ref": "#/definitions/ingress"
+        }
       },
       "allOf": [
         {
           "if": {
-            "properties": { "enabled": { "const": true } },
-            "required": ["enabled"]
+            "properties": {
+              "enabled": {
+                "const": true
+              }
+            },
+            "required": [
+              "enabled"
+            ]
           },
           "then": {
-            "required": ["image"],
+            "required": [
+              "image"
+            ],
             "properties": {
               "image": {
-                "required": ["repository"],
+                "required": [
+                  "repository"
+                ],
                 "properties": {
                   "repository": {
                     "minLength": 1,
@@ -298,7 +544,8 @@
         }
       ]
     },
-
-    "tests": { "type": "object" }
+    "tests": {
+      "type": "object"
+    }
   }
 }
