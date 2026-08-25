@@ -1,0 +1,9 @@
+# Helm
+charts/*/charts/
+*.tgz
+!charts/**/Chart.lock
+
+# Local tooling
+.DS_Store
+*.swp
+/tmp/
