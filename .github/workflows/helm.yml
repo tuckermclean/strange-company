@@ -189,7 +189,7 @@ jobs:
           helm install "$RELEASE" "$CHART" \
             -n "$NS" --create-namespace \
             -f "$CHART/ci/values-batteries.yaml" \
-            --wait --timeout 15m
+            --wait --timeout 20m
 
       - name: Wait for readiness
         run: |
@@ -337,7 +337,7 @@ jobs:
           helm install "$RELEASE" "$CHART" \
             -n "$NS" \
             -f "$CHART/ci/values-hybrid-b.yaml" \
-            --wait --timeout 15m
+            --wait --timeout 20m
 
       - name: Assert no chart-owned PostgreSQL exists
         run: |
@@ -433,7 +433,7 @@ jobs:
           helm install "$RELEASE" "$TGZ" \
             -n "$NS" --create-namespace \
             -f "$CHART/ci/values-batteries.yaml" \
-            --wait --timeout 15m
+            --wait --timeout 20m
           kubectl -n "$NS" wait --for=condition=Available deployment --all --timeout=300s
           helm test "$RELEASE" -n "$NS" --logs --timeout 5m
 

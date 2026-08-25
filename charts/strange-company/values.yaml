@@ -246,14 +246,27 @@ hermes:
   tolerations: []
   affinity: {}
 
-  # -- The upstream Hermes image declares USER root and manages /opt/data
-  # itself, so runAsNonRoot is NOT forced here. Privilege escalation is still
-  # denied and all capabilities dropped.
-  podSecurityContext: {}
+  # -- The upstream Hermes image runs an s6-overlay init as root, which chowns
+  # /opt/data and then drops the application to the unprivileged `hermes` user
+  # (uid 10000). So the container starts as root by design and runAsNonRoot is
+  # not forced -- but the workload itself does not end up running as root.
+  #
+  # s6 needs five capabilities to do that hand-off. With `drop: [ALL]` alone it
+  # fails with "s6-applyuidgid: unable to set supplementary group list" and
+  # crash-loops. Everything else is still dropped and privilege escalation is
+  # still denied.
+  podSecurityContext:
+    fsGroup: 10000
   securityContext:
     allowPrivilegeEscalation: false
     capabilities:
       drop: ["ALL"]
+      add:
+        - CHOWN        # chown /opt/data to the hermes user
+        - DAC_OVERRIDE # write into directories it has just re-owned
+        - FOWNER       # chown files it does not already own
+        - SETGID       # s6-applyuidgid: set the supplementary group list
+        - SETUID       # s6-applyuidgid: drop from root to uid 10000
 
   ingress:
     enabled: false
