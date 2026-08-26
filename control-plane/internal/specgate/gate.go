@@ -62,6 +62,11 @@ const (
 	// has no stated verification method.
 	ReasonUnverifiableCriteria Reason = "CRITERION_WITHOUT_VERIFICATION"
 
+	// ReasonSpecNotApproved means a specification document exists but no
+	// human has approved it (spec §10.2: "Human approves the completed
+	// spec. Only then may the control plane promote the card to Ready.").
+	ReasonSpecNotApproved Reason = "SPEC_NOT_APPROVED"
+
 	// ReasonNoRepo means the card names no repository to work in.
 	ReasonNoRepo Reason = "REPO_MISSING"
 
@@ -144,6 +149,13 @@ type Inputs struct {
 	// package does not know how to load or validate that policy; it only
 	// asks whether one exists.
 	PermittedActions bool
+
+	// SpecApproved reports whether a human has approved Spec as it
+	// currently reads (spec §10.2). It is meaningless (and ignored) when
+	// Spec is nil, exactly like SpecProblems: a missing document is
+	// reported as ReasonNoSpec and nothing else about it is evaluated,
+	// including whether it was approved.
+	SpecApproved bool
 }
 
 // Evaluate runs every deterministic check in spec section 10 against in and
@@ -205,6 +217,18 @@ func Evaluate(in Inputs) Result {
 					Detail: fmt.Sprintf("%s: %s", p.Kind, p.Detail),
 				})
 			}
+		}
+
+		// Spec §10.2's last sentence: a well-formed spec is not enough --
+		// a human must have approved it before the card can become Ready.
+		// This check runs alongside the others above, not instead of them,
+		// so a perfectly-formatted spec nobody read is reported as a
+		// failure in the same pass as any other problem with it.
+		if !in.SpecApproved {
+			failures = append(failures, Failure{
+				Reason: ReasonSpecNotApproved,
+				Detail: "a human must approve the specification before the card can become Ready (spec §10.2)",
+			})
 		}
 	}
 

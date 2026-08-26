@@ -43,6 +43,7 @@ func satisfiedInputs() Inputs {
 			},
 		},
 		SpecProblems:     nil,
+		SpecApproved:     true,
 		Dependencies:     nil,
 		PermittedActions: true,
 	}
@@ -498,5 +499,70 @@ func TestAFutureProblemKindFailsClosed(t *testing.T) {
 
 	if Evaluate(in).Passed {
 		t.Fatal("a problem kind added to spec.Parse later must block until this package handles it deliberately")
+	}
+}
+
+// --- spec §10.2: human approval of the completed spec -----------------------
+
+// TestUnapprovedSpecBlocksReadyEvenWhenPerfect checks that a spec passing
+// every other check still blocks the gate when no human has approved it: a
+// perfectly-formatted spec nobody read is exactly the failure §10.2 exists
+// to prevent.
+func TestUnapprovedSpecBlocksReadyEvenWhenPerfect(t *testing.T) {
+	in := satisfiedInputs()
+	in.SpecApproved = false
+
+	got := Evaluate(in)
+
+	if got.Passed {
+		t.Fatal("spec §10.2: a card must not become Ready on an unapproved specification, however well-formed")
+	}
+	if len(got.Failures) != 1 || got.Failures[0].Reason != ReasonSpecNotApproved {
+		t.Fatalf("want exactly one ReasonSpecNotApproved failure, got %+v", got.Failures)
+	}
+}
+
+// TestApprovedSpecPassesTheApprovalCheck checks the positive case: with
+// SpecApproved true and everything else satisfied, the gate passes.
+func TestApprovedSpecPassesTheApprovalCheck(t *testing.T) {
+	in := satisfiedInputs()
+	in.SpecApproved = true
+
+	got := Evaluate(in)
+
+	if !got.Passed {
+		t.Fatalf("§10.2: an approved, otherwise-satisfied spec must pass the gate, got failures %+v", got.Failures)
+	}
+}
+
+// TestUnapprovedSpecIsReportedAlongsideOtherFailures checks that the
+// approval check does not short-circuit the others: an unapproved spec with
+// other unrelated problems reports all of them in one pass, per rule 9.
+func TestUnapprovedSpecIsReportedAlongsideOtherFailures(t *testing.T) {
+	in := satisfiedInputs()
+	in.SpecApproved = false
+	in.PermittedActions = false
+	cardCopy := *in.Card
+	cardCopy.RepoURL = nil
+	in.Card = &cardCopy
+
+	got := Evaluate(in)
+
+	if got.Passed {
+		t.Fatal("§10: multiple simultaneous failures, including an unapproved spec, must not pass")
+	}
+	wantCounts := map[Reason]int{
+		ReasonSpecNotApproved:    1,
+		ReasonNoRepo:             1,
+		ReasonNoPermittedActions: 1,
+	}
+	gotCounts := countByReason(got.Failures)
+	for reason, want := range wantCounts {
+		if gotCounts[reason] != want {
+			t.Errorf("want %d failure(s) of reason %s, got %d (failures=%+v)", want, reason, gotCounts[reason], got.Failures)
+		}
+	}
+	if len(gotCounts) != len(wantCounts) {
+		t.Errorf("got unexpected reasons in failure set: %+v", gotCounts)
 	}
 }
