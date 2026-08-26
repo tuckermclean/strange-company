@@ -2,8 +2,7 @@
 
 Autonomous Engineering Control Plane — v1 Specification
 
-> Status: PART 1 OF 2 received. Part 2 pending — do not treat as complete.
-> Received 2026-08-26. The substrate this builds on is the `strange-company`
+> Status: COMPLETE (parts 1 and 2 received 2026-08-26). The substrate this builds on is the `strange-company`
 > Helm chart (see `strange-company-helm-chart.md`), already delivered.
 
 ## 1. Purpose
@@ -523,4 +522,359 @@ pods. The control plane owns that permission.
 
 ### 16.1 Job characteristics
 
-<!-- PART 1 ENDS MID-SECTION. Part 2 to be appended here. -->
+Each Job receives: card ID, run ID, model alias, harness selection, repository
+URL, branch, spec, plan, permitted-action file, and model credentials appropriate
+to that run.
+
+Each Job has: CPU limit, memory limit, wall-clock timeout, non-root user,
+read-only root filesystem where practical, ephemeral workspace, no hostPath, no
+privileged mode, no cluster-admin credentials, `automountServiceAccountToken: false`.
+
+### 16.2 Repository persistence
+
+Do not require a persistent PVC per card in v1. **Git is the persistent
+workspace.**
+
+Card branch: `agent/<card-id>-<slug>`
+
+Each successful intermediate phase commits to the agent branch:
+
+```
+plan(card-123): attach implementation plan
+test(card-123): add acceptance tests
+wip(card-123): implementation attempt 1
+wip(card-123): implementation attempt 2
+feat(card-123): satisfy acceptance criteria
+```
+
+Broken intermediate work may exist on the isolated agent branch. `main` remains
+protected. Every attempt gets a durable, inspectable history without sticky
+worker storage.
+
+## 17. Verification
+
+Verification is owned by the runner. Never ask "did you fix it?" Ask:
+
+```
+$ test-command
+exit 0
+```
+
+May include: compile/build, unit tests, integration tests, acceptance tests,
+lint, formatting check, type check, security scan, generated artifact validation.
+The card defines its required verification commands.
+
+A successful model process with failed verification is an unsuccessful attempt.
+A failed model process with a passing implementation may be examined by the
+runner, but MUST NOT automatically succeed unless all expected artifacts and
+checks exist.
+
+## 18. Automated Review
+
+After the deterministic green gate, run one independent Sonnet review. The
+reviewer receives the approved spec, implementation plan, acceptance criteria,
+final diff and passing verification summary. The reviewer does NOT receive the
+implementer's private reasoning.
+
+Two stages: specification compliance, then code quality.
+
+Results: `PASS` | `CORRECTABLE` | `BLOCKING`
+
+`CORRECTABLE` sends the card back into implementation without resetting global
+escalation history unless policy explicitly permits. `BLOCKING` sends the card to
+`NeedsHuman`. **Automated review cannot move a card to Done.**
+
+## 19. Human Review and Merge
+
+For v1 the human remains the final merge authority. When all gates pass: agent
+branch is pushed, a pull request is created, the card moves to Review, and the
+PR, test evidence, cost, artifacts and review result appear on the card.
+
+- Approval: `Review → merge → Done`
+- Rejection: `Review → Ready`, with the reason attached.
+
+Implementation-attempt policy may reset according to a versioned review policy.
+A future R0 risk class may permit auto-merge after sufficient evidence — out of
+scope for v1.
+
+## 20. Artifacts
+
+Types: `spec`, `ambiguity-report`, `implementation-plan`, `test-mapping`,
+`test-output`, `diff`, `compiler-output`, `linter-output`, `security-output`,
+`review`, `cost-report`, `failure-summary`, `human-decision`.
+
+Metadata: `id`, `card_id`, `attempt_id`, `type`, `created_at`, `actor`, `model`,
+`commit_sha`, `content_type`, `storage_uri`, `sha256`.
+
+For v1: small text artifacts may live in PostgreSQL; source changes live in Git;
+large logs are capped and compressed. Introduce S3/MinIO only when artifact size
+requires it.
+
+## 21. Audit Log
+
+Every state transition produces an immutable record: `timestamp`, `card_id`,
+`from`, `to`, `actor_type`, `actor_id`, `reason`, `run_id`, `evidence`.
+
+The stakeholder view must answer "what happened to card X?" **without exposing
+model chain-of-thought** — based on states, actions, diffs, tests, artifacts,
+costs and decisions.
+
+## 22. Cost Ledger
+
+Every model call records: `provider`, `model`, `harness`, `phase`, `card_id`,
+`attempt`, `input_tokens`, `output_tokens`, `cached_tokens`, `started_at`,
+`duration_ms`, `estimated_cost_usd`.
+
+Each card displays a per-phase breakdown and total.
+
+The system MUST make it possible to answer: how often does Haiku finish before
+escalation; what percentage require Sonnet; how often does Opus rescue a failed
+task; how much does specification cost versus implementation; what is average
+cost per completed card; which repositories consume the most model spend.
+
+That data is the empirical test of the model-tiering thesis.
+
+## 23. Budgets
+
+A card may contain `max_cost_usd`. Before invoking the next tier the control
+plane computes whether the run may exceed the remaining budget. If not:
+
+```
+InProgress → NeedsHuman
+reason = BUDGET_ESCALATION_REQUIRED
+```
+
+**A model may never increase its own budget.**
+
+## 24. Forbidden Actions
+
+Every card has an allowlist; the worker sandbox enforces it.
+
+Permitted by default: read repository; modify files inside workspace; execute
+project tests; execute approved build tools; create commits on `agent/*`; push
+own agent branch.
+
+Forbidden by default: force push shared branches; modify `main`; delete remote
+branches; access unrelated repositories; read cluster Secrets; `kubectl`; SSH to
+arbitrary systems; production database access; production deployment; billing
+changes; DNS changes; privilege escalation.
+
+An attempted forbidden action causes `card → Blocked, reason = POLICY_VIOLATION`.
+It is logged. It is not something another model should "try harder" to circumvent.
+
+## 25. GitHub Integration
+
+**Inbound.** A GitHub issue labeled `agent-ready` is eligible for ingestion.
+Within 60 seconds: create/update canonical card; create Vikunja task; attach
+source URL; parse spec reference; parse acceptance criteria. If required
+information is absent: `state = Backlog or Blocked, reason = SPEC_REQUIRED`.
+
+**Outbound.** On verified implementation: push `agent/<card-id>-slug`;
+create/update pull request; include card link, acceptance-criterion checklist,
+verification summary, automated review result and cost summary.
+
+GitHub never becomes the agent execution database.
+
+## 26. Management Bots
+
+**PM bot** — weekly. "Which projects deserve attention?" Most repository scanning
+is deterministic. The model receives scan facts plus a version-controlled
+portfolio rubric and returns **exactly three** MOVE recommendations; everything
+else appears under IGNORE. A fourth recommendation is a failure.
+
+**Scrum bot** — daily. "Within the work we've chosen, what happens next?" Reports
+movement, stuck cards, Needs Human, WIP; orders Ready cards using deterministic
+rules; proposes splits for oversized cards; produces a two-week sprint review.
+
+Deterministic ordering: cards that unblock others; PM-bot recommendations by
+rank; oldest Ready card. Pinned cards override automation.
+
+Management bots advise and organize. They do not get broad executive authority
+merely because they are called managers. That is a feature.
+
+## 27. K3s Deployment
+
+Namespaces: `mechanical-company`, `agent-runs`.
+
+```
+mechanical-company/     agent-runs/
+  postgres                ephemeral claude-code jobs
+  vikunja                 ephemeral codex jobs
+  company-control-plane
+  hermes-gateway
+  hermes-dashboard
+```
+
+- **postgres** — persistent volume; canonical workflow database.
+- **vikunja** — persistent application data; ingress `kanban.<domain>`.
+- **company-control-plane** — 2 replicas permitted once claim logic is proven.
+  Owns: state machine, board sync, GitHub integration, atomic claiming, Hermes
+  run dispatch, coding Job creation, verification, audit, cost ledger, MCP
+  server. Ingress/API generally internal except authenticated GitHub/Vikunja
+  callbacks.
+- **hermes-gateway** — not necessarily public; used by the control plane through
+  cluster networking.
+- **hermes-dashboard** — ingress `hermes.<domain>`, authenticated.
+
+## 28. Network Policy
+
+Default stance: **deny**.
+
+- **Hermes** may reach: control plane, configured model provider, approved Hermes
+  tool providers. May not reach: Kubernetes API, Postgres directly, arbitrary
+  internal services.
+- **Coding Job** may reach: model provider, GitHub, explicitly required
+  dependency registries. May not reach: Kubernetes API, control-plane database,
+  unrelated internal applications, production infrastructure.
+- **Control plane** may reach: Kubernetes API for Job management, Postgres,
+  Vikunja, Hermes, GitHub.
+
+## 29. Secrets
+
+Kubernetes Secrets contain: Hermes provider credentials, Anthropic credentials,
+OpenAI credentials, GitHub App credentials, Vikunja API token, webhook HMAC
+secrets, database credentials.
+
+Coding Jobs receive only credentials required by that run. A Haiku Claude Code
+Job should not receive an OpenAI key; a Codex Job should not receive an Anthropic
+key; neither receives the control-plane database password.
+
+## 30. Control-Plane API
+
+```
+GET    /cards
+GET    /cards/{id}
+POST   /cards/{id}/claim
+POST   /cards/{id}/heartbeat
+POST   /cards/{id}/release
+POST   /cards/{id}/transition
+POST   /cards/{id}/approve-spec
+POST   /cards/{id}/approve
+POST   /cards/{id}/reject
+GET    /cards/{id}/artifacts
+GET    /cards/{id}/attempts
+GET    /cards/{id}/cost
+POST   /webhooks/vikunja
+POST   /webhooks/github
+POST   /runs/{card}/plan
+POST   /runs/{card}/tests
+POST   /runs/{card}/implement
+POST   /runs/{card}/review
+GET    /health
+GET    /ready
+```
+
+Hermes should normally access these through the narrower MCP interface rather
+than improvising HTTP.
+
+## 31. Observability
+
+```
+cards_total{state}            cards_completed_total     cards_needs_human_total
+worker_claims_total           worker_active
+runs_total{phase,model,harness,result}                  run_duration_seconds
+run_cost_usd                  implementation_attempts{model}
+escalations_total{from_model,to_model}
+verification_total{result}    policy_violations_total
+card_cycle_time_seconds       card_cost_usd
+```
+
+Logs must include card ID, run ID, attempt ID, worker ID. Do not log API keys. Do
+not expose hidden model reasoning as an operational requirement.
+
+## 32. Failure Classification
+
+Every failure is classified before retrying:
+
+`CODE_FAILURE` `TEST_FAILURE` `SPEC_FAILURE` `POLICY_FAILURE` `INFRA_FAILURE`
+`PROVIDER_FAILURE` `BUDGET_FAILURE` `HUMAN_REQUIRED`
+
+- CODE/TEST — use the model escalation ladder.
+- SPEC — stop implementation, return to specification.
+- POLICY — block immediately.
+- INFRA/PROVIDER — retry per infrastructure policy; do not burn model-tier attempts.
+- BUDGET / HUMAN_REQUIRED — Needs Human.
+
+This prevents the very AI-like behavior of responding to every kind of problem
+with "try again, but harder."
+
+## 33. User Experience
+
+**Kanban card**, in this order: title; state / current phase; why it exists;
+acceptance criteria; current worker (`Meeseeks #8f2c — Implementation — Haiku
+attempt 2/3`); latest result (`8/9 tests passed. auth_timeout_test failed.`);
+cost (`$0.41 so far`); artifacts (spec, plan, tests, diff, logs, PR); history
+with timestamps.
+
+No chain-of-thought dump. No need to watch a terminal scroll by. The product is
+visibility into work.
+
+**Hermes dashboard** is where the human talks to the company: what's stuck; why
+did card 143 escalate; show me this week's expensive cards; let's spec card 208
+with Fable; why did PM bot choose Stele instead of Monolith; spawn workers for
+the Ready queue. Hermes answers by inspecting deterministic company state and
+invokes tools when action is requested.
+
+## 34. Build Sequence
+
+- **Milestone 0 — Infrastructure.** Postgres, Vikunja, Hermes gateway, Hermes
+  dashboard, TLS/auth, control-plane skeleton. *Exit: all services reachable and
+  healthy.*
+- **Milestone 1 — Deterministic board.** Canonical card schema, state machine,
+  Vikunja synchronization, immutable history, atomic claims, leases. *Exit: ten
+  workers race for one Ready card; exactly one gets it.*
+- **Milestone 2 — One Meeseeks.** Company MCP, cheap Hermes foreman, claim →
+  inspect → update → exit, Hermes run/session linked to card. *Exit: a Hermes
+  worker autonomously claims a dummy card, performs a deterministic tool action,
+  records evidence, and moves it to Review.*
+- **Milestone 3 — Coding runner.** Kubernetes Job controller, Claude Code
+  adapter, Codex adapter, Git agent branches, artifacts, Superpowers
+  installation. *Exit: a worker can invoke either coding harness on a repository
+  and collect structured results.*
+- **Milestone 4 — Spec → plan → tests.** Fable specification profile, spec
+  approval, Opus planner, Sonnet test writer, deterministic red gate. *Exit: a
+  real feature reaches a valid failing acceptance test without implementation
+  code.*
+- **Milestone 5 — Escalation ladder.** Haiku ×3 → Sonnet ×3 → Opus ×1, plus
+  deterministic verification and failure summaries. *Exit: a deliberately chosen
+  task exercises at least one escalation boundary and the logged attempt/model
+  sequence exactly matches policy.*
+- **Milestone 6 — Review.** Sonnet independent review, PR creation, human
+  approve/reject, Done transition. *Exit: one real GitHub issue travels the whole
+  pipeline without manual orchestration between steps.*
+- **Milestone 7 — Management.** PM bot, Scrum bot, daily digest, weekly portfolio
+  brief, cost reports. *Exit: the company chooses and orders its own eligible
+  engineering work under version-controlled policy.*
+
+## 35. v1 Definition of Done
+
+1. A GitHub issue labeled `agent-ready` becomes a board card within 60 seconds.
+2. A card cannot enter Ready without a specification and acceptance criteria.
+3. Two simultaneous agents cannot claim the same card.
+4. A cheap Hermes worker can claim a card without human intervention.
+5. Hermes can invoke Claude Code through the coding-runner abstraction.
+6. Hermes can invoke Codex through the same abstraction.
+7. Fable is used for interactive unresolved ambiguity rather than ordinary implementation.
+8. Opus creates the implementation plan.
+9. Sonnet creates acceptance tests.
+10. Those tests are proven red before implementation begins.
+11. Implementation begins with Haiku.
+12. Three failed Haiku attempts escalate to Sonnet.
+13. Three failed Sonnet attempts escalate to Opus.
+14. One failed Opus attempt moves the card to Needs Human.
+15. Infrastructure failures do not consume implementation attempts.
+16. No model determines that its own tests passed.
+17. A deterministic runner performs final verification.
+18. Every attempt records model, harness, result, evidence, tokens where available, and cost.
+19. A forbidden action is rejected by software and recorded.
+20. Passing work creates or updates a pull request.
+21. Passing work moves to Review, never directly to Done.
+22. Human approval merges and moves the card to Done.
+23. Human rejection records a reason and returns the card for additional work.
+24. A nontechnical observer can inspect a card and explain what happened without reading model transcripts.
+25. Every state transition has timestamp, actor, and reason.
+26. The PM bot can produce exactly three evidence-backed weekly MOVE recommendations.
+27. The Scrum bot can produce a daily board digest and deterministically order eligible Ready work.
+28. One real issue has completed the entire pipeline.
+29. One real issue has exhausted or crossed at least one model tier so the escalation mechanism has been demonstrated rather than merely unit-tested.
+30. An agent has moved a real card to Review without a human directing the intermediate steps.
