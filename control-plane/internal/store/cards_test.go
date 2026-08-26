@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/tuckermclean/strange-company/control-plane/internal/card"
+	"github.com/tuckermclean/strange-company/control-plane/internal/specgate"
 )
 
 // seedReadyCard migrates the schema (if not already applied) and inserts one
@@ -360,4 +362,147 @@ func TestTransitionWritesImmutableHistory(t *testing.T) {
 	if got[0] != want {
 		t.Errorf("got card_history row %+v, want %+v", got[0], want)
 	}
+}
+
+// --- specification gate (spec §10, DoD item 2) ---
+
+// The gate is worthless if the generic transition path can route around it.
+func TestBacklogToReadyIsRefusedOnTheGenericTransitionPath(t *testing.T) {
+	s := openTestStore(t)
+	id := seedBacklogCard(t, s)
+
+	err := s.Transition(context.Background(), id, card.Ready, card.ActorAgent, "meeseeks-1", "looks ready to me")
+
+	if !errors.Is(err, ErrSpecGateRequired) {
+		t.Fatalf("spec §10: a card must not reach Ready without the gate, got %v", err)
+	}
+	if got := stateOf(t, s, id); got != card.Backlog {
+		t.Fatalf("card moved despite the refusal: state is %s", got)
+	}
+}
+
+// DoD item 2 says a card cannot enter Ready without a specification, without
+// exception. Dragging it across the board in Vikunja is not an exception.
+func TestAHumanCannotDragACardIntoReadyWithoutASpec(t *testing.T) {
+	s := openTestStore(t)
+	id := seedBacklogCard(t, s)
+
+	err := s.Transition(context.Background(), id, card.Ready, card.ActorHuman, "tucker", "moved in Vikunja")
+
+	if !errors.Is(err, ErrSpecGateRequired) {
+		t.Fatalf("DoD 2 has no human exception, got %v", err)
+	}
+}
+
+func TestPromoteToReadyRefusesAFailingGate(t *testing.T) {
+	s := openTestStore(t)
+	id := seedBacklogCard(t, s)
+
+	failing := specgate.Result{
+		Passed: false,
+		Failures: []specgate.Failure{
+			{Reason: specgate.ReasonNoCriteria, Detail: "no acceptance criteria"},
+		},
+	}
+
+	err := s.PromoteToReady(context.Background(), id, failing, card.ActorHuman, "tucker")
+
+	if !errors.Is(err, ErrSpecGateRequired) {
+		t.Fatalf("want ErrSpecGateRequired, got %v", err)
+	}
+	// The operator has to be told which check failed, or they cannot fix it.
+	if !strings.Contains(err.Error(), "acceptance criteria") {
+		t.Errorf("the refusal must name the failing check, got %q", err.Error())
+	}
+}
+
+func TestPromoteToReadyAcceptsAPassingGateAndRecordsIt(t *testing.T) {
+	s := openTestStore(t)
+	id := seedBacklogCard(t, s)
+
+	if err := s.PromoteToReady(context.Background(), id, specgate.Result{Passed: true}, card.ActorHuman, "tucker"); err != nil {
+		t.Fatalf("a passing gate must promote the card: %v", err)
+	}
+	if got := stateOf(t, s, id); got != card.Ready {
+		t.Fatalf("want Ready, got %s", got)
+	}
+	if n := historyCount(t, s, id, string(card.Backlog), string(card.Ready)); n != 1 {
+		t.Fatalf("want exactly one history row for the promotion, got %d", n)
+	}
+}
+
+// §19: a human rejecting reviewed work returns it to Ready. That card's spec
+// already passed the gate, so this path must stay open.
+func TestReviewToReadyRemainsOpenForHumanRejection(t *testing.T) {
+	s := openTestStore(t)
+	id := seedBacklogCard(t, s)
+	ctx := context.Background()
+
+	if err := s.PromoteToReady(ctx, id, specgate.Result{Passed: true}, card.ActorHuman, "tucker"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ClaimReady(ctx, "meeseeks-1", 10*time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Transition(ctx, id, card.Review, card.ActorAgent, "meeseeks-1", "done"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.Transition(ctx, id, card.Ready, card.ActorHuman, "tucker", "rejected: missing tests"); err != nil {
+		t.Fatalf("§19: a human must be able to reject reviewed work back to Ready: %v", err)
+	}
+}
+
+
+// seedBacklogCard inserts one card in Backlog, the state the specification gate
+// guards the exit from.
+func seedBacklogCard(t *testing.T, s *Store) uuid.UUID {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := s.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate() returned error %v, want nil", err)
+	}
+
+	id := uuid.New()
+	_, err := s.Pool().Exec(ctx, `
+		INSERT INTO cards (id, title, source_type, state, phase, risk_class, effective_priority)
+		VALUES ($1::uuid, $2, $3, $4, $5, $6, 100)
+	`, id.String(), "seeded backlog card", "manual", string(card.Backlog), string(card.PhaseSpecification), "R1")
+	if err != nil {
+		t.Fatalf("seeding backlog card returned error %v, want nil", err)
+	}
+	return id
+}
+
+func stateOf(t *testing.T, s *Store, id uuid.UUID) card.State {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var state string
+	if err := s.Pool().QueryRow(ctx, `SELECT state FROM cards WHERE id = $1::uuid`, id.String()).Scan(&state); err != nil {
+		t.Fatalf("reading card state returned error %v, want nil", err)
+	}
+	return card.State(state)
+}
+
+func historyCount(t *testing.T, s *Store, id uuid.UUID, from, to string) int {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var n int
+	err := s.Pool().QueryRow(ctx, `
+		SELECT count(*) FROM card_history
+		WHERE card_id = $1::uuid AND from_state = $2 AND to_state = $3
+	`, id.String(), from, to).Scan(&n)
+	if err != nil {
+		t.Fatalf("counting history returned error %v, want nil", err)
+	}
+	return n
 }
