@@ -77,6 +77,18 @@ tests:
           path: spec.template.spec.containers[0].readinessProbe.httpGet.path
           value: /readyz
 
+  # Without this, a control plane waiting on a slow PostgreSQL is killed by
+  # liveness before it can finish booting.
+  - it: gives the control plane a startup grace period
+    values: [../ci/values-batteries.yaml]
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].startupProbe.httpGet.path
+          value: /healthz
+      - equal:
+          path: spec.template.spec.containers[0].startupProbe.failureThreshold
+          value: 30
+
   - it: honours a replica count change
     values: [../ci/values-batteries.yaml]
     set:

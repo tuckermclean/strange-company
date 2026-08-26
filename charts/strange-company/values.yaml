@@ -354,6 +354,15 @@ controlPlane:
       drop: ["ALL"]
 
   probes:
+    # -- Kubernetes suppresses liveness and readiness until the startup probe
+    # succeeds. Without it, a control plane waiting on a slow PostgreSQL gets
+    # killed by liveness before it ever finishes booting.
+    startup:
+      enabled: true
+      path: /healthz
+      periodSeconds: 10
+      timeoutSeconds: 3
+      failureThreshold: 30
     liveness:
       enabled: true
       path: /healthz

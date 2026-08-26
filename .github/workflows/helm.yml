@@ -3,6 +3,10 @@ name: helm
 on:
   push:
     branches: ["**"]
+    paths:
+      - "charts/**"
+      - ".github/ci/**"
+      - ".github/workflows/helm.yml"
   pull_request:
   workflow_dispatch:
 
@@ -408,6 +412,96 @@ jobs:
       - name: Delete cluster
         if: always()
         run: k3d cluster delete strange-company-hybrid || true
+
+  integration-real-control-plane:
+    name: chart with the real control-plane image
+    runs-on: ubuntu-latest
+    needs: [lint, unit]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Install k3d
+        run: |
+          set -euo pipefail
+          curl -sSfL "https://raw.githubusercontent.com/k3d-io/k3d/${K3D_VERSION}/install.sh" | TAG="${K3D_VERSION}" bash
+
+      - name: Build the control-plane image
+        run: docker build -t strange-company-control-plane:ci --build-arg VERSION=ci control-plane
+
+      - name: Create K3s cluster
+        run: |
+          set -euo pipefail
+          k3d cluster create strange-company-cp \
+            --image "$K3S_IMAGE" \
+            --k3s-arg "--disable=traefik@server:0" \
+            --k3s-arg "--disable=metrics-server@server:0" \
+            --wait --timeout 300s
+
+      - name: Import the image into the cluster
+        # Imported rather than pushed, so this proves the chart and the image
+        # work together on a branch without publishing a package for every commit.
+        run: k3d image import strange-company-control-plane:ci -c strange-company-cp
+
+      - name: Resolve dependencies
+        run: helm dependency build "$CHART"
+
+      - name: Install with the real control plane
+        run: |
+          set -euo pipefail
+          helm install "$RELEASE" "$CHART" \
+            -n "$NS" --create-namespace \
+            -f "$CHART/ci/values-batteries.yaml" \
+            --set controlPlane.image.repository=strange-company-control-plane \
+            --set controlPlane.image.tag=ci \
+            --set controlPlane.image.pullPolicy=Never \
+            --set-json 'controlPlane.args=[]' \
+            --wait --timeout 20m
+
+      - name: Readiness must mean real dependency connectivity
+        run: |
+          set -euo pipefail
+          kubectl -n "$NS" wait --for=condition=Available deployment --all --timeout=300s
+
+          # A 200 here is a stronger claim than the whoami fixture ever made:
+          # the control plane only reports ready once it has actually reached
+          # PostgreSQL, Vikunja and the Hermes gateway.
+          kubectl -n "$NS" run readyprobe --rm -i --restart=Never --image=busybox:1.37.0 -- \
+            wget -q -O- "http://$FULLNAME-control-plane:8080/readyz" | tee /tmp/readyz.json
+          grep -q '"ready":true' /tmp/readyz.json || { echo "::error::control plane is not ready"; exit 1; }
+          for dep in postgres vikunja hermes-gateway; do
+            grep -q "\"name\":\"$dep\"" /tmp/readyz.json || { echo "::error::$dep missing from readiness report"; exit 1; }
+          done
+
+      - name: The config endpoint must not leak secrets
+        run: |
+          set -euo pipefail
+          kubectl -n "$NS" run confprobe --rm -i --restart=Never --image=busybox:1.37.0 -- \
+            wget -q -O- "http://$FULLNAME-control-plane:8080/config" | tee /tmp/config.json
+          pw=$(kubectl -n "$NS" get secret "$FULLNAME-postgresql" -o jsonpath='{.data.password}' | base64 -d)
+          if grep -qF "$pw" /tmp/config.json; then
+            echo "::error::/config leaked the database password"; exit 1
+          fi
+          echo "/config is redacted"
+
+      - name: helm test
+        run: helm test "$RELEASE" -n "$NS" --logs --timeout 5m
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          kubectl -n "$NS" get all -o wide || true
+          kubectl -n "$NS" describe pods || true
+          kubectl -n "$NS" logs -l app.kubernetes.io/component=control-plane --tail=200 || true
+          kubectl -n "$NS" get events --sort-by=.lastTimestamp || true
+
+      - name: Delete cluster
+        if: always()
+        run: k3d cluster delete strange-company-cp || true
 
   package:
     name: package and install the tarball
