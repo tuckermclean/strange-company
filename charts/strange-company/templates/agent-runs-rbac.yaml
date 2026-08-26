@@ -1,0 +1,69 @@
+{{- /*
+  Coding runs are Kubernetes Jobs (spec §16): every coding execution happens in
+  an isolated Job in its own namespace, and the control-plane -- never Hermes,
+  never a coding Job itself -- is the thing that creates them (spec §9, §28).
+
+  This is the ONLY template in this chart that grants the control plane any
+  Kubernetes API access at all, and it only renders when an operator opts in
+  with `controlPlane.agentRuns.enabled`. Left off (the default), the chart's
+  posture is unchanged: no Role, no RoleBinding, no token.
+*/}}
+{{- if and .Values.controlPlane.enabled .Values.controlPlane.agentRuns.enabled }}
+{{- $namespace := .Values.controlPlane.agentRuns.namespace }}
+{{- if .Values.controlPlane.agentRuns.createNamespace }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $namespace }}
+  labels:
+    {{- include "strange-company.labels" (dict "ctx" $ "component" "agent-runs") | nindent 4 }}
+---
+{{- end }}
+# Deliberately a Role, never a ClusterRole: scoped to the single
+# `controlPlane.agentRuns.namespace` namespace, nothing cluster-wide.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "strange-company.controlPlane.fullname" . }}-agent-runs
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "strange-company.labels" (dict "ctx" $ "component" "control-plane") | nindent 4 }}
+rules:
+  # Create and manage the isolated coding Jobs themselves (spec §16).
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  # Watch the Pods a Job creates to know when a run has finished.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  # pods/log is how a coding run's output is collected -- the control plane
+  # reads the harness transcript back out of the Job's Pod logs. There is no
+  # rule for `secrets`, `configmaps`, `pods/exec`, or any wildcard resource or
+  # verb: this Role deliberately cannot read Secrets in `agent-runs`, cannot
+  # exec into a running Job, and cannot touch anything outside this namespace.
+  # Coding Jobs receive only the credentials injected into them at creation
+  # time (spec §29); the control plane has no need, and is given no ability,
+  # to read arbitrary Secrets here.
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+# Deliberately a RoleBinding, never a ClusterRoleBinding: ties the Role above
+# to the control-plane ServiceAccount, and only within this one namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "strange-company.controlPlane.fullname" . }}-agent-runs
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "strange-company.labels" (dict "ctx" $ "component" "control-plane") | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "strange-company.controlPlane.fullname" . }}-agent-runs
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "strange-company.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

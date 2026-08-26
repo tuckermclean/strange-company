@@ -413,6 +413,18 @@ controlPlane:
     hosts: []
     tls: []
 
+  # -- Permission to run coding agents as isolated Kubernetes Jobs.
+  #
+  # Default off. Enabling this is the ONLY thing in this chart that gives the
+  # control plane any Kubernetes API access at all, so it is opt-in and scoped
+  # to a single namespace. The Jobs it creates get no API access themselves.
+  agentRuns:
+    enabled: false
+    # -- Namespace the coding Jobs run in. Must already exist, or set create.
+    namespace: agent-runs
+    # -- Create the namespace as part of this release.
+    createNamespace: false
+
 # ---------------------------------------------------------------------------
 # Helm test pod
 # ---------------------------------------------------------------------------

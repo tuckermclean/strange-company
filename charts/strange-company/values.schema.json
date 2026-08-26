@@ -524,6 +524,22 @@
         },
         "ingress": {
           "$ref": "#/definitions/ingress"
+        },
+        "agentRuns": {
+          "type": "object",
+          "description": "Opt-in permission to run coding agents as isolated Kubernetes Jobs. Default off; the only thing in this chart that grants the control plane any Kubernetes API access.",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "namespace": {
+              "type": "string",
+              "minLength": 1
+            },
+            "createNamespace": {
+              "type": "boolean"
+            }
+          }
         }
       },
       "allOf": [
