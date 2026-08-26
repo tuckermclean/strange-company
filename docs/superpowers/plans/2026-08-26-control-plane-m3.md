@@ -140,7 +140,64 @@ Job controller, `agent-runs` namespace, narrowly scoped RBAC (create/get/list/
 watch/delete Jobs and read pod logs, in one namespace, nothing else), result
 collection by reading pod logs through the same adapters.
 
-## M3c (next)
+## M3c — the runner image
 
-Runner image with git and both CLIs; `agent/<card-id>-<slug>` branches;
-per-phase commits; push credentials as a referenced Secret.
+### The log-interleaving problem
+
+Kubernetes merges a container's stdout and stderr into one log stream. The
+adapters parse JSONL and **error on any malformed line** — deliberately, so a
+truncated stream is never mistaken for success. Put those two facts together and
+a single line of `git clone` progress output corrupts the run result.
+
+So the entrypoint frames the harness stream:
+
+```
+::STRANGE-COMPANY-STREAM-BEGIN::
+{...harness JSONL, verbatim, nothing else...}
+::STRANGE-COMPANY-STREAM-END::
+```
+
+Everything else — clone, checkout, commit, push, diagnostics — goes outside the
+markers and is ignored by the parser but stays visible to a human reading
+`kubectl logs`. The control plane extracts the framed region before parsing, and
+**errors if the markers are absent**: a missing end marker means the Job was
+killed mid-run, which is an infrastructure failure (§12.1), not a code failure.
+
+### Task 1 — stream extraction (control plane)
+
+`control-plane/internal/runner/stream.go`
+
+```go
+const StreamBegin = "::STRANGE-COMPANY-STREAM-BEGIN::"
+const StreamEnd   = "::STRANGE-COMPANY-STREAM-END::"
+
+func ExtractStream(podLog []byte) ([]byte, error)
+var ErrStreamMissing, ErrStreamTruncated error
+```
+
+Tests: extracts a framed stream surrounded by noise; `ErrStreamTruncated` when
+the end marker is missing; `ErrStreamMissing` when neither appears; tolerates
+CRLF; ignores marker-like text *inside* the JSON payload.
+
+### Task 2 — the runner image
+
+`runner/Dockerfile`, `runner/entrypoint.sh`
+
+Carries git and both CLIs. The entrypoint:
+
+1. clones `REPO_URL` at `BASE_REF` into the emptyDir workspace (shallow),
+2. creates or checks out `agent/<card-id>-<slug>` (§16.2),
+3. runs the harness argv with **stdin closed** — Codex hangs forever otherwise,
+   and it needs a git repo, which by this point it has,
+4. frames the harness stream in the markers above,
+5. commits any changes with a phase-appropriate message (§16.2),
+6. pushes the agent branch,
+7. exits with the harness's exit code, so §12.1 classification stays intact.
+
+Non-root, no shell in the final image beyond what the entrypoint needs, git
+credentials from a referenced Secret. `main` is never pushed to; only
+`agent/*`.
+
+### Task 3 — publish the runner image
+
+Its own workflow, same shape as the control-plane image job.

@@ -3,6 +3,7 @@ package vikunja
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -68,6 +69,16 @@ type fakeVikunja struct {
 	mintedToken       string
 	createTokenStatus int
 	tokenRequests     []tokenPermRequest
+
+	// infoStatus is the status GET /api/v1/info responds with. Defaults to
+	// 200; set to a non-2xx status to simulate the endpoint being
+	// unreachable or erroring.
+	infoStatus int
+	// infoLocalEnabled and infoRegistrationEnabled are the auth.local
+	// fields reported by GET /api/v1/info. Both default to true, matching
+	// a normal, non-SSO Vikunja instance with local registration on.
+	infoLocalEnabled        bool
+	infoRegistrationEnabled bool
 }
 
 type tokenPermRequest struct {
@@ -84,14 +95,17 @@ func newFakeVikunja(t *testing.T) *fakeVikunja {
 	t.Helper()
 
 	f := &fakeVikunja{
-		users:             make(map[string]string),
-		loginFailStatus:   http.StatusPreconditionFailed,
-		jwt:               "login-jwt-token",
-		userID:            7,
-		routes:            defaultRoutes(),
-		validTokens:       make(map[string]bool),
-		mintedToken:       "minted-api-token",
-		createTokenStatus: http.StatusOK,
+		users:                   make(map[string]string),
+		loginFailStatus:         http.StatusPreconditionFailed,
+		jwt:                     "login-jwt-token",
+		userID:                  7,
+		routes:                  defaultRoutes(),
+		validTokens:             make(map[string]bool),
+		mintedToken:             "minted-api-token",
+		createTokenStatus:       http.StatusOK,
+		infoStatus:              http.StatusOK,
+		infoLocalEnabled:        true,
+		infoRegistrationEnabled: true,
 	}
 
 	mux := http.NewServeMux()
@@ -100,6 +114,7 @@ func newFakeVikunja(t *testing.T) *fakeVikunja {
 	mux.HandleFunc("/api/v1/user", f.handleUser)
 	mux.HandleFunc("/api/v1/routes", f.handleRoutes)
 	mux.HandleFunc("/api/v1/tokens", f.handleTokens)
+	mux.HandleFunc("/api/v1/info", f.handleInfo)
 
 	f.server = httptest.NewServer(mux)
 	t.Cleanup(f.server.Close)
@@ -223,6 +238,30 @@ func (f *fakeVikunja) handleTokens(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"token": minted})
+}
+
+func (f *fakeVikunja) handleInfo(w http.ResponseWriter, r *http.Request) {
+	f.record(r)
+
+	f.mu.Lock()
+	status := f.infoStatus
+	localEnabled := f.infoLocalEnabled
+	registrationEnabled := f.infoRegistrationEnabled
+	f.mu.Unlock()
+
+	if status != http.StatusOK {
+		w.WriteHeader(status)
+		return
+	}
+
+	writeJSON(w, status, map[string]any{
+		"auth": map[string]any{
+			"local": map[string]any{
+				"enabled":              localEnabled,
+				"registration_enabled": registrationEnabled,
+			},
+		},
+	})
 }
 
 func (f *fakeVikunja) writeCalls() int {
@@ -425,5 +464,109 @@ func TestStoredTokenIsNeverLogged(t *testing.T) {
 	}
 	if strings.Contains(msg, fake.jwt) {
 		t.Fatalf("error message %q contains the login JWT, want it withheld", msg)
+	}
+}
+
+func TestEnsureTokenExplainsHowToFixRegistrationDisabled(t *testing.T) {
+	fake := newFakeVikunja(t)
+	fake.infoLocalEnabled = true
+	fake.infoRegistrationEnabled = false
+	// fake.users starts empty: the bootstrap account does not exist yet, and
+	// on this instance it never can via this package.
+
+	store := &memStore{}
+	b := NewBootstrapper(fake.server.URL, store, testUsername, testPassword, nil)
+
+	_, err := b.EnsureToken(context.Background())
+	if err == nil {
+		t.Fatalf("EnsureToken() returned nil error, want an error explaining that registration is disabled")
+	}
+	if !errors.Is(err, ErrRegistrationDisabled) {
+		t.Fatalf("EnsureToken() error = %v, want it to wrap ErrRegistrationDisabled", err)
+	}
+	if fake.sawRequest("POST /api/v1/register") {
+		t.Fatalf("EnsureToken() called /register, want no register attempt when /info already reports it is disabled")
+	}
+
+	msg := err.Error()
+	if !strings.Contains(msg, testUsername) {
+		t.Fatalf("error message %q does not mention the username %q the operator needs to pre-create", msg, testUsername)
+	}
+	if !strings.Contains(msg, "user create") {
+		t.Fatalf("error message %q does not tell the operator how to fix this (want it to mention %q)", msg, "user create")
+	}
+}
+
+func TestEnsureTokenReportsLocalAuthDisabled(t *testing.T) {
+	fake := newFakeVikunja(t)
+	fake.infoLocalEnabled = false
+
+	store := &memStore{}
+	b := NewBootstrapper(fake.server.URL, store, testUsername, testPassword, nil)
+
+	_, err := b.EnsureToken(context.Background())
+	if err == nil {
+		t.Fatalf("EnsureToken() returned nil error, want an error when local authentication is disabled entirely")
+	}
+	if !errors.Is(err, ErrLocalAuthDisabled) {
+		t.Fatalf("EnsureToken() error = %v, want it to wrap ErrLocalAuthDisabled", err)
+	}
+	if fake.sawRequest("POST /api/v1/login") {
+		t.Fatalf("EnsureToken() called /login, want no login attempt when /info reports local auth is disabled")
+	}
+	if fake.sawRequest("POST /api/v1/register") {
+		t.Fatalf("EnsureToken() called /register, want no register attempt when /info reports local auth is disabled")
+	}
+}
+
+func TestEnsureTokenStillRegistersWhenRegistrationIsEnabled(t *testing.T) {
+	fake := newFakeVikunja(t)
+	fake.infoLocalEnabled = true
+	fake.infoRegistrationEnabled = true
+	// fake.users starts empty: the bootstrap account does not exist yet.
+
+	store := &memStore{}
+	b := NewBootstrapper(fake.server.URL, store, testUsername, testPassword, nil)
+
+	if _, err := b.EnsureToken(context.Background()); err != nil {
+		t.Fatalf("EnsureToken() returned error %v, want nil", err)
+	}
+
+	if fake.registerCalls != 1 {
+		t.Fatalf("register was called %d times, want exactly 1 when /info reports registration is enabled", fake.registerCalls)
+	}
+}
+
+func TestEnsureTokenFallsBackWhenInfoIsUnreachable(t *testing.T) {
+	fake := newFakeVikunja(t)
+	fake.infoStatus = http.StatusInternalServerError
+	// fake.users starts empty: the bootstrap account does not exist yet.
+
+	store := &memStore{}
+	b := NewBootstrapper(fake.server.URL, store, testUsername, testPassword, nil)
+
+	if _, err := b.EnsureToken(context.Background()); err != nil {
+		t.Fatalf("EnsureToken() returned error %v, want nil: an unreachable /info must not block bootstrap", err)
+	}
+
+	if fake.registerCalls != 1 {
+		t.Fatalf("register was called %d times, want exactly 1: bootstrap must fall back to attempting "+
+			"registration when /info cannot be read or parsed", fake.registerCalls)
+	}
+}
+
+func TestEnsureTokenSkipsInfoWhenStoredTokenIsValid(t *testing.T) {
+	fake := newFakeVikunja(t)
+	fake.validTokens["existing-stored-token"] = true
+
+	store := &memStore{creds: map[string]string{credentialName: "existing-stored-token"}}
+	b := NewBootstrapper(fake.server.URL, store, testUsername, testPassword, nil)
+
+	if _, err := b.EnsureToken(context.Background()); err != nil {
+		t.Fatalf("EnsureToken() returned error %v, want nil", err)
+	}
+
+	if fake.sawRequest("GET /api/v1/info") {
+		t.Fatalf("EnsureToken() called /info, want the fast path (a still-valid stored token) to skip it entirely")
 	}
 }

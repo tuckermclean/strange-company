@@ -22,6 +22,15 @@ func validSpec() Spec {
 		RepoURL: "https://github.com/example/repo.git",
 		Branch:  "agent/card-123-do-the-thing",
 		Command: []string{"claude", "-p", "implement the widget"},
+		BaseRef: "main",
+		Phase:   "implementation",
+		Attempt: 1,
+		GitToken: &policy.CredentialRef{
+			Secret: "git-credentials", Key: "token",
+		},
+		GitUsername:    "x-access-token",
+		GitAuthorName:  "strange-company",
+		GitAuthorEmail: "bot@strange-company.invalid",
 		Env: map[string]policy.CredentialRef{
 			"ANTHROPIC_API_KEY": {Secret: "anthropic-credentials", Key: "api-key"},
 		},
@@ -336,8 +345,17 @@ func TestBuild_EnvOmitsCredentialsWhenResolutionDeclaresNone(t *testing.T) {
 	job := mustBuild(t, s)
 
 	for _, e := range job.Spec.Template.Spec.Containers[0].Env {
+		// SC_GIT_TOKEN is repository access, not model access. It comes from
+		// Spec.GitToken rather than from the policy Resolution, and is asserted
+		// separately by TestBuild_OmitsGitTokenWhenNoneIsConfigured. Folding the
+		// two together here would mean a run could not both push a branch and
+		// declare no model credentials -- which is exactly what a verification
+		// or plan-only run looks like.
+		if e.Name == "SC_GIT_TOKEN" {
+			continue
+		}
 		if e.ValueFrom != nil && e.ValueFrom.SecretKeyRef != nil {
-			t.Fatalf("spec 29: env contains secretKeyRef %q even though the Resolution declared no credentials", e.Name)
+			t.Fatalf("spec 29: env contains model credential secretKeyRef %q even though the Resolution declared none", e.Name)
 		}
 	}
 }
@@ -438,5 +456,94 @@ func TestAgentBranch_PunctuationOnlyTitleOmitsSlug(t *testing.T) {
 	want := "agent/card-42"
 	if got != want {
 		t.Fatalf("spec 16.2: AgentBranch() with an all-punctuation title = %q, want %q (no dangling hyphen for an empty slug)", got, want)
+	}
+}
+
+
+// The runner's entrypoint reads a fixed set of SC_* variables. If the Job stops
+// injecting one of them the runner falls back to a default or fails at clone
+// time, inside a container, minutes later -- so the contract is asserted here
+// where the failure is immediate and legible.
+func TestBuild_InjectsEveryVariableTheEntrypointReads(t *testing.T) {
+	job, err := Build(validSpec())
+	if err != nil {
+		t.Fatalf("Build() returned error: %v", err)
+	}
+
+	got := map[string]bool{}
+	for _, e := range job.Spec.Template.Spec.Containers[0].Env {
+		got[e.Name] = true
+	}
+
+	for _, want := range []string{
+		"SC_CARD_ID", "SC_RUN_ID", "SC_HARNESS", "SC_MODEL",
+		"SC_REPO_URL", "SC_BRANCH", "SC_BASE_REF", "SC_PHASE",
+		"SC_ATTEMPT", "SC_WORKSPACE_ROOT",
+		"SC_GIT_USERNAME", "SC_GIT_AUTHOR_NAME", "SC_GIT_AUTHOR_EMAIL",
+		"SC_GIT_TOKEN",
+	} {
+		if !got[want] {
+			t.Errorf("runner entrypoint reads %s but the Job does not inject it", want)
+		}
+	}
+}
+
+// Repository access is not model access. Conflating them would hand a coding
+// harness push rights it has no business holding (spec 29).
+func TestBuild_GitTokenIsASecretRefSeparateFromModelCredentials(t *testing.T) {
+	job, err := Build(validSpec())
+	if err != nil {
+		t.Fatalf("Build() returned error: %v", err)
+	}
+
+	for _, e := range job.Spec.Template.Spec.Containers[0].Env {
+		if e.Name != "SC_GIT_TOKEN" {
+			continue
+		}
+		if e.Value != "" {
+			t.Fatal("spec 29: the git token must never be a literal value in the manifest")
+		}
+		if e.ValueFrom == nil || e.ValueFrom.SecretKeyRef == nil {
+			t.Fatal("SC_GIT_TOKEN must come from a secretKeyRef")
+		}
+		if e.ValueFrom.SecretKeyRef.Name != "git-credentials" {
+			t.Errorf("want secret git-credentials, got %q", e.ValueFrom.SecretKeyRef.Name)
+		}
+		return
+	}
+	t.Fatal("SC_GIT_TOKEN was not injected at all")
+}
+
+func TestBuild_OmitsGitTokenWhenNoneIsConfigured(t *testing.T) {
+	s := validSpec()
+	s.GitToken = nil
+
+	job, err := Build(s)
+	if err != nil {
+		t.Fatalf("a run with no push credential is legitimate: %v", err)
+	}
+	for _, e := range job.Spec.Template.Spec.Containers[0].Env {
+		if e.Name == "SC_GIT_TOKEN" {
+			t.Fatal("SC_GIT_TOKEN must be absent when no credential is configured")
+		}
+	}
+}
+
+func TestBuild_RejectsAMissingBaseRefRatherThanGuessing(t *testing.T) {
+	s := validSpec()
+	s.BaseRef = ""
+
+	if _, err := Build(s); err == nil {
+		t.Fatal("defaulting BaseRef would silently branch from the wrong place on any repo whose default branch differs")
+	}
+}
+
+func TestBuild_RejectsAnAttemptBelowOne(t *testing.T) {
+	for _, n := range []int{0, -1} {
+		s := validSpec()
+		s.Attempt = n
+		if _, err := Build(s); err == nil {
+			t.Errorf("Attempt=%d must be rejected: it feeds the commit message and the escalation ladder", n)
+		}
 	}
 }

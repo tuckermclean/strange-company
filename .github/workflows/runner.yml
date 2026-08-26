@@ -1,0 +1,96 @@
+name: runner
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "runner/**"
+      - ".github/workflows/runner.yml"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  image:
+    name: build and publish the runner image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Entrypoint must be valid POSIX sh
+        # The image ships no bash, so a bashism here would only surface inside a
+        # container mid-run.
+        run: |
+          set -euo pipefail
+          sh -n runner/entrypoint.sh
+          echo "entrypoint parses as POSIX sh"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/strange-company-runner
+          tags: |
+            type=sha,format=short
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+
+      - name: Build (and push on main or a tag)
+        uses: docker/build-push-action@v6
+        with:
+          context: runner
+          file: runner/Dockerfile
+          push: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          load: ${{ github.event_name != 'push' || (github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/')) }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: The image must actually carry what a coding run needs
+        run: |
+          set -euo pipefail
+          docker build -t runner:verify runner
+          # Both harnesses and git must be present and executable as the
+          # non-root user the Job runs as. Discovering any of this in a cluster
+          # costs a full Job timeout to learn.
+          for bin in git claude codex; do
+            docker run --rm --user 65532:65532 --entrypoint sh runner:verify \
+              -c "command -v $bin >/dev/null" \
+              && echo "  ok: $bin" \
+              || { echo "::error::$bin missing from the runner image"; exit 1; }
+          done
+
+      - name: It must refuse to touch a protected branch
+        run: |
+          set -euo pipefail
+          # spec 24 forbids modifying main. The entrypoint is the last line of
+          # defence if a branch name is ever computed wrongly upstream, so prove
+          # the refusal rather than trusting the code review that added it.
+          set +e
+          out=$(docker run --rm --user 65532:65532 \
+            -e SC_CARD_ID=c1 -e SC_RUN_ID=r1 \
+            -e SC_REPO_URL=https://example.invalid/x.git \
+            -e SC_BRANCH=main -e SC_BASE_REF=main \
+            -e SC_PHASE=implementation -e SC_ATTEMPT=1 \
+            runner:verify claude -p noop 2>&1)
+          code=$?
+          set -e
+          echo "$out"
+          [ $code -ne 0 ] || { echo "::error::the runner accepted branch 'main'"; exit 1; }
+          echo "$out" | grep -qiE "agent/|protected|refus" \
+            || { echo "::error::refusal did not explain why"; exit 1; }
+          echo "refuses to run against a protected branch"
