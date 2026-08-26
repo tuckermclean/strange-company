@@ -80,7 +80,7 @@ func main() {
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           server.New(cfg, checks, version).Handler(),
+		Handler:           server.New(cfg, checks, version).SetCards(st, storeErrorClassifier{}).Handler(),
 		ReadHeaderTimeout: readHeaderTimeout,
 		ReadTimeout:       readTimeout,
 		WriteTimeout:      writeTimeout,
@@ -194,4 +194,22 @@ func (c *postgresChecker) Check(ctx context.Context) health.Status {
 		Detail:    "ok",
 		CheckedAt: now,
 	}
+}
+
+// storeErrorClassifier lets the server map a *store.Store error to an HTTP
+// status without the server package importing store (and therefore pgx).
+// It exists only to satisfy server.ErrorClassifier by comparing against the
+// store package's own sentinel errors with errors.Is.
+type storeErrorClassifier struct{}
+
+func (storeErrorClassifier) IsNoWork(err error) bool {
+	return errors.Is(err, store.ErrNoWork)
+}
+
+func (storeErrorClassifier) IsNotClaimant(err error) bool {
+	return errors.Is(err, store.ErrNotClaimant)
+}
+
+func (storeErrorClassifier) IsNotFound(err error) bool {
+	return errors.Is(err, store.ErrCardNotFound)
 }

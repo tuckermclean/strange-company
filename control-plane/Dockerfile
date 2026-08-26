@@ -1,6 +1,6 @@
 # Build stage: compile a static binary. A separate build stage keeps the Go
 # toolchain, module cache, and source tree out of the final image.
-FROM golang:1.23-bookworm AS build
+FROM golang:1.25-bookworm AS build
 WORKDIR /src
 COPY go.mod go.sum* ./
 COPY . .

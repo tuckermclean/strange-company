@@ -1,0 +1,377 @@
+package store
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+
+	"github.com/tuckermclean/strange-company/control-plane/internal/card"
+)
+
+// ErrNoWork is returned by ClaimReady when no card is currently claimable:
+// there is no card in state Ready whose lease is unheld or expired.
+var ErrNoWork = errors.New("no claimable card")
+
+// ErrNotClaimant is returned when a caller attempts to heartbeat or release
+// a card it does not currently hold the lease on.
+var ErrNotClaimant = errors.New("worker does not hold this card")
+
+// ErrCardNotFound is returned when an operation references a card id that
+// does not exist in the cards table.
+var ErrCardNotFound = errors.New("card not found")
+
+// cardColumns is the column list, in the order scanCard expects, for
+// selecting a full row from the cards table. Numeric columns that are
+// nullable/arbitrary-precision in Postgres are cast to float8 so they scan
+// directly into Go float64 values without needing pgtype.Numeric, and the
+// uuid primary key is cast to text so it scans into a plain string that is
+// then parsed with uuid.Parse.
+const cardColumns = `
+	id::text,
+	vikunja_task_id,
+	title,
+	source_type,
+	source_url,
+	source_external_id,
+	repo_url,
+	repo_base_ref,
+	branch,
+	state,
+	phase,
+	spec_uri,
+	plan_uri,
+	risk_class,
+	effective_priority,
+	claimed_by,
+	lease_expires_at,
+	implementation_attempt,
+	infrastructure_failures,
+	max_cost_usd::float8,
+	cost_usd::float8,
+	created_at,
+	updated_at
+`
+
+// rowScanner is satisfied by both pgx.Row and pgx.Rows, letting scanCard
+// serve GetCard's single-row query and ListCards' multi-row query alike.
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+// scanCard scans one row produced by a query selecting cardColumns (in that
+// order) into a *card.Card.
+func scanCard(row rowScanner) (*card.Card, error) {
+	var (
+		c      card.Card
+		idText string
+		state  string
+		phase  string
+	)
+
+	err := row.Scan(
+		&idText,
+		&c.VikunjaTaskID,
+		&c.Title,
+		&c.SourceType,
+		&c.SourceURL,
+		&c.SourceExternalID,
+		&c.RepoURL,
+		&c.RepoBaseRef,
+		&c.Branch,
+		&state,
+		&phase,
+		&c.SpecURI,
+		&c.PlanURI,
+		&c.RiskClass,
+		&c.EffectivePriority,
+		&c.ClaimedBy,
+		&c.LeaseExpiresAt,
+		&c.ImplementationAttempt,
+		&c.InfrastructureFailures,
+		&c.MaxCostUSD,
+		&c.CostUSD,
+		&c.CreatedAt,
+		&c.UpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	id, err := uuid.Parse(idText)
+	if err != nil {
+		return nil, fmt.Errorf("store: parse card id %q: %w", idText, err)
+	}
+
+	c.ID = id
+	c.State = card.State(state)
+	c.Phase = card.Phase(phase)
+
+	return &c, nil
+}
+
+// ClaimReady atomically claims one Ready, unclaimed-or-expired-lease card
+// for workerID and moves it to InProgress (spec section 6). It MUST be safe
+// against at least ten simultaneous callers racing for the same card, and
+// guarantees exactly one of them receives it.
+//
+// The whole operation — select-for-update, state change and history write —
+// happens in a single transaction. SELECT ... FOR UPDATE SKIP LOCKED is what
+// makes losing callers see no row (and thus ErrNoWork) instead of blocking
+// on the winner's row lock; it must not be replaced with NOWAIT, an advisory
+// lock, or a retry loop.
+func (s *Store) ClaimReady(ctx context.Context, workerID string, lease time.Duration) (*card.Card, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("store: begin claim transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	var idText string
+	err = tx.QueryRow(ctx, `
+		SELECT id::text
+		FROM cards
+		WHERE state = 'Ready'
+		  AND (claimed_by IS NULL OR lease_expires_at < now())
+		ORDER BY effective_priority, created_at
+		FOR UPDATE SKIP LOCKED
+		LIMIT 1
+	`).Scan(&idText)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNoWork
+		}
+		return nil, fmt.Errorf("store: select claimable card: %w", err)
+	}
+
+	leaseExpiresAt := time.Now().Add(lease)
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE cards
+		SET state = 'InProgress',
+		    claimed_by = $1,
+		    lease_expires_at = $2,
+		    updated_at = now()
+		WHERE id = $3::uuid
+	`, workerID, leaseExpiresAt, idText); err != nil {
+		return nil, fmt.Errorf("store: claim card %s: %w", idText, err)
+	}
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO card_history (card_id, from_state, to_state, actor_type, actor_id, reason)
+		VALUES ($1::uuid, $2, $3, $4, $5, $6)
+	`, idText, string(card.Ready), string(card.InProgress), string(card.ActorAgent), workerID, "claimed"); err != nil {
+		return nil, fmt.Errorf("store: record claim history for card %s: %w", idText, err)
+	}
+
+	claimed, err := scanCard(tx.QueryRow(ctx, `SELECT `+cardColumns+` FROM cards WHERE id = $1::uuid`, idText))
+	if err != nil {
+		return nil, fmt.Errorf("store: reload claimed card %s: %w", idText, err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("store: commit claim transaction: %w", err)
+	}
+
+	return claimed, nil
+}
+
+// Heartbeat extends a card's lease, but only while workerID is still the
+// current claimant and its existing lease has not already expired.
+func (s *Store) Heartbeat(ctx context.Context, cardID uuid.UUID, workerID string, lease time.Duration) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("store: begin heartbeat transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	idText := cardID.String()
+
+	var claimedBy *string
+	var leaseExpiresAt *time.Time
+	err = tx.QueryRow(ctx, `
+		SELECT claimed_by, lease_expires_at
+		FROM cards
+		WHERE id = $1::uuid
+		FOR UPDATE
+	`, idText).Scan(&claimedBy, &leaseExpiresAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrCardNotFound
+		}
+		return fmt.Errorf("store: load card %s for heartbeat: %w", idText, err)
+	}
+
+	if claimedBy == nil || *claimedBy != workerID {
+		return ErrNotClaimant
+	}
+	if leaseExpiresAt == nil || !leaseExpiresAt.After(time.Now()) {
+		return ErrNotClaimant
+	}
+
+	newLease := time.Now().Add(lease)
+	if _, err := tx.Exec(ctx, `
+		UPDATE cards
+		SET lease_expires_at = $1,
+		    updated_at = now()
+		WHERE id = $2::uuid
+	`, newLease, idText); err != nil {
+		return fmt.Errorf("store: extend lease for card %s: %w", idText, err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("store: commit heartbeat transaction: %w", err)
+	}
+
+	return nil
+}
+
+// Release clears a card's claim and returns it to Ready, but only while
+// workerID is still the current claimant. It writes an InProgress -> Ready
+// card_history row.
+func (s *Store) Release(ctx context.Context, cardID uuid.UUID, workerID, reason string) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("store: begin release transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	idText := cardID.String()
+
+	var claimedBy *string
+	err = tx.QueryRow(ctx, `
+		SELECT claimed_by
+		FROM cards
+		WHERE id = $1::uuid
+		FOR UPDATE
+	`, idText).Scan(&claimedBy)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrCardNotFound
+		}
+		return fmt.Errorf("store: load card %s for release: %w", idText, err)
+	}
+
+	if claimedBy == nil || *claimedBy != workerID {
+		return ErrNotClaimant
+	}
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE cards
+		SET state = 'Ready',
+		    claimed_by = NULL,
+		    lease_expires_at = NULL,
+		    updated_at = now()
+		WHERE id = $1::uuid
+	`, idText); err != nil {
+		return fmt.Errorf("store: release card %s: %w", idText, err)
+	}
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO card_history (card_id, from_state, to_state, actor_type, actor_id, reason)
+		VALUES ($1::uuid, $2, $3, $4, $5, $6)
+	`, idText, string(card.InProgress), string(card.Ready), string(card.ActorAgent), workerID, reason); err != nil {
+		return fmt.Errorf("store: record release history for card %s: %w", idText, err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("store: commit release transaction: %w", err)
+	}
+
+	return nil
+}
+
+// Transition moves a card from its current state to `to`, subject to
+// card.CanTransition. If the move is illegal, the error from CanTransition
+// is returned unchanged (wrapping card.ErrIllegalTransition) and no
+// card_history row is written. On success, the state change and its
+// card_history row are written together in one transaction.
+func (s *Store) Transition(ctx context.Context, cardID uuid.UUID, to card.State, actor card.ActorType, actorID, reason string) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("store: begin transition transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	idText := cardID.String()
+
+	var current string
+	err = tx.QueryRow(ctx, `
+		SELECT state
+		FROM cards
+		WHERE id = $1::uuid
+		FOR UPDATE
+	`, idText).Scan(&current)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrCardNotFound
+		}
+		return fmt.Errorf("store: load card %s for transition: %w", idText, err)
+	}
+
+	from := card.State(current)
+	if err := card.CanTransition(from, to, actor); err != nil {
+		return err
+	}
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE cards
+		SET state = $1,
+		    updated_at = now()
+		WHERE id = $2::uuid
+	`, string(to), idText); err != nil {
+		return fmt.Errorf("store: update state for card %s: %w", idText, err)
+	}
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO card_history (card_id, from_state, to_state, actor_type, actor_id, reason)
+		VALUES ($1::uuid, $2, $3, $4, $5, $6)
+	`, idText, string(from), string(to), string(actor), actorID, reason); err != nil {
+		return fmt.Errorf("store: record transition history for card %s: %w", idText, err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("store: commit transition transaction: %w", err)
+	}
+
+	return nil
+}
+
+// GetCard loads a single card by id.
+func (s *Store) GetCard(ctx context.Context, id uuid.UUID) (*card.Card, error) {
+	row := s.pool.QueryRow(ctx, `SELECT `+cardColumns+` FROM cards WHERE id = $1::uuid`, id.String())
+	c, err := scanCard(row)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrCardNotFound
+		}
+		return nil, fmt.Errorf("store: get card %s: %w", id, err)
+	}
+	return c, nil
+}
+
+// ListCards loads every card, ordered by creation time.
+func (s *Store) ListCards(ctx context.Context) ([]*card.Card, error) {
+	rows, err := s.pool.Query(ctx, `SELECT `+cardColumns+` FROM cards ORDER BY created_at`)
+	if err != nil {
+		return nil, fmt.Errorf("store: list cards: %w", err)
+	}
+	defer rows.Close()
+
+	var cards []*card.Card
+	for rows.Next() {
+		c, err := scanCard(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: scan card row: %w", err)
+		}
+		cards = append(cards, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: list cards: %w", err)
+	}
+
+	return cards, nil
+}

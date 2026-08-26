@@ -21,6 +21,7 @@ type Server struct {
 	checks  []health.Checker
 	version string
 	log     *slog.Logger
+	cards   *cardsDeps
 }
 
 // New builds a Server. checks may be empty, which makes readiness trivially true.
@@ -47,6 +48,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /ready", s.handleReady)
 	mux.HandleFunc("GET /config", s.handleConfig)
 	mux.HandleFunc("GET /version", s.handleVersion)
+
+	mux.HandleFunc("GET /cards", s.handleListCards)
+	mux.HandleFunc("GET /cards/{id}", s.handleGetCard)
+	mux.HandleFunc("POST /cards/{id}/claim", s.handleClaim)
+	mux.HandleFunc("POST /cards/{id}/heartbeat", s.handleHeartbeat)
+	mux.HandleFunc("POST /cards/{id}/release", s.handleRelease)
+	mux.HandleFunc("POST /cards/{id}/transition", s.handleTransition)
 
 	return mux
 }
