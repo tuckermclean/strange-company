@@ -237,9 +237,17 @@ hermes:
     enabled: true
     port: 9119
     # -- The dashboard's auth gate engages on any non-loopback bind and fails
-    # closed without an auth provider, so a basic-auth credential is required
-    # for it to listen at all. Leave the password empty to generate one and
-    # preserve it across upgrades.
+    # closed without an auth provider, so a credential is required for it to
+    # listen at all. Basic auth is generated here because it needs no external
+    # infrastructure and works on a fresh install.
+    #
+    # To put the dashboard behind your own identity provider instead, no chart
+    # feature is needed: set `hermes.existingSecret` (which suppresses the
+    # basic-auth variables below) and pass the provider settings through
+    # `hermes.env`. The chart deliberately does not model OIDC itself -- that
+    # would be a worse version of what these two values already do.
+    #
+    # Leave the password empty to generate one and preserve it across upgrades.
     username: hermes
     password: ""
 
