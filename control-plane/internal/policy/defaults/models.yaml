@@ -46,7 +46,7 @@ aliases:
   # profile): find work, claim work, choose the next allowed action,
   # interpret structured tool results. Never writes source code.
   foreman-cheap:
-    provider: deepseek-foreman
+    provider: deepseek
     model: deepseek-chat
 
   # Interactive human <-> Fable specification conversation (spec §8.2

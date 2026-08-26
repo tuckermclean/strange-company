@@ -26,7 +26,20 @@
 # SCHEMA (see control-plane/internal/policy/policy.go for the authoritative
 # Go types):
 #
-#   providers:
+#   # NAMING CONVENTION
+#
+# A provider is named for WHAT IT IS, never for what it is used for. Its name
+# should be the vendor, plus whatever technical fact distinguishes it from
+# another entry for the same vendor -- the credential kind (`anthropic-api` vs
+# `anthropic-oauth`) or the harness (`openai-codex`).
+#
+# Roles live one layer up, in the aliases in models.yaml: `foreman-cheap`,
+# `plan`, `tests`, `implement-cheap`, `review`. That separation is the whole
+# point of having two files. A provider called `deepseek-foreman` is wrong the
+# moment DeepSeek is used for anything but the foreman, and it quietly invites
+# a second, near-identical entry rather than an alias change.
+
+providers:
 #     <provider-name>:            # referenced by alias.provider in models.yaml
 #       harness: claude-code | codex | hermes
 #       baseUrl: <optional URL>   # self-hosted / OpenAI-compatible endpoint
@@ -38,7 +51,7 @@
 #         <ENV_VAR_NAME>: <literal value>
 #
 # A provider needing no credentials at all (a local Ollama box reachable only
-# by baseUrl) simply omits `env` entirely — see local-ollama below.
+# by baseUrl) simply omits `env` entirely — see ollama below.
 # =============================================================================
 
 providers:
@@ -79,7 +92,7 @@ providers:
   # Hermes gateway talks to it directly over its own chat-completion
   # client, it never shells out to a coding-agent binary.
   # ---------------------------------------------------------------------
-  deepseek-foreman:
+  deepseek:
     harness: hermes
     baseUrl: https://api.deepseek.com
     env:
@@ -104,10 +117,10 @@ providers:
   # A fully local, credential-free Ollama endpoint. Proves the model
   # generalizes down to "zero credentials, just a baseUrl" as cleanly as it
   # generalizes up to a metered frontier API. Not wired into any alias by
-  # default — add an alias pointing `provider: local-ollama` at it to use
+  # default — add an alias pointing `provider: ollama` at it to use
   # it for, e.g., a no-cost foreman-cheap tier in a self-hosted deployment.
   # ---------------------------------------------------------------------
-  local-ollama:
+  ollama:
     harness: hermes
     baseUrl: http://ollama.strange-company.svc.cluster.local:11434
     # No `env` key at all: this provider needs no credentials whatsoever,
