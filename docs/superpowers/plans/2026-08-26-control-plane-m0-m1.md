@@ -736,6 +736,46 @@ decisions to make, not as gaps in a task.
 `ErrNotClaimant` / `ErrIllegalTransition` are defined in Tasks 7–8 and used with
 those exact names in Tasks 9–10. `config.Config` field names match Task 1.
 
+
+## Status as of 2026-08-26 (overnight run)
+
+Branch `feat/control-plane-m0`. Every claim below is backed by a CI job, not by
+inspection.
+
+| Task | State | Evidence |
+|---|---|---|
+| 1 config contract | DONE | `ok internal/config` |
+| 2 dependency checks | DONE | unit job green |
+| 3 probes / config / version | DONE | unit job green |
+| 4 entrypoint + image | DONE | image job builds; publishes on main and tags only |
+| 5 chart with the real image | DONE | `chart with the real control-plane image` green: `/readyz` returned ready with postgres, vikunja and hermes-gateway all reachable |
+| 6 schema + migrator | DONE | integration job vs postgres:17.11 |
+| 7 state machine | DONE | unit job green |
+| 8 atomic claiming | DONE | **`--- PASS: TestTenConcurrentWorkersClaimExactlyOnce`** |
+| 9 card endpoints | DONE | unit job green |
+| 10a Vikunja bootstrap | DONE (unit) | e2e assertion added against the real bundled Vikunja |
+| 10 reconciler | NOT STARTED | blocked on API research, see below |
+| 11 integration CI | DONE | named M1 gate step |
+
+**M0 exit: met.** All services reachable and healthy, and readiness now means the
+control plane actually reached PostgreSQL, Vikunja and the Hermes gateway --
+a stronger claim than the `whoami` fixture could make.
+
+**M1 exit: met for the gate itself** (ten workers race, exactly one wins, proven
+against the same PostgreSQL minor version the chart ships). Vikunja
+synchronisation (Task 10) remains.
+
+### Two real bugs CI caught that review had missed
+
+1. **A card with an expired lease was unreachable forever.** The claim predicate
+   filtered on `state = 'Ready'`, but claiming sets the state to `InProgress` --
+   so once a worker died, nothing could ever pick that card up again. Since a
+   Meeseeks is *expected* to die, that is the normal recovery path, not an edge
+   case. Fixed by making the second branch explicit and adding an index for it.
+2. **`expires_at` is required when minting a Vikunja token.** Upstream marks it
+   `valid:"required"` in `pkg/models/api_tokens.go`; the first implementation
+   omitted it and would have been rejected by a real server.
+
 ## Decisions made 2026-08-26
 
 1. **Naming: `strange-company` throughout.** The spec's `mechanical-company`
