@@ -73,6 +73,7 @@ func main() {
 	}
 
 	ensureVikunjaToken(ctx, logger, cfg, st)
+	startReconciler(ctx, logger, cfg, st)
 
 	checks := []health.Checker{
 		&postgresChecker{store: st},
@@ -200,6 +201,38 @@ func ensureVikunjaToken(ctx context.Context, logger *slog.Logger, cfg *config.Co
 		logger.Info("no Vikunja credentials configured; skipping token bootstrap")
 	}
 }
+
+// startReconciler brings the Vikunja board into existence and keeps it in step
+// with the database.
+//
+// Every failure here is non-fatal. Vikunja is a projection: if it is down, the
+// control plane is still the source of truth and must keep serving. The
+// reconciler simply retries on its next tick.
+func startReconciler(ctx context.Context, logger *slog.Logger, cfg *config.Config, st *store.Store) {
+	if cfg.VikunjaToken == "" {
+		logger.Info("no Vikunja token; board reconciliation disabled")
+		return
+	}
+
+	client := vikunja.New(cfg.VikunjaURL, cfg.VikunjaToken, nil)
+
+	board, err := client.EnsureBoard(ctx, vikunjaProjectTitle)
+	if err != nil {
+		logger.Warn("could not prepare the Vikunja board; reconciliation disabled for this boot",
+			"error", err)
+		return
+	}
+	logger.Info("vikunja board ready",
+		"project_id", board.ProjectID,
+		"kanban_view_id", board.KanbanViewID,
+		"buckets", len(board.BucketByState))
+
+	go vikunja.NewReconciler(client, board, st, logger).Run(ctx, cfg.ReconcileInterval)
+	logger.Info("board reconciliation started", "interval", cfg.ReconcileInterval.String())
+}
+
+// vikunjaProjectTitle is the single project this control plane owns.
+const vikunjaProjectTitle = "strange-company"
 
 // postgresChecker adapts the store's connection pool to health.Checker by
 // pinging it directly, which exercises the live pool rather than opening a

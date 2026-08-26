@@ -516,6 +516,24 @@ jobs:
           fi
           echo "the control plane minted and stored its own Vikunja token"
 
+      - name: The control plane must have built its Kanban board
+        run: |
+          set -euo pipefail
+          # Proves EnsureBoard against real Vikunja: the project, its Kanban view
+          # and all seven state buckets. Non-fatal in the app by design, so it is
+          # asserted here rather than assumed.
+          ok=""
+          for i in $(seq 1 30); do
+            if kubectl -n "$NS" logs -l app.kubernetes.io/component=control-plane --tail=500 2>/dev/null \
+                 | grep -q '"msg":"vikunja board ready"'; then ok=yes; break; fi
+            sleep 10
+          done
+          kubectl -n "$NS" logs -l app.kubernetes.io/component=control-plane --tail=50 || true
+          [ -n "$ok" ] || { echo "::error::the control plane never reported a ready Vikunja board"; exit 1; }
+          kubectl -n "$NS" logs -l app.kubernetes.io/component=control-plane --tail=500 \
+            | grep -o '"msg":"vikunja board ready"[^}]*' | head -1
+          echo "board built against real Vikunja"
+
       - name: The config endpoint must not leak secrets
         run: |
           set -euo pipefail
