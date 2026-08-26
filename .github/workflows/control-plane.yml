@@ -97,6 +97,17 @@ jobs:
       - name: Store integration tests
         run: go test -race -v ./internal/store/...
 
+      - name: 'M1 gate: ten workers race for one card, exactly one wins'
+        # Called out as its own step so the milestone exit criterion is a named
+        # green check rather than a line buried in test output.
+        run: |
+          set -euo pipefail
+          go test -race -v -count=1 \
+            -run 'TestTenConcurrentWorkersClaimExactlyOnce' \
+            ./internal/store/... 2>&1 | tee /tmp/gate.txt
+          grep -q -- "--- PASS: TestTenConcurrentWorkersClaimExactlyOnce" /tmp/gate.txt \
+            || { echo "::error::the M1 exit test did not run"; exit 1; }
+
   image:
     name: build and publish the image
     runs-on: ubuntu-latest
