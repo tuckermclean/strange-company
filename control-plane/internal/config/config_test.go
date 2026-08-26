@@ -111,6 +111,46 @@ func TestRedactedDistinguishesSetFromUnset(t *testing.T) {
 	}
 }
 
+// A fresh install has no bootstrap credentials configured either -- the
+// operator has supplied VIKUNJA_TOKEN directly, or intends to set one later.
+// Bootstrap is then simply skipped, and config loading must not fail.
+func TestLoadSucceedsWithoutBootstrapCredentials(t *testing.T) {
+	cfg, err := Load(env(completeEnv()))
+	if err != nil {
+		t.Fatalf("bootstrap credentials must not be required: %v", err)
+	}
+	if cfg.VikunjaBootstrapUsername != "" || cfg.VikunjaBootstrapPassword != "" {
+		t.Errorf("want empty bootstrap credentials, got username=%q password=%q",
+			cfg.VikunjaBootstrapUsername, cfg.VikunjaBootstrapPassword)
+	}
+}
+
+// The bootstrap password is as sensitive as any other credential here: it
+// must never come back verbatim from Redacted().
+func TestRedactedNeverLeaksTheBootstrapPassword(t *testing.T) {
+	m := completeEnv()
+	m["VIKUNJA_BOOTSTRAP_USERNAME"] = "strange-company-bootstrap"
+	m["VIKUNJA_BOOTSTRAP_PASSWORD"] = "super-secret-bootstrap-password"
+
+	cfg, err := Load(env(m))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r := cfg.Redacted()
+	for k, v := range r {
+		if v == "super-secret-bootstrap-password" {
+			t.Errorf("Redacted()[%q] leaked the bootstrap password", k)
+		}
+	}
+	if r["VIKUNJA_BOOTSTRAP_PASSWORD"] != "***" {
+		t.Errorf("want VIKUNJA_BOOTSTRAP_PASSWORD rendered as ***, got %q", r["VIKUNJA_BOOTSTRAP_PASSWORD"])
+	}
+	if r["VIKUNJA_BOOTSTRAP_USERNAME"] != "strange-company-bootstrap" {
+		t.Errorf("want the bootstrap username reported plainly, got %q", r["VIKUNJA_BOOTSTRAP_USERNAME"])
+	}
+}
+
 func TestDSNContainsHostPortAndDatabase(t *testing.T) {
 	cfg, err := Load(env(completeEnv()))
 	if err != nil {

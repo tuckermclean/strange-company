@@ -71,6 +71,15 @@ spec:
                   name: {{ include "strange-company.hermesSecretName" . }}
                   key: {{ include "strange-company.hermesApiKeyKey" . }}
                   optional: true
+            {{- if and .Values.vikunja.bootstrap.enabled (not .Values.vikunja.token) }}
+            - name: VIKUNJA_BOOTSTRAP_USERNAME
+              value: {{ .Values.vikunja.bootstrap.username | quote }}
+            - name: VIKUNJA_BOOTSTRAP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "strange-company.secretName" . }}
+                  key: vikunja-bootstrap-password
+            {{- end }}
             {{- range $k, $v := .Values.controlPlane.env }}
             - name: {{ $k }}
               value: {{ $v | quote }}

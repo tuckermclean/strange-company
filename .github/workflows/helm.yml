@@ -477,6 +477,26 @@ jobs:
             grep -q "\"name\":\"$dep\"" /tmp/readyz.json || { echo "::error::$dep missing from readiness report"; exit 1; }
           done
 
+      - name: The control plane must have provisioned its own Vikunja token
+        run: |
+          set -euo pipefail
+          # Bootstrap runs at startup against the real bundled Vikunja. It is
+          # non-fatal by design (a Vikunja outage must not stop the control
+          # plane booting), so assert it explicitly here rather than assuming.
+          for i in $(seq 1 30); do
+            kubectl -n "$NS" run tokprobe-$i --rm -i --restart=Never --image=busybox:1.37.0 -- \
+              wget -q -O- "http://$FULLNAME-control-plane:8080/config" > /tmp/cfg.json 2>/dev/null || true
+            grep -q '"VIKUNJA_TOKEN":"\*\*\*"' /tmp/cfg.json && break
+            sleep 10
+          done
+          cat /tmp/cfg.json
+          if ! grep -q '"VIKUNJA_TOKEN":"\*\*\*"' /tmp/cfg.json; then
+            echo "::error::the control plane did not provision a Vikunja API token"
+            kubectl -n "$NS" logs -l app.kubernetes.io/component=control-plane --tail=100 || true
+            exit 1
+          fi
+          echo "the control plane minted and stored its own Vikunja token"
+
       - name: The config endpoint must not leak secrets
         run: |
           set -euo pipefail

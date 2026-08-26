@@ -26,6 +26,13 @@ type Config struct {
 	VikunjaURL   string
 	VikunjaToken string
 
+	// VikunjaBootstrapUsername and VikunjaBootstrapPassword are optional: when
+	// VikunjaToken is unset, they let the control plane log in (registering
+	// the account first if necessary) and mint its own long-lived API token
+	// on first boot. When both are empty, bootstrap is simply skipped.
+	VikunjaBootstrapUsername string
+	VikunjaBootstrapPassword string
+
 	HermesGatewayURL   string
 	HermesAPIKey       string
 	HermesDashboardURL string
@@ -42,9 +49,10 @@ const (
 
 // secretVars are never rendered verbatim by Redacted.
 var secretVars = map[string]bool{
-	"DATABASE_PASSWORD": true,
-	"VIKUNJA_TOKEN":     true,
-	"HERMES_API_KEY":    true,
+	"DATABASE_PASSWORD":          true,
+	"VIKUNJA_TOKEN":              true,
+	"VIKUNJA_BOOTSTRAP_PASSWORD": true,
+	"HERMES_API_KEY":             true,
 }
 
 // Load reads the contract using the supplied lookup function.
@@ -77,6 +85,12 @@ func Load(getenv func(string) string) (*Config, error) {
 		VikunjaToken:       strings.TrimSpace(getenv("VIKUNJA_TOKEN")),
 		HermesAPIKey:       strings.TrimSpace(getenv("HERMES_API_KEY")),
 		HermesDashboardURL: strings.TrimSpace(getenv("HERMES_DASHBOARD_URL")),
+
+		// Optional: only needed to bootstrap a Vikunja token on first boot.
+		// When VikunjaToken is already set, or when both of these are absent,
+		// bootstrap is skipped entirely.
+		VikunjaBootstrapUsername: strings.TrimSpace(getenv("VIKUNJA_BOOTSTRAP_USERNAME")),
+		VikunjaBootstrapPassword: strings.TrimSpace(getenv("VIKUNJA_BOOTSTRAP_PASSWORD")),
 
 		DatabaseSSLMode:   valueOr(getenv("DATABASE_SSLMODE"), defaultSSLMode),
 		ReconcileInterval: defaultReconcileInterval,
@@ -156,21 +170,23 @@ func (c *Config) DSN() string {
 // becoming a way to read one.
 func (c *Config) Redacted() map[string]string {
 	out := map[string]string{
-		"DATABASE_HOST":        c.DatabaseHost,
-		"DATABASE_PORT":        strconv.Itoa(c.DatabasePort),
-		"DATABASE_NAME":        c.DatabaseName,
-		"DATABASE_USER":        c.DatabaseUser,
-		"DATABASE_SSLMODE":     c.DatabaseSSLMode,
-		"VIKUNJA_URL":          c.VikunjaURL,
-		"HERMES_GATEWAY_URL":   c.HermesGatewayURL,
-		"HERMES_DASHBOARD_URL": c.HermesDashboardURL,
-		"PORT":                 strconv.Itoa(c.Port),
-		"RECONCILE_INTERVAL":   c.ReconcileInterval.String(),
+		"DATABASE_HOST":              c.DatabaseHost,
+		"DATABASE_PORT":              strconv.Itoa(c.DatabasePort),
+		"DATABASE_NAME":              c.DatabaseName,
+		"DATABASE_USER":              c.DatabaseUser,
+		"DATABASE_SSLMODE":           c.DatabaseSSLMode,
+		"VIKUNJA_URL":                c.VikunjaURL,
+		"VIKUNJA_BOOTSTRAP_USERNAME": c.VikunjaBootstrapUsername,
+		"HERMES_GATEWAY_URL":         c.HermesGatewayURL,
+		"HERMES_DASHBOARD_URL":       c.HermesDashboardURL,
+		"PORT":                       strconv.Itoa(c.Port),
+		"RECONCILE_INTERVAL":         c.ReconcileInterval.String(),
 	}
 	for name, value := range map[string]string{
-		"DATABASE_PASSWORD": c.DatabasePassword,
-		"VIKUNJA_TOKEN":     c.VikunjaToken,
-		"HERMES_API_KEY":    c.HermesAPIKey,
+		"DATABASE_PASSWORD":          c.DatabasePassword,
+		"VIKUNJA_TOKEN":              c.VikunjaToken,
+		"VIKUNJA_BOOTSTRAP_PASSWORD": c.VikunjaBootstrapPassword,
+		"HERMES_API_KEY":             c.HermesAPIKey,
 	} {
 		if !secretVars[name] {
 			continue

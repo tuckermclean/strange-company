@@ -10,6 +10,7 @@
 #
 #   DATABASE_HOST  DATABASE_PORT  DATABASE_NAME  DATABASE_USER  DATABASE_PASSWORD
 #   VIKUNJA_URL    VIKUNJA_TOKEN
+#   [VIKUNJA_BOOTSTRAP_USERNAME]  [VIKUNJA_BOOTSTRAP_PASSWORD]
 #   HERMES_GATEWAY_URL  HERMES_API_KEY  [HERMES_DASHBOARD_URL]
 
 # -- Settings shared by every chart-owned workload.
@@ -149,10 +150,19 @@ vikunja:
     existingSecret: ""
     tokenKey: token
 
-  # -- API token handed to the control plane as VIKUNJA_TOKEN. Vikunja has no
-  # bootstrap-token API, so a bundled install starts without one; create a token
-  # in the UI and set it here (or supply `controlPlane.existingSecret`).
+  # -- API token handed to the control plane as VIKUNJA_TOKEN. Leave empty (the
+  # default) and the control plane provisions its own token on first boot using
+  # `bootstrap` below; set this explicitly to skip that entirely (for example
+  # when the target Vikunja instance has registration disabled).
   token: ""
+
+  # -- Credentials the control plane uses to bootstrap its own API token on
+  # first boot. Leave the password empty to generate one that is preserved
+  # across upgrades. Ignored entirely when `vikunja.token` is set.
+  bootstrap:
+    enabled: true
+    username: strange-company-bootstrap
+    password: ""
 
   # ---- values below are passed verbatim to the upstream Vikunja chart ----
   vikunja:

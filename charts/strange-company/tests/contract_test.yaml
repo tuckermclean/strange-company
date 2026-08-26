@@ -97,3 +97,39 @@ tests:
       - equal:
           path: spec.replicas
           value: 2
+
+  - it: batteries mode wires the Vikunja bootstrap credentials through
+    values: [../ci/values-batteries.yaml]
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: VIKUNJA_BOOTSTRAP_USERNAME
+            value: strange-company-bootstrap
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: VIKUNJA_BOOTSTRAP_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: strange-company-secrets
+                key: vikunja-bootstrap-password
+
+  - it: an explicit vikunja token suppresses the bootstrap credentials
+    values: [../ci/values-batteries.yaml]
+    set:
+      vikunja.token: abc
+    asserts:
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: VIKUNJA_BOOTSTRAP_USERNAME
+            value: strange-company-bootstrap
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: VIKUNJA_BOOTSTRAP_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: strange-company-secrets
+                key: vikunja-bootstrap-password

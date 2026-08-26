@@ -18,6 +18,7 @@ import (
 	"github.com/tuckermclean/strange-company/control-plane/internal/health"
 	"github.com/tuckermclean/strange-company/control-plane/internal/server"
 	"github.com/tuckermclean/strange-company/control-plane/internal/store"
+	"github.com/tuckermclean/strange-company/control-plane/internal/vikunja"
 )
 
 // version is overridden at build time via -ldflags "-X main.version=...".
@@ -70,6 +71,8 @@ func main() {
 		st.Close()
 		os.Exit(1)
 	}
+
+	ensureVikunjaToken(ctx, logger, cfg, st)
 
 	checks := []health.Checker{
 		&postgresChecker{store: st},
@@ -164,6 +167,37 @@ func openStoreWithRetry(ctx context.Context, logger *slog.Logger, dsn string) (*
 		if delay > dbRetryMaxDelay {
 			delay = dbRetryMaxDelay
 		}
+	}
+}
+
+// ensureVikunjaToken resolves the Vikunja API token the control plane will
+// use for the rest of this process's lifetime, mutating cfg.VikunjaToken in
+// place when it mints a new one.
+//
+// A supplied token always wins and skips bootstrap entirely. Otherwise, if
+// bootstrap credentials are configured, it mints and persists a token in the
+// control plane's own PostgreSQL (see internal/vikunja.Bootstrapper), reusing
+// whatever is already stored there on later boots. A Vikunja outage or
+// missing credentials must never stop the control plane from starting and
+// reporting health, so failures here are logged and startup continues
+// regardless -- the "vikunja" health check surfaces the resulting outage.
+func ensureVikunjaToken(ctx context.Context, logger *slog.Logger, cfg *config.Config, st *store.Store) {
+	switch {
+	case cfg.VikunjaToken != "":
+		logger.Info("using the supplied Vikunja token")
+
+	case cfg.VikunjaBootstrapUsername != "" && cfg.VikunjaBootstrapPassword != "":
+		bootstrapper := vikunja.NewBootstrapper(cfg.VikunjaURL, st, cfg.VikunjaBootstrapUsername, cfg.VikunjaBootstrapPassword, nil)
+		token, err := bootstrapper.EnsureToken(ctx)
+		if err != nil {
+			logger.Warn("failed to bootstrap a Vikunja token; continuing without one", "error", err)
+			return
+		}
+		cfg.VikunjaToken = token
+		logger.Info("bootstrapped a Vikunja API token")
+
+	default:
+		logger.Info("no Vikunja credentials configured; skipping token bootstrap")
 	}
 }
 
