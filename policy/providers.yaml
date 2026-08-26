@@ -1,0 +1,128 @@
+# =============================================================================
+# providers.yaml — THIS FILE DECIDES WHICH VENDOR IS USED.
+#
+# This is the only place in the whole system that names a vendor. The Go code
+# in control-plane/internal/policy never contains a line like
+# `if provider == "anthropic"` — it only knows "harness + credentials +
+# optional base URL", read from here. Adding Bedrock, Vertex, a different
+# DeepSeek-compatible host, a second Ollama box, or any future provider is a
+# YAML edit to this file. It requires ZERO code changes anywhere in the
+# control plane.
+#
+# CREDENTIALS: every `secret`/`key` pair below must name a Kubernetes Secret
+# the OPERATOR has already created (see charts/strange-company/values.yaml,
+# `providers.<name>.credentials`). The chart mounts this file read-only and
+# NEVER invents, generates, or manages a provider credential on your behalf —
+# if a Secret named here does not exist in the cluster, the run that needs it
+# fails closed, not open.
+#
+# Spec references: docs/specs/strange-company-control-plane-v1.md
+#   §2.3  — model/provider choice is a versioned configuration value.
+#   §2.5  — policy lives in files; this file is mounted read-only at /policy.
+#   §12   — the escalation ladder that models.yaml builds out of these.
+#   §29   — least-privilege credentials: a run gets only its own provider's
+#           `env` map, never the union of everything defined below.
+#
+# SCHEMA (see control-plane/internal/policy/policy.go for the authoritative
+# Go types):
+#
+#   providers:
+#     <provider-name>:            # referenced by alias.provider in models.yaml
+#       harness: claude-code | codex | hermes
+#       baseUrl: <optional URL>   # self-hosted / OpenAI-compatible endpoint
+#       env:                      # environment variables sourced from Secrets
+#         <ENV_VAR_NAME>:
+#           secret: <k8s Secret name, already created by the operator>
+#           key: <key within that Secret>
+#       plainEnv:                 # non-secret settings (feature flags, etc.)
+#         <ENV_VAR_NAME>: <literal value>
+#
+# A provider needing no credentials at all (a local Ollama box reachable only
+# by baseUrl) simply omits `env` entirely — see local-ollama below.
+# =============================================================================
+
+providers:
+
+  # ---------------------------------------------------------------------
+  # Anthropic, via metered API key. Used for run types that are billed
+  # per-token rather than against a human's subscription: implementation,
+  # planning, test-writing, review — anything a coding Job runs
+  # unattended inside agent-runs.
+  # ---------------------------------------------------------------------
+  anthropic-api:
+    harness: claude-code
+    env:
+      ANTHROPIC_API_KEY:
+        secret: anthropic-api-credentials
+        key: api-key
+
+  # ---------------------------------------------------------------------
+  # Anthropic, via Claude subscription OAuth. SAME harness as
+  # anthropic-api (claude-code reads either credential identically) but a
+  # COMPLETELY DIFFERENT credential — this is the proof that "which
+  # credential" cannot be derived from "which harness". Claude subscription
+  # OAuth is scoped to the Claude Code binary itself, so this provider
+  # exists for the interactive, human-facing specifier profile (spec §8.2,
+  # §10.2), not for unattended coding Jobs a third party like Hermes drives.
+  # ---------------------------------------------------------------------
+  anthropic-oauth:
+    harness: claude-code
+    env:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        secret: anthropic-oauth-credentials
+        key: oauth-token
+
+  # ---------------------------------------------------------------------
+  # DeepSeek, an OpenAI-compatible chat completion endpoint, used by the
+  # cheap Hermes foreman (spec §2.1: "initially a cheap cloud API such as
+  # DeepSeek"). This is a "hermes" harness, not a coding-CLI harness: the
+  # Hermes gateway talks to it directly over its own chat-completion
+  # client, it never shells out to a coding-agent binary.
+  # ---------------------------------------------------------------------
+  deepseek-foreman:
+    harness: hermes
+    baseUrl: https://api.deepseek.com
+    env:
+      DEEPSEEK_API_KEY:
+        secret: deepseek-credentials
+        key: api-key
+
+  # ---------------------------------------------------------------------
+  # OpenAI, via the Codex CLI harness. Demonstrates that the coding-runner
+  # abstraction (spec §2.2, §14) is genuinely harness-agnostic: swapping an
+  # implementation rung from Claude Code to Codex is an edit to models.yaml
+  # (which alias.provider a rung points at), never a code change here.
+  # ---------------------------------------------------------------------
+  openai-codex:
+    harness: codex
+    env:
+      OPENAI_API_KEY:
+        secret: openai-credentials
+        key: api-key
+
+  # ---------------------------------------------------------------------
+  # A fully local, credential-free Ollama endpoint. Proves the model
+  # generalizes down to "zero credentials, just a baseUrl" as cleanly as it
+  # generalizes up to a metered frontier API. Not wired into any alias by
+  # default — add an alias pointing `provider: local-ollama` at it to use
+  # it for, e.g., a no-cost foreman-cheap tier in a self-hosted deployment.
+  # ---------------------------------------------------------------------
+  local-ollama:
+    harness: hermes
+    baseUrl: http://ollama.strange-company.svc.cluster.local:11434
+    # No `env` key at all: this provider needs no credentials whatsoever,
+    # and policy.Validate() treats that as perfectly valid.
+
+  # ---------------------------------------------------------------------
+  # EXAMPLE ONLY (commented out): this is the entire diff required to make
+  # implementation attempts 1-3 use DeepSeek instead of Claude Haiku
+  # instead. Uncomment, then in models.yaml change the implement-cheap
+  # alias's `provider:` to `deepseek-implement`. No Go code changes.
+  #
+  # deepseek-implement:
+  #   harness: hermes
+  #   baseUrl: https://api.deepseek.com
+  #   env:
+  #     DEEPSEEK_API_KEY:
+  #       secret: deepseek-credentials
+  #       key: api-key

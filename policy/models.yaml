@@ -1,0 +1,147 @@
+# =============================================================================
+# models.yaml — model aliases and per-phase escalation ladders.
+#
+# This file, together with providers.yaml, is the entire model-routing
+# policy described in docs/specs/strange-company-control-plane-v1.md §2.3
+# and §12. Nothing here names a vendor directly: every phase names an
+# ALIAS, every alias names a PROVIDER (defined in providers.yaml) plus a
+# model string. Re-pointing any tier at a different vendor is a two-line
+# edit — change the alias's `provider:` and `model:` — with zero Go changes.
+#
+# SCHEMA (see control-plane/internal/policy/policy.go for the authoritative
+# Go types):
+#
+#   aliases:
+#     <alias-name>:
+#       provider: <name of a provider defined in providers.yaml>
+#       model: <the literal model string that provider/harness expects>
+#
+#   phases:
+#     <phase-name>:
+#       - model: <alias-name>       # NOTE: this key is called "model" for
+#         max_attempts: <int >= 1>  # readability, but its value is an
+#       - model: <alias-name>       # ALIAS name, never a raw model string
+#         max_attempts: <int >= 1>  # or provider name.
+#
+# Every phase is expressed as a LIST of rungs, even phases that only ever
+# have one rung (foreman, specification, planning, tests, review). This
+# keeps control-plane/internal/policy.Resolve's arithmetic uniform: it
+# always walks a ladder and accumulates max_attempts, whether that ladder
+# has one rung or three. A single-rung phase with max_attempts: 1 behaves
+# exactly like spec §12's shorthand (e.g. "planning: max_attempts: 1") —
+# attempt 1 resolves, attempt 2 returns ErrLadderExhausted.
+#
+# Policy.Resolve(phase, attempt) walks each phase's rungs in order,
+# accumulating max_attempts, until the cumulative total reaches or passes
+# `attempt`. For the implementation ladder below (3, then 3, then 1):
+#   attempts 1-3 -> implement-cheap      attempts 4-6 -> implement-mid
+#   attempt 7    -> implement-frontier   attempt 8    -> ErrLadderExhausted
+# Spec §12.3: no eighth implementation attempt happens automatically. An
+# exhausted ladder is what moves a card to NeedsHuman.
+# =============================================================================
+
+aliases:
+
+  # Cheap, high-volume Hermes coordination (spec §2.1, §8.2 "foreman"
+  # profile): find work, claim work, choose the next allowed action,
+  # interpret structured tool results. Never writes source code.
+  foreman-cheap:
+    provider: deepseek-foreman
+    model: deepseek-chat
+
+  # Interactive human <-> Fable specification conversation (spec §8.2
+  # "specifier" profile, §10.2). Runs under the OAuth credential because
+  # this is a human-attended session against a Claude subscription, not an
+  # unattended metered coding Job.
+  spec-frontier:
+    provider: anthropic-oauth
+    model: claude-fable-5
+
+  # Implementation planning (spec §11.1). Read-mostly, plan-oriented.
+  plan:
+    provider: anthropic-api
+    model: claude-opus-5
+
+  # Acceptance test writing (spec §11.2). Must not implement the feature it
+  # is writing tests for.
+  tests:
+    provider: anthropic-api
+    model: claude-sonnet-5
+
+  # Implementation escalation ladder (spec §2.3, §12): cheap first, then
+  # progressively more capable, never skipping a tier.
+  implement-cheap:
+    provider: anthropic-api
+    model: claude-haiku-4-5
+
+  implement-mid:
+    provider: anthropic-api
+    model: claude-sonnet-5
+
+  implement-frontier:
+    provider: anthropic-api
+    model: claude-opus-5
+
+  # Independent automated code review after the deterministic green gate
+  # (spec §18). Never receives the implementer's private reasoning, and can
+  # never itself move a card to Done.
+  review:
+    provider: anthropic-api
+    model: claude-sonnet-5
+
+  # ---------------------------------------------------------------------
+  # EXAMPLE ONLY (commented out): repointing implement-cheap at Codex
+  # instead of Claude Haiku is exactly this — no other file changes:
+  #
+  # implement-cheap:
+  #   provider: openai-codex
+  #   model: gpt-5-codex
+  # ---------------------------------------------------------------------
+
+phases:
+
+  # Ordinary Hermes coordination (spec §2.1, §7). Not an escalation ladder
+  # in the coding-attempt sense — it is a single, always-on tier — but
+  # expressed as a one-rung ladder so Policy.Resolve's arithmetic stays
+  # uniform across every phase. Meeseeks calls Resolve("foreman", 1) once
+  # per lifecycle.
+  foreman:
+    - model: foreman-cheap
+      max_attempts: 1
+
+  # Fable specification conversation (spec §10.2). Human-attended and
+  # human-approved; not something the ladder can escalate past on its own.
+  specification:
+    - model: spec-frontier
+      max_attempts: 1
+
+  # Spec §12: planning is single-shot. A planner that cannot proceed
+  # declares SPEC_INSUFFICIENT rather than being retried automatically.
+  planning:
+    - model: plan
+      max_attempts: 1
+
+  # Spec §12: test-writing gets two attempts before requiring human
+  # attention — the red gate (spec §11.3) is deterministic, but a
+  # malformed test file is still worth one retry before escalating.
+  tests:
+    - model: tests
+      max_attempts: 2
+
+  # Spec §12.3, the core escalation ladder this whole milestone exists to
+  # exercise: Haiku x3 -> Sonnet x3 -> Opus x1 -> NeedsHuman.
+  implementation:
+    - model: implement-cheap
+      max_attempts: 3
+    - model: implement-mid
+      max_attempts: 3
+    - model: implement-frontier
+      max_attempts: 1
+
+  # Spec §18: one independent review pass per verification cycle.
+  # CORRECTABLE sends the card back into implementation without resetting
+  # implementation_attempt (policy, not this file, owns that reset rule);
+  # BLOCKING sends it to NeedsHuman. Review can never reach Done on its own.
+  review:
+    - model: review
+      max_attempts: 1
