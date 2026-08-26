@@ -25,16 +25,16 @@ const tokenTitle = "strange-company-control-plane"
 // token request never asks for a permission group a given server does not
 // expose.
 var desiredScopeGroups = []string{
-	"tasks",
-	"projects",
-	"labels",
-	"comments",
-	"assignees",
-	"relations",
-	"buckets",
-	"views",
-	"subscriptions",
-	"webhooks",
+	"task",
+	"project",
+	"label",
+	"comment",
+	"assignee",
+	"relation",
+	"bucket",
+	"view",
+	"subscription",
+	"webhook",
 }
 
 // CredentialStore is the persistence dependency Bootstrapper needs. It is
@@ -170,9 +170,13 @@ func intersectPermissions(routes map[string]map[string]any) (map[string]any, []s
 	perms := make(map[string]any)
 	var scopes []string
 
-	for _, group := range desiredScopeGroups {
-		actions, ok := routes[group]
-		if !ok {
+	// Match on substrings rather than exact names. Vikunja does not promise
+	// the group names we would guess -- the Kanban views group, for instance,
+	// is not literally "views" -- and an unmatched group silently drops the
+	// permission, which then surfaces much later as an opaque 401 on a route
+	// the token simply is not scoped for.
+	for group, actions := range routes {
+		if !wantsGroup(group) {
 			continue
 		}
 
@@ -188,6 +192,18 @@ func intersectPermissions(routes map[string]map[string]any) (map[string]any, []s
 
 	sort.Strings(scopes)
 	return perms, scopes
+}
+
+// wantsGroup reports whether a permission group reported by GET /routes is one
+// the control plane needs.
+func wantsGroup(group string) bool {
+	g := strings.ToLower(group)
+	for _, want := range desiredScopeGroups {
+		if strings.Contains(g, want) {
+			return true
+		}
+	}
+	return false
 }
 
 // isAuthFailure reports whether err is Vikunja rejecting our credentials, as
