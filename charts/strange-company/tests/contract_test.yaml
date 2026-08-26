@@ -89,6 +89,37 @@ tests:
           path: spec.template.spec.containers[0].startupProbe.failureThreshold
           value: 30
 
+  # Spec 2.5: models may read policy and propose changes to it, but must never
+  # silently rewrite it. A writable mount would make that a convention rather
+  # than a guarantee.
+  - it: mounts operator-supplied policy read-only
+    values: [../ci/values-batteries.yaml]
+    set:
+      policy.models: "phases: {}"
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: policy
+            mountPath: /policy
+            readOnly: true
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: POLICY_DIR
+            value: /policy
+
+  - it: mounts no policy volume when the operator supplies none
+    values: [../ci/values-batteries.yaml]
+    asserts:
+      - notExists:
+          path: spec.template.spec.volumes
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: POLICY_DIR
+            value: /policy
+
   - it: honours a replica count change
     values: [../ci/values-batteries.yaml]
     set:

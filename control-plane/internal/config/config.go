@@ -37,6 +37,10 @@ type Config struct {
 	HermesAPIKey       string
 	HermesDashboardURL string
 
+	// PolicyDir is where operator-supplied policy is mounted. Empty means use
+	// the policy compiled into the binary.
+	PolicyDir string
+
 	Port              int
 	ReconcileInterval time.Duration
 }
@@ -92,6 +96,7 @@ func Load(getenv func(string) string) (*Config, error) {
 		VikunjaBootstrapUsername: strings.TrimSpace(getenv("VIKUNJA_BOOTSTRAP_USERNAME")),
 		VikunjaBootstrapPassword: strings.TrimSpace(getenv("VIKUNJA_BOOTSTRAP_PASSWORD")),
 
+		PolicyDir:         strings.TrimSpace(getenv("POLICY_DIR")),
 		DatabaseSSLMode:   valueOr(getenv("DATABASE_SSLMODE"), defaultSSLMode),
 		ReconcileInterval: defaultReconcileInterval,
 	}
