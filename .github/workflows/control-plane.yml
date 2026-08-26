@@ -157,7 +157,7 @@ jobs:
           # readOnlyRootFilesystem: true. Verify that here rather than
           # discovering it in a cluster.
           tag=$(echo "${{ steps.meta.outputs.tags }}" | head -1)
-          docker build -t verify:local --build-arg VERSION=verify -f control-plane/Dockerfile control-plane
+          docker build -t verify:local --build-arg VERSION=verify -f Dockerfile .
           uid=$(docker run --rm --entrypoint="" verify:local id -u 2>/dev/null || echo "no-shell")
           echo "image user check: $uid (distroless has no shell, so 'no-shell' is expected)"
           # A missing required variable must fail fast with a clear message.

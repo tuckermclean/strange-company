@@ -130,16 +130,28 @@ func (s *Store) ClaimReady(ctx context.Context, workerID string, lease time.Dura
 	}
 	defer tx.Rollback(ctx)
 
-	var idText string
+	// Two kinds of card are claimable:
+	//
+	//   1. a Ready card nobody holds, and
+	//   2. an InProgress card whose lease has expired -- its worker died
+	//      without releasing it. Spec section 6 allows reclaiming only after
+	//      expiry, and a Meeseeks is expected to die, so this is the normal
+	//      recovery path rather than an edge case.
+	//
+	// The current state is selected too, so the history row records where the
+	// card actually came from instead of assuming Ready.
+	var idText, fromState string
 	err = tx.QueryRow(ctx, `
-		SELECT id::text
+		SELECT id::text, state
 		FROM cards
-		WHERE state = 'Ready'
-		  AND (claimed_by IS NULL OR lease_expires_at < now())
+		WHERE (state = 'Ready' AND claimed_by IS NULL)
+		   OR (state = 'InProgress'
+		       AND lease_expires_at IS NOT NULL
+		       AND lease_expires_at < now())
 		ORDER BY effective_priority, created_at
 		FOR UPDATE SKIP LOCKED
 		LIMIT 1
-	`).Scan(&idText)
+	`).Scan(&idText, &fromState)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNoWork
@@ -163,7 +175,7 @@ func (s *Store) ClaimReady(ctx context.Context, workerID string, lease time.Dura
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO card_history (card_id, from_state, to_state, actor_type, actor_id, reason)
 		VALUES ($1::uuid, $2, $3, $4, $5, $6)
-	`, idText, string(card.Ready), string(card.InProgress), string(card.ActorAgent), workerID, "claimed"); err != nil {
+	`, idText, fromState, string(card.InProgress), string(card.ActorAgent), workerID, claimReason(fromState)); err != nil {
 		return nil, fmt.Errorf("store: record claim history for card %s: %w", idText, err)
 	}
 
@@ -374,4 +386,14 @@ func (s *Store) ListCards(ctx context.Context) ([]*card.Card, error) {
 	}
 
 	return cards, nil
+}
+
+
+// claimReason distinguishes a normal claim from taking over a card whose
+// previous worker's lease expired, so the audit log shows which happened.
+func claimReason(fromState string) string {
+	if fromState == string(card.InProgress) {
+		return "reclaimed after lease expiry"
+	}
+	return "claimed"
 }
