@@ -33,7 +33,10 @@ func openTestStore(t *testing.T) *Store {
 	dropCtx, dropCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer dropCancel()
 
-	const dropSQL = `DROP TABLE IF EXISTS card_history, card_dependencies, acceptance_criteria, cards, schema_migrations CASCADE`
+	// Reset by rebuilding the schema rather than dropping a hardcoded table
+	// list: with a list, every new migration silently breaks this helper and
+	// the failure shows up as "relation already exists" in unrelated tests.
+	const dropSQL = `DROP SCHEMA public CASCADE; CREATE SCHEMA public;`
 	if _, err := s.Pool().Exec(dropCtx, dropSQL); err != nil {
 		t.Fatalf("failed to reset schema before test: got error %v, want nil", err)
 	}
