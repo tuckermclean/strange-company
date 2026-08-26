@@ -72,8 +72,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	ensureVikunjaToken(ctx, logger, cfg, st)
-	startReconciler(ctx, logger, cfg, st)
+	// Runs for the lifetime of the process, retrying until Vikunja is reachable.
+	go runVikunjaSupervisor(ctx, logger, cfg, st)
 
 	checks := []health.Checker{
 		&postgresChecker{store: st},
@@ -171,64 +171,86 @@ func openStoreWithRetry(ctx context.Context, logger *slog.Logger, dsn string) (*
 	}
 }
 
-// ensureVikunjaToken resolves the Vikunja API token the control plane will
-// use for the rest of this process's lifetime, mutating cfg.VikunjaToken in
-// place when it mints a new one.
+// runVikunjaSupervisor owns everything that talks to Vikunja, and keeps
+// retrying until it works.
 //
-// A supplied token always wins and skips bootstrap entirely. Otherwise, if
-// bootstrap credentials are configured, it mints and persists a token in the
-// control plane's own PostgreSQL (see internal/vikunja.Bootstrapper), reusing
-// whatever is already stored there on later boots. A Vikunja outage or
-// missing credentials must never stop the control plane from starting and
-// reporting health, so failures here are logged and startup continues
-// regardless -- the "vikunja" health check surfaces the resulting outage.
-func ensureVikunjaToken(ctx context.Context, logger *slog.Logger, cfg *config.Config, st *store.Store) {
-	switch {
-	case cfg.VikunjaToken != "":
+// This deliberately does NOT happen once at boot. The control plane routinely
+// starts before Vikunja is listening, and a one-shot bootstrap then fails with
+// "connection refused" and never recovers -- which is exactly the bug this
+// replaces. Vikunja is a projection, so the same principle the spec applies to
+// webhooks applies here: do not assume a delivery worked, reconcile until it has.
+//
+// Nothing here is fatal. If Vikunja never comes back, the control plane is still
+// the source of truth and keeps serving.
+func runVikunjaSupervisor(ctx context.Context, logger *slog.Logger, cfg *config.Config, st *store.Store) {
+	const retryInterval = 10 * time.Second
+
+	token := cfg.VikunjaToken
+	if token != "" {
 		logger.Info("using the supplied Vikunja token")
+	}
+	if token == "" && (cfg.VikunjaBootstrapUsername == "" || cfg.VikunjaBootstrapPassword == "") {
+		logger.Info("no Vikunja credentials configured; board reconciliation disabled")
+		return
+	}
 
-	case cfg.VikunjaBootstrapUsername != "" && cfg.VikunjaBootstrapPassword != "":
-		bootstrapper := vikunja.NewBootstrapper(cfg.VikunjaURL, st, cfg.VikunjaBootstrapUsername, cfg.VikunjaBootstrapPassword, nil)
-		token, err := bootstrapper.EnsureToken(ctx)
-		if err != nil {
-			logger.Warn("failed to bootstrap a Vikunja token; continuing without one", "error", err)
-			return
+	var (
+		client     *vikunja.Client
+		board      *vikunja.Board
+		reconciler *vikunja.Reconciler
+	)
+
+	for {
+		// Each stage is attempted only once the previous one has succeeded, and
+		// every stage is retried on its own schedule.
+		if token == "" {
+			t, err := vikunja.NewBootstrapper(cfg.VikunjaURL, st,
+				cfg.VikunjaBootstrapUsername, cfg.VikunjaBootstrapPassword, nil).EnsureToken(ctx)
+			if err != nil {
+				logger.Warn("waiting to bootstrap a Vikunja token", "error", err)
+			} else {
+				token = t
+				logger.Info("bootstrapped a Vikunja API token")
+			}
 		}
-		cfg.VikunjaToken = token
-		logger.Info("bootstrapped a Vikunja API token")
 
-	default:
-		logger.Info("no Vikunja credentials configured; skipping token bootstrap")
+		if token != "" && client == nil {
+			client = vikunja.New(cfg.VikunjaURL, token, nil)
+		}
+
+		if client != nil && board == nil {
+			b, err := client.EnsureBoard(ctx, vikunjaProjectTitle)
+			if err != nil {
+				logger.Warn("waiting to prepare the Vikunja board", "error", err)
+			} else {
+				board = b
+				reconciler = vikunja.NewReconciler(client, board, st, logger)
+				logger.Info("vikunja board ready",
+					"project_id", board.ProjectID,
+					"kanban_view_id", board.KanbanViewID,
+					"buckets", len(board.BucketByState))
+			}
+		}
+
+		interval := retryInterval
+		if reconciler != nil {
+			if res, err := reconciler.RunOnce(ctx); err != nil {
+				logger.Warn("board reconciliation pass failed", "error", err)
+			} else if res.Pushed+res.Accepted+res.Rejected > 0 {
+				logger.Info("board reconciled",
+					"checked", res.Checked, "pushed", res.Pushed,
+					"accepted", res.Accepted, "rejected", res.Rejected)
+			}
+			interval = cfg.ReconcileInterval
+		}
+
+		select {
+		case <-ctx.Done():
+			logger.Info("vikunja supervisor stopping")
+			return
+		case <-time.After(interval):
+		}
 	}
-}
-
-// startReconciler brings the Vikunja board into existence and keeps it in step
-// with the database.
-//
-// Every failure here is non-fatal. Vikunja is a projection: if it is down, the
-// control plane is still the source of truth and must keep serving. The
-// reconciler simply retries on its next tick.
-func startReconciler(ctx context.Context, logger *slog.Logger, cfg *config.Config, st *store.Store) {
-	if cfg.VikunjaToken == "" {
-		logger.Info("no Vikunja token; board reconciliation disabled")
-		return
-	}
-
-	client := vikunja.New(cfg.VikunjaURL, cfg.VikunjaToken, nil)
-
-	board, err := client.EnsureBoard(ctx, vikunjaProjectTitle)
-	if err != nil {
-		logger.Warn("could not prepare the Vikunja board; reconciliation disabled for this boot",
-			"error", err)
-		return
-	}
-	logger.Info("vikunja board ready",
-		"project_id", board.ProjectID,
-		"kanban_view_id", board.KanbanViewID,
-		"buckets", len(board.BucketByState))
-
-	go vikunja.NewReconciler(client, board, st, logger).Run(ctx, cfg.ReconcileInterval)
-	logger.Info("board reconciliation started", "interval", cfg.ReconcileInterval.String())
 }
 
 // vikunjaProjectTitle is the single project this control plane owns.
