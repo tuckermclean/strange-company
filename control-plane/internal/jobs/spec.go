@@ -17,11 +17,11 @@
 package jobs
 
 import (
-	"strconv"
 	"encoding/json"
 	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -296,13 +296,13 @@ func Build(s Spec) (*Job, error) {
 	if s.BaseRef == "" {
 		// Defaulting this would silently branch from the wrong place on any repo
 		// whose default branch is not the one we guessed.
-		return nil, errors.New("jobs: BaseRef is required")
+		return nil, fmt.Errorf("jobs: BaseRef is required")
 	}
 	if s.Phase == "" {
-		return nil, errors.New("jobs: Phase is required")
+		return nil, fmt.Errorf("jobs: Phase is required")
 	}
 	if s.Attempt < 1 {
-		return nil, errors.New("jobs: Attempt must be at least 1")
+		return nil, fmt.Errorf("jobs: Attempt must be at least 1")
 	}
 	if len(s.Command) == 0 {
 		return nil, fmt.Errorf("jobs: Command must not be empty")
