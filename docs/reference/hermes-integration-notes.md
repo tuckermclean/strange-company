@@ -121,25 +121,64 @@ model answer. Per §12.1 that is exactly the misclassification the attempt ledge
 exists to prevent, so **any Hermes turn must check `finish_reason` before
 believing the content.**
 
-That specific error is also a live configuration fault on the operator's
-cluster, not a property of Hermes: the gateway's default model is
-`anthropic/claude-opus-4.6` while the backing account is a Codex/ChatGPT one
-that refuses it. Every gateway chat call fails until the default model and the
-credentialed backend agree.
+The error observed on the operator's cluster was a mismatch between the
+gateway's default model and the credentialed backend. That is not a fault to be
+hand-corrected in the running instance -- see the next section for why
+hand-correcting it is the actual problem.
+
+## Credentials must arrive as secrets, not as dashboard input
+
+The dashboard can write credentials. `PUT /api/env` persists a key to
+`~/.hermes/.env` **and** reconciles the `config.yaml` mirrors that hold a
+higher-precedence copy (`model.api_key`, `auxiliary.*.api_key`,
+`custom_providers[*]`). Both live on the Hermes PVC, so a value typed once
+outlives every redeploy.
+
+That matters because of the startup precedence in `hermes_cli/env_loader.py`,
+where `~/.hermes/.env` is loaded with `override=True`:
+
+```python
+if user_env.exists():
+    _load_dotenv_with_fallback(user_env, override=True)
+```
+
+**A hand-entered key silently beats a container environment variable.** A chart
+that injects provider credentials through `hermes.env` therefore does not
+control them: whatever a human typed into the dashboard wins, persists on the
+PVC, and is invisible to `helm diff`. A model/backend mismatch is one of the
+shapes that misconfiguration takes.
+
+### Managed scope is the mechanism, and it is already built
+
+`hermes_cli/managed_scope.py` exists for exactly this and describes itself as an
+"IT-pushed, user-immutable config & env layer":
+
+> A system-level directory (default `/etc/hermes`, root-owned and not
+> user-writable) supplies `config.yaml` and `.env` values that WIN over the
+> user's `~/.hermes/config.yaml` and `~/.hermes/.env` on a per-leaf-key basis.
+
+It is applied last, with `override=True`, deliberately inverting the usual
+env-over-config precedence for pinned keys. The directory resolves from
+`$HERMES_MANAGED_DIR` first and `/etc/hermes` second, and a per-key pin means an
+operator can fix the provider credentials while leaving everything else
+adjustable in the dashboard.
+
+A read-only Kubernetes Secret projected at `/etc/hermes` is precisely the
+root-owned, not-user-writable directory this layer expects. That is the chart's
+job, and it is specified in
+[`specs/hermes-managed-scope.md`](../specs/hermes-managed-scope.md).
 
 ## The handoff this enables
 
 The control plane creates a session with `POST /api/sessions`, giving it a title
-naming the card, the `specifier` model, and a system prompt built from the card,
-its repository context and the ambiguity report, then records the session id on
-the card. The human opens the dashboard and continues it there. Nothing new to
-build or host, and no model call spent to open the conversation.
+naming the card, the specification model, and a system prompt built from the
+card, its repository context and the ambiguity report, then records the session
+id on the card. The human opens the dashboard and continues it there. Nothing
+new to build or host, and no model call spent to open the conversation.
 
-**Still unverified:** whether an `api_server` session appears in the *dashboard's*
-session list. The dashboard is a separate listener (port 9119) behind authentik
-OIDC and rejects the gateway bearer key, so this cannot be checked without the
-operator's browser session. The dashboard reads the same session store and
-applies source filters only when the caller passes them, and these sessions are
-`hidden: false` -- but that is inference, not a verified fact. A session titled
-"strange-company: does a gateway session show up here?" is parked on the live
-gateway to settle it by eye.
+**Still unverified:** whether an `api_server` session appears in the
+*dashboard's* session list. The dashboard is a separate listener (port 9119)
+behind OIDC and rejects the gateway bearer key, so it cannot be checked from the
+gateway API. It will be verified against a chart-installed Hermes in CI, which
+is where behavioural claims about this chart belong -- not against a shared
+deployment that other people are using.
