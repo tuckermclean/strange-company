@@ -135,9 +135,18 @@ rewrite policy.
 Vikunja for v1: self-hosted, mature Kanban UI, REST API, API-token auth, project
 webhooks, signed webhook payloads, less machinery than a larger PM suite.
 
-**Important constraint:** Vikunja webhook delivery is one-shot and does not retry
-failures. Therefore **webhooks are hints, not the source of truth**, and the
-control plane MUST additionally perform periodic reconciliation against Vikunja.
+**Important constraint:** webhooks are **hints, not the source of truth**, and
+the control plane MUST additionally perform periodic reconciliation against
+Vikunja.
+
+> Correction, verified against upstream v2.5.0 on 2026-08-26: the original claim
+> that delivery is "one-shot and does not retry" is **wrong** -- Vikunja wraps
+> delivery in watermill retry middleware (5 retries, exponential backoff up to an
+> hour, then a poison queue). The conclusion still holds, but for a different
+> reason: the pub/sub is the in-memory `gochannel` implementation, so anything
+> queued is lost on process restart. Reconciliation is required because delivery
+> does not survive a restart, not because it is never retried.
+> See `docs/reference/vikunja-api-notes.md`.
 
 Default reconciliation interval: **60 seconds**. No valid state change may become
 permanently lost because a webhook failed.

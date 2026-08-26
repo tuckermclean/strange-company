@@ -1,6 +1,7 @@
 package vikunja
 
 import (
+	"strings"
 	"context"
 	"errors"
 	"fmt"
@@ -99,14 +100,28 @@ func (b *Bootstrapper) EnsureToken(ctx context.Context) (string, error) {
 func (b *Bootstrapper) mint(ctx context.Context) (string, error) {
 	anon := New(b.baseURL, "", b.httpClient)
 
+	// Vikunja deliberately returns the SAME failure (403, code 1011) for an
+	// unknown username and a wrong password, so that login cannot be used to
+	// enumerate accounts. That means we cannot ask "does this user exist?" --
+	// we can only try to create it and interpret the result.
+	//
+	// So: on any login failure, attempt to register. If registration reports
+	// the account already exists, the account is real and our password is
+	// wrong, which is an operator error worth saying plainly rather than
+	// retrying forever.
 	jwt, err := anon.Login(ctx, b.username, b.password)
 	if err != nil {
-		if !looksLikeUnknownUser(err) {
+		if !isAuthFailure(err) {
 			return "", fmt.Errorf("vikunja bootstrap: login: %w", err)
 		}
 
 		email := b.username + "@strange-company.local"
 		if regErr := anon.Register(ctx, b.username, email, b.password); regErr != nil {
+			if isAlreadyExists(regErr) {
+				return "", fmt.Errorf(
+					"vikunja bootstrap: account %q already exists but the configured password was rejected; "+
+						"set vikunja.token explicitly or reset the bootstrap credential: %w", b.username, err)
+			}
 			return "", fmt.Errorf("vikunja bootstrap: register: %w", regErr)
 		}
 
@@ -175,16 +190,39 @@ func intersectPermissions(routes map[string]map[string]any) (map[string]any, []s
 	return perms, scopes
 }
 
-// looksLikeUnknownUser reports whether err is the kind of failure Vikunja
-// returns from /api/v1/login when the given username has no account yet,
-// as opposed to, say, a wrong password or a network failure. Vikunja does
-// not expose a distinct error code for this, so this checks the HTTP status
-// codes it is known to use for "no such user" (400 and 412) rather than
-// hard-coding on the response body's contents.
-func looksLikeUnknownUser(err error) bool {
+// isAuthFailure reports whether err is Vikunja rejecting our credentials, as
+// opposed to the server being unreachable or broken.
+//
+// Vikunja answers an unknown username and a wrong password identically -- HTTP
+// 403 with code 1011 -- and hashes a dummy value in the unknown-user case
+// specifically so the two cannot be told apart by timing either. Any attempt to
+// distinguish them here would be guesswork, so we do not try.
+func isAuthFailure(err error) bool {
 	var reqErr *RequestError
 	if !errors.As(err, &reqErr) {
 		return false
 	}
-	return reqErr.Status == http.StatusBadRequest || reqErr.Status == http.StatusPreconditionFailed
+	switch reqErr.Status {
+	case http.StatusForbidden, http.StatusUnauthorized,
+		http.StatusBadRequest, http.StatusPreconditionFailed:
+		return true
+	}
+	return false
+}
+
+// isAlreadyExists reports whether a registration failed because the username or
+// email is taken, which is how we learn -- after the fact -- that the account
+// existed and our password was simply wrong.
+func isAlreadyExists(err error) bool {
+	var reqErr *RequestError
+	if !errors.As(err, &reqErr) {
+		return false
+	}
+	if reqErr.Status == http.StatusConflict {
+		return true
+	}
+	body := strings.ToLower(reqErr.Body)
+	return strings.Contains(body, "already exist") ||
+		strings.Contains(body, "already in use") ||
+		strings.Contains(body, "already taken")
 }
