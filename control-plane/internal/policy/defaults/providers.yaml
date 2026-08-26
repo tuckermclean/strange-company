@@ -39,7 +39,6 @@
 # moment DeepSeek is used for anything but the foreman, and it quietly invites
 # a second, near-identical entry rather than an alias change.
 
-providers:
 #     <provider-name>:            # referenced by alias.provider in models.yaml
 #       harness: claude-code | codex | hermes
 #       baseUrl: <optional URL>   # self-hosted / OpenAI-compatible endpoint
