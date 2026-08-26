@@ -345,8 +345,17 @@ func TestBuild_EnvOmitsCredentialsWhenResolutionDeclaresNone(t *testing.T) {
 	job := mustBuild(t, s)
 
 	for _, e := range job.Spec.Template.Spec.Containers[0].Env {
+		// SC_GIT_TOKEN is repository access, not model access. It comes from
+		// Spec.GitToken rather than from the policy Resolution, and is asserted
+		// separately by TestBuild_OmitsGitTokenWhenNoneIsConfigured. Folding the
+		// two together here would mean a run could not both push a branch and
+		// declare no model credentials -- which is exactly what a verification
+		// or plan-only run looks like.
+		if e.Name == "SC_GIT_TOKEN" {
+			continue
+		}
 		if e.ValueFrom != nil && e.ValueFrom.SecretKeyRef != nil {
-			t.Fatalf("spec 29: env contains secretKeyRef %q even though the Resolution declared no credentials", e.Name)
+			t.Fatalf("spec 29: env contains model credential secretKeyRef %q even though the Resolution declared none", e.Name)
 		}
 	}
 }

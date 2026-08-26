@@ -18,6 +18,18 @@ const credentialName = "vikunja_bot_token"
 // is recognizable in Vikunja's own token-management UI.
 const tokenTitle = "strange-company-control-plane"
 
+// ErrRegistrationDisabled is wrapped into the error EnsureToken returns when
+// login fails and GET /api/v1/info reports that local registration is
+// disabled, so the bootstrap account can never be created by this package.
+// The operator must pre-create it out of band.
+var ErrRegistrationDisabled = errors.New("vikunja: local registration is disabled")
+
+// ErrLocalAuthDisabled is wrapped into the error EnsureToken returns when
+// GET /api/v1/info reports that local authentication itself is disabled
+// (a pure-SSO instance). Bootstrap cannot work at all in that configuration;
+// the operator must set vikunja.token explicitly to a pre-minted token.
+var ErrLocalAuthDisabled = errors.New("vikunja: local authentication is disabled")
+
 // desiredScopeGroups is the full set of Vikunja permission groups the
 // control plane would like its bot token to hold. It is never used
 // unfiltered: EnsureToken always intersects it with whatever groups
@@ -100,6 +112,24 @@ func (b *Bootstrapper) EnsureToken(ctx context.Context) (string, error) {
 func (b *Bootstrapper) mint(ctx context.Context) (string, error) {
 	anon := New(b.baseURL, "", b.httpClient)
 
+	// Consult GET /api/v1/info up front so we can diagnose -- rather than
+	// blindly attempt -- a login/registration sequence that this server's
+	// auth configuration guarantees will fail (e.g. a Vikunja instance
+	// sitting behind SSO with local registration turned off). This call is
+	// best-effort: infoOK is false whenever /info could not be reached or
+	// parsed, and every decision below then falls through to the original
+	// behaviour unchanged. An unreachable info endpoint is a transient
+	// condition the supervisor already retries; a diagnostic improvement
+	// must never become a new hard dependency for bootstrap itself.
+	info, infoOK := fetchAuthInfo(ctx, anon)
+
+	if infoOK && !info.localEnabled {
+		return "", fmt.Errorf(
+			"vikunja bootstrap: local authentication is disabled on this instance (auth is SSO-only); "+
+				"bootstrap cannot create or use a local account here -- set vikunja.token explicitly to a "+
+				"pre-minted API token: %w", ErrLocalAuthDisabled)
+	}
+
 	// Vikunja deliberately returns the SAME failure (403, code 1011) for an
 	// unknown username and a wrong password, so that login cannot be used to
 	// enumerate accounts. That means we cannot ask "does this user exist?" --
@@ -113,6 +143,14 @@ func (b *Bootstrapper) mint(ctx context.Context) (string, error) {
 	if err != nil {
 		if !isAuthFailure(err) {
 			return "", fmt.Errorf("vikunja bootstrap: login: %w", err)
+		}
+
+		if infoOK && !info.registrationEnabled {
+			return "", fmt.Errorf(
+				"vikunja bootstrap: login for user %q failed and local registration is disabled on this "+
+					"Vikunja instance, so the account cannot be self-provisioned; pre-create it out of band, "+
+					"e.g.:\n  kubectl -n <namespace> exec deploy/<vikunja> -- vikunja user create -u %s -e <email> -p <password>: %w",
+				b.username, b.username, ErrRegistrationDisabled)
 		}
 
 		email := b.username + "@strange-company.local"
@@ -159,6 +197,37 @@ func (b *Bootstrapper) mint(ctx context.Context) (string, error) {
 	}
 
 	return token, nil
+}
+
+// authInfo is the subset of GET /api/v1/info this package consults to
+// diagnose why a login or registration attempt might be doomed before
+// making it.
+type authInfo struct {
+	localEnabled        bool
+	registrationEnabled bool
+}
+
+// fetchAuthInfo calls the unauthenticated GET /api/v1/info endpoint and
+// extracts its local-auth configuration. ok is false whenever the endpoint
+// could not be reached or its response could not be parsed; callers must
+// treat that as "unknown" and fall back to their pre-existing behaviour
+// rather than fail bootstrap on it -- see the comment in mint for why.
+func fetchAuthInfo(ctx context.Context, c *Client) (info authInfo, ok bool) {
+	var resp struct {
+		Auth struct {
+			Local struct {
+				Enabled             bool `json:"enabled"`
+				RegistrationEnabled bool `json:"registration_enabled"`
+			} `json:"local"`
+		} `json:"auth"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/api/v1/info", nil, &resp); err != nil {
+		return authInfo{}, false
+	}
+	return authInfo{
+		localEnabled:        resp.Auth.Local.Enabled,
+		registrationEnabled: resp.Auth.Local.RegistrationEnabled,
+	}, true
 }
 
 // intersectPermissions builds the permissions map to request from Vikunja,
