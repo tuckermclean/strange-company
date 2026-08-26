@@ -5,6 +5,10 @@
 # Separate suite because helm-unittest resolves a per-test `template:` against
 # the suite-level `templates:` list -- a test cannot select a template the suite
 # did not declare.
+#
+# Documents are selected by `documentSelector` on kind rather than by
+# `documentIndex`, so these assertions do not silently depend on the order the
+# template happens to emit them in.
 suite: coding-job RBAC
 release:
   name: strange-company
@@ -15,18 +19,20 @@ templates:
 tests:
   - it: grants no Kubernetes access by default
     values: [../ci/values-batteries.yaml]
-    templates:
-      - templates/agent-runs-rbac.yaml
-      - templates/control-plane-deployment.yaml
+    template: templates/agent-runs-rbac.yaml
     asserts:
       - hasDocuments:
           count: 0
-        template: templates/agent-runs-rbac.yaml
+
+  - it: mounts no service account token by default
+    values: [../ci/values-batteries.yaml]
+    template: templates/control-plane-deployment.yaml
+    asserts:
       - equal:
           path: spec.template.spec.automountServiceAccountToken
           value: false
-        template: templates/control-plane-deployment.yaml
 
+  # The token is mounted only because creating Jobs requires API access.
   - it: mounts a token only when coding Jobs are enabled
     values: [../ci/values-batteries.yaml]
     set:
@@ -37,44 +43,39 @@ tests:
           path: spec.template.spec.automountServiceAccountToken
           value: true
 
-  - it: the coding-Job role is namespaced, never cluster-wide
+  - it: grants exactly one Role and one RoleBinding, never cluster-wide
     values: [../ci/values-batteries.yaml]
     set:
       controlPlane.agentRuns.enabled: true
     template: templates/agent-runs-rbac.yaml
     asserts:
+      # Exactly two documents, and each is found by kind. A ClusterRole or
+      # ClusterRoleBinding could not satisfy both of these at once.
       - hasDocuments:
           count: 2
       - equal:
-          path: kind
+          path: metadata.namespace
+          value: agent-runs
+          documentSelector:
+            path: kind
+            value: Role
+      - equal:
+          path: metadata.namespace
+          value: agent-runs
+          documentSelector:
+            path: kind
+            value: RoleBinding
+      - equal:
+          path: roleRef.kind
           value: Role
-          documentIndex: 0
-      - notEqual:
-          path: kind
-          value: ClusterRole
-          documentIndex: 0
-      - equal:
-          path: metadata.namespace
-          value: agent-runs
-          documentIndex: 0
-      - equal:
-          path: kind
-          value: RoleBinding
-          documentIndex: 1
-      - notEqual:
-          path: kind
-          value: ClusterRoleBinding
-          documentIndex: 1
-      - equal:
-          path: metadata.namespace
-          value: agent-runs
-          documentIndex: 1
+          documentSelector:
+            path: kind
+            value: RoleBinding
 
-  # Load-bearing: this pins the Role's rules to an exact allowlist. Any future
-  # change that widens the Role -- adding secrets, configmaps, exec, or a "*"
-  # wildcard for resources or verbs -- makes the rendered `rules` diverge from
-  # this literal and fails CI.
-  - it: the coding-Job role cannot read secrets
+  # Load-bearing. This pins the Role to an exact allowlist, so any future change
+  # that widens it -- secrets, configmaps, pods/exec, or a "*" wildcard -- makes
+  # the rendered rules diverge and fails CI rather than passing review.
+  - it: the coding-Job role cannot read secrets or use wildcards
     values: [../ci/values-batteries.yaml]
     set:
       controlPlane.agentRuns.enabled: true
@@ -82,6 +83,9 @@ tests:
     asserts:
       - equal:
           path: rules
+          documentSelector:
+            path: kind
+            value: Role
           value:
             - apiGroups: ["batch"]
               resources: ["jobs"]
@@ -92,4 +96,3 @@ tests:
             - apiGroups: [""]
               resources: ["pods/log"]
               verbs: ["get"]
-          documentIndex: 0
