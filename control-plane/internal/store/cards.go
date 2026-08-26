@@ -397,3 +397,25 @@ func claimReason(fromState string) string {
 	}
 	return "claimed"
 }
+
+// SetVikunjaTaskID links a card to the Vikunja task that represents it.
+//
+// The link is written once, when the reconciler first pushes a card onto the
+// board. It is deliberately not part of Transition: the projection changing has
+// nothing to do with the card's workflow state, and should not append a history
+// row.
+func (s *Store) SetVikunjaTaskID(ctx context.Context, cardID uuid.UUID, taskID int64) error {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE cards
+		SET vikunja_task_id = $1,
+		    updated_at = now()
+		WHERE id = $2::uuid
+	`, taskID, cardID.String())
+	if err != nil {
+		return fmt.Errorf("store: link card %s to vikunja task %d: %w", cardID, taskID, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrCardNotFound
+	}
+	return nil
+}
