@@ -1,0 +1,95 @@
+# The chart granted the control plane no Kubernetes access at all until
+# Milestone 3 needed it. These tests exist to keep that true by default, and to
+# keep the opt-in narrow.
+#
+# Separate suite because helm-unittest resolves a per-test `template:` against
+# the suite-level `templates:` list -- a test cannot select a template the suite
+# did not declare.
+suite: coding-job RBAC
+release:
+  name: strange-company
+  namespace: strange-company
+templates:
+  - templates/agent-runs-rbac.yaml
+  - templates/control-plane-deployment.yaml
+tests:
+  - it: grants no Kubernetes access by default
+    values: [../ci/values-batteries.yaml]
+    templates:
+      - templates/agent-runs-rbac.yaml
+      - templates/control-plane-deployment.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+        template: templates/agent-runs-rbac.yaml
+      - equal:
+          path: spec.template.spec.automountServiceAccountToken
+          value: false
+        template: templates/control-plane-deployment.yaml
+
+  - it: mounts a token only when coding Jobs are enabled
+    values: [../ci/values-batteries.yaml]
+    set:
+      controlPlane.agentRuns.enabled: true
+    template: templates/control-plane-deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.automountServiceAccountToken
+          value: true
+
+  - it: the coding-Job role is namespaced, never cluster-wide
+    values: [../ci/values-batteries.yaml]
+    set:
+      controlPlane.agentRuns.enabled: true
+    template: templates/agent-runs-rbac.yaml
+    asserts:
+      - hasDocuments:
+          count: 2
+      - equal:
+          path: kind
+          value: Role
+          documentIndex: 0
+      - notEqual:
+          path: kind
+          value: ClusterRole
+          documentIndex: 0
+      - equal:
+          path: metadata.namespace
+          value: agent-runs
+          documentIndex: 0
+      - equal:
+          path: kind
+          value: RoleBinding
+          documentIndex: 1
+      - notEqual:
+          path: kind
+          value: ClusterRoleBinding
+          documentIndex: 1
+      - equal:
+          path: metadata.namespace
+          value: agent-runs
+          documentIndex: 1
+
+  # Load-bearing: this pins the Role's rules to an exact allowlist. Any future
+  # change that widens the Role -- adding secrets, configmaps, exec, or a "*"
+  # wildcard for resources or verbs -- makes the rendered `rules` diverge from
+  # this literal and fails CI.
+  - it: the coding-Job role cannot read secrets
+    values: [../ci/values-batteries.yaml]
+    set:
+      controlPlane.agentRuns.enabled: true
+    template: templates/agent-runs-rbac.yaml
+    asserts:
+      - equal:
+          path: rules
+          value:
+            - apiGroups: ["batch"]
+              resources: ["jobs"]
+              verbs: ["create", "get", "list", "watch", "delete"]
+            - apiGroups: [""]
+              resources: ["pods"]
+              verbs: ["get", "list", "watch"]
+            - apiGroups: [""]
+              resources: ["pods/log"]
+              verbs: ["get"]
+          documentIndex: 0
