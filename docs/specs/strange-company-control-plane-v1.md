@@ -1,6 +1,10 @@
-# The Mechanical Company
+# Strange Company — Autonomous Engineering Control Plane
 
-Autonomous Engineering Control Plane — v1 Specification
+v1 Specification
+
+> Naming: this document was originally drafted as "The Mechanical Company".
+> The canonical name is **strange-company** throughout — chart, namespace,
+> repository, OCI artifact and identifiers. Decided 2026-08-26.
 
 > Status: COMPLETE (parts 1 and 2 received 2026-08-26). The substrate this builds on is the `strange-company`
 > Helm chart (see `strange-company-helm-chart.md`), already delivered.
@@ -694,10 +698,11 @@ merely because they are called managers. That is a feature.
 
 ## 27. K3s Deployment
 
-Namespaces: `mechanical-company`, `agent-runs`.
+Namespaces: `strange-company`, `agent-runs`. (§27 originally said
+`mechanical-company`; superseded by the naming decision above.)
 
 ```
-mechanical-company/     agent-runs/
+strange-company/        agent-runs/
   postgres                ephemeral claude-code jobs
   vikunja                 ephemeral codex jobs
   company-control-plane

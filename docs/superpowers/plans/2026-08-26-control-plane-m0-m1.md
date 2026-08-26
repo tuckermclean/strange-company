@@ -1,4 +1,4 @@
-# Mechanical Company M0 + M1 Implementation Plan
+# Control Plane M0 + M1 Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development
 > (recommended) or superpowers:executing-plans to implement this plan task-by-task.
@@ -20,7 +20,7 @@ web framework), `jackc/pgx/v5` + `pgxpool`, embedded SQL migrations, distroless
 static base image, GitHub Actions with a pinned `postgres:17.11` service
 container.
 
-**Spec:** `docs/specs/mechanical-company-v1.md`
+**Spec:** `docs/specs/strange-company-control-plane-v1.md`
 **Substrate:** `docs/specs/strange-company-helm-chart.md` (already delivered)
 
 ## Global Constraints
@@ -736,11 +736,111 @@ decisions to make, not as gaps in a task.
 `ErrNotClaimant` / `ErrIllegalTransition` are defined in Tasks 7–8 and used with
 those exact names in Tasks 9–10. `config.Config` field names match Task 1.
 
-## Open decisions blocking later tasks (not Tasks 1–5)
+## Decisions made 2026-08-26
 
-1. **Namespace naming.** Spec §27 says `mechanical-company`; the chart and every
-   existing doc say `strange-company`. Pick one before it is baked into policy
-   files and NetworkPolicy selectors. Task 5 uses `strange-company` today.
-2. **Vikunja API token bootstrap.** Task 10 cannot run without one, and Vikunja
-   has no bootstrap-token API. Either the control plane provisions a user and
-   token on first start, or it stays a documented one-time manual step.
+1. **Naming: `strange-company` throughout.** The spec's `mechanical-company`
+   namespace is superseded. No chart, artifact or Flux churn.
+2. **The control plane provisions its own Vikunja token** (see Task 10a). It is
+   stored in the control plane's own PostgreSQL, **not** a Kubernetes Secret, so
+   this needs no new RBAC and the chart keeps `automountServiceAccountToken:
+   false` on the control plane.
+
+---
+
+### Task 10a: Vikunja bootstrap — the control plane mints its own bot token
+
+**Files:**
+- Create: `control-plane/internal/vikunja/bootstrap.go`
+- Create: `control-plane/internal/store/migrations/0002_service_credentials.sql`
+- Test: `control-plane/internal/vikunja/bootstrap_test.go`
+
+**Interfaces:**
+- Produces: `func (b *Bootstrapper) EnsureToken(ctx context.Context) (string, error)`
+
+**Verified upstream flow** (read from `go-vikunja/vikunja`, `veans/README.md` and
+`veans/internal/client/`, 2026-08-26). Vikunja has a first-class **bot user**:
+no password, no email, cannot log in interactively. A long-lived API token is
+minted *for* that bot by its owner.
+
+```
+POST /api/v1/register   {username,email,password}   # first boot only, if absent
+POST /api/v1/login      {username,password}         # transient human-ish session (JWT)
+GET  /api/v1/routes                                 # discover real permission groups
+PUT  /api/v1/tokens     {title, owner_id, permissions, expires_at}
+```
+
+Sequence on start-up:
+
+1. Read the stored token from `service_credentials`. If present and a probe call
+   succeeds, use it and stop — boot is idempotent.
+2. Otherwise `POST /login` with `VIKUNJA_BOOTSTRAP_USERNAME` /
+   `VIKUNJA_BOOTSTRAP_PASSWORD` (chart-generated, preserved across upgrades
+   exactly like the PostgreSQL password). On "user does not exist", `POST
+   /register` first, then log in.
+3. Ensure the board project exists and create the buckets from spec §4.2:
+   `Backlog Ready InProgress Review Done Blocked NeedsHuman`.
+4. Create the bot user if absent, and share the project with it read+write.
+5. `GET /routes`, then `PUT /tokens` with `owner_id` set to the bot and
+   permissions **intersected with the route groups the server actually exposes**
+   — never a hard-coded scope list, which is how upstream avoids drift.
+6. Persist the bot token in `service_credentials`; discard the login JWT.
+
+- [ ] **Step 1: Write the failing test** against an `httptest` server that
+      mimics the four endpoints, asserting (a) a second `EnsureToken` performs
+      **no** write calls because the stored token still validates, and (b) the
+      requested permissions are a subset of what `GET /routes` returned.
+
+```go
+func TestEnsureTokenIsIdempotent(t *testing.T) {
+    fake := newFakeVikunja(t)          // records every method+path
+    b := New(fake.URL, store, creds)
+    if _, err := b.EnsureToken(ctx); err != nil { t.Fatal(err) }
+    fake.reset()
+    if _, err := b.EnsureToken(ctx); err != nil { t.Fatal(err) }
+    if n := fake.writeCalls(); n != 0 {
+        t.Fatalf("second boot must not mint a second token, saw %d writes", n)
+    }
+}
+
+func TestRequestedScopesNeverExceedServerRoutes(t *testing.T) {
+    fake := newFakeVikunja(t)
+    fake.routes = map[string]any{"tasks": ..., "labels": ...}   // no "teams"
+    b := New(fake.URL, store, creds)
+    if _, err := b.EnsureToken(ctx); err != nil { t.Fatal(err) }
+    for group := range fake.lastTokenRequest.Permissions {
+        if _, ok := fake.routes[group]; !ok {
+            t.Fatalf("requested scope %q that this server does not expose", group)
+        }
+    }
+}
+```
+
+- [ ] **Step 2: Run and watch fail** — `undefined: EnsureToken`
+- [ ] **Step 3: Implement**, with `0002_service_credentials.sql`:
+
+```sql
+CREATE TABLE service_credentials (
+    name       text PRIMARY KEY,       -- e.g. 'vikunja_bot_token'
+    secret     text NOT NULL,
+    metadata   jsonb NOT NULL DEFAULT '{}',
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+```
+
+- [ ] **Step 4: Run** — PASS
+- [ ] **Step 5: Chart change** — add `vikunja.bootstrap.username` (default
+      `strange-company-bootstrap`) and a generated, upgrade-stable
+      `vikunja.bootstrap.password`, surfaced to the control plane as
+      `VIKUNJA_BOOTSTRAP_USERNAME` / `VIKUNJA_BOOTSTRAP_PASSWORD`. `VIKUNJA_TOKEN`
+      stays supported and, when set, short-circuits the whole bootstrap.
+- [ ] **Step 6: Commit**
+
+```bash
+git add control-plane/internal/vikunja control-plane/internal/store/migrations
+git commit -m "feat(control-plane): provision the Vikunja bot token on first boot"
+```
+
+**Constraint worth stating plainly:** registration must be enabled on the Vikunja
+instance for step 2's first boot (it is by default). If an operator has disabled
+it, they set `VIKUNJA_TOKEN` explicitly and the bootstrap is skipped entirely.
