@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/tuckermclean/strange-company/control-plane/internal/card"
+	"github.com/tuckermclean/strange-company/control-plane/internal/specgate"
 )
 
 // ErrNoWork is returned by ClaimReady when no card is currently claimable:
@@ -301,7 +302,42 @@ func (s *Store) Release(ctx context.Context, cardID uuid.UUID, workerID, reason 
 // is returned unchanged (wrapping card.ErrIllegalTransition) and no
 // card_history row is written. On success, the state change and its
 // card_history row are written together in one transaction.
+// ErrSpecGateRequired is returned when something tries to promote a card to
+// Ready through the generic transition path.
+//
+// Spec §10: a Backlog card cannot become Ready merely because an LLM says it is
+// ready. Checking that in the caller would make the gate advisory -- anything
+// holding a Store could route around it -- so the generic path refuses and
+// PromoteToReady is the only way in.
+var ErrSpecGateRequired = errors.New("promotion to Ready must go through the specification gate")
+
+// PromoteToReady moves a Backlog card to Ready, and only with a passing
+// specification gate.
+//
+// The gate result is taken as an argument rather than computed here because
+// evaluating it needs the spec document and the card's dependencies, which are
+// the caller's to assemble. What this function guarantees is narrower and more
+// important: no path through this package reaches Ready without one.
+func (s *Store) PromoteToReady(ctx context.Context, cardID uuid.UUID, gate specgate.Result, actor card.ActorType, actorID string) error {
+	if !gate.Passed {
+		return fmt.Errorf("store: refusing to promote card %s: %w: %s", cardID, ErrSpecGateRequired, gate.Error())
+	}
+	return s.transition(ctx, cardID, card.Ready, actor, actorID, "specification gate passed")
+}
+
 func (s *Store) Transition(ctx context.Context, cardID uuid.UUID, to card.State, actor card.ActorType, actorID, reason string) error {
+	if to == card.Ready {
+		// Ready is reachable only through PromoteToReady. Callers that legitimately
+		// need it (a human rejecting a review, a worker releasing a claim) use the
+		// dedicated methods, which supply their own justification.
+		if actor != card.ActorHuman {
+			return fmt.Errorf("store: %w", ErrSpecGateRequired)
+		}
+	}
+	return s.transition(ctx, cardID, to, actor, actorID, reason)
+}
+
+func (s *Store) transition(ctx context.Context, cardID uuid.UUID, to card.State, actor card.ActorType, actorID, reason string) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("store: begin transition transaction: %w", err)
@@ -325,6 +361,17 @@ func (s *Store) Transition(ctx context.Context, cardID uuid.UUID, to card.State,
 	}
 
 	from := card.State(current)
+
+	// Backlog -> Ready is the specification gate's transition and nothing else's.
+	// Keyed on the transition rather than the actor, deliberately: DoD item 2 says
+	// a card cannot enter Ready without a specification, and says it without
+	// exception -- so a human dragging the card across the board in Vikunja is
+	// gated too. Review -> Ready stays open, because that is §19's human
+	// rejection of work whose spec already passed.
+	if !viaGate && from == card.Backlog && to == card.Ready {
+		return fmt.Errorf("store: %w", ErrSpecGateRequired)
+	}
+
 	if err := card.CanTransition(from, to, actor); err != nil {
 		return err
 	}
