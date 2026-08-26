@@ -112,27 +112,40 @@ helm install strange-company charts/strange-company \
   --wait --timeout 20m
 ```
 
-### You must supply a control-plane image
+### The control-plane image
 
-**The chart's default `controlPlane.image.repository` is a placeholder that
-does not exist yet.** Installing without overriding it gives you three healthy
-services and a control-plane pod stuck in `ImagePullBackOff`. Point it at a
-real image:
+The image now exists and is anonymously pullable:
+
+```
+ghcr.io/tuckermclean/strange-company-control-plane:main
+ghcr.io/tuckermclean/strange-company-control-plane:sha-<short-sha>
+```
+
+The chart's default `controlPlane.image.tag` is empty, which falls back to the
+chart `appVersion` (`0.1.0`) -- and **no `0.1.0` tag has been published yet**, so
+you must still set the tag explicitly until a release is cut:
 
 ```yaml
 # my-values.yaml
 controlPlane:
   image:
     repository: ghcr.io/tuckermclean/strange-company-control-plane
-    tag: "0.1.0"
+    tag: "main"          # or a specific sha- tag to pin
 ```
 
-That image must serve `GET /healthz` and `GET /readyz` on port 8080.
+What that image does today: serves `/healthz`, `/health`, `/readyz`, `/ready`,
+`/config` (redacted) and `/version`; runs the card API; applies its own database
+migrations at startup; provisions its own Vikunja API token; and builds and
+reconciles the Kanban board every 60 seconds. Readiness is meaningful -- a 200
+from `/readyz` means it actually reached PostgreSQL, Vikunja and the Hermes
+gateway, and the body names any dependency that is down.
 
-### Smoke-testing before the control plane exists
+### Smoke-testing the substrate alone
 
-To validate the substrate on its own, substitute the same fixture CI uses. It
-answers 200 on every path, which satisfies both probes:
+To validate the chart without the real control plane, substitute the fixture CI
+uses. It answers 200 on every path, which satisfies both probes -- but note that
+makes readiness meaningless, since it cannot tell you whether anything is
+actually reachable:
 
 ```yaml
 controlPlane:
