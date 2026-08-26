@@ -17,6 +17,7 @@
 package jobs
 
 import (
+	"strconv"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -235,6 +236,31 @@ type Spec struct {
 	Branch    string
 	Command   []string // argv from the adapter's Command()
 
+	// BaseRef is the ref the agent branch is cut from. Required: defaulting it
+	// would mean silently branching from the wrong place on any repo whose
+	// default branch is not what we guessed.
+	BaseRef string
+
+	// Phase and Attempt appear in the commit message the runner writes, so the
+	// agent branch reads as a history of the work (spec §16.2).
+	Phase   string
+	Attempt int
+
+	// CommitSummary optionally overrides the generated commit subject.
+	CommitSummary string
+
+	// GitToken is the credential the runner pushes the agent branch with. It is
+	// a Secret reference like any other credential, and is deliberately separate
+	// from Env: it is repository access, not model access, and the two should
+	// never be conflated (spec §29).
+	GitToken *policy.CredentialRef
+	// GitUsername is the HTTPS username paired with GitToken. For GitHub tokens
+	// this is a placeholder the server ignores.
+	GitUsername string
+	// GitAuthorName/Email identify the bot in commit metadata.
+	GitAuthorName  string
+	GitAuthorEmail string
+
 	Env      map[string]policy.CredentialRef // secret-backed (spec §29)
 	PlainEnv map[string]string
 
@@ -266,6 +292,17 @@ func Build(s Spec) (*Job, error) {
 	}
 	if strings.TrimSpace(s.Image) == "" {
 		return nil, fmt.Errorf("jobs: Image must not be empty")
+	}
+	if s.BaseRef == "" {
+		// Defaulting this would silently branch from the wrong place on any repo
+		// whose default branch is not the one we guessed.
+		return nil, errors.New("jobs: BaseRef is required")
+	}
+	if s.Phase == "" {
+		return nil, errors.New("jobs: Phase is required")
+	}
+	if s.Attempt < 1 {
+		return nil, errors.New("jobs: Attempt must be at least 1")
 	}
 	if len(s.Command) == 0 {
 		return nil, fmt.Errorf("jobs: Command must not be empty")
@@ -411,6 +448,18 @@ func buildEnv(s Spec) []EnvVar {
 		env = append(env, EnvVar{Name: k, Value: s.PlainEnv[k]})
 	}
 
+	if s.GitToken != nil {
+		env = append(env, EnvVar{
+			Name: "SC_GIT_TOKEN",
+			ValueFrom: &EnvVarSource{
+				SecretKeyRef: &SecretKeySelector{
+					Name: s.GitToken.Secret,
+					Key:  s.GitToken.Key,
+				},
+			},
+		})
+	}
+
 	// Run-identifying variables. These are not credentials and carry no
 	// secret material, so they are safe to inline as literal values.
 	for _, kv := range []struct{ name, value string }{
@@ -420,6 +469,14 @@ func buildEnv(s Spec) []EnvVar {
 		{"SC_MODEL", s.Model},
 		{"SC_REPO_URL", s.RepoURL},
 		{"SC_BRANCH", s.Branch},
+		{"SC_BASE_REF", s.BaseRef},
+		{"SC_PHASE", s.Phase},
+		{"SC_ATTEMPT", strconv.Itoa(s.Attempt)},
+		{"SC_COMMIT_SUMMARY", s.CommitSummary},
+		{"SC_GIT_USERNAME", s.GitUsername},
+		{"SC_GIT_AUTHOR_NAME", s.GitAuthorName},
+		{"SC_GIT_AUTHOR_EMAIL", s.GitAuthorEmail},
+		{"SC_WORKSPACE_ROOT", workspaceMountPath},
 	} {
 		if kv.value == "" {
 			continue
