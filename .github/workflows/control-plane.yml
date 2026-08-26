@@ -1,0 +1,33 @@
+name: control-plane
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "control-plane/**"
+      - ".github/workflows/control-plane.yml"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: control-plane
+
+jobs:
+  test:
+    name: vet and unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          # No go.sum yet; module cache would fail to key without one.
+          cache: false
+      - name: go vet
+        run: go vet ./...
+      - name: go test
+        run: go test -race ./...
