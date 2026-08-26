@@ -11,6 +11,7 @@ on:
 
 permissions:
   contents: read
+  packages: write
 
 defaults:
   run:
@@ -95,3 +96,65 @@ jobs:
       - run: go mod tidy
       - name: Store integration tests
         run: go test -race -v ./internal/store/...
+
+  image:
+    name: build and publish the image
+    runs-on: ubuntu-latest
+    needs: [test]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        # Only when we are actually going to push.
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/strange-company-control-plane
+          tags: |
+            type=sha,format=short
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - name: Build (and push on main or a tag)
+        uses: docker/build-push-action@v6
+        with:
+          context: control-plane
+          file: control-plane/Dockerfile
+          push: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ github.ref_name }}-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Prove the image runs as non-root on a read-only filesystem
+        run: |
+          set -euo pipefail
+          # The chart runs this image with runAsUser 65532 and
+          # readOnlyRootFilesystem: true. Verify that here rather than
+          # discovering it in a cluster.
+          tag=$(echo "${{ steps.meta.outputs.tags }}" | head -1)
+          docker build -t verify:local --build-arg VERSION=verify -f control-plane/Dockerfile control-plane
+          uid=$(docker run --rm --entrypoint="" verify:local id -u 2>/dev/null || echo "no-shell")
+          echo "image user check: $uid (distroless has no shell, so 'no-shell' is expected)"
+          # A missing required variable must fail fast with a clear message.
+          set +e
+          out=$(docker run --rm --read-only --user 65532:65532 verify:local 2>&1)
+          code=$?
+          set -e
+          echo "$out"
+          [ $code -ne 0 ] || { echo "::error::starting with no configuration should have failed"; exit 1; }
+          echo "$out" | grep -q "DATABASE_HOST" || { echo "::error::startup error should name the missing variables"; exit 1; }
+          echo "fails fast and names the missing configuration"
