@@ -71,6 +71,15 @@ spec:
                   name: {{ include "strange-company.hermesSecretName" . }}
                   key: {{ include "strange-company.hermesApiKeyKey" . }}
                   optional: true
+            {{- if and .Values.vikunja.bootstrap.enabled (not .Values.vikunja.token) }}
+            - name: VIKUNJA_BOOTSTRAP_USERNAME
+              value: {{ .Values.vikunja.bootstrap.username | quote }}
+            - name: VIKUNJA_BOOTSTRAP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "strange-company.secretName" . }}
+                  key: vikunja-bootstrap-password
+            {{- end }}
             {{- range $k, $v := .Values.controlPlane.env }}
             - name: {{ $k }}
               value: {{ $v | quote }}
@@ -79,6 +88,15 @@ spec:
             - name: http
               containerPort: {{ .Values.controlPlane.service.port }}
               protocol: TCP
+          {{- if .Values.controlPlane.probes.startup.enabled }}
+          startupProbe:
+            httpGet:
+              path: {{ .Values.controlPlane.probes.startup.path }}
+              port: http
+            periodSeconds: {{ .Values.controlPlane.probes.startup.periodSeconds }}
+            timeoutSeconds: {{ .Values.controlPlane.probes.startup.timeoutSeconds }}
+            failureThreshold: {{ .Values.controlPlane.probes.startup.failureThreshold }}
+          {{- end }}
           {{- if .Values.controlPlane.probes.liveness.enabled }}
           livenessProbe:
             httpGet:

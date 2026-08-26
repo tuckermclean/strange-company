@@ -3,6 +3,10 @@ name: helm
 on:
   push:
     branches: ["**"]
+    paths:
+      - "charts/**"
+      - ".github/ci/**"
+      - ".github/workflows/helm.yml"
   pull_request:
   workflow_dispatch:
 
@@ -408,6 +412,153 @@ jobs:
       - name: Delete cluster
         if: always()
         run: k3d cluster delete strange-company-hybrid || true
+
+  integration-real-control-plane:
+    name: chart with the real control-plane image
+    runs-on: ubuntu-latest
+    needs: [lint, unit]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Install k3d
+        run: |
+          set -euo pipefail
+          curl -sSfL "https://raw.githubusercontent.com/k3d-io/k3d/${K3D_VERSION}/install.sh" | TAG="${K3D_VERSION}" bash
+
+      - name: Build the control-plane image
+        run: docker build -t strange-company-control-plane:ci --build-arg VERSION=ci control-plane
+
+      - name: Create K3s cluster
+        run: |
+          set -euo pipefail
+          k3d cluster create strange-company-cp \
+            --image "$K3S_IMAGE" \
+            --k3s-arg "--disable=traefik@server:0" \
+            --k3s-arg "--disable=metrics-server@server:0" \
+            --wait --timeout 300s
+
+      - name: Import the image into the cluster
+        # Imported rather than pushed, so this proves the chart and the image
+        # work together on a branch without publishing a package for every commit.
+        #
+        # The import is verified rather than assumed: it has silently not landed
+        # before, and with pullPolicy=Never that surfaces 20 minutes later as an
+        # opaque ErrImageNeverPull instead of a clear failure here.
+        run: |
+          set -euo pipefail
+          node="k3d-strange-company-cp-server-0"
+          for attempt in 1 2 3; do
+            k3d image import strange-company-control-plane:ci -c strange-company-cp || true
+            if docker exec "$node" crictl images 2>/dev/null | grep -q "strange-company-control-plane"; then
+              echo "image present in the node's container runtime (attempt $attempt)"
+              docker exec "$node" crictl images | grep strange-company-control-plane
+              exit 0
+            fi
+            echo "::warning::image not visible after import attempt $attempt, retrying"
+            sleep 10
+          done
+          echo "::error::the control-plane image never became visible to the kubelet"
+          docker exec "$node" crictl images || true
+          exit 1
+
+      - name: Resolve dependencies
+        run: helm dependency build "$CHART"
+
+      - name: Install with the real control plane
+        run: |
+          set -euo pipefail
+          helm install "$RELEASE" "$CHART" \
+            -n "$NS" --create-namespace \
+            -f "$CHART/ci/values-batteries.yaml" \
+            --set controlPlane.image.repository=strange-company-control-plane \
+            --set controlPlane.image.tag=ci \
+            --set controlPlane.image.pullPolicy=Never \
+            --set-json 'controlPlane.args=[]' \
+            --wait --timeout 20m
+
+      - name: Readiness must mean real dependency connectivity
+        run: |
+          set -euo pipefail
+          kubectl -n "$NS" wait --for=condition=Available deployment --all --timeout=300s
+
+          # A 200 here is a stronger claim than the whoami fixture ever made:
+          # the control plane only reports ready once it has actually reached
+          # PostgreSQL, Vikunja and the Hermes gateway.
+          kubectl -n "$NS" run readyprobe --rm -i --restart=Never --image=busybox:1.37.0 -- \
+            wget -q -O- "http://$FULLNAME-control-plane:8080/readyz" | tee /tmp/readyz.json
+          grep -q '"ready":true' /tmp/readyz.json || { echo "::error::control plane is not ready"; exit 1; }
+          for dep in postgres vikunja hermes-gateway; do
+            grep -q "\"name\":\"$dep\"" /tmp/readyz.json || { echo "::error::$dep missing from readiness report"; exit 1; }
+          done
+
+      - name: The control plane must provision its own Vikunja token
+        run: |
+          set -euo pipefail
+          # The supervisor retries until Vikunja is up, so this waits rather
+          # than sampling once.
+          ok=""
+          for i in $(seq 1 36); do
+            if kubectl -n "$NS" logs -l app.kubernetes.io/component=control-plane --tail=500 2>/dev/null \
+                 | grep -qE '"msg":"(bootstrapped a Vikunja API token|using the supplied Vikunja token)"'; then
+              ok=yes; break
+            fi
+            sleep 10
+          done
+          [ -n "$ok" ] || {
+            echo "::error::the control plane never provisioned a Vikunja API token"
+            kubectl -n "$NS" logs -l app.kubernetes.io/component=control-plane --tail=100 || true
+            exit 1
+          }
+          echo "the control plane minted and stored its own Vikunja token"
+
+      - name: The control plane must have built its Kanban board
+        run: |
+          set -euo pipefail
+          # Proves EnsureBoard against real Vikunja: the project, its Kanban view
+          # and all seven state buckets. Non-fatal in the app by design, so it is
+          # asserted here rather than assumed.
+          ok=""
+          for i in $(seq 1 30); do
+            if kubectl -n "$NS" logs -l app.kubernetes.io/component=control-plane --tail=500 2>/dev/null \
+                 | grep -q '"msg":"vikunja board ready"'; then ok=yes; break; fi
+            sleep 10
+          done
+          kubectl -n "$NS" logs -l app.kubernetes.io/component=control-plane --tail=50 || true
+          [ -n "$ok" ] || { echo "::error::the control plane never reported a ready Vikunja board"; exit 1; }
+          kubectl -n "$NS" logs -l app.kubernetes.io/component=control-plane --tail=500 \
+            | grep -o '"msg":"vikunja board ready"[^}]*' | head -1
+          echo "board built against real Vikunja"
+
+      - name: The config endpoint must not leak secrets
+        run: |
+          set -euo pipefail
+          kubectl -n "$NS" run confprobe --rm -i --restart=Never --image=busybox:1.37.0 -- \
+            wget -q -O- "http://$FULLNAME-control-plane:8080/config" | tee /tmp/config.json
+          pw=$(kubectl -n "$NS" get secret "$FULLNAME-postgresql" -o jsonpath='{.data.password}' | base64 -d)
+          if grep -qF "$pw" /tmp/config.json; then
+            echo "::error::/config leaked the database password"; exit 1
+          fi
+          echo "/config is redacted"
+
+      - name: helm test
+        run: helm test "$RELEASE" -n "$NS" --logs --timeout 5m
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          kubectl -n "$NS" get all -o wide || true
+          kubectl -n "$NS" describe pods || true
+          kubectl -n "$NS" logs -l app.kubernetes.io/component=control-plane --tail=200 || true
+          kubectl -n "$NS" get events --sort-by=.lastTimestamp || true
+
+      - name: Delete cluster
+        if: always()
+        run: k3d cluster delete strange-company-cp || true
 
   package:
     name: package and install the tarball

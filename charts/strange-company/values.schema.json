@@ -258,6 +258,21 @@
         "token": {
           "type": "string"
         },
+        "bootstrap": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "username": {
+              "type": "string",
+              "minLength": 1
+            },
+            "password": {
+              "type": "string"
+            }
+          }
+        },
         "external": {
           "type": "object",
           "properties": {
