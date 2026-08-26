@@ -8,7 +8,9 @@
 #
 # Documents are selected by `documentSelector` on kind rather than by
 # `documentIndex`, so these assertions do not silently depend on the order the
-# template happens to emit them in.
+# template happens to emit them in. Note that documentSelector is a SIBLING of
+# the assertion key, not a field inside it -- nested, it is silently ignored and
+# the assertion runs against every document.
 suite: coding-job RBAC
 release:
   name: strange-company
@@ -56,21 +58,21 @@ tests:
       - equal:
           path: metadata.namespace
           value: agent-runs
-          documentSelector:
-            path: kind
-            value: Role
+        documentSelector:
+          path: kind
+          value: Role
       - equal:
           path: metadata.namespace
           value: agent-runs
-          documentSelector:
-            path: kind
-            value: RoleBinding
+        documentSelector:
+          path: kind
+          value: RoleBinding
       - equal:
           path: roleRef.kind
           value: Role
-          documentSelector:
-            path: kind
-            value: RoleBinding
+        documentSelector:
+          path: kind
+          value: RoleBinding
 
   # Load-bearing. This pins the Role to an exact allowlist, so any future change
   # that widens it -- secrets, configmaps, pods/exec, or a "*" wildcard -- makes
@@ -83,9 +85,6 @@ tests:
     asserts:
       - equal:
           path: rules
-          documentSelector:
-            path: kind
-            value: Role
           value:
             - apiGroups: ["batch"]
               resources: ["jobs"]
@@ -96,3 +95,6 @@ tests:
             - apiGroups: [""]
               resources: ["pods/log"]
               verbs: ["get"]
+        documentSelector:
+          path: kind
+          value: Role
