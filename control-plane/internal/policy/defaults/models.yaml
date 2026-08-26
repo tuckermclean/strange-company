@@ -47,7 +47,11 @@ aliases:
   # interpret structured tool results. Never writes source code.
   foreman-cheap:
     provider: deepseek
-    model: deepseek-chat
+    # Verified against the live DeepSeek /models endpoint on 2026-08-26, which
+    # offers deepseek-v4-flash, deepseek-v4-pro and a vision variant. The older
+    # `deepseek-chat` name this originally used is not among them. Flash is the
+    # cheap tier, which is the whole point of the foreman.
+    model: deepseek-v4-flash
 
   # Interactive human <-> Fable specification conversation (spec §8.2
   # "specifier" profile, §10.2). Runs under the OAuth credential because

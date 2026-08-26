@@ -17,7 +17,10 @@ spec:
     spec:
       {{- include "strange-company.imagePullSecrets" . | nindent 6 }}
       serviceAccountName: {{ include "strange-company.serviceAccountName" . }}
-      automountServiceAccountToken: false
+      # The token is mounted only because creating coding Jobs (spec §16)
+      # requires talking to the Kubernetes API; every other posture of this
+      # chart needs no Kubernetes access at all, so it stays unmounted.
+      automountServiceAccountToken: {{ .Values.controlPlane.agentRuns.enabled }}
       {{- with .Values.controlPlane.podSecurityContext }}
       securityContext:
         {{- toYaml . | nindent 8 }}

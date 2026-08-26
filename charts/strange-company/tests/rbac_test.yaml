@@ -1,0 +1,100 @@
+# The chart granted the control plane no Kubernetes access at all until
+# Milestone 3 needed it. These tests exist to keep that true by default, and to
+# keep the opt-in narrow.
+#
+# Separate suite because helm-unittest resolves a per-test `template:` against
+# the suite-level `templates:` list -- a test cannot select a template the suite
+# did not declare.
+#
+# Documents are selected by `documentSelector` on kind rather than by
+# `documentIndex`, so these assertions do not silently depend on the order the
+# template happens to emit them in. Note that documentSelector is a SIBLING of
+# the assertion key, not a field inside it -- nested, it is silently ignored and
+# the assertion runs against every document.
+suite: coding-job RBAC
+release:
+  name: strange-company
+  namespace: strange-company
+templates:
+  - templates/agent-runs-rbac.yaml
+  - templates/control-plane-deployment.yaml
+tests:
+  - it: grants no Kubernetes access by default
+    values: [../ci/values-batteries.yaml]
+    template: templates/agent-runs-rbac.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: mounts no service account token by default
+    values: [../ci/values-batteries.yaml]
+    template: templates/control-plane-deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.automountServiceAccountToken
+          value: false
+
+  # The token is mounted only because creating Jobs requires API access.
+  - it: mounts a token only when coding Jobs are enabled
+    values: [../ci/values-batteries.yaml]
+    set:
+      controlPlane.agentRuns.enabled: true
+    template: templates/control-plane-deployment.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.automountServiceAccountToken
+          value: true
+
+  - it: grants exactly one Role and one RoleBinding, never cluster-wide
+    values: [../ci/values-batteries.yaml]
+    set:
+      controlPlane.agentRuns.enabled: true
+    template: templates/agent-runs-rbac.yaml
+    asserts:
+      # Exactly two documents, and each is found by kind. A ClusterRole or
+      # ClusterRoleBinding could not satisfy both of these at once.
+      - hasDocuments:
+          count: 2
+      - equal:
+          path: metadata.namespace
+          value: agent-runs
+        documentSelector:
+          path: kind
+          value: Role
+      - equal:
+          path: metadata.namespace
+          value: agent-runs
+        documentSelector:
+          path: kind
+          value: RoleBinding
+      - equal:
+          path: roleRef.kind
+          value: Role
+        documentSelector:
+          path: kind
+          value: RoleBinding
+
+  # Load-bearing. This pins the Role to an exact allowlist, so any future change
+  # that widens it -- secrets, configmaps, pods/exec, or a "*" wildcard -- makes
+  # the rendered rules diverge and fails CI rather than passing review.
+  - it: the coding-Job role cannot read secrets or use wildcards
+    values: [../ci/values-batteries.yaml]
+    set:
+      controlPlane.agentRuns.enabled: true
+    template: templates/agent-runs-rbac.yaml
+    asserts:
+      - equal:
+          path: rules
+          value:
+            - apiGroups: ["batch"]
+              resources: ["jobs"]
+              verbs: ["create", "get", "list", "watch", "delete"]
+            - apiGroups: [""]
+              resources: ["pods"]
+              verbs: ["get", "list", "watch"]
+            - apiGroups: [""]
+              resources: ["pods/log"]
+              verbs: ["get"]
+        documentSelector:
+          path: kind
+          value: Role

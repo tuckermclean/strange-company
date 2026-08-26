@@ -164,3 +164,7 @@ tests:
               secretKeyRef:
                 name: strange-company-secrets
                 key: vikunja-bootstrap-password
+
+  # ---------------------------------------------------------------------
+  # Coding-Job RBAC (spec §16, §28): opt-in, narrowly scoped, off by default.
+  # ---------------------------------------------------------------------
