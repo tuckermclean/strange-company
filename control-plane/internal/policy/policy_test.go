@@ -332,9 +332,9 @@ func TestAProviderNeedingNoCredentialsIsValid(t *testing.T) {
 // fixture, and checks they satisfy the aliases and phases the rest of the
 // system assumes exist.
 func TestLoadDirLoadsTheShippedDefaultPolicy(t *testing.T) {
-	p, err := LoadDir("../../../policy")
+	p, err := Defaults()
 	if err != nil {
-		t.Fatalf("LoadDir(../../../policy): %v", err)
+		t.Fatalf("Defaults(): %v", err)
 	}
 
 	for _, alias := range []string{

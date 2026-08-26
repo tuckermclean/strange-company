@@ -84,6 +84,10 @@ spec:
             - name: {{ $k }}
               value: {{ $v | quote }}
             {{- end }}
+            {{- if or .Values.policy.providers .Values.policy.models }}
+            - name: POLICY_DIR
+              value: /policy
+            {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.controlPlane.service.port }}
@@ -121,6 +125,20 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+          {{- if or .Values.policy.providers .Values.policy.models }}
+          volumeMounts:
+            - name: policy
+              mountPath: /policy
+              # Spec 2.5: models may read policy and may propose changes to it,
+              # but must never silently rewrite it.
+              readOnly: true
+          {{- end }}
+      {{- if or .Values.policy.providers .Values.policy.models }}
+      volumes:
+        - name: policy
+          configMap:
+            name: {{ include "strange-company.fullname" . }}-policy
+      {{- end }}
       {{- with .Values.controlPlane.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

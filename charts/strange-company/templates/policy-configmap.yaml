@@ -1,0 +1,27 @@
+{{- if or .Values.policy.providers .Values.policy.models }}
+{{- /*
+  Operator-supplied model and provider policy.
+
+  Leaving both empty is the normal case: the control plane ships a working
+  default compiled into the image, so it starts and is inspectable before
+  anyone has written policy. Supplying either value here overrides that.
+
+  The mount is read-only on purpose (spec 2.5): models may read policy and may
+  propose changes to it, but must never silently rewrite it.
+*/ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "strange-company.fullname" . }}-policy
+  labels:
+    {{- include "strange-company.labels" (dict "ctx" $ "component" "control-plane") | nindent 4 }}
+data:
+  {{- with .Values.policy.providers }}
+  providers.yaml: |
+    {{- . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.policy.models }}
+  models.yaml: |
+    {{- . | nindent 4 }}
+  {{- end }}
+{{- end }}

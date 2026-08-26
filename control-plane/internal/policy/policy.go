@@ -31,6 +31,7 @@
 package policy
 
 import (
+	"embed"
 	"errors"
 	"fmt"
 	"os"
@@ -302,4 +303,43 @@ func (p *Policy) Validate() error {
 	}
 
 	return errors.Join(problems...)
+}
+
+
+//go:embed defaults/providers.yaml defaults/models.yaml
+var defaultsFS embed.FS
+
+// Defaults returns the policy compiled into the binary.
+//
+// Shipping a working default matters: the control plane must start and be
+// inspectable before an operator has written any policy of their own. An
+// operator overrides it by mounting their own files and pointing POLICY_DIR at
+// them -- which is why the mount is read-only (spec 2.5: models may read
+// policy, never silently rewrite it).
+func Defaults() (*Policy, error) {
+	providers, err := defaultsFS.ReadFile("defaults/providers.yaml")
+	if err != nil {
+		return nil, fmt.Errorf("policy: read embedded providers: %w", err)
+	}
+	models, err := defaultsFS.ReadFile("defaults/models.yaml")
+	if err != nil {
+		return nil, fmt.Errorf("policy: read embedded models: %w", err)
+	}
+	return Load(providers, models)
+}
+
+// LoadOrDefaults loads policy from dir when dir is non-empty and readable, and
+// otherwise falls back to the embedded defaults. The returned bool reports
+// whether operator-supplied policy was used, so startup can say which is in
+// force rather than leaving it ambiguous.
+func LoadOrDefaults(dir string) (*Policy, bool, error) {
+	if dir == "" {
+		p, err := Defaults()
+		return p, false, err
+	}
+	p, err := LoadDir(dir)
+	if err != nil {
+		return nil, false, err
+	}
+	return p, true, nil
 }

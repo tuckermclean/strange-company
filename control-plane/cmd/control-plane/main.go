@@ -4,6 +4,7 @@
 package main
 
 import (
+	"strings"
 	"context"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/tuckermclean/strange-company/control-plane/internal/config"
 	"github.com/tuckermclean/strange-company/control-plane/internal/health"
+	"github.com/tuckermclean/strange-company/control-plane/internal/policy"
 	"github.com/tuckermclean/strange-company/control-plane/internal/server"
 	"github.com/tuckermclean/strange-company/control-plane/internal/store"
 	"github.com/tuckermclean/strange-company/control-plane/internal/vikunja"
@@ -71,6 +73,9 @@ func main() {
 		st.Close()
 		os.Exit(1)
 	}
+
+	pol := loadPolicy(logger, cfg)
+	_ = pol // consumed by the worker in M3; loaded now so bad policy fails visibly at boot
 
 	// Runs for the lifetime of the process, retrying until Vikunja is reachable.
 	go runVikunjaSupervisor(ctx, logger, cfg, st)
@@ -169,6 +174,38 @@ func openStoreWithRetry(ctx context.Context, logger *slog.Logger, dsn string) (*
 			delay = dbRetryMaxDelay
 		}
 	}
+}
+
+// loadPolicy resolves the model and provider policy and reports what it found.
+//
+// Policy is loaded at startup rather than lazily so that a malformed file is a
+// loud failure an operator sees immediately, not a surprise the first time a
+// card escalates. The ladder is logged because "which model runs attempt 4" is
+// the question people actually ask, and reading it from a log beats inferring
+// it from YAML.
+func loadPolicy(logger *slog.Logger, cfg *config.Config) *policy.Policy {
+	pol, operatorSupplied, err := policy.LoadOrDefaults(cfg.PolicyDir)
+	if err != nil {
+		logger.Error("policy is invalid; refusing to start with an unknown escalation ladder",
+			"policy_dir", cfg.PolicyDir, "error", err)
+		os.Exit(1)
+	}
+
+	source := "built-in defaults"
+	if operatorSupplied {
+		source = cfg.PolicyDir
+	}
+
+	var ladder []string
+	for attempt := 1; ; attempt++ {
+		res, err := pol.Resolve("implementation", attempt)
+		if err != nil {
+			break
+		}
+		ladder = append(ladder, fmt.Sprintf("%d=%s/%s", attempt, res.ProviderName, res.Model))
+	}
+	logger.Info("policy loaded", "source", source, "implementation_ladder", strings.Join(ladder, " "))
+	return pol
 }
 
 // runVikunjaSupervisor owns everything that talks to Vikunja, and keeps

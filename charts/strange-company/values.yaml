@@ -317,6 +317,23 @@ hermes:
   apiKey: ""
 
 # ---------------------------------------------------------------------------
+# Model and provider policy
+# ---------------------------------------------------------------------------
+# Which vendor runs which phase is a configuration decision, never a code
+# change. The control plane ships a working default, so leaving both of these
+# empty is normal and correct.
+#
+# Supply either to override. Both are raw YAML documents; see
+# control-plane/internal/policy/defaults/ for the shipped ones. Credentials are
+# referenced by Secret name and key -- the chart never invents provider
+# credentials, so create those Secrets yourself.
+policy:
+  # -- Contents of providers.yaml: harness, credentials and base URL per provider.
+  providers: ""
+  # -- Contents of models.yaml: phase -> ordered ladder of model aliases.
+  models: ""
+
+# ---------------------------------------------------------------------------
 # Control plane
 # ---------------------------------------------------------------------------
 # This chart deploys the control-plane image; it does not implement it.
