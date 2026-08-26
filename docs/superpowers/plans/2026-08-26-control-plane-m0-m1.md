@@ -753,19 +753,21 @@ inspection.
 | 7 state machine | DONE | unit job green |
 | 8 atomic claiming | DONE | **`--- PASS: TestTenConcurrentWorkersClaimExactlyOnce`** |
 | 9 card endpoints | DONE | unit job green |
-| 10a Vikunja bootstrap | DONE (unit) | e2e assertion added against the real bundled Vikunja |
-| 10 reconciler | NOT STARTED | blocked on API research, see below |
+| 10a Vikunja bootstrap | DONE | proven end to end: CI asserts the control plane minted and stored its own token against real Vikunja 2.5.0 |
+| 10 reconciler | DONE | unit green; board creation asserted against real Vikunja |
 | 11 integration CI | DONE | named M1 gate step |
 
 **M0 exit: met.** All services reachable and healthy, and readiness now means the
 control plane actually reached PostgreSQL, Vikunja and the Hermes gateway --
 a stronger claim than the `whoami` fixture could make.
 
-**M1 exit: met for the gate itself** (ten workers race, exactly one wins, proven
-against the same PostgreSQL minor version the chart ships). Vikunja
-synchronisation (Task 10) remains.
+**M1 exit: met.** Ten workers race, exactly one wins, proven against the same
+PostgreSQL minor version the chart ships. Vikunja synchronisation is in place:
+the board is built from the seven states, and a human move in the UI is
+validated as a human transition before it becomes canonical -- an illegal move
+is pushed back rather than silently accepted.
 
-### Two real bugs CI caught that review had missed
+### Bugs caught by CI and by reading upstream, not by review
 
 1. **A card with an expired lease was unreachable forever.** The claim predicate
    filtered on `state = 'Ready'`, but claiming sets the state to `InProgress` --
@@ -775,6 +777,18 @@ synchronisation (Task 10) remains.
 2. **`expires_at` is required when minting a Vikunja token.** Upstream marks it
    `valid:"required"` in `pkg/models/api_tokens.go`; the first implementation
    omitted it and would have been rejected by a real server.
+3. **Login cannot tell "no such user" from "wrong password".** Vikunja returns an
+   identical 403/1011 for both, deliberately, and hashes a dummy value so timing
+   cannot separate them either. The first implementation branched on 400/412 and
+   would therefore never have registered the account on first boot. It now
+   attempts registration on any auth failure and reports plainly if the account
+   already exists.
+4. **Setting `bucket_id` on a task update is a silent no-op.** `Task.BucketID` is
+   `xorm:"-"`, so it never persists despite appearing in `colsToUpdate`. Moving a
+   task between columns must use the bucket-tasks relation endpoint.
+5. **The spec's webhook claim was wrong.** It says delivery is one-shot with no
+   retry; upstream retries five times with backoff. The conclusion survives for a
+   different reason: the pub/sub is in-memory, so nothing survives a restart.
 
 ## Decisions made 2026-08-26
 
