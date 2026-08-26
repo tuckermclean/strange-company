@@ -11,7 +11,7 @@ import (
 // (two of them — anthropic-api and anthropic-oauth — differing only in
 // which credential they carry), one provider under a different harness
 // entirely (openai-codex, so credential isolation has something real to
-// isolate against), one credential-free provider (local-ollama), and an
+// isolate against), one credential-free provider (ollama), and an
 // implementation ladder of haiku x3, sonnet x3, opus x1.
 func loadTestPolicy(t *testing.T) *Policy {
 	t.Helper()
@@ -39,7 +39,7 @@ providers:
         secret: openai-credentials
         key: api-key
 
-  local-ollama:
+  ollama:
     harness: hermes
     baseUrl: http://ollama.internal:11434
 `
@@ -311,15 +311,15 @@ func TestTheSameHarnessCanCarryDifferentCredentialKinds(t *testing.T) {
 func TestAProviderNeedingNoCredentialsIsValid(t *testing.T) {
 	p := loadTestPolicy(t)
 
-	ollama, ok := p.Providers["local-ollama"]
+	ollama, ok := p.Providers["ollama"]
 	if !ok {
-		t.Fatal("expected local-ollama provider in test policy")
+		t.Fatal("expected ollama provider in test policy")
 	}
 	if ollama.BaseURL == "" {
-		t.Fatal("expected local-ollama to declare a baseUrl")
+		t.Fatal("expected ollama to declare a baseUrl")
 	}
 	if len(ollama.Env) != 0 {
-		t.Fatalf("expected local-ollama to need no credentials, got %v", ollama.Env)
+		t.Fatalf("expected ollama to need no credentials, got %v", ollama.Env)
 	}
 
 	if err := p.Validate(); err != nil {
