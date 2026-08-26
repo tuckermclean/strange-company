@@ -322,22 +322,17 @@ func (s *Store) PromoteToReady(ctx context.Context, cardID uuid.UUID, gate specg
 	if !gate.Passed {
 		return fmt.Errorf("store: refusing to promote card %s: %w: %s", cardID, ErrSpecGateRequired, gate.Error())
 	}
-	return s.transition(ctx, cardID, card.Ready, actor, actorID, "specification gate passed")
+	return s.transition(ctx, cardID, card.Ready, actor, actorID, "specification gate passed", true)
 }
 
 func (s *Store) Transition(ctx context.Context, cardID uuid.UUID, to card.State, actor card.ActorType, actorID, reason string) error {
-	if to == card.Ready {
-		// Ready is reachable only through PromoteToReady. Callers that legitimately
-		// need it (a human rejecting a review, a worker releasing a claim) use the
-		// dedicated methods, which supply their own justification.
-		if actor != card.ActorHuman {
-			return fmt.Errorf("store: %w", ErrSpecGateRequired)
-		}
-	}
-	return s.transition(ctx, cardID, to, actor, actorID, reason)
+	return s.transition(ctx, cardID, to, actor, actorID, reason, false)
 }
 
-func (s *Store) transition(ctx context.Context, cardID uuid.UUID, to card.State, actor card.ActorType, actorID, reason string) error {
+// transition carries viaGate so that exactly one caller -- PromoteToReady --
+// can make the Backlog -> Ready move. Passing it as an argument rather than
+// checking a field keeps the exception visible at every call site.
+func (s *Store) transition(ctx context.Context, cardID uuid.UUID, to card.State, actor card.ActorType, actorID, reason string, viaGate bool) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("store: begin transition transaction: %w", err)
