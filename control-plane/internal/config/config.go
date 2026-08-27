@@ -30,6 +30,18 @@ type Config struct {
 	// VikunjaToken is unset, they let the control plane log in (registering
 	// the account first if necessary) and mint its own long-lived API token
 	// on first boot. When both are empty, bootstrap is simply skipped.
+	// VikunjaBoardShareWith are usernames granted access to the generated
+	// board. The control plane creates the project as its own bootstrap
+	// user, so without this the board is private to a service account and
+	// no human can see the cards.
+	VikunjaBoardShareWith []string
+
+	// VikunjaBoardPermission is the Vikunja permission those users get:
+	// 0 read, 1 read & write, 2 admin. Defaults to read & write, because a
+	// human moving a card is a real input (spec §4.3) and read-only would
+	// silently break it.
+	VikunjaBoardPermission int
+
 	VikunjaBootstrapUsername string
 	VikunjaBootstrapPassword string
 
@@ -55,6 +67,7 @@ const (
 	defaultReconcileInterval = 60 * time.Second
 	defaultSSLMode           = "disable"
 	defaultCredentialsDir    = "/credentials"
+	defaultBoardPermission   = 1
 )
 
 // secretVars are never rendered verbatim by Redacted.
@@ -99,6 +112,7 @@ func Load(getenv func(string) string) (*Config, error) {
 		// Optional: only needed to bootstrap a Vikunja token on first boot.
 		// When VikunjaToken is already set, or when both of these are absent,
 		// bootstrap is skipped entirely.
+		VikunjaBoardShareWith:    splitList(getenv("VIKUNJA_BOARD_SHARE_WITH")),
 		VikunjaBootstrapUsername: strings.TrimSpace(getenv("VIKUNJA_BOOTSTRAP_USERNAME")),
 		VikunjaBootstrapPassword: strings.TrimSpace(getenv("VIKUNJA_BOOTSTRAP_PASSWORD")),
 
@@ -113,6 +127,7 @@ func Load(getenv func(string) string) (*Config, error) {
 		problems = append(problems, "DATABASE_PORT is required")
 	}
 	cfg.Port = intVar("PORT", getenv, defaultPort, &problems)
+	cfg.VikunjaBoardPermission = intVar("VIKUNJA_BOARD_PERMISSION", getenv, defaultBoardPermission, &problems)
 
 	if d := strings.TrimSpace(getenv("RECONCILE_INTERVAL")); d != "" {
 		parsed, err := time.ParseDuration(d)
@@ -190,6 +205,7 @@ func (c *Config) Redacted() map[string]string {
 		"VIKUNJA_URL":                c.VikunjaURL,
 		"VIKUNJA_BOOTSTRAP_USERNAME": c.VikunjaBootstrapUsername,
 		"CREDENTIALS_DIR":            c.CredentialsDir,
+		"VIKUNJA_BOARD_SHARE_WITH":   strings.Join(c.VikunjaBoardShareWith, ","),
 		"HERMES_GATEWAY_URL":         c.HermesGatewayURL,
 		"HERMES_DASHBOARD_URL":       c.HermesDashboardURL,
 		"PORT":                       strconv.Itoa(c.Port),
@@ -208,6 +224,20 @@ func (c *Config) Redacted() map[string]string {
 			out[name] = "(unset)"
 		} else {
 			out[name] = "***"
+		}
+	}
+	return out
+}
+
+// splitList parses a comma-separated environment value, dropping blanks.
+//
+// A stray comma in a Helm values list is the common way to get an empty entry,
+// and an empty username would ask Vikunja to share a project with "".
+func splitList(raw string) []string {
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
 		}
 	}
 	return out
