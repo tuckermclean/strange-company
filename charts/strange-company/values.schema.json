@@ -432,6 +432,12 @@
                   "type": "string"
                 }
               }
+            },
+            "fromCredentials": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
             }
           }
         },
@@ -631,6 +637,16 @@
           "type": "string"
         },
         "models": {
+          "type": "string"
+        }
+      }
+    },
+    "credentials": {
+      "type": "object",
+      "description": "Free-form map: any entry name and any keys are accepted, not only the documented defaults. Each entry becomes a Secret named and keyed accordingly.",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": {
           "type": "string"
         }
       }

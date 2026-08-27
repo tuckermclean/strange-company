@@ -348,6 +348,34 @@ hermes:
     existingSecretKeys:
       env: ""
       config: ""
+    # -- Env var -> "<secretName>.<key>" naming an entry in `credentials`
+    # below. The literal value is pinned into the managed scope, so this and
+    # the provider Secret can never drift apart. Requires
+    # `hermes.managed.enabled: true`; composes with `env` above, but the same
+    # key must not be set in both. See docs/specs/single-source-credentials.md.
+    fromCredentials: {}
+      # ANTHROPIC_API_KEY: anthropic-api-credentials.api-key
+
+# ---------------------------------------------------------------------------
+# Provider credentials
+# ---------------------------------------------------------------------------
+# One place to put AI provider credentials so a fresh install actually works.
+# Each entry becomes a Secret whose name and keys are exactly what
+# control-plane/internal/policy/defaults/providers.yaml references. This chart
+# never invents a credential: an empty value renders no Secret at all, so an
+# unset provider fails closed rather than authenticating with "". The four
+# entries below are the shipped defaults' documented defaults, not an
+# allowlist -- add any other entry to create a Secret for a provider this
+# chart has never heard of. See docs/specs/single-source-credentials.md.
+credentials:
+  anthropic-api-credentials:
+    api-key: ""
+  anthropic-oauth-credentials:
+    oauth-token: ""
+  deepseek-credentials:
+    api-key: ""
+  openai-credentials:
+    api-key: ""
 
 # ---------------------------------------------------------------------------
 # Model and provider policy

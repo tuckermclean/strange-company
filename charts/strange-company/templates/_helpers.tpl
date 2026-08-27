@@ -239,21 +239,39 @@ regardless of whether the bundled Hermes happens to be on.
 Called unconditionally from the top of templates/hermes-managed-secret.yaml so
 it always runs, even on the branch where that template goes on to render
 nothing (the existingSecret branch).
+
+Extended for hermes.managed.fromCredentials (spec:
+single-source-credentials.md, Rules 4-6). Layered onto
+strange-company.hermesManagedValidate above: fromCredentials feeds the same
+generated .env as hermes.managed.env, so it inherits that block's constraints
+(the mutual exclusivity with existingSecret, the environment-variable-name
+regex) in addition to its own -- resolving to a non-empty `credentials` entry,
+and requiring hermes.managed.enabled.
+
+The `not $m.enabled` check runs unconditionally, ahead of every other guard in
+this file (including the `hermes.managed.enabled` gate further down), because
+Rule 6 must fire precisely when managed scope is OFF.
 */}}
 {{- define "strange-company.hermesManagedValidate" -}}
-{{- if .Values.hermes.managed.enabled -}}
+{{- $ctx := . -}}
 {{- $m := .Values.hermes.managed -}}
+{{- $hasFromCredentials := gt (len $m.fromCredentials) 0 -}}
+{{- if and $hasFromCredentials (not $m.enabled) -}}
+{{- fail "hermes.managed.fromCredentials is set but hermes.managed.enabled is false. A pin with managed scope disabled would pin nothing; set hermes.managed.enabled: true or clear fromCredentials." -}}
+{{- end -}}
+{{- if $m.enabled -}}
 {{- $hasEnv := gt (len $m.env) 0 -}}
 {{- $hasConfig := gt (len $m.config) 0 -}}
 {{- $hasExisting := ne $m.existingSecret "" -}}
-{{- if and $hasExisting (or $hasEnv $hasConfig) -}}
+{{- if and $hasExisting (or $hasEnv $hasConfig $hasFromCredentials) -}}
 {{- $inline := list -}}
 {{- if $hasEnv -}}{{- $inline = append $inline "hermes.managed.env" -}}{{- end -}}
 {{- if $hasConfig -}}{{- $inline = append $inline "hermes.managed.config" -}}{{- end -}}
+{{- if $hasFromCredentials -}}{{- $inline = append $inline "hermes.managed.fromCredentials" -}}{{- end -}}
 {{- fail (printf "hermes.managed.existingSecret (%q) is set together with %s. These are mutually exclusive: choose an existing Secret or inline values, not both." $m.existingSecret (join " and " $inline)) -}}
 {{- end -}}
-{{- if not (or $hasEnv $hasConfig $hasExisting) -}}
-{{- fail "hermes.managed.enabled is true but hermes.managed.env, hermes.managed.config and hermes.managed.existingSecret are all empty. An empty managed scope pins nothing -- it reads as pinned credentials while pinning none. Set at least one of them, or leave hermes.managed.enabled false." -}}
+{{- if not (or $hasEnv $hasConfig $hasExisting $hasFromCredentials) -}}
+{{- fail "hermes.managed.enabled is true but hermes.managed.env, hermes.managed.config, hermes.managed.fromCredentials and hermes.managed.existingSecret are all empty. An empty managed scope pins nothing -- it reads as pinned credentials while pinning none. Set at least one of them, or leave hermes.managed.enabled false." -}}
 {{- end -}}
 {{- $keys := $m.existingSecretKeys -}}
 {{- if and $hasExisting (ne (empty $keys.env) (empty $keys.config)) -}}
@@ -263,6 +281,67 @@ nothing (the existingSecret branch).
 {{- if not (regexMatch "^[A-Za-z_][A-Za-z0-9_]*$" $k) -}}
 {{- fail (printf "hermes.managed.env key %q is not a valid environment variable name (must match ^[A-Za-z_][A-Za-z0-9_]*$). hermes_cli's env loader silently skips lines it cannot parse, so an invalid key would look like a working pin until a provider call failed." $k) -}}
 {{- end -}}
+{{- end -}}
+{{- range $k, $ref := $m.fromCredentials -}}
+{{- if not (regexMatch "^[A-Za-z_][A-Za-z0-9_]*$" $k) -}}
+{{- fail (printf "hermes.managed.fromCredentials key %q is not a valid environment variable name (must match ^[A-Za-z_][A-Za-z0-9_]*$). hermes_cli's env loader silently skips lines it cannot parse, so an invalid key would look like a working pin until a provider call failed." $k) -}}
+{{- end -}}
+{{- if hasKey $m.env $k -}}
+{{- fail (printf "hermes.managed.env and hermes.managed.fromCredentials both set %q. Both feed the same generated .env; a key set on both sides would leave one silently overwritten by whichever happens to render last. Remove it from one side." $k) -}}
+{{- end -}}
+{{- $parts := splitn "." 2 $ref -}}
+{{- $secretName := $parts._0 -}}
+{{- $key := $parts._1 -}}
+{{- $hasEntry := hasKey $ctx.Values.credentials $secretName -}}
+{{- $keyPresent := false -}}
+{{- $resolved := "" -}}
+{{- if $hasEntry -}}
+{{- $entry := index $ctx.Values.credentials $secretName -}}
+{{- $keyPresent = hasKey $entry $key -}}
+{{- if $keyPresent -}}{{- $resolved = index $entry $key -}}{{- end -}}
+{{- end -}}
+{{- if or (not $hasEntry) (not $keyPresent) (eq $resolved "") -}}
+{{- fail (printf "hermes.managed.fromCredentials.%s references %q, which does not resolve to a non-empty value. fromCredentials values must be <secretName>.<key> naming a non-empty entry in `credentials` -- check that credentials.%s.%s exists and is set." $k $ref $secretName $key) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Resolves a hermes.managed.fromCredentials reference ("<secretName>.<key>") to
+its value in `credentials` (spec: single-source-credentials.md). Call with
+(dict "ctx" $ "ref" $ref). strange-company.hermesManagedValidate has already
+guaranteed this resolves to a non-empty string; this helper does not re-check,
+so it must never be called without that guard having run first in the same
+template.
+*/}}
+{{- define "strange-company.resolveCredential" -}}
+{{- $parts := splitn "." 2 .ref -}}
+{{- index (index .ctx.Values.credentials $parts._0) $parts._1 -}}
+{{- end -}}
+
+{{/*
+Fail-fast guard for the `credentials` block (spec:
+single-source-credentials.md, Rule 3). Runs unconditionally, independent of
+whether any given entry happens to be populated this render: the collision is
+about the NAME an operator chose, and a name that would shadow a chart-owned
+Secret the moment it is populated is worth rejecting before that happens, not
+after.
+*/}}
+{{- define "strange-company.credentialsValidate" -}}
+{{- $ctx := . -}}
+{{- $secretName := include "strange-company.secretName" $ctx -}}
+{{- $pgName := include "strange-company.postgresql.fullname" $ctx -}}
+{{- $vikunjaDbName := $ctx.Values.vikunja.databaseSecretName -}}
+{{- $hermesEnvName := printf "%s-env" (include "strange-company.hermes.fullname" $ctx) -}}
+{{- $owned := dict -}}
+{{- $_ := set $owned $secretName "the chart's own credentials Secret (templates/secret.yaml)" -}}
+{{- $_ := set $owned $pgName "the bundled PostgreSQL Secret (templates/postgresql-secret.yaml)" -}}
+{{- $_ := set $owned $vikunjaDbName "the Vikunja database Secret (templates/postgresql-secret.yaml, vikunja.databaseSecretName)" -}}
+{{- $_ := set $owned $hermesEnvName "the Hermes development-convenience Secret (templates/hermes-secret.yaml, hermes.secrets)" -}}
+{{- range $name, $entry := $ctx.Values.credentials -}}
+{{- if hasKey $owned $name -}}
+{{- fail (printf "credentials.%s collides with %s. Rename the credentials entry: reusing a chart-owned Secret name would silently overwrite it." $name (index $owned $name)) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
