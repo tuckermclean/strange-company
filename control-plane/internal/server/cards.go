@@ -1,6 +1,7 @@
 package server
 
 import (
+	"strings"
 	"context"
 	"encoding/json"
 	"errors"
@@ -28,6 +29,11 @@ type CardStore interface {
 	Heartbeat(ctx context.Context, cardID uuid.UUID, workerID string, lease time.Duration) error
 	Release(ctx context.Context, cardID uuid.UUID, workerID, reason string) error
 	Transition(ctx context.Context, cardID uuid.UUID, to card.State, actor card.ActorType, actorID, reason string) error
+
+	// ApproveSpec records that a human approved the card's specification as
+	// it currently reads (spec §10.2). Promotion to Ready is the control
+	// plane's consequence of this, not a second human action.
+	ApproveSpec(ctx context.Context, cardID uuid.UUID, approvedBy string) error
 }
 
 // ErrorClassifier lets the server map a store error to an HTTP status
@@ -332,4 +338,43 @@ func (s *Server) handleTransition(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, c)
+}
+
+// approveSpecRequest is the body of POST /cards/{id}/approve-spec.
+type approveSpecRequest struct {
+	ApprovedBy string `json:"approved_by"`
+}
+
+// handleApproveSpec serves POST /cards/{id}/approve-spec.
+//
+// Spec §10.2: "Human approves the completed spec. Only then may the control
+// plane promote the card to Ready." Approval is the human input; promotion is
+// the control plane's consequence of it, and happens on the next reconcile
+// pass once the deterministic gate also passes. There is deliberately no
+// endpoint to promote directly -- that would be a way around the gate.
+func (s *Server) handleApproveSpec(w http.ResponseWriter, r *http.Request) {
+	cd, ok := s.cardsOrError(w)
+	if !ok {
+		return
+	}
+	id, ok := parseCardID(w, r)
+	if !ok {
+		return
+	}
+
+	var req approveSpecRequest
+	if !decodeBody(w, r, &req) {
+		return
+	}
+	if strings.TrimSpace(req.ApprovedBy) == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request",
+			"approved_by is required: an approval that names nobody is not an approval")
+		return
+	}
+
+	if err := cd.store.ApproveSpec(r.Context(), id, strings.TrimSpace(req.ApprovedBy)); err != nil {
+		s.writeStoreError(w, cd, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
