@@ -1,4 +1,23 @@
 {{- if .Values.controlPlane.enabled }}
+{{- /*
+  Spec: docs/specs/policy-selected-models.md, "Chart". Same emptiness filter as
+  templates/credentials-secret.yaml (single-source-credentials.md Rules 1-2):
+  an entry whose values are all empty renders no Secret there, so it must not
+  be projected here either -- projecting a Secret that was never created would
+  fail the pod at mount time, not at credential-read time.
+*/ -}}
+{{- $populatedCredentials := dict -}}
+{{- range $name, $entry := .Values.credentials }}
+{{- $filtered := dict -}}
+{{- range $k, $v := $entry }}
+{{- if ne $v "" }}
+{{- $_ := set $filtered $k $v }}
+{{- end }}
+{{- end }}
+{{- if $filtered }}
+{{- $_ := set $populatedCredentials $name $filtered -}}
+{{- end }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -91,6 +110,10 @@ spec:
             - name: POLICY_DIR
               value: /policy
             {{- end }}
+            {{- if $populatedCredentials }}
+            - name: CREDENTIALS_DIR
+              value: {{ .Values.controlPlane.credentials.mountPath | quote }}
+            {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.controlPlane.service.port }}
@@ -128,19 +151,48 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          {{- if or .Values.policy.providers .Values.policy.models }}
+          {{- if or .Values.policy.providers .Values.policy.models $populatedCredentials }}
           volumeMounts:
+            {{- if or .Values.policy.providers .Values.policy.models }}
             - name: policy
               mountPath: /policy
               # Spec 2.5: models may read policy and may propose changes to it,
               # but must never silently rewrite it.
               readOnly: true
+            {{- end }}
+            {{- if $populatedCredentials }}
+            - name: credentials
+              mountPath: {{ .Values.controlPlane.credentials.mountPath }}
+              readOnly: true
+            {{- end }}
           {{- end }}
-      {{- if or .Values.policy.providers .Values.policy.models }}
+      {{- if or .Values.policy.providers .Values.policy.models $populatedCredentials }}
       volumes:
+        {{- if or .Values.policy.providers .Values.policy.models }}
         - name: policy
           configMap:
             name: {{ include "strange-company.fullname" . }}-policy
+        {{- end }}
+        {{- if $populatedCredentials }}
+        - name: credentials
+          projected:
+            # One `secret` source per populated credentials entry, with an
+            # explicit `path` per key, so each Secret lands under its own
+            # subdirectory: <mountPath>/<secret>/<key>. A plain `secret:`
+            # volume projects every Secret's keys into one flat directory,
+            # which is not what credentials.Dir.Read (<dir>/<secret>/<key>)
+            # expects.
+            sources:
+              {{- range $secretName, $keys := $populatedCredentials }}
+              - secret:
+                  name: {{ $secretName }}
+                  items:
+                    {{- range $k, $v := $keys }}
+                    - key: {{ $k }}
+                      path: {{ printf "%s/%s" $secretName $k }}
+                    {{- end }}
+              {{- end }}
+        {{- end }}
       {{- end }}
       {{- with .Values.controlPlane.nodeSelector }}
       nodeSelector:

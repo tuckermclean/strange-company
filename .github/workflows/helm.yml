@@ -492,6 +492,80 @@ jobs:
           }
           echo "credentials Secret exists with the expected key"
 
+      # spec: docs/specs/policy-selected-models.md, "Chart". The control
+      # plane reads a provider credential from
+      # <CREDENTIALS_DIR>/<secret>/<key> (control-plane/internal/credentials.
+      # Dir.Read), so the projected volume must lay files out one
+      # subdirectory per Secret, not flat -- a plain `secret:` volume would
+      # render a perfectly valid Deployment that mounts fine and makes every
+      # credential unreadable at runtime. So this proves the rendered volume
+      # by actually reading a file back through it, not by reading the spec.
+      #
+      # Neither the fixture control-plane image used in this job
+      # (traefik/whoami, per ci/values-batteries.yaml) nor the real one
+      # (gcr.io/distroless/static-debian12, per control-plane/Dockerfile) has
+      # a shell to `kubectl exec cat` into -- distroless by design, and
+      # traefik/whoami is a single static binary on scratch. So this copies
+      # the EXACT `volumes`/`volumeMounts` entries the chart rendered for
+      # "credentials" onto a throwaway busybox pod -- same Secret, same
+      # projected `items[].path` prefixes, same mount path -- and reads the
+      # file through them there. Only the container image differs from what
+      # the control plane itself runs; the volume definition under test is
+      # the real one, copied verbatim from the live Deployment.
+      - name: Assert the rendered credentials volume actually places the Secret's key at <mount>/<secret>/<key>
+        run: |
+          set -euo pipefail
+
+          cred_dir=$(kubectl -n "$NS" get deployment "$FULLNAME-control-plane" \
+            -o jsonpath='{.spec.template.spec.containers[?(@.name=="control-plane")].env[?(@.name=="CREDENTIALS_DIR")].value}')
+          [ "$cred_dir" = "/credentials" ] || {
+            echo "::error::CREDENTIALS_DIR is '$cred_dir', not /credentials"
+            exit 1
+          }
+
+          deploy_json=$(kubectl -n "$NS" get deployment "$FULLNAME-control-plane" -o json)
+          volume=$(echo "$deploy_json" | jq -c '.spec.template.spec.volumes[] | select(.name=="credentials")')
+          mount=$(echo "$deploy_json" | jq -c '.spec.template.spec.containers[] | select(.name=="control-plane") | .volumeMounts[] | select(.name=="credentials")')
+          [ -n "$volume" ] || { echo "::error::no 'credentials' volume rendered on the control-plane Deployment"; exit 1; }
+          [ -n "$mount" ] || { echo "::error::no 'credentials' volumeMount rendered on the control-plane container"; exit 1; }
+          echo "rendered volume: $volume"
+          echo "rendered mount: $mount"
+
+          jq -n --argjson volume "$volume" --argjson mount "$mount" '{
+            apiVersion: "v1",
+            kind: "Pod",
+            metadata: {name: "credentials-layout-probe"},
+            spec: {
+              restartPolicy: "Never",
+              containers: [{
+                name: "probe",
+                image: "busybox:1.37.0",
+                command: ["cat", ($mount.mountPath + "/sc-ci-probe-credentials/probe-key")],
+                volumeMounts: [$mount]
+              }],
+              volumes: [$volume]
+            }
+          }' | tee /tmp/credentials-layout-probe.json | kubectl -n "$NS" apply -f -
+
+          phase=""
+          for i in $(seq 1 30); do
+            phase=$(kubectl -n "$NS" get pod credentials-layout-probe -o jsonpath='{.status.phase}' 2>/dev/null || true)
+            if [ "$phase" = "Succeeded" ] || [ "$phase" = "Failed" ]; then
+              break
+            fi
+            sleep 2
+          done
+
+          result=$(kubectl -n "$NS" logs pod/credentials-layout-probe 2>/dev/null || true)
+          if [ "$phase" != "Succeeded" ] || [ "$result" != "integration-secret-value" ]; then
+            echo "::error::expected to read 'integration-secret-value' via the rendered volume, got phase='$phase' output='$result'"
+            kubectl -n "$NS" describe pod/credentials-layout-probe || true
+            exit 1
+          fi
+          echo "the rendered credentials volume places sc-ci-probe-credentials/probe-key at $cred_dir/sc-ci-probe-credentials/probe-key and it reads back correctly"
+
+          kubectl -n "$NS" delete pod credentials-layout-probe --ignore-not-found
+
       # `kubectl exec ... env` cannot answer this. hermes_cli merges its tiers
       # into its own process's os.environ at startup, and neither a freshly
       # exec'd shell nor /proc/<pid>/environ (a snapshot taken at exec time)
