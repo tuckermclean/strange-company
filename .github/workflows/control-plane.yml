@@ -3,6 +3,12 @@ name: control-plane
 on:
   push:
     branches: ["**"]
+    # The image job below is already written to push on a tag, but without
+    # this it never received one: a release tag published the chart while the
+    # image its appVersion names was never built. release.yml re-checks that
+    # the image exists, so a regression here fails loudly instead of shipping
+    # a chart that cannot pull.
+    tags: ["v*"]
     paths:
       - "control-plane/**"
       - ".github/workflows/control-plane.yml"

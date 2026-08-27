@@ -41,6 +41,10 @@ jobs:
           fi
           echo "releasing $chart"
 
+      # A chart whose appVersion names an image that was never built installs
+      # into ImagePullBackOff, and the failure surfaces in the operator's
+      # cluster rather than here. The image is built by control-plane.yml on
+      # the same tag; this is the check that the two actually agree.
       - name: Resolve dependencies
         run: helm dependency build "$CHART"
 
@@ -54,6 +58,25 @@ jobs:
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" \
             | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Verify the control-plane image exists for this appVersion
+        run: |
+          set -euo pipefail
+          appversion=$(helm show chart "$CHART" | awk '/^appVersion:/ {gsub(/"/,"",$2); print $2}')
+          image="ghcr.io/${{ github.repository_owner }}/strange-company-control-plane:${appversion}"
+
+          # The image job runs in parallel with this one, so wait rather than
+          # racing it. Ten minutes is well past a normal Go build and push.
+          deadline=$(( $(date +%s) + 600 ))
+          until docker manifest inspect "$image" >/dev/null 2>&1; do
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::error::$image was never published; the chart would install into ImagePullBackOff"
+              exit 1
+            fi
+            echo "waiting for $image ..."
+            sleep 20
+          done
+          echo "$image is published"
 
       - name: Push
         run: |
