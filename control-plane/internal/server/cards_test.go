@@ -75,6 +75,12 @@ func (f *fakeStore) Transition(ctx context.Context, cardID uuid.UUID, to card.St
 	return f.transitionFn(ctx, cardID, to, actor, actorID, reason)
 }
 
+// ListArtifacts satisfies CardStore for tests that predate artifacts.
+// artifactStore in artifacts_test.go overrides it.
+func (f *fakeStore) ListArtifacts(context.Context, uuid.UUID) ([]Artifact, error) {
+	return nil, nil
+}
+
 // ApproveSpec satisfies CardStore for the tests written before approval
 // existed. approvingStore in approve_test.go overrides it.
 func (f *fakeStore) ApproveSpec(ctx context.Context, cardID uuid.UUID, approvedBy string) error {

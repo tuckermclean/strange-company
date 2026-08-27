@@ -17,6 +17,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/tuckermclean/strange-company/control-plane/internal/config"
 	"github.com/tuckermclean/strange-company/control-plane/internal/credentials"
 	"github.com/tuckermclean/strange-company/control-plane/internal/github"
@@ -108,7 +110,7 @@ func main() {
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           server.New(cfg, checks, version).SetCards(st, storeErrorClassifier{}).Handler(),
+		Handler:           server.New(cfg, checks, version).SetCards(cardStore{st}, storeErrorClassifier{}).Handler(),
 		ReadHeaderTimeout: readHeaderTimeout,
 		ReadTimeout:       readTimeout,
 		WriteTimeout:      writeTimeout,
@@ -563,4 +565,27 @@ func runPromotionSupervisor(ctx context.Context, logger *slog.Logger, cfg *confi
 		case <-time.After(cfg.ReconcileInterval):
 		}
 	}
+}
+
+// cardStore adapts *store.Store to server.CardStore.
+//
+// Only ListArtifacts needs adapting: the server declares its own Artifact so
+// that package never imports the concrete storage engine, which is the same
+// reason CardStore itself is declared there rather than here.
+type cardStore struct{ *store.Store }
+
+func (c cardStore) ListArtifacts(ctx context.Context, cardID uuid.UUID) ([]server.Artifact, error) {
+	stored, err := c.Store.ListArtifacts(ctx, cardID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]server.Artifact, 0, len(stored))
+	for _, a := range stored {
+		out = append(out, server.Artifact{
+			ID: a.ID.String(), Type: a.Type, Actor: a.Actor, Model: a.Model,
+			CommitSHA: a.CommitSHA, ContentType: a.ContentType, StorageURI: a.StorageURI,
+			Content: a.Content, SHA256: a.SHA256, SizeBytes: a.SizeBytes, Truncated: a.Truncated,
+		})
+	}
+	return out, nil
 }
