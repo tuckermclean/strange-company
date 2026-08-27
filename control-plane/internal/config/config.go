@@ -41,6 +41,11 @@ type Config struct {
 	// the policy compiled into the binary.
 	PolicyDir string
 
+	// CredentialsDir is where provider Secrets are projected, one directory
+	// per Secret. The control plane reads the credential for a phase it
+	// runs itself from <dir>/<secret>/<key>; see internal/credentials.
+	CredentialsDir string
+
 	Port              int
 	ReconcileInterval time.Duration
 }
@@ -49,6 +54,7 @@ const (
 	defaultPort              = 8080
 	defaultReconcileInterval = 60 * time.Second
 	defaultSSLMode           = "disable"
+	defaultCredentialsDir    = "/credentials"
 )
 
 // secretVars are never rendered verbatim by Redacted.
@@ -97,6 +103,7 @@ func Load(getenv func(string) string) (*Config, error) {
 		VikunjaBootstrapPassword: strings.TrimSpace(getenv("VIKUNJA_BOOTSTRAP_PASSWORD")),
 
 		PolicyDir:         strings.TrimSpace(getenv("POLICY_DIR")),
+		CredentialsDir:    valueOr(getenv("CREDENTIALS_DIR"), defaultCredentialsDir),
 		DatabaseSSLMode:   valueOr(getenv("DATABASE_SSLMODE"), defaultSSLMode),
 		ReconcileInterval: defaultReconcileInterval,
 	}
@@ -182,6 +189,7 @@ func (c *Config) Redacted() map[string]string {
 		"DATABASE_SSLMODE":           c.DatabaseSSLMode,
 		"VIKUNJA_URL":                c.VikunjaURL,
 		"VIKUNJA_BOOTSTRAP_USERNAME": c.VikunjaBootstrapUsername,
+		"CREDENTIALS_DIR":            c.CredentialsDir,
 		"HERMES_GATEWAY_URL":         c.HermesGatewayURL,
 		"HERMES_DASHBOARD_URL":       c.HermesDashboardURL,
 		"PORT":                       strconv.Itoa(c.Port),

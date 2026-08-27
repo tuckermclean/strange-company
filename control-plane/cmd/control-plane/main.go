@@ -4,6 +4,7 @@
 package main
 
 import (
+	"net/url"
 	"strings"
 	"context"
 	"errors"
@@ -16,10 +17,11 @@ import (
 	"time"
 
 	"github.com/tuckermclean/strange-company/control-plane/internal/config"
+	"github.com/tuckermclean/strange-company/control-plane/internal/credentials"
 	"github.com/tuckermclean/strange-company/control-plane/internal/health"
 	"github.com/tuckermclean/strange-company/control-plane/internal/hermes"
-	"github.com/tuckermclean/strange-company/control-plane/internal/modelclient"
 	"github.com/tuckermclean/strange-company/control-plane/internal/policy"
+	"github.com/tuckermclean/strange-company/control-plane/internal/providerclient"
 	"github.com/tuckermclean/strange-company/control-plane/internal/server"
 	"github.com/tuckermclean/strange-company/control-plane/internal/specsession"
 	"github.com/tuckermclean/strange-company/control-plane/internal/store"
@@ -381,11 +383,19 @@ func runSpecificationSupervisor(ctx context.Context, logger *slog.Logger, cfg *c
 		return
 	}
 
-	// The gateway speaks the OpenAI-compatible API under /v1, and holds the
-	// provider credentials itself -- the control plane never sees them.
-	mc, err := modelclient.New(strings.TrimSuffix(cfg.HermesGatewayURL, "/")+"/v1", cfg.HermesAPIKey, screenRes.Model)
+	// Straight to the provider policy named -- NOT through the Hermes
+	// gateway. The gateway ignores the requested model and answers from its
+	// own global route, so routing this call through it meant policy chose
+	// deepseek-v4-flash while claude-opus-4-6 answered, at frontier prices,
+	// with the logs reporting the cheap model. See
+	// docs/specs/policy-selected-models.md.
+	mc, err := providerclient.New(screenRes, credentials.Dir(cfg.CredentialsDir))
 	if err != nil {
-		log.Error("could not build a model client; specification screening disabled", "error", err)
+		// Refused rather than degraded: the alternative is calling some
+		// other endpoint and reporting success, which is the bug this
+		// replaces.
+		log.Error("specification screening disabled: the foreman provider cannot be called",
+			"provider", screenRes.ProviderName, "model", screenRes.Model, "error", err)
 		return
 	}
 	gateway, err := hermes.New(cfg.HermesGatewayURL, cfg.HermesAPIKey)
@@ -402,8 +412,14 @@ func runSpecificationSupervisor(ctx context.Context, logger *slog.Logger, cfg *c
 		log,
 	)
 
+	// The endpoint host is logged so "which model actually answered" is
+	// answerable from the startup log alone, which it previously was not.
 	log.Info("specification screening enabled",
-		"screening_model", screenRes.Model, "conversation_model", specRes.Model)
+		"screening_provider", screenRes.ProviderName,
+		"screening_model", screenRes.Model,
+		"screening_endpoint", endpointHost(screenRes.BaseURL),
+		"conversation_model", specRes.Model,
+		"conversation_endpoint", endpointHost(cfg.HermesGatewayURL))
 
 	for {
 		if res, err := rec.RunOnce(ctx); err != nil {
@@ -420,4 +436,14 @@ func runSpecificationSupervisor(ctx context.Context, logger *slog.Logger, cfg *c
 		case <-time.After(cfg.ReconcileInterval):
 		}
 	}
+}
+
+// endpointHost reduces a base URL to scheme and host for logging. A provider
+// base URL is not a secret, but a path or query on one might carry a token.
+func endpointHost(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return "(unparseable)"
+	}
+	return u.Scheme + "://" + u.Host
 }
