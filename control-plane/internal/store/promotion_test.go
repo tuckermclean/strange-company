@@ -138,3 +138,35 @@ func TestEditingAnApprovedSpecWithdrawsItFromPromotion(t *testing.T) {
 		t.Fatalf("an edited spec is still queued for promotion: %v", pending)
 	}
 }
+
+// The gate refuses a card whose dependencies are not Done. Passing an empty
+// slice regardless would promote a card whose prerequisites are unfinished,
+// and nothing downstream would notice.
+func TestDependenciesAreLoadedForTheGate(t *testing.T) {
+	s := migrated(t)
+	ctx := context.Background()
+
+	blocker := seedBacklogCard(t, s)
+	dependent := seedBacklogCard(t, s)
+	if _, err := s.pool.Exec(ctx,
+		`INSERT INTO card_dependencies (card_id, depends_on) VALUES ($1, $2)`,
+		dependent, blocker); err != nil {
+		t.Fatal(err)
+	}
+
+	deps, err := s.ListDependencies(ctx, dependent)
+	if err != nil {
+		t.Fatalf("ListDependencies: %v", err)
+	}
+	if len(deps) != 1 || deps[0].ID != blocker {
+		t.Fatalf("deps = %+v, want the blocking card", deps)
+	}
+
+	none, err := s.ListDependencies(ctx, blocker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(none) != 0 {
+		t.Fatalf("a card with no dependencies reported %d", len(none))
+	}
+}

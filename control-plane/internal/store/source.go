@@ -8,6 +8,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+
+	"github.com/tuckermclean/strange-company/control-plane/internal/card"
 )
 
 // SourceCard is one work item as its external source describes it.
@@ -188,4 +190,45 @@ func (s *Store) ListApprovedAwaitingPromotion(ctx context.Context, limit int) ([
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
+}
+
+// ListDependencies returns the cards cardID depends on.
+//
+// §10's gate refuses a card whose dependencies are not Done. Passing an empty
+// slice regardless would promote a card whose prerequisites are unfinished and
+// nothing downstream would notice, so this is loaded rather than assumed.
+func (s *Store) ListDependencies(ctx context.Context, cardID uuid.UUID) ([]*card.Card, error) {
+	const q = `
+		SELECT d.depends_on
+		  FROM card_dependencies d
+		 WHERE d.card_id = $1
+		 ORDER BY d.depends_on`
+
+	rows, err := s.pool.Query(ctx, q, cardID)
+	if err != nil {
+		return nil, fmt.Errorf("store: listing dependencies: %w", err)
+	}
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("store: reading dependency: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: listing dependencies: %w", err)
+	}
+
+	deps := make([]*card.Card, 0, len(ids))
+	for _, id := range ids {
+		c, err := s.GetCard(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		deps = append(deps, c)
+	}
+	return deps, nil
 }
