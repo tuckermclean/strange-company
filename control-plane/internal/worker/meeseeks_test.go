@@ -102,6 +102,16 @@ func (f *fakeCardStore) Transition(ctx context.Context, cardID uuid.UUID, to car
 	return nil
 }
 
+// AdvancePhase satisfies CardStore for the tests written before a step could
+// finish a phase. phaseStore in phases_test.go exercises it properly.
+func (f *fakeCardStore) AdvancePhase(_ context.Context, _ uuid.UUID, to card.Phase, _ card.ActorType, _, _ string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.callOrder = append(f.callOrder, "advance")
+	f.advancedTo = to
+	return nil
+}
+
 func (f *fakeCardStore) AttachEvidence(ctx context.Context, cardID uuid.UUID, ev Evidence) error {
 	f.mu.Lock()
 	f.evidenceCalls = append(f.evidenceCalls, ev)
