@@ -80,8 +80,8 @@ func TestOrdinaryFinishReasonsStillReturnTheAnswer(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Complete: %v", err)
 			}
-			if got.Content != "the answer" {
-				t.Fatalf("content = %q", got.Content)
+			if got.Text != "the answer" {
+				t.Fatalf("text = %q", got.Text)
 			}
 		})
 	}
