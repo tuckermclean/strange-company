@@ -17,6 +17,12 @@ data:
   DATABASE_PORT: {{ include "strange-company.databasePort" . | quote }}
   DATABASE_NAME: {{ include "strange-company.databaseName" . | quote }}
   VIKUNJA_URL: {{ include "strange-company.vikunjaUrl" . | quote }}
+  # Without at least one username here the board belongs to the bootstrap
+  # user alone and no human can see the cards.
+  VIKUNJA_BOARD_SHARE_WITH: {{ join "," .Values.vikunja.board.shareWith | quote }}
+  # 0 read, 1 read & write, 2 admin. Read & write by default: a human moving a
+  # card is a real input (spec 4.3), and read-only silently breaks it.
+  VIKUNJA_BOARD_PERMISSION: {{ .Values.vikunja.board.permission | quote }}
   HERMES_GATEWAY_URL: {{ include "strange-company.hermesGatewayUrl" . | quote }}
   {{- with (include "strange-company.hermesDashboardUrl" .) }}
   HERMES_DASHBOARD_URL: {{ . | quote }}

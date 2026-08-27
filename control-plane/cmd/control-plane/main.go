@@ -270,6 +270,24 @@ func runVikunjaSupervisor(ctx context.Context, logger *slog.Logger, cfg *config.
 			} else {
 				board = b
 				reconciler = vikunja.NewReconciler(client, board, st, logger)
+
+				// Without this the project belongs to the bootstrap
+				// user alone and no human can see the cards. Not
+				// fatal: an unknown username should leave a working
+				// board that one person cannot see, not no board.
+				if err := client.EnsureProjectShares(ctx, board.ProjectID,
+					cfg.VikunjaBoardShareWith, cfg.VikunjaBoardPermission); err != nil {
+					logger.Error("could not share the board; it will only be visible to the bootstrap user",
+						"error", err)
+				} else if len(cfg.VikunjaBoardShareWith) > 0 {
+					logger.Info("board shared",
+						"with", cfg.VikunjaBoardShareWith,
+						"permission", cfg.VikunjaBoardPermission)
+				} else {
+					logger.Warn("nobody is shared on the board; set vikunja.board.shareWith or no human will see the cards",
+						"project_id", b.ProjectID)
+				}
+
 				logger.Info("vikunja board ready",
 					"project_id", board.ProjectID,
 					"kanban_view_id", board.KanbanViewID,

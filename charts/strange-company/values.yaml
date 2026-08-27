@@ -126,6 +126,16 @@ postgresql:
 # and `vikunja.external` belong to THIS chart, while `vikunja.vikunja.*` is
 # passed through to the upstream chart.
 vikunja:
+  # -- Who can see the generated board. The control plane creates the project
+  # as its own bootstrap user, so with nobody listed here the board is private
+  # to a service account and no human sees the cards.
+  board:
+    # -- Vikunja usernames granted access.
+    shareWith: []
+    # -- 0 read, 1 read & write, 2 admin. Read & write by default: a human
+    # moving a card is a real input, and read-only silently breaks it.
+    permission: 1
+
   # -- Render the upstream Vikunja dependency.
   enabled: true
 

@@ -1,0 +1,46 @@
+# The control plane creates the Vikunja project as its own bootstrap user, so
+# the board is private to a service account until somebody is shared on it.
+suite: board sharing
+release:
+  name: strange-company
+  namespace: strange-company
+templates:
+  - templates/configmap.yaml
+tests:
+  - it: shares with nobody by default, and says so as an empty value
+    asserts:
+      # Present-but-empty rather than absent: the control plane logs a warning
+      # naming the value to set, which it can only do if the key exists.
+      - equal:
+          path: data.VIKUNJA_BOARD_SHARE_WITH
+          value: ""
+      - equal:
+          path: data.VIKUNJA_BOARD_PERMISSION
+          value: "1"
+
+  - it: passes usernames through as a comma-separated list
+    set:
+      vikunja.board.shareWith:
+        - tucker
+        - someone-else
+    asserts:
+      - equal:
+          path: data.VIKUNJA_BOARD_SHARE_WITH
+          value: "tucker,someone-else"
+
+  - it: defaults to read and write, because a human moving a card is an input
+    set:
+      vikunja.board.shareWith: [tucker]
+    asserts:
+      - equal:
+          path: data.VIKUNJA_BOARD_PERMISSION
+          value: "1"
+
+  - it: honours an explicit read-only permission
+    set:
+      vikunja.board.shareWith: [tucker]
+      vikunja.board.permission: 0
+    asserts:
+      - equal:
+          path: data.VIKUNJA_BOARD_PERMISSION
+          value: "0"
