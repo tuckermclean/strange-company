@@ -159,7 +159,10 @@ func TestACardAwaitingAConversationIsRetriedWithoutRescreening(t *testing.T) {
 	c := cardWithID()
 	b := newBoard()
 	b.cards[c.ID] = c
-	b.awaiting = []store.PendingScreening{{CardID: c.ID, Content: "# Problem\n\ntext", ContentSHA256: "sha"}}
+	b.awaiting = []store.PendingScreening{{
+		CardID: c.ID, Content: "# Problem\n\ntext", ContentSHA256: "sha",
+		Score: int(ambiguity.ScoreMaterialAmbiguity),
+	}}
 	b.screened[c.ID] = int(ambiguity.ScoreMaterialAmbiguity)
 	g := &fakeGateway{nextID: "api_retry"}
 	scr := &scriptedScreener{score: ambiguity.ScoreMechanical}

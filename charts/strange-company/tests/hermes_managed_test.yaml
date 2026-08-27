@@ -4,6 +4,11 @@
 # Each test declares its own `template:`, chosen from the suite-level
 # `templates:` allowlist below -- a test cannot select a template the suite
 # did not declare.
+#
+# The `fromCredentials` tests below cover docs/specs/single-source-credentials.md
+# instead -- the half of that spec that feeds this file's managed `.env`. The
+# `credentials` block itself (one Secret per populated entry) is covered by
+# tests/credentials_test.yaml against templates/credentials-secret.yaml.
 suite: hermes managed scope
 release:
   name: strange-company

@@ -22,6 +22,11 @@ type PendingScreening struct {
 	CardID        uuid.UUID
 	Content       string
 	ContentSHA256 string
+
+	// Score is the recorded screening score. It is meaningful only for
+	// rows from ListSpecsAwaitingConversation, where the screening already
+	// happened; it is zero for rows still awaiting one.
+	Score int
 }
 
 // ListSpecsNeedingScreening returns up to limit specifications whose current
@@ -101,3 +106,52 @@ func (s *Store) RecordScreening(ctx context.Context, cardID uuid.UUID, contentSH
 	}
 	return ErrSpecChanged
 }
+
+// ListSpecsAwaitingConversation returns specifications that screening already
+// judged to need a human, but which have no conversation open.
+//
+// This is the retry path for a card whose screening succeeded and whose
+// session could not be created -- a gateway outage, most likely. Without it,
+// the only way back would be to re-screen, paying for the same answer again.
+func (s *Store) ListSpecsAwaitingConversation(ctx context.Context, limit int) ([]PendingScreening, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+
+	// screened_sha256 must still match the current content: a specification
+	// edited since screening belongs on the screening path, not this one.
+	const q = `
+		SELECT s.card_id, s.content, s.screened_sha256, s.screened_score
+		  FROM card_specs s
+		  JOIN cards c ON c.id = s.card_id
+		 WHERE s.screened_score >= $1
+		   AND s.screened_sha256 = encode(sha256(s.content::bytea), 'hex')
+		   AND c.spec_session_id IS NULL
+		 ORDER BY s.screened_at
+		 LIMIT $2`
+
+	rows, err := s.pool.Query(ctx, q, scoreRequiringHuman, limit)
+	if err != nil {
+		return nil, fmt.Errorf("store: listing specifications awaiting a conversation: %w", err)
+	}
+	defer rows.Close()
+
+	var pending []PendingScreening
+	for rows.Next() {
+		var p PendingScreening
+		if err := rows.Scan(&p.CardID, &p.Content, &p.ContentSHA256, &p.Score); err != nil {
+			return nil, fmt.Errorf("store: reading specification awaiting a conversation: %w", err)
+		}
+		pending = append(pending, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: listing specifications awaiting a conversation: %w", err)
+	}
+	return pending, nil
+}
+
+// scoreRequiringHuman mirrors spec 10.1: scores 2 and 3 need a human. It lives
+// here only so this query can filter in SQL; the authority on what the score
+// means is ambiguity.Report.RequiresHuman, and specsession.Opener re-checks it
+// before opening anything.
+const scoreRequiringHuman = 2
