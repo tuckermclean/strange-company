@@ -364,9 +364,9 @@ hermes:
 # control-plane/internal/policy/defaults/providers.yaml references. This chart
 # never invents a credential: an empty value renders no Secret at all, so an
 # unset provider fails closed rather than authenticating with "". The four
-# entries below are the shipped defaults' documented defaults, not an
-# allowlist -- add any other entry to create a Secret for a provider this
-# chart has never heard of. See docs/specs/single-source-credentials.md.
+# entries below are documented defaults matching the shipped providers.yaml,
+# not an allowlist -- add any other entry to create a Secret for a provider
+# this chart has never heard of. See docs/specs/single-source-credentials.md.
 credentials:
   anthropic-api-credentials:
     api-key: ""
