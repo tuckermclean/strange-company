@@ -418,6 +418,16 @@ controlPlane:
   # resolved by the chart and are not overridden by this Secret.
   existingSecret: ""
 
+  # -- Where the `credentials` block above (see "Provider credentials") is
+  # projected into this pod, one subdirectory per populated Secret:
+  # <mountPath>/<secret>/<key>. Matches control-plane/internal/config's
+  # CREDENTIALS_DIR default of /credentials; the chart sets CREDENTIALS_DIR to
+  # this value whenever at least one `credentials` entry is populated, and
+  # renders no volume, no mount and no CREDENTIALS_DIR at all otherwise. See
+  # docs/specs/policy-selected-models.md, "Chart".
+  credentials:
+    mountPath: /credentials
+
   # -- Non-secret environment variables, added on top of the contract.
   env: {}
 

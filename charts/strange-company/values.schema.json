@@ -559,6 +559,16 @@
         "existingSecret": {
           "type": "string"
         },
+        "credentials": {
+          "type": "object",
+          "description": "Where the top-level `credentials` block is projected into the control-plane pod. No effect unless at least one `credentials` entry is populated.",
+          "properties": {
+            "mountPath": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
         "env": {
           "type": "object"
         },
