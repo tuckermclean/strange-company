@@ -51,6 +51,7 @@ type fakeCardStore struct {
 	releaseCalls    []releaseCall
 	transitionCalls []transitionCall
 	evidenceCalls   []Evidence
+	advancedTo      card.Phase
 	callOrder       []string
 }
 
