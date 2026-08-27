@@ -211,8 +211,11 @@ tests:
             secret:
               secretName: my-hermes-managed
 
+  # Validation lives in hermes-managed-secret.yaml, which includes the guard
+  # unconditionally -- so it fires even on the existingSecret branch where that
+  # template renders nothing. Rules 2, 3 and 5 above are asserted the same way.
   - it: rejects renaming only one of the two managed files
-    template: templates/hermes-deployment.yaml
+    template: templates/hermes-managed-secret.yaml
     set:
       hermes.managed.enabled: true
       hermes.managed.existingSecret: my-hermes-managed
