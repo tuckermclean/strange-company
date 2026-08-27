@@ -219,6 +219,55 @@ Chart-created Secret holding credentials this chart owns.
 {{- end -}}
 
 {{/*
+Name of the Secret backing the Hermes managed scope (spec:
+hermes-managed-scope.md). A BYO secret wins outright; otherwise a chart-owned
+one is named after the Hermes workload.
+*/}}
+{{- define "strange-company.hermesManagedSecretName" -}}
+{{- if .Values.hermes.managed.existingSecret -}}
+{{- .Values.hermes.managed.existingSecret -}}
+{{- else -}}
+{{- printf "%s-managed" (include "strange-company.hermes.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Fail-fast guards for hermes.managed (spec: hermes-managed-scope.md, "Rules").
+Independent of hermes.enabled: a misconfigured managed block is a mistake
+regardless of whether the bundled Hermes happens to be on.
+
+Called unconditionally from the top of templates/hermes-managed-secret.yaml so
+it always runs, even on the branch where that template goes on to render
+nothing (the existingSecret branch).
+*/}}
+{{- define "strange-company.hermesManagedValidate" -}}
+{{- if .Values.hermes.managed.enabled -}}
+{{- $m := .Values.hermes.managed -}}
+{{- $hasEnv := gt (len $m.env) 0 -}}
+{{- $hasConfig := gt (len $m.config) 0 -}}
+{{- $hasExisting := ne $m.existingSecret "" -}}
+{{- if and $hasExisting (or $hasEnv $hasConfig) -}}
+{{- $inline := list -}}
+{{- if $hasEnv -}}{{- $inline = append $inline "hermes.managed.env" -}}{{- end -}}
+{{- if $hasConfig -}}{{- $inline = append $inline "hermes.managed.config" -}}{{- end -}}
+{{- fail (printf "hermes.managed.existingSecret (%q) is set together with %s. These are mutually exclusive: choose an existing Secret or inline values, not both." $m.existingSecret (join " and " $inline)) -}}
+{{- end -}}
+{{- if not (or $hasEnv $hasConfig $hasExisting) -}}
+{{- fail "hermes.managed.enabled is true but hermes.managed.env, hermes.managed.config and hermes.managed.existingSecret are all empty. An empty managed scope pins nothing -- it reads as pinned credentials while pinning none. Set at least one of them, or leave hermes.managed.enabled false." -}}
+{{- end -}}
+{{- $keys := $m.existingSecretKeys -}}
+{{- if and $hasExisting (ne (empty $keys.env) (empty $keys.config)) -}}
+{{- fail (printf "hermes.managed.existingSecretKeys names %q but not both keys. A Kubernetes secret volume projects either every key under its own name or only the keys listed under `items`, so renaming one file hides the other. Name both, or leave both empty when the secret already uses `.env` and `config.yaml`." (default $keys.config $keys.env)) -}}
+{{- end -}}
+{{- range $k, $v := $m.env -}}
+{{- if not (regexMatch "^[A-Za-z_][A-Za-z0-9_]*$" $k) -}}
+{{- fail (printf "hermes.managed.env key %q is not a valid environment variable name (must match ^[A-Za-z_][A-Za-z0-9_]*$). hermes_cli's env loader silently skips lines it cannot parse, so an invalid key would look like a working pin until a provider call failed." $k) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 The bundled PostgreSQL password, resolved once per render.
 
 Precedence: an explicit value, then the password already stored in the cluster

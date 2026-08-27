@@ -79,6 +79,13 @@ spec:
                   key: hermes-dashboard-password
             {{- end }}
             {{- end }}
+            {{- if .Values.hermes.managed.enabled }}
+            # Read by hermes_cli/managed_scope.py before /etc/hermes; its
+            # config & .env layer wins over the user's own copies on a
+            # per-leaf-key basis. See docs/specs/hermes-managed-scope.md.
+            - name: HERMES_MANAGED_DIR
+              value: {{ .Values.hermes.managed.mountPath | quote }}
+            {{- end }}
             {{- range $k, $v := .Values.hermes.env }}
             - name: {{ $k }}
               value: {{ $v | quote }}
@@ -128,6 +135,11 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /opt/data
+            {{- if .Values.hermes.managed.enabled }}
+            - name: hermes-managed
+              mountPath: {{ .Values.hermes.managed.mountPath }}
+              readOnly: true
+            {{- end }}
           {{- with .Values.hermes.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
@@ -140,6 +152,18 @@ spec:
           {{- else }}
           emptyDir: {}
           {{- end }}
+        {{- if .Values.hermes.managed.enabled }}
+        - name: hermes-managed
+          secret:
+            secretName: {{ include "strange-company.hermesManagedSecretName" . }}
+            {{- if and .Values.hermes.managed.existingSecret .Values.hermes.managed.existingSecretKeys.env .Values.hermes.managed.existingSecretKeys.config }}
+            items:
+              - key: {{ .Values.hermes.managed.existingSecretKeys.env }}
+                path: .env
+              - key: {{ .Values.hermes.managed.existingSecretKeys.config }}
+                path: config.yaml
+            {{- end }}
+        {{- end }}
       {{- with .Values.hermes.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

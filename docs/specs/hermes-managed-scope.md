@@ -55,9 +55,9 @@ hermes:
     env: {}                 # map[string]string -> .env, one KEY=value per line
     config: {}              # free-form mapping -> config.yaml
     existingSecret: ""      # BYO secret; keys ".env" and/or "config.yaml"
-    existingSecretKeys:
-      env: ".env"
-      config: "config.yaml"
+    existingSecretKeys:     # only to rename; empty = already named as above
+      env: ""
+      config: ""
 ```
 
 Rules:
@@ -78,6 +78,12 @@ Rules:
    looks exactly like a working one until a call fails.
 6. `config.yaml` is rendered with `toYaml`, so operators can pin any leaf key
    (`model.default` is the expected common case alongside `model.api_key`).
+7. `existingSecretKeys` exists only to rename. Empty (the default) means the
+   secret already uses `.env` / `config.yaml`, and the volume projects whichever
+   of the two it has. Naming exactly one must `fail`: a secret volume projects
+   either every key under its own name or only the keys listed under `items`, so
+   renaming one file would hide the other, and emitting `items` unconditionally
+   would leave the pod unable to mount a secret that pins only credentials.
 
 ## Acceptance criteria
 
@@ -90,9 +96,9 @@ Rendering (helm-unittest, `charts/strange-company/tests/`):
   `readOnly: true`; `HERMES_MANAGED_DIR` equals `mountPath`.
 - `enabled: true` with `config`: Secret contains a `config.yaml` key whose
   decoded content parses as the supplied mapping.
-- `existingSecret`: no Secret is generated, the named secret is mounted, and the
-  key names come from `existingSecretKeys`.
-- each failure in Rules 2, 3 and 5 produces its specific message.
+- `existingSecret`: no Secret is generated and the named secret is mounted --
+  with no `items` by default, and with `items` when both key names are given.
+- each failure in Rules 2, 3, 5 and 7 produces its specific message.
 
 Behaviour (k3d integration job, `.github/workflows/helm.yml`):
 

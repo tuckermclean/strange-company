@@ -398,6 +398,43 @@
         "apiKey": {
           "type": "string"
         },
+        "managed": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "mountPath": {
+              "type": "string",
+              "minLength": 1
+            },
+            "env": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "config": {
+              "type": "object"
+            },
+            "existingSecret": {
+              "type": "string"
+            },
+            "existingSecretKeys": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "env": {
+                  "type": "string"
+                },
+                "config": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
         "env": {
           "type": "object"
         },

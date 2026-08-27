@@ -324,6 +324,31 @@ hermes:
   # Leave empty to generate one and preserve it across upgrades.
   apiKey: ""
 
+  # -- `hermes.env` is not authoritative for credentials: a value typed into
+  # the Hermes dashboard is written to the PVC and beats it on every restart.
+  # `managed` is a pinned layer that wins instead -- see
+  # docs/specs/hermes-managed-scope.md.
+  managed:
+    # -- Default off: an existing install renders unchanged on upgrade.
+    enabled: false
+    mountPath: /etc/hermes-managed
+    # -- map[string]string, written verbatim as `.env`, one `KEY=value` line
+    # per entry. Keys must match `^[A-Za-z_][A-Za-z0-9_]*$`.
+    env: {}
+    # -- Free-form mapping, rendered as `config.yaml`. Any leaf key can be
+    # pinned, e.g. `model.default` alongside `model.api_key`.
+    config: {}
+    # -- BYO secret holding the same two files, under the keys named by
+    # `existingSecretKeys` below. Mutually exclusive with inline `env`/`config`.
+    existingSecret: ""
+    # -- Only needed when the existing secret stores these files under other
+    # key names. Empty means "already named `.env` / `config.yaml`", which
+    # projects whichever of the two the secret actually has. A rename replaces
+    # the projection wholesale, so if you name one you must name both.
+    existingSecretKeys:
+      env: ""
+      config: ""
+
 # ---------------------------------------------------------------------------
 # Model and provider policy
 # ---------------------------------------------------------------------------
