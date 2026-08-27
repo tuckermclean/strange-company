@@ -1,0 +1,226 @@
+# Spec: docs/specs/hermes-managed-scope.md. Each `it:` names the acceptance
+# criterion it covers.
+#
+# Each test declares its own `template:`, chosen from the suite-level
+# `templates:` allowlist below -- a test cannot select a template the suite
+# did not declare.
+suite: hermes managed scope
+release:
+  name: strange-company
+  namespace: strange-company
+templates:
+  - templates/hermes-deployment.yaml
+  - templates/hermes-managed-secret.yaml
+tests:
+  # ---- default: enabled: false renders exactly what the chart renders today ----
+  - it: renders no managed secret by default
+    template: templates/hermes-managed-secret.yaml
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: adds no managed volume, mount or HERMES_MANAGED_DIR by default
+    template: templates/hermes-deployment.yaml
+    asserts:
+      # Exact-list equality (not just presence) so an accidental extra volume
+      # or mount cannot slip through unnoticed.
+      - equal:
+          path: spec.template.spec.volumes
+          value:
+            - name: data
+              persistentVolumeClaim:
+                claimName: strange-company-hermes
+      - equal:
+          path: spec.template.spec.containers[0].volumeMounts
+          value:
+            - name: data
+              mountPath: /opt/data
+      - notContains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: HERMES_MANAGED_DIR
+            value: /etc/hermes-managed
+
+  # ---- enabled: true with env ----
+  - it: pins env vars into a generated secret as KEY=value lines
+    template: templates/hermes-managed-secret.yaml
+    set:
+      hermes.managed.enabled: true
+      hermes.managed.env:
+        ANTHROPIC_API_KEY: sk-pinned-123
+        FOO_BAR: baz
+    asserts:
+      - hasDocuments:
+          count: 1
+      - isKind:
+          of: Secret
+      - equal:
+          path: metadata.name
+          value: strange-company-hermes-managed
+      - matchRegex:
+          path: stringData[".env"]
+          pattern: "(^|\n)ANTHROPIC_API_KEY=sk-pinned-123(\n|$)"
+      - matchRegex:
+          path: stringData[".env"]
+          pattern: "(^|\n)FOO_BAR=baz(\n|$)"
+      - notExists:
+          path: stringData["config.yaml"]
+
+  - it: mounts the generated secret at mountPath read-only and sets HERMES_MANAGED_DIR
+    template: templates/hermes-deployment.yaml
+    set:
+      hermes.managed.enabled: true
+      hermes.managed.mountPath: /etc/hermes-managed-custom
+      hermes.managed.env:
+        ANTHROPIC_API_KEY: sk-pinned-123
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: hermes-managed
+            mountPath: /etc/hermes-managed-custom
+            readOnly: true
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: HERMES_MANAGED_DIR
+            value: /etc/hermes-managed-custom
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: hermes-managed
+            secret:
+              secretName: strange-company-hermes-managed
+
+  # ---- enabled: true with config ----
+  - it: pins config.yaml into a generated secret from a free-form mapping
+    template: templates/hermes-managed-secret.yaml
+    set:
+      hermes.managed.enabled: true
+      hermes.managed.config:
+        model:
+          default: anthropic/claude-test
+    asserts:
+      - hasDocuments:
+          count: 1
+      - matchRegex:
+          path: stringData["config.yaml"]
+          pattern: "model:"
+      - matchRegex:
+          path: stringData["config.yaml"]
+          pattern: "default: anthropic/claude-test"
+      - notExists:
+          path: stringData[".env"]
+
+  # ---- existingSecret ----
+  - it: an existingSecret suppresses the generated secret
+    template: templates/hermes-managed-secret.yaml
+    set:
+      hermes.managed.enabled: true
+      hermes.managed.existingSecret: my-hermes-managed
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: mounts the existingSecret using the configured key names
+    template: templates/hermes-deployment.yaml
+    set:
+      hermes.managed.enabled: true
+      hermes.managed.existingSecret: my-hermes-managed
+      hermes.managed.existingSecretKeys:
+        env: creds-env
+        config: creds-config.yaml
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].volumeMounts
+          content:
+            name: hermes-managed
+            mountPath: /etc/hermes-managed
+            readOnly: true
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: hermes-managed
+            secret:
+              secretName: my-hermes-managed
+              items:
+                - key: creds-env
+                  path: .env
+                - key: creds-config.yaml
+                  path: config.yaml
+
+  # ---- Rule 2: existingSecret and inline values are mutually exclusive ----
+  - it: rejects existingSecret combined with inline env
+    template: templates/hermes-managed-secret.yaml
+    set:
+      hermes.managed.enabled: true
+      hermes.managed.existingSecret: my-hermes-managed
+      hermes.managed.env:
+        FOO: bar
+    asserts:
+      - failedTemplate:
+          errorPattern: "hermes\\.managed\\.existingSecret.*hermes\\.managed\\.env.*mutually exclusive"
+
+  - it: rejects existingSecret combined with inline config
+    template: templates/hermes-managed-secret.yaml
+    set:
+      hermes.managed.enabled: true
+      hermes.managed.existingSecret: my-hermes-managed
+      hermes.managed.config:
+        model:
+          default: x
+    asserts:
+      - failedTemplate:
+          errorPattern: "hermes\\.managed\\.existingSecret.*hermes\\.managed\\.config.*mutually exclusive"
+
+  # ---- Rule 3: an empty managed scope is always a mistake ----
+  - it: rejects an enabled managed scope with nothing pinned
+    template: templates/hermes-managed-secret.yaml
+    set:
+      hermes.managed.enabled: true
+    asserts:
+      - failedTemplate:
+          errorPattern: "empty managed scope pins nothing"
+
+  # ---- Rule 5: env_loader silently skips lines it cannot parse ----
+  - it: rejects an env key that is not a valid environment variable name
+    template: templates/hermes-managed-secret.yaml
+    set:
+      hermes.managed.enabled: true
+      hermes.managed.env:
+        FOO-BAR: baz
+    asserts:
+      - failedTemplate:
+          errorPattern: "not a valid environment variable name"
+
+  # ---- existingSecret projection: renaming is all-or-nothing ----
+  # A secret volume projects either every key under its own name, or only the
+  # keys listed under `items`. Emitting `items` unconditionally would demand
+  # both files exist and leave the pod unable to mount when an operator pins
+  # only credentials -- so with no key names given, no items are emitted.
+  - it: projects an existingSecret under its own key names when none are given
+    template: templates/hermes-deployment.yaml
+    set:
+      hermes.managed.enabled: true
+      hermes.managed.existingSecret: my-hermes-managed
+    asserts:
+      - contains:
+          path: spec.template.spec.volumes
+          content:
+            name: hermes-managed
+            secret:
+              secretName: my-hermes-managed
+
+  # Validation lives in hermes-managed-secret.yaml, which includes the guard
+  # unconditionally -- so it fires even on the existingSecret branch where that
+  # template renders nothing. Rules 2, 3 and 5 above are asserted the same way.
+  - it: rejects renaming only one of the two managed files
+    template: templates/hermes-managed-secret.yaml
+    set:
+      hermes.managed.enabled: true
+      hermes.managed.existingSecret: my-hermes-managed
+      hermes.managed.existingSecretKeys:
+        env: creds-env
+    asserts:
+      - failedTemplate:
+          errorPattern: "names \"creds-env\" but not both keys"

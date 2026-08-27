@@ -413,6 +413,128 @@ jobs:
         if: always()
         run: k3d cluster delete strange-company-hybrid || true
 
+  integration-hermes-managed:
+    name: hermes managed scope outranks the container environment
+    runs-on: ubuntu-latest
+    needs: [lint, unit]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Install k3d
+        run: |
+          set -euo pipefail
+          curl -sSfL "https://raw.githubusercontent.com/k3d-io/k3d/${K3D_VERSION}/install.sh" | TAG="${K3D_VERSION}" bash
+
+      - name: Create K3s cluster
+        run: |
+          set -euo pipefail
+          k3d cluster create strange-company-hermes-managed \
+            --image "$K3S_IMAGE" \
+            --k3s-arg "--disable=traefik@server:0" \
+            --k3s-arg "--disable=metrics-server@server:0" \
+            --wait --timeout 300s
+
+      - name: Resolve dependencies
+        run: helm dependency build "$CHART"
+
+      # spec: docs/specs/hermes-managed-scope.md. The same variable is set two
+      # ways: hermes.env is the container-environment tier the chart has
+      # always had; hermes.managed.env is the new pinned tier that must win.
+      # This is the only test in this workflow that proves the precedence
+      # claim rather than restating a reading of upstream source -- see the
+      # exec-based assertion below.
+      - name: Install with a container env value and a conflicting managed-scope pin
+        run: |
+          set -euo pipefail
+          helm install "$RELEASE" "$CHART" \
+            -n "$NS" --create-namespace \
+            -f "$CHART/ci/values-batteries.yaml" \
+            --set hermes.env.HERMES_MANAGED_PROBE=from-container-env \
+            --set hermes.managed.enabled=true \
+            --set hermes.managed.env.HERMES_MANAGED_PROBE=from-managed-scope \
+            --wait --timeout 20m
+
+      - name: Assert the managed Secret exists and is wired at HERMES_MANAGED_DIR
+        run: |
+          set -euo pipefail
+          managed_dir=$(kubectl -n "$NS" get deployment "$FULLNAME-hermes" \
+            -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="HERMES_MANAGED_DIR")].value}')
+          [ "$managed_dir" = "/etc/hermes-managed" ] || {
+            echo "::error::HERMES_MANAGED_DIR is '$managed_dir', not /etc/hermes-managed"
+            exit 1
+          }
+          kubectl -n "$NS" get secret "$FULLNAME-hermes-managed" -o jsonpath='{.data}' | grep -q '\.env'
+          echo "managed Secret exists and HERMES_MANAGED_DIR points at the mount"
+
+      # `kubectl exec ... env` cannot answer this. hermes_cli merges its tiers
+      # into its own process's os.environ at startup, and neither a freshly
+      # exec'd shell nor /proc/<pid>/environ (a snapshot taken at exec time)
+      # can see that merge. So run Hermes's own public loader,
+      # hermes_cli.env_loader.load_hermes_dotenv(), in a fresh interpreter in
+      # the pod and read back what it resolved. That function ends by calling
+      # _apply_managed_env() -> managed_scope.get_managed_dir(), so this
+      # exercises the chart's actual wiring -- the HERMES_MANAGED_DIR value,
+      # the mount path, the `.env` filename and upstream's own precedence --
+      # rather than a reading of it. Calling a private helper with a path this
+      # step constructed itself would bypass exactly the resolution under test.
+      - name: Assert Hermes itself resolves the managed value, not the container one
+        run: |
+          set -euo pipefail
+          POD=$(kubectl -n "$NS" get pod -l app.kubernetes.io/component=hermes -o jsonpath='{.items[0].metadata.name}')
+
+          # The `hermes` entrypoint in this image is a shell script, not a
+          # Python console-script, so its shebang is /bin/sh and says nothing
+          # about the interpreter. Ask instead which candidate can import
+          # hermes_cli -- that is the only property this step needs, and a
+          # wrong guess fails here with the list rather than as a syntax error
+          # further down.
+          PYBIN=$(kubectl -n "$NS" exec "$POD" -c hermes -- sh -c '
+            for p in /opt/hermes/bin/python3 /opt/hermes/bin/python \
+                     "$(command -v python3 || true)" "$(command -v python || true)"; do
+              [ -n "$p" ] && [ -x "$p" ] || continue
+              if "$p" -c "import hermes_cli" >/dev/null 2>&1; then echo "$p"; exit 0; fi
+            done
+            echo "no interpreter on this image could import hermes_cli" >&2
+            exit 1
+          ')
+          echo "python interpreter: $PYBIN"
+
+          resolved=$(kubectl -n "$NS" exec -i "$POD" -c hermes -- sh -c "$PYBIN -" <<'PYEOF'
+          import os, sys
+          from hermes_cli.env_loader import load_hermes_dotenv
+
+          print(f"HERMES_MANAGED_DIR={os.environ.get('HERMES_MANAGED_DIR')!r}", file=sys.stderr)
+          print(f"before={os.environ.get('HERMES_MANAGED_PROBE')!r}", file=sys.stderr)
+          load_hermes_dotenv()
+          after = os.environ.get("HERMES_MANAGED_PROBE")
+          print(f"after={after!r}", file=sys.stderr)
+          print(after or "")
+          PYEOF
+          )
+          echo "resolved HERMES_MANAGED_PROBE = $resolved"
+          [ "$resolved" = "from-managed-scope" ] || {
+            echo "::error::expected the managed scope to win (from-managed-scope), got '$resolved'"
+            exit 1
+          }
+          echo "managed scope correctly overrides the container environment"
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          kubectl -n "$NS" get all -o wide || true
+          kubectl -n "$NS" describe pods || true
+          kubectl -n "$NS" logs -l app.kubernetes.io/component=hermes --all-containers --tail=200 || true
+          kubectl -n "$NS" get events --sort-by=.lastTimestamp || true
+
+      - name: Delete cluster
+        if: always()
+        run: k3d cluster delete strange-company-hermes-managed || true
+
   integration-real-control-plane:
     name: chart with the real control-plane image
     runs-on: ubuntu-latest

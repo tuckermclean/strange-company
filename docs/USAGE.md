@@ -173,6 +173,33 @@ sit *outside* the `strange-company:` block.
   `VIKUNJA_TOKEN`. Create a token in the UI and set `vikunja.token`, or supply
   `controlPlane.existingSecret`.
 
+### Pinning a Hermes provider credential against dashboard drift
+
+`hermes.env` is not authoritative for credentials: Hermes lets a human type a
+provider API key into its own dashboard, which writes it to `~/.hermes/.env`
+on the Hermes PVC and reloads it with `override=True` on every restart -- so a
+hand-entered value silently beats whatever the chart declared, forever, with
+no trace in `helm diff`. See
+[`specs/hermes-managed-scope.md`](specs/hermes-managed-scope.md).
+
+`hermes.managed` pins specific keys so they win instead, on every restart,
+regardless of what the dashboard has stored:
+
+```yaml
+hermes:
+  managed:
+    enabled: true
+    env:
+      ANTHROPIC_API_KEY: sk-ant-...
+    config:
+      model:
+        default: anthropic/claude-test
+```
+
+`env` and `config` are mutually exclusive with `existingSecret` -- use one or
+the other. Everything *not* pinned here stays adjustable in the dashboard, as
+normal.
+
 ## Storage
 
 `storageClass: ""` means "use the cluster default StorageClass" — the chart
