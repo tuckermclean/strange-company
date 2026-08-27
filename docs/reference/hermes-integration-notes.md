@@ -176,9 +176,9 @@ card, its repository context and the ambiguity report, then records the session
 id on the card. The human opens the dashboard and continues it there. Nothing
 new to build or host, and no model call spent to open the conversation.
 
-**Still unverified:** whether an `api_server` session appears in the
-*dashboard's* session list. The dashboard is a separate listener (port 9119)
-behind OIDC and rejects the gateway bearer key, so it cannot be checked from the
-gateway API. It will be verified against a chart-installed Hermes in CI, which
-is where behavioural claims about this chart belong -- not against a shared
-deployment that other people are using.
+**Verified 2026-08-27:** a session created through the gateway does appear in
+the dashboard's session list. Confirmed by the operator against their own
+browser session, which is the only place it could be checked -- the dashboard
+is a separate listener behind OIDC and rejects the gateway bearer key.
+
+Every step of the §10.2 handoff is now verified rather than inferred.
