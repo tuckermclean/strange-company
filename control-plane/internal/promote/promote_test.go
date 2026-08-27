@@ -12,25 +12,49 @@ import (
 	"github.com/tuckermclean/strange-company/control-plane/internal/store"
 )
 
-const goodSpec = `# Problem
+const goodSpec = `# Context
 
-Health is unobservable.
+The service exposes no health signal.
 
-# Scope
+# Task
 
-One endpoint.
+Add a health endpoint.
+
+# Evidence available
+
+The existing HTTP handlers and their tests.
+
+# Interfaces
+
+GET /healthz
+
+# Constraints
+
+No new dependencies.
+
+# Invariants
+
+The endpoint never blocks on the database.
+
+# Permitted actions
+
+Modify files in the repository; run the project tests.
+
+# Forbidden actions
+
+Anything touching production.
+
+# Acceptance criteria
+
+- AC1: returns 200 when healthy — verified by: ` + "`curl -fsS localhost:8080/healthz`" + `
 
 # Out of scope
 
 Metrics.
 
-# Acceptance criteria
+# Failure behavior
 
-- AC1: returns 200 when healthy (verified by: curl)
-
-# Risks
-
-None.
+Returns 503 when the database is unreachable.
 `
 
 type board struct {
@@ -121,7 +145,7 @@ func TestACardWithNoPermittedActionsIsNotPromoted(t *testing.T) {
 // and does not care, and the card must stay put rather than being promoted on
 // the strength of the approval alone.
 func TestAnApprovedButIncompleteSpecIsNotPromoted(t *testing.T) {
-	b, _ := boardWith(t, "# Problem\n\nnot much else\n", true, true)
+	b, _ := boardWith(t, "# Context\n\nnot much else\n", true, true)
 
 	res, err := promote.New(b, 10, nil).RunOnce(context.Background())
 	if err != nil {
