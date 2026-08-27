@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strings"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -23,6 +24,7 @@ import (
 	"github.com/tuckermclean/strange-company/control-plane/internal/hermes"
 	"github.com/tuckermclean/strange-company/control-plane/internal/ingest"
 	"github.com/tuckermclean/strange-company/control-plane/internal/policy"
+	"github.com/tuckermclean/strange-company/control-plane/internal/promote"
 	"github.com/tuckermclean/strange-company/control-plane/internal/providerclient"
 	"github.com/tuckermclean/strange-company/control-plane/internal/server"
 	"github.com/tuckermclean/strange-company/control-plane/internal/specsession"
@@ -91,7 +93,11 @@ func main() {
 	go runSpecificationSupervisor(ctx, logger, cfg, st, pol)
 
 	// Turns labelled GitHub issues into cards (spec 25).
-	go runIngestSupervisor(ctx, logger, cfg, st)
+	go runIngestSupervisor(ctx, logger, cfg, st, pol)
+
+	// Moves approved cards into Ready when the deterministic gate agrees
+	// (spec 10.2).
+	go runPromotionSupervisor(ctx, logger, cfg, st)
 
 	checks := []health.Checker{
 		&postgresChecker{store: st},
@@ -479,7 +485,7 @@ func endpointHost(raw string) string {
 // §4.3's rule about Vikunja applies here too: do not assume a delivery worked,
 // reconcile until it has. A webhook can make this faster later; it cannot make
 // it correct, and it would need public ingress this chart does not require.
-func runIngestSupervisor(ctx context.Context, logger *slog.Logger, cfg *config.Config, st *store.Store) {
+func runIngestSupervisor(ctx context.Context, logger *slog.Logger, cfg *config.Config, st *store.Store, pol *policy.Policy) {
 	log := logger.With("supervisor", "ingest")
 
 	if len(cfg.GitHubRepositories) == 0 {
@@ -498,7 +504,16 @@ func runIngestSupervisor(ctx context.Context, logger *slog.Logger, cfg *config.C
 		return
 	}
 
-	rec := ingest.New(client, st, cfg.GitHubRepositories, cfg.GitHubIngestLabel, log)
+	// Every card is stamped with the allowlist at creation. A card without
+	// one can never pass 10's gate, so it would sit on the board forever
+	// looking like work nobody had got to.
+	actions, err := json.Marshal(pol.DefaultPermittedActions())
+	if err != nil {
+		log.Error("could not render the permitted-actions allowlist; issue ingestion disabled", "error", err)
+		return
+	}
+
+	rec := ingest.New(client, st, cfg.GitHubRepositories, cfg.GitHubIngestLabel, actions, log)
 	log.Info("issue ingestion enabled",
 		"repositories", cfg.GitHubRepositories,
 		"label", cfg.GitHubIngestLabel,
@@ -516,6 +531,34 @@ func runIngestSupervisor(ctx context.Context, logger *slog.Logger, cfg *config.C
 		select {
 		case <-ctx.Done():
 			log.Info("ingest supervisor stopping")
+			return
+		case <-time.After(cfg.ReconcileInterval):
+		}
+	}
+}
+
+// runPromotionSupervisor moves approved cards into Ready.
+//
+// Spec §10.2 makes approval the human input and promotion the control plane's
+// consequence of it, which is why this is a supervisor rather than an
+// endpoint: an endpoint that promoted directly would be a way around the
+// deterministic gate.
+func runPromotionSupervisor(ctx context.Context, logger *slog.Logger, cfg *config.Config, st *store.Store) {
+	log := logger.With("supervisor", "promotion")
+	rec := promote.New(st, specScreeningLimit, log)
+
+	for {
+		if res, err := rec.RunOnce(ctx); err != nil {
+			log.Warn("promotion pass failed", "error", err)
+		} else if res.Promoted+res.Blocked+res.Failed > 0 {
+			log.Info("promotion pass",
+				"considered", res.Considered, "promoted", res.Promoted,
+				"blocked", res.Blocked, "failed", res.Failed)
+		}
+
+		select {
+		case <-ctx.Done():
+			log.Info("promotion supervisor stopping")
 			return
 		case <-time.After(cfg.ReconcileInterval):
 		}

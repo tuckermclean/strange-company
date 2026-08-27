@@ -54,7 +54,7 @@ func TestAnIssueBecomesACard(t *testing.T) {
 	src := &fakeSource{byRepo: map[string][]github.Issue{"example/repo": {issue("example/repo", 7)}}}
 	board := &fakeBoard{}
 
-	res, err := ingest.New(src, board, []string{"example/repo"}, "agent-ready", nil).RunOnce(context.Background())
+	res, err := ingest.New(src, board, []string{"example/repo"}, "agent-ready", []byte(`{"files":{"include":["**"]}}`), nil).RunOnce(context.Background())
 	if err != nil {
 		t.Fatalf("RunOnce: %v", err)
 	}
@@ -76,6 +76,11 @@ func TestAnIssueBecomesACard(t *testing.T) {
 	if got.RepoURL != "https://github.com/example/repo" {
 		t.Errorf("repo url = %q", got.RepoURL)
 	}
+	// A card with no allowlist can never pass 10's gate, so ingestion has
+	// to stamp one at creation or the card is unworkable forever.
+	if len(got.PermittedActions) == 0 {
+		t.Error("ingested a card with no permitted-actions block")
+	}
 	if res.Created != 1 || res.Failed != 0 {
 		t.Errorf("result = %+v", res)
 	}
@@ -93,7 +98,7 @@ func TestOneUnreadableRepositoryDoesNotStopTheRest(t *testing.T) {
 	}
 	board := &fakeBoard{}
 
-	res, err := ingest.New(src, board, []string{"bad/repo", "good/repo"}, "agent-ready", nil).RunOnce(context.Background())
+	res, err := ingest.New(src, board, []string{"bad/repo", "good/repo"}, "agent-ready", nil, nil).RunOnce(context.Background())
 	if err != nil {
 		t.Fatalf("RunOnce should not fail the pass: %v", err)
 	}
@@ -113,7 +118,7 @@ func TestAFailedWriteIsCountedAndThePassContinues(t *testing.T) {
 	}}
 	board := &fakeBoard{err: errors.New("database down")}
 
-	res, err := ingest.New(src, board, []string{"example/repo"}, "agent-ready", nil).RunOnce(context.Background())
+	res, err := ingest.New(src, board, []string{"example/repo"}, "agent-ready", []byte(`{"files":{"include":["**"]}}`), nil).RunOnce(context.Background())
 	if err != nil {
 		t.Fatalf("RunOnce: %v", err)
 	}
@@ -126,7 +131,7 @@ func TestNoRepositoriesIsANoOp(t *testing.T) {
 	src := &fakeSource{}
 	board := &fakeBoard{}
 
-	res, err := ingest.New(src, board, nil, "agent-ready", nil).RunOnce(context.Background())
+	res, err := ingest.New(src, board, nil, "agent-ready", nil, nil).RunOnce(context.Background())
 	if err != nil {
 		t.Fatalf("RunOnce: %v", err)
 	}
