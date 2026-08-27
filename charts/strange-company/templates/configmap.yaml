@@ -17,6 +17,11 @@ data:
   DATABASE_PORT: {{ include "strange-company.databasePort" . | quote }}
   DATABASE_NAME: {{ include "strange-company.databaseName" . | quote }}
   VIKUNJA_URL: {{ include "strange-company.vikunjaUrl" . | quote }}
+  # Spec 25: an issue carrying this label becomes a card. With no repositories
+  # listed, nothing can create a card at all and the board stays empty.
+  GITHUB_API_URL: {{ .Values.github.apiUrl | quote }}
+  GITHUB_REPOSITORIES: {{ join "," .Values.github.repositories | quote }}
+  GITHUB_INGEST_LABEL: {{ .Values.github.label | quote }}
   # Without at least one username here the board belongs to the bootstrap
   # user alone and no human can see the cards.
   VIKUNJA_BOARD_SHARE_WITH: {{ join "," .Values.vikunja.board.shareWith | quote }}

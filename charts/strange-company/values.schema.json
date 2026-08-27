@@ -681,6 +681,30 @@
           "type": "string"
         }
       }
+    },
+    "github": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "apiUrl": {
+          "type": "string",
+          "minLength": 1
+        },
+        "repositories": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[^/]+/[^/]+$"
+          }
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "token": {
+          "type": "string"
+        }
+      }
     }
   }
 }
