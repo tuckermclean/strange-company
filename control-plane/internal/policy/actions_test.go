@@ -58,12 +58,12 @@ endpoints: []
 network: []
 `)
 
-	p, source, err := policy.LoadOrDefaults(dir)
+	p, operatorSupplied, err := policy.LoadOrDefaults(dir)
 	if err != nil {
 		t.Fatalf("LoadOrDefaults: %v", err)
 	}
-	if source != dir {
-		t.Fatalf("source = %q, want %q", source, dir)
+	if !operatorSupplied {
+		t.Fatal("operator policy was not reported as in force")
 	}
 	actions := p.DefaultPermittedActions()
 	if len(actions.Files.Include) != 1 || actions.Files.Include[0] != "src/**" {
