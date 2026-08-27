@@ -17,8 +17,11 @@ import (
 
 	"github.com/tuckermclean/strange-company/control-plane/internal/config"
 	"github.com/tuckermclean/strange-company/control-plane/internal/health"
+	"github.com/tuckermclean/strange-company/control-plane/internal/hermes"
+	"github.com/tuckermclean/strange-company/control-plane/internal/modelclient"
 	"github.com/tuckermclean/strange-company/control-plane/internal/policy"
 	"github.com/tuckermclean/strange-company/control-plane/internal/server"
+	"github.com/tuckermclean/strange-company/control-plane/internal/specsession"
 	"github.com/tuckermclean/strange-company/control-plane/internal/store"
 	"github.com/tuckermclean/strange-company/control-plane/internal/vikunja"
 )
@@ -75,10 +78,13 @@ func main() {
 	}
 
 	pol := loadPolicy(logger, cfg)
-	_ = pol // consumed by the worker in M3; loaded now so bad policy fails visibly at boot
 
 	// Runs for the lifetime of the process, retrying until Vikunja is reachable.
 	go runVikunjaSupervisor(ctx, logger, cfg, st)
+
+	// Screens specifications and opens the human conversation for the ones
+	// that need it (spec 10.1, 10.2).
+	go runSpecificationSupervisor(ctx, logger, cfg, st, pol)
 
 	checks := []health.Checker{
 		&postgresChecker{store: st},
@@ -338,4 +344,80 @@ func (storeErrorClassifier) IsNotClaimant(err error) bool {
 
 func (storeErrorClassifier) IsNotFound(err error) bool {
 	return errors.Is(err, store.ErrCardNotFound)
+}
+
+// specScreeningLimit bounds how many specifications one pass will screen.
+//
+// Each one is a model call, so this is the difference between a large backlog
+// costing a bounded amount per pass and costing whatever the backlog happens
+// to be. Cards not reached this pass are reached on the next.
+const specScreeningLimit = 10
+
+// runSpecificationSupervisor screens unscreened specifications and opens the
+// Hermes conversation for the ones a human has to resolve.
+//
+// Like the Vikunja supervisor, nothing here is fatal and nothing is done once
+// at boot: the gateway is routinely not listening yet, and a specification
+// that could not be screened this minute is screened the next.
+func runSpecificationSupervisor(ctx context.Context, logger *slog.Logger, cfg *config.Config, st *store.Store, pol *policy.Policy) {
+	log := logger.With("supervisor", "specification")
+
+	if cfg.HermesGatewayURL == "" {
+		log.Info("no Hermes gateway configured; specification screening disabled")
+		return
+	}
+
+	// Screening runs on the foreman rung: it is a cheap, high-volume
+	// classification, and paying frontier prices to be told a card is
+	// mechanical is the failure this tiering exists to avoid.
+	screenRes, err := pol.Resolve("foreman", 1)
+	if err != nil {
+		log.Error("no foreman model in policy; specification screening disabled", "error", err)
+		return
+	}
+	specRes, err := pol.Resolve("specification", 1)
+	if err != nil {
+		log.Error("no specification model in policy; specification screening disabled", "error", err)
+		return
+	}
+
+	// The gateway speaks the OpenAI-compatible API under /v1, and holds the
+	// provider credentials itself -- the control plane never sees them.
+	mc, err := modelclient.New(strings.TrimSuffix(cfg.HermesGatewayURL, "/")+"/v1", cfg.HermesAPIKey, screenRes.Model)
+	if err != nil {
+		log.Error("could not build a model client; specification screening disabled", "error", err)
+		return
+	}
+	gateway, err := hermes.New(cfg.HermesGatewayURL, cfg.HermesAPIKey)
+	if err != nil {
+		log.Error("could not build a Hermes client; specification screening disabled", "error", err)
+		return
+	}
+
+	rec := specsession.NewReconciler(
+		st,
+		specsession.NewModelScreener(mc, screenRes.Model),
+		specsession.NewOpener(gateway, st, specRes.Model),
+		specScreeningLimit,
+		log,
+	)
+
+	log.Info("specification screening enabled",
+		"screening_model", screenRes.Model, "conversation_model", specRes.Model)
+
+	for {
+		if res, err := rec.RunOnce(ctx); err != nil {
+			log.Warn("specification pass failed", "error", err)
+		} else if res.Screened+res.Opened+res.Failed > 0 {
+			log.Info("specifications reconciled",
+				"screened", res.Screened, "opened", res.Opened, "failed", res.Failed)
+		}
+
+		select {
+		case <-ctx.Done():
+			log.Info("specification supervisor stopping")
+			return
+		case <-time.After(cfg.ReconcileInterval):
+		}
+	}
 }

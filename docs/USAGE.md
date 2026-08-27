@@ -173,6 +173,33 @@ sit *outside* the `strange-company:` block.
   `VIKUNJA_TOKEN`. Create a token in the UI and set `vikunja.token`, or supply
   `controlPlane.existingSecret`.
 
+### Provider credentials in one place
+
+`credentials` is the one place to put AI provider credentials so a fresh
+install actually works. Each entry becomes a Secret whose name and keys are
+exactly what `control-plane/internal/policy/defaults/providers.yaml` (or your
+own `policy.providers`) references. The chart never invents a credential: an
+empty value renders no Secret at all, so an unconfigured provider fails closed
+rather than authenticating with `""`. See
+[`specs/single-source-credentials.md`](specs/single-source-credentials.md).
+
+The minimum values file that makes the shipped default `providers.yaml`'s
+`anthropic-api` provider work:
+
+```yaml
+credentials:
+  anthropic-api-credentials:
+    api-key: sk-ant-...
+```
+
+`credentials` is a free-form map -- the four documented entries in
+`values.yaml` are defaults for the shipped `providers.yaml`, not an allowlist.
+Add any other entry to create a Secret for a provider this chart has never
+heard of. A name that collides with a Secret the chart already owns (its own
+credentials Secret, the bundled PostgreSQL Secret, the Vikunja database
+Secret, or Hermes's development-convenience Secret) fails the render rather
+than silently overwriting it.
+
 ### Pinning a Hermes provider credential against dashboard drift
 
 `hermes.env` is not authoritative for credentials: Hermes lets a human type a
@@ -199,6 +226,28 @@ hermes:
 `env` and `config` are mutually exclusive with `existingSecret` -- use one or
 the other. Everything *not* pinned here stays adjustable in the dashboard, as
 normal.
+
+To pin the *same* value that also backs a provider Secret above -- so the
+gateway's dashboard and the coding runners can never drift apart -- reference
+it from `credentials` instead of retyping it:
+
+```yaml
+credentials:
+  anthropic-api-credentials:
+    api-key: sk-ant-...
+
+hermes:
+  managed:
+    enabled: true
+    fromCredentials:
+      ANTHROPIC_API_KEY: anthropic-api-credentials.api-key
+```
+
+`fromCredentials` composes with `env` above (a key set in both fails the
+render), requires `hermes.managed.enabled: true`, and each
+`<secretName>.<key>` reference must resolve to a non-empty value in
+`credentials` -- an unresolvable or empty reference fails the render, naming
+the reference.
 
 ## Storage
 
