@@ -87,6 +87,14 @@ spec:
                   name: {{ include "strange-company.vikunjaSecretName" . }}
                   key: {{ include "strange-company.vikunjaTokenKey" . }}
                   optional: true
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "strange-company.secretName" . }}
+                  key: github-token
+                  # Optional: no token simply disables ingestion, and the
+                  # control plane says so at boot rather than failing.
+                  optional: true
             - name: HERMES_API_KEY
               valueFrom:
                 secretKeyRef:

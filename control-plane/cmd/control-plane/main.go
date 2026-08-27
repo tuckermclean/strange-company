@@ -18,8 +18,10 @@ import (
 
 	"github.com/tuckermclean/strange-company/control-plane/internal/config"
 	"github.com/tuckermclean/strange-company/control-plane/internal/credentials"
+	"github.com/tuckermclean/strange-company/control-plane/internal/github"
 	"github.com/tuckermclean/strange-company/control-plane/internal/health"
 	"github.com/tuckermclean/strange-company/control-plane/internal/hermes"
+	"github.com/tuckermclean/strange-company/control-plane/internal/ingest"
 	"github.com/tuckermclean/strange-company/control-plane/internal/policy"
 	"github.com/tuckermclean/strange-company/control-plane/internal/providerclient"
 	"github.com/tuckermclean/strange-company/control-plane/internal/server"
@@ -87,6 +89,9 @@ func main() {
 	// Screens specifications and opens the human conversation for the ones
 	// that need it (spec 10.1, 10.2).
 	go runSpecificationSupervisor(ctx, logger, cfg, st, pol)
+
+	// Turns labelled GitHub issues into cards (spec 25).
+	go runIngestSupervisor(ctx, logger, cfg, st)
 
 	checks := []health.Checker{
 		&postgresChecker{store: st},
@@ -464,4 +469,55 @@ func endpointHost(raw string) string {
 		return "(unparseable)"
 	}
 	return u.Scheme + "://" + u.Host
+}
+
+// runIngestSupervisor turns labelled GitHub issues into cards, for the life of
+// the process.
+//
+// Spec §25 wants an eligible issue on the board within 60 seconds, which is
+// the reconcile interval. This polls rather than waiting on a webhook because
+// §4.3's rule about Vikunja applies here too: do not assume a delivery worked,
+// reconcile until it has. A webhook can make this faster later; it cannot make
+// it correct, and it would need public ingress this chart does not require.
+func runIngestSupervisor(ctx context.Context, logger *slog.Logger, cfg *config.Config, st *store.Store) {
+	log := logger.With("supervisor", "ingest")
+
+	if len(cfg.GitHubRepositories) == 0 {
+		log.Info("no GitHub repositories configured; issue ingestion disabled, so the board will only hold cards created by other means")
+		return
+	}
+	if cfg.GitHubToken == "" {
+		log.Error("GitHub repositories are configured but no token is set; issue ingestion disabled",
+			"repositories", cfg.GitHubRepositories)
+		return
+	}
+
+	client, err := github.New(cfg.GitHubAPIURL, cfg.GitHubToken, nil)
+	if err != nil {
+		log.Error("could not build a GitHub client; issue ingestion disabled", "error", err)
+		return
+	}
+
+	rec := ingest.New(client, st, cfg.GitHubRepositories, cfg.GitHubIngestLabel, log)
+	log.Info("issue ingestion enabled",
+		"repositories", cfg.GitHubRepositories,
+		"label", cfg.GitHubIngestLabel,
+		"endpoint", endpointHost(cfg.GitHubAPIURL))
+
+	for {
+		if res, err := rec.RunOnce(ctx); err != nil {
+			log.Warn("ingestion pass failed", "error", err)
+		} else if res.Created+res.Failed > 0 {
+			log.Info("issues ingested",
+				"seen", res.Seen, "created", res.Created,
+				"updated", res.Updated, "failed", res.Failed)
+		}
+
+		select {
+		case <-ctx.Done():
+			log.Info("ingest supervisor stopping")
+			return
+		case <-time.After(cfg.ReconcileInterval):
+		}
+	}
 }

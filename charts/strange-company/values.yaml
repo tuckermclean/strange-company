@@ -388,6 +388,23 @@ credentials:
     api-key: ""
 
 # ---------------------------------------------------------------------------
+# Work intake
+# ---------------------------------------------------------------------------
+# Spec 25: a GitHub issue carrying `label` becomes a board card. With no
+# repositories listed there is no way to create a card at all, so the board
+# stays empty however healthy everything else is.
+github:
+  # -- API root. Point at a GitHub Enterprise install by changing this.
+  apiUrl: https://api.github.com
+  # -- Repositories to ingest from, each "owner/name".
+  repositories: []
+  # -- Only issues carrying this label are eligible.
+  label: agent-ready
+  # -- Token with read access to those repositories' issues. Rendered into the
+  # chart's Secret; leave empty and set `existingSecret` to bring your own.
+  token: ""
+
+# ---------------------------------------------------------------------------
 # Model and provider policy
 # ---------------------------------------------------------------------------
 # Which vendor runs which phase is a configuration decision, never a code

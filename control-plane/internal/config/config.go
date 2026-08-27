@@ -49,6 +49,19 @@ type Config struct {
 	HermesAPIKey       string
 	HermesDashboardURL string
 
+	// GitHubAPIURL is the API root, so GitHub Enterprise is configuration
+	// rather than a code change.
+	GitHubAPIURL string
+
+	// GitHubToken authenticates issue ingestion. Empty disables it.
+	GitHubToken string
+
+	// GitHubRepositories are the "owner/name" repositories to ingest from.
+	GitHubRepositories []string
+
+	// GitHubIngestLabel is the label that makes an issue eligible (spec §25).
+	GitHubIngestLabel string
+
 	// PolicyDir is where operator-supplied policy is mounted. Empty means use
 	// the policy compiled into the binary.
 	PolicyDir string
@@ -68,6 +81,8 @@ const (
 	defaultSSLMode           = "disable"
 	defaultCredentialsDir    = "/credentials"
 	defaultBoardPermission   = 1
+	defaultGitHubAPIURL      = "https://api.github.com"
+	defaultIngestLabel       = "agent-ready"
 )
 
 // secretVars are never rendered verbatim by Redacted.
@@ -75,6 +90,7 @@ var secretVars = map[string]bool{
 	"DATABASE_PASSWORD":          true,
 	"VIKUNJA_TOKEN":              true,
 	"VIKUNJA_BOOTSTRAP_PASSWORD": true,
+	"GITHUB_TOKEN":               true,
 	"HERMES_API_KEY":             true,
 }
 
@@ -112,6 +128,10 @@ func Load(getenv func(string) string) (*Config, error) {
 		// Optional: only needed to bootstrap a Vikunja token on first boot.
 		// When VikunjaToken is already set, or when both of these are absent,
 		// bootstrap is skipped entirely.
+		GitHubAPIURL:             valueOr(getenv("GITHUB_API_URL"), defaultGitHubAPIURL),
+		GitHubToken:              strings.TrimSpace(getenv("GITHUB_TOKEN")),
+		GitHubRepositories:       splitList(getenv("GITHUB_REPOSITORIES")),
+		GitHubIngestLabel:        valueOr(getenv("GITHUB_INGEST_LABEL"), defaultIngestLabel),
 		VikunjaBoardShareWith:    splitList(getenv("VIKUNJA_BOARD_SHARE_WITH")),
 		VikunjaBootstrapUsername: strings.TrimSpace(getenv("VIKUNJA_BOOTSTRAP_USERNAME")),
 		VikunjaBootstrapPassword: strings.TrimSpace(getenv("VIKUNJA_BOOTSTRAP_PASSWORD")),
@@ -205,6 +225,9 @@ func (c *Config) Redacted() map[string]string {
 		"VIKUNJA_URL":                c.VikunjaURL,
 		"VIKUNJA_BOOTSTRAP_USERNAME": c.VikunjaBootstrapUsername,
 		"CREDENTIALS_DIR":            c.CredentialsDir,
+		"GITHUB_API_URL":             c.GitHubAPIURL,
+		"GITHUB_REPOSITORIES":        strings.Join(c.GitHubRepositories, ","),
+		"GITHUB_INGEST_LABEL":        c.GitHubIngestLabel,
 		"VIKUNJA_BOARD_SHARE_WITH":   strings.Join(c.VikunjaBoardShareWith, ","),
 		"HERMES_GATEWAY_URL":         c.HermesGatewayURL,
 		"HERMES_DASHBOARD_URL":       c.HermesDashboardURL,
@@ -215,6 +238,7 @@ func (c *Config) Redacted() map[string]string {
 		"DATABASE_PASSWORD":          c.DatabasePassword,
 		"VIKUNJA_TOKEN":              c.VikunjaToken,
 		"VIKUNJA_BOOTSTRAP_PASSWORD": c.VikunjaBootstrapPassword,
+		"GITHUB_TOKEN":               c.GitHubToken,
 		"HERMES_API_KEY":             c.HermesAPIKey,
 	} {
 		if !secretVars[name] {
