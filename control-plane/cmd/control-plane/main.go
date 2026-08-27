@@ -17,6 +17,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/tuckermclean/strange-company/control-plane/internal/config"
 	"github.com/tuckermclean/strange-company/control-plane/internal/credentials"
 	"github.com/tuckermclean/strange-company/control-plane/internal/github"
