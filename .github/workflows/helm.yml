@@ -448,7 +448,12 @@ jobs:
       # This is the only test in this workflow that proves the precedence
       # claim rather than restating a reading of upstream source -- see the
       # exec-based assertion below.
-      - name: Install with a container env value and a conflicting managed-scope pin
+      #
+      # Also covers docs/specs/single-source-credentials.md's behaviour
+      # criterion: a `credentials` entry plus a `fromCredentials` mapping for
+      # it, installed in the same release. sc-ci-probe-credentials is chosen
+      # to collide with nothing this chart owns (Rule 3).
+      - name: Install with a container env value, a conflicting managed-scope pin, and a credentials entry pinned via fromCredentials
         run: |
           set -euo pipefail
           helm install "$RELEASE" "$CHART" \
@@ -457,6 +462,8 @@ jobs:
             --set hermes.env.HERMES_MANAGED_PROBE=from-container-env \
             --set hermes.managed.enabled=true \
             --set hermes.managed.env.HERMES_MANAGED_PROBE=from-managed-scope \
+            --set credentials.sc-ci-probe-credentials.probe-key=integration-secret-value \
+            --set hermes.managed.fromCredentials.HERMES_CREDENTIAL_PROBE=sc-ci-probe-credentials.probe-key \
             --wait --timeout 20m
 
       - name: Assert the managed Secret exists and is wired at HERMES_MANAGED_DIR
@@ -471,6 +478,20 @@ jobs:
           kubectl -n "$NS" get secret "$FULLNAME-hermes-managed" -o jsonpath='{.data}' | grep -q '\.env'
           echo "managed Secret exists and HERMES_MANAGED_DIR points at the mount"
 
+      # spec: docs/specs/single-source-credentials.md. Both halves of a
+      # `credentials` entry referenced via `fromCredentials` come from one
+      # values entry -- assert the provider Secret side of it here; the
+      # resolved-env-var side is asserted in the exec-based step below.
+      - name: Assert the credentials Secret exists with the expected key
+        run: |
+          set -euo pipefail
+          val=$(kubectl -n "$NS" get secret sc-ci-probe-credentials -o jsonpath='{.data.probe-key}' | base64 -d)
+          [ "$val" = "integration-secret-value" ] || {
+            echo "::error::sc-ci-probe-credentials/probe-key is '$val', not integration-secret-value"
+            exit 1
+          }
+          echo "credentials Secret exists with the expected key"
+
       # `kubectl exec ... env` cannot answer this. hermes_cli merges its tiers
       # into its own process's os.environ at startup, and neither a freshly
       # exec'd shell nor /proc/<pid>/environ (a snapshot taken at exec time)
@@ -482,7 +503,7 @@ jobs:
       # the mount path, the `.env` filename and upstream's own precedence --
       # rather than a reading of it. Calling a private helper with a path this
       # step constructed itself would bypass exactly the resolution under test.
-      - name: Assert Hermes itself resolves the managed value, not the container one
+      - name: Assert Hermes itself resolves the managed value and the fromCredentials pin
         run: |
           set -euo pipefail
           POD=$(kubectl -n "$NS" get pod -l app.kubernetes.io/component=hermes -o jsonpath='{.items[0].metadata.name}')
@@ -509,19 +530,32 @@ jobs:
           from hermes_cli.env_loader import load_hermes_dotenv
 
           print(f"HERMES_MANAGED_DIR={os.environ.get('HERMES_MANAGED_DIR')!r}", file=sys.stderr)
-          print(f"before={os.environ.get('HERMES_MANAGED_PROBE')!r}", file=sys.stderr)
+          print(f"before_probe={os.environ.get('HERMES_MANAGED_PROBE')!r}", file=sys.stderr)
+          print(f"before_cred={os.environ.get('HERMES_CREDENTIAL_PROBE')!r}", file=sys.stderr)
           load_hermes_dotenv()
-          after = os.environ.get("HERMES_MANAGED_PROBE")
-          print(f"after={after!r}", file=sys.stderr)
-          print(after or "")
+          after_probe = os.environ.get("HERMES_MANAGED_PROBE")
+          after_cred = os.environ.get("HERMES_CREDENTIAL_PROBE")
+          print(f"after_probe={after_probe!r}", file=sys.stderr)
+          print(f"after_cred={after_cred!r}", file=sys.stderr)
+          print(f"{after_probe or ''}|{after_cred or ''}")
           PYEOF
           )
-          echo "resolved HERMES_MANAGED_PROBE = $resolved"
-          [ "$resolved" = "from-managed-scope" ] || {
-            echo "::error::expected the managed scope to win (from-managed-scope), got '$resolved'"
+          echo "resolved HERMES_MANAGED_PROBE|HERMES_CREDENTIAL_PROBE = $resolved"
+          resolved_probe="${resolved%%|*}"
+          resolved_cred="${resolved#*|}"
+          [ "$resolved_probe" = "from-managed-scope" ] || {
+            echo "::error::expected the managed scope to win (from-managed-scope), got '$resolved_probe'"
             exit 1
           }
           echo "managed scope correctly overrides the container environment"
+          # spec: docs/specs/single-source-credentials.md. Same literal that
+          # went into the credentials Secret above, now resolved through
+          # fromCredentials -- both halves came from one values entry.
+          [ "$resolved_cred" = "integration-secret-value" ] || {
+            echo "::error::expected fromCredentials to resolve to integration-secret-value, got '$resolved_cred'"
+            exit 1
+          }
+          echo "fromCredentials correctly pinned the credentials Secret's value"
 
       - name: Diagnostics on failure
         if: failure()

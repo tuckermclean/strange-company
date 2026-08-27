@@ -4,6 +4,11 @@
 # Each test declares its own `template:`, chosen from the suite-level
 # `templates:` allowlist below -- a test cannot select a template the suite
 # did not declare.
+#
+# The `fromCredentials` tests below cover docs/specs/single-source-credentials.md
+# instead -- the half of that spec that feeds this file's managed `.env`. The
+# `credentials` block itself (one Secret per populated entry) is covered by
+# tests/credentials_test.yaml against templates/credentials-secret.yaml.
 suite: hermes managed scope
 release:
   name: strange-company
@@ -224,3 +229,118 @@ tests:
     asserts:
       - failedTemplate:
           errorPattern: "names \"creds-env\" but not both keys"
+
+  # ===================================================================
+  # docs/specs/single-source-credentials.md: hermes.managed.fromCredentials
+  # ===================================================================
+
+  # ---- a resolving reference puts KEY=value in the managed .env ----
+  - it: resolves fromCredentials into a KEY=value line in the managed .env
+    template: templates/hermes-managed-secret.yaml
+    set:
+      hermes.managed.enabled: true
+      credentials.my-provider-credentials.api-key: sk-resolved
+      hermes.managed.fromCredentials.ANTHROPIC_API_KEY: my-provider-credentials.api-key
+    asserts:
+      - hasDocuments:
+          count: 1
+      - matchRegex:
+          path: stringData[".env"]
+          pattern: "(^|\n)ANTHROPIC_API_KEY=sk-resolved(\n|$)"
+
+  # ---- Rule 5: fromCredentials composes with the existing managed.env ----
+  - it: composes fromCredentials with inline managed.env in the same .env
+    template: templates/hermes-managed-secret.yaml
+    set:
+      hermes.managed.enabled: true
+      hermes.managed.env.FOO: bar
+      credentials.my-provider-credentials.api-key: sk-resolved
+      hermes.managed.fromCredentials.ANTHROPIC_API_KEY: my-provider-credentials.api-key
+    asserts:
+      - matchRegex:
+          path: stringData[".env"]
+          pattern: "(^|\n)FOO=bar(\n|$)"
+      - matchRegex:
+          path: stringData[".env"]
+          pattern: "(^|\n)ANTHROPIC_API_KEY=sk-resolved(\n|$)"
+
+  # ---- Rule 4: an unresolvable or empty reference fails, naming the reference ----
+  - it: rejects fromCredentials naming a credentials entry that does not exist
+    template: templates/hermes-managed-secret.yaml
+    set:
+      hermes.managed.enabled: true
+      hermes.managed.fromCredentials.ANTHROPIC_API_KEY: does-not-exist.api-key
+    asserts:
+      - failedTemplate:
+          errorPattern: "fromCredentials\\.ANTHROPIC_API_KEY references \"does-not-exist\\.api-key\""
+
+  - it: rejects fromCredentials naming a key that does not exist in the entry
+    template: templates/hermes-managed-secret.yaml
+    set:
+      hermes.managed.enabled: true
+      credentials.my-provider-credentials.api-key: sk-real
+      hermes.managed.fromCredentials.ANTHROPIC_API_KEY: my-provider-credentials.missing-key
+    asserts:
+      - failedTemplate:
+          errorPattern: "fromCredentials\\.ANTHROPIC_API_KEY references \"my-provider-credentials\\.missing-key\""
+
+  - it: rejects fromCredentials resolving to an empty value
+    template: templates/hermes-managed-secret.yaml
+    set:
+      hermes.managed.enabled: true
+      credentials.my-provider-credentials.api-key: ""
+      hermes.managed.fromCredentials.ANTHROPIC_API_KEY: my-provider-credentials.api-key
+    asserts:
+      - failedTemplate:
+          errorPattern: "fromCredentials\\.ANTHROPIC_API_KEY references \"my-provider-credentials\\.api-key\""
+
+  # ---- Rule 6: fromCredentials requires managed scope to be enabled ----
+  - it: rejects fromCredentials when hermes.managed.enabled is false
+    template: templates/hermes-managed-secret.yaml
+    set:
+      hermes.managed.enabled: false
+      credentials.my-provider-credentials.api-key: sk-real
+      hermes.managed.fromCredentials.ANTHROPIC_API_KEY: my-provider-credentials.api-key
+    asserts:
+      - failedTemplate:
+          errorPattern: "hermes\\.managed\\.fromCredentials is set but hermes\\.managed\\.enabled is false"
+
+  # ---- Rule 5: a key set in both managed.env and fromCredentials must fail ----
+  - it: rejects a key present in both managed.env and fromCredentials
+    template: templates/hermes-managed-secret.yaml
+    set:
+      hermes.managed.enabled: true
+      hermes.managed.env.ANTHROPIC_API_KEY: sk-from-env
+      credentials.my-provider-credentials.api-key: sk-from-credentials
+      hermes.managed.fromCredentials.ANTHROPIC_API_KEY: my-provider-credentials.api-key
+    asserts:
+      - failedTemplate:
+          errorPattern: "hermes\\.managed\\.env and hermes\\.managed\\.fromCredentials both set \"ANTHROPIC_API_KEY\""
+
+  # ---- extension of hermes-managed-scope.md Rule 2: existingSecret has no
+  # generated .env for fromCredentials to land in, so it is just as mutually
+  # exclusive as inline env/config -- otherwise the pin would silently pin
+  # nothing, exactly what Rule 4 exists to prevent. ----
+  - it: rejects existingSecret combined with fromCredentials
+    template: templates/hermes-managed-secret.yaml
+    set:
+      hermes.managed.enabled: true
+      hermes.managed.existingSecret: my-hermes-managed
+      credentials.my-provider-credentials.api-key: sk-real
+      hermes.managed.fromCredentials.ANTHROPIC_API_KEY: my-provider-credentials.api-key
+    asserts:
+      - failedTemplate:
+          errorPattern: "hermes\\.managed\\.existingSecret.*hermes\\.managed\\.fromCredentials.*mutually exclusive"
+
+  # ---- extension of hermes-managed-scope.md Rule 5: fromCredentials keys feed
+  # the same .env as managed.env, so the same env-var-name constraint applies. ----
+  - it: rejects a fromCredentials key that is not a valid environment variable name
+    template: templates/hermes-managed-secret.yaml
+    set:
+      hermes.managed.enabled: true
+      credentials.my-provider-credentials.api-key: sk-real
+      hermes.managed.fromCredentials:
+        FOO-BAR: my-provider-credentials.api-key
+    asserts:
+      - failedTemplate:
+          errorPattern: "hermes\\.managed\\.fromCredentials key \"FOO-BAR\" is not a valid environment variable name"
