@@ -487,9 +487,21 @@ jobs:
           set -euo pipefail
           POD=$(kubectl -n "$NS" get pod -l app.kubernetes.io/component=hermes -o jsonpath='{.items[0].metadata.name}')
 
-          HERMES_BIN=$(kubectl -n "$NS" exec "$POD" -c hermes -- which hermes)
-          PYBIN=$(kubectl -n "$NS" exec "$POD" -c hermes -- sh -c "head -1 '$HERMES_BIN' | sed 's/^#!//'")
-          echo "hermes entrypoint: $HERMES_BIN"
+          # The `hermes` entrypoint in this image is a shell script, not a
+          # Python console-script, so its shebang is /bin/sh and says nothing
+          # about the interpreter. Ask instead which candidate can import
+          # hermes_cli -- that is the only property this step needs, and a
+          # wrong guess fails here with the list rather than as a syntax error
+          # further down.
+          PYBIN=$(kubectl -n "$NS" exec "$POD" -c hermes -- sh -c '
+            for p in /opt/hermes/bin/python3 /opt/hermes/bin/python \
+                     "$(command -v python3 || true)" "$(command -v python || true)"; do
+              [ -n "$p" ] && [ -x "$p" ] || continue
+              if "$p" -c "import hermes_cli" >/dev/null 2>&1; then echo "$p"; exit 0; fi
+            done
+            echo "no interpreter on this image could import hermes_cli" >&2
+            exit 1
+          ')
           echo "python interpreter: $PYBIN"
 
           resolved=$(kubectl -n "$NS" exec -i "$POD" -c hermes -- sh -c "$PYBIN -" <<'PYEOF'
