@@ -82,6 +82,11 @@ func TestRecordingTheSameSessionTwiceIsNotAnError(t *testing.T) {
 
 func TestRecordSpecSessionOnAMissingCardIsNotFound(t *testing.T) {
 	s := openTestStore(t)
+	// openTestStore resets the schema without migrating; the other tests
+	// here migrate via seedBacklogCard, and this one has no card to seed.
+	if err := s.Migrate(context.Background()); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
 
 	err := s.RecordSpecSession(context.Background(), uuid.New(), "api_x")
 	if !errors.Is(err, ErrCardNotFound) {
