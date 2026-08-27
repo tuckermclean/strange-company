@@ -1,4 +1,4 @@
-{{- if or .Values.policy.providers .Values.policy.models }}
+{{- if or .Values.policy.providers .Values.policy.models .Values.policy.actions }}
 {{- /*
   Operator-supplied model and provider policy.
 
@@ -22,6 +22,10 @@ data:
   {{- end }}
   {{- with .Values.policy.models }}
   models.yaml: |
+    {{- . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.policy.actions }}
+  actions.yaml: |
     {{- . | nindent 4 }}
   {{- end }}
 {{- end }}

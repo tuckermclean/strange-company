@@ -28,6 +28,9 @@ type fakeStore struct {
 	heartbeatFn  func(ctx context.Context, cardID uuid.UUID, workerID string, lease time.Duration) error
 	releaseFn    func(ctx context.Context, cardID uuid.UUID, workerID, reason string) error
 	transitionFn func(ctx context.Context, cardID uuid.UUID, to card.State, actor card.ActorType, actorID, reason string) error
+	// approveSpecFn is unset in the tests that predate approval; the
+	// method below treats nil as "nothing to record".
+	approveSpecFn func(ctx context.Context, cardID uuid.UUID, approvedBy string) error
 }
 
 func (f *fakeStore) ListCards(ctx context.Context) ([]*card.Card, error) {
@@ -70,6 +73,15 @@ func (f *fakeStore) Transition(ctx context.Context, cardID uuid.UUID, to card.St
 		panic("fakeStore: Transition not configured")
 	}
 	return f.transitionFn(ctx, cardID, to, actor, actorID, reason)
+}
+
+// ApproveSpec satisfies CardStore for the tests written before approval
+// existed. approvingStore in approve_test.go overrides it.
+func (f *fakeStore) ApproveSpec(ctx context.Context, cardID uuid.UUID, approvedBy string) error {
+	if f.approveSpecFn == nil {
+		panic("fakeStore: ApproveSpec not configured")
+	}
+	return f.approveSpecFn(ctx, cardID, approvedBy)
 }
 
 // Sentinel test errors, classified by fakeClassifier below via errors.Is —

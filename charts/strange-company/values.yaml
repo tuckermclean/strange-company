@@ -420,6 +420,11 @@ policy:
   providers: ""
   # -- Contents of models.yaml: phase -> ordered ladder of model aliases.
   models: ""
+  # -- Contents of actions.yaml: the permitted-actions allowlist stamped onto
+  # every card at creation (spec 5, 24). Optional even when providers and
+  # models are supplied -- an operator who only wanted to change a model keeps
+  # the shipped allowlist rather than having to restate it.
+  actions: ""
 
 # ---------------------------------------------------------------------------
 # Control plane

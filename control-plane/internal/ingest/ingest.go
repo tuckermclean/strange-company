@@ -44,15 +44,22 @@ type Reconciler struct {
 	board  Board
 	repos  []string
 	label  string
-	log    *slog.Logger
+
+	// actions is the allowlist stamped onto every card this creates.
+	// Without one, §10's gate refuses the card forever and it can never be
+	// promoted -- so a card created without an allowlist is a card that can
+	// never be worked on.
+	actions []byte
+
+	log *slog.Logger
 }
 
 // New builds a Reconciler.
-func New(s Source, b Board, repositories []string, label string, log *slog.Logger) *Reconciler {
+func New(s Source, b Board, repositories []string, label string, actions []byte, log *slog.Logger) *Reconciler {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	return &Reconciler{source: s, board: b, repos: repositories, label: label, log: log}
+	return &Reconciler{source: s, board: b, repos: repositories, label: label, actions: actions, log: log}
 }
 
 // RunOnce ingests every eligible issue once.
@@ -79,7 +86,7 @@ func (r *Reconciler) RunOnce(ctx context.Context) (Result, error) {
 		for _, issue := range issues {
 			res.Seen++
 
-			_, created, err := r.board.UpsertSourceCard(ctx, cardFor(issue))
+			_, created, err := r.board.UpsertSourceCard(ctx, cardFor(issue, r.actions))
 			if err != nil {
 				r.log.Error("could not ingest issue",
 					"repository", repo, "issue", issue.Number, "error", err)
@@ -104,7 +111,7 @@ func (r *Reconciler) RunOnce(ctx context.Context) (Result, error) {
 // The issue body becomes the specification. That is the whole §10 pipeline's
 // input: the deterministic gate reads it, screening reads it, and a human
 // rewrites it in conversation when it is not enough.
-func cardFor(i github.Issue) store.SourceCard {
+func cardFor(i github.Issue, actions []byte) store.SourceCard {
 	return store.SourceCard{
 		SourceType: sourceType,
 		ExternalID: i.ExternalID(),
@@ -115,5 +122,7 @@ func cardFor(i github.Issue) store.SourceCard {
 		// The coding runner has to know what to clone; an ingested card
 		// with no repository is a card nothing can act on.
 		RepoURL: fmt.Sprintf("https://github.com/%s", i.Repository),
+
+		PermittedActions: actions,
 	}
 }

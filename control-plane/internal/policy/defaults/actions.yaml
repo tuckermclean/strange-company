@@ -1,0 +1,46 @@
+# =============================================================================
+# actions.yaml — the default permitted-actions allowlist stamped onto every
+# card at creation (spec §5's permitted_actions block, §24's defaults).
+#
+# This file is a TRANSCRIPTION, not a design. Spec §24 states the defaults
+# outright, and they are reproduced here so an operator can see and change
+# them in one place rather than reading them out of Go.
+#
+# Why per-card rather than global: §10's gate asks whether a permitted-actions
+# policy exists FOR THIS CARD. A purely global default would make that check
+# unfailable and turn a real gate rule into a rubber stamp. So this is the
+# default a card is stamped with when it is created, and a card that reaches
+# the gate without one still fails — which is the check doing its job.
+#
+# §24: "Every card has an allowlist; the worker sandbox enforces it." This file
+# is the declaration. Enforcement lives in the runner sandbox, and a permission
+# written here that the sandbox does not enforce is a lie in a file — keep the
+# two in agreement.
+# =============================================================================
+
+# Permitted by default (spec §24, verbatim):
+#   read repository; modify files inside workspace; execute project tests;
+#   execute approved build tools; create commits on `agent/*`; push own agent
+#   branch.
+files:
+  # The workspace is the checkout. Everything outside it is not writable.
+  include:
+    - "**"
+  exclude: []
+
+commands:
+  - test
+  - build
+
+endpoints: []
+
+network: []
+
+# Forbidden by default (spec §24) is not expressed as a list here on purpose.
+# An allowlist that also carries a denylist invites the reading that anything
+# absent from the denylist is allowed, which is the opposite of an allowlist.
+# The forbidden set in §24 — force-pushing shared branches, touching main,
+# deleting remote branches, other repositories, cluster Secrets, kubectl, SSH,
+# production databases and deployments, billing, DNS, privilege escalation —
+# is forbidden because it is not in the lists above, and stays forbidden if
+# someone adds an unrelated entry to them.
