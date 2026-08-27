@@ -6,6 +6,7 @@ import (
 
 	"github.com/tuckermclean/strange-company/control-plane/internal/card"
 	"github.com/tuckermclean/strange-company/control-plane/internal/runner"
+	"github.com/tuckermclean/strange-company/control-plane/internal/specgate"
 )
 
 func issue(n string) SourceCard {
@@ -77,7 +78,7 @@ func TestReingestionNeverDisturbsExecutionState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.PromoteToReady(ctx, id, "test"); err != nil {
+	if err := s.PromoteToReady(ctx, id, specgate.Result{Passed: true}, card.ActorHuman, "test"); err != nil {
 		t.Fatalf("PromoteToReady: %v", err)
 	}
 	if _, err := s.RecordAttempt(ctx, recordOf(id, "run-1", resultOf(runner.StatusFailed))); err != nil {
@@ -150,8 +151,8 @@ func TestEditingTheIssueAfterApprovalRevokesIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if spec.ApprovedBy != nil {
-		t.Fatalf("approval survived an edit to the issue: %+v", spec.ApprovedBy)
+	if spec.Approved {
+		t.Fatalf("approval survived an edit to the issue (by %q)", spec.ApprovedBy)
 	}
 }
 
@@ -176,7 +177,7 @@ func TestReingestingAnUnchangedIssueKeepsTheApproval(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if spec.ApprovedBy == nil {
+	if !spec.Approved {
 		t.Fatal("an unchanged re-ingestion revoked the approval")
 	}
 }
