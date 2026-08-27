@@ -48,6 +48,11 @@ const maxRawBytes = 64 * 1024
 // regardless of how large the body actually was.
 const maxErrorBodyBytes = 512
 
+// finishReasonError is the value an OpenAI-compatible gateway uses to say the
+// turn failed. It is not part of the OpenAI specification; it is what Hermes
+// returns, verified against a live gateway (docs/reference/hermes-integration-notes.md).
+const finishReasonError = "error"
+
 // maxResponseBodyBytes is an outer safety cap on how much of any response
 // body this client will ever read into memory, success or failure.
 const maxResponseBodyBytes = 10 * 1024 * 1024
@@ -73,6 +78,16 @@ var (
 	// status. The returned error also names the status code and carries a
 	// truncated body.
 	ErrHTTP = errors.New("modelclient: non-2xx response")
+
+	// ErrProviderFailure is returned when the provider reports a failed
+	// turn inside an otherwise successful HTTP response.
+	//
+	// A Hermes gateway answers a backend failure with HTTP 200, the error
+	// text in the assistant message, and finish_reason "error". Returning
+	// that content would record an outage as a model answer; spec 12.1
+	// then counts it as an implementation attempt and burns a rung of the
+	// escalation ladder on a problem no model was ever asked to solve.
+	ErrProviderFailure = errors.New("modelclient: provider reported a failed turn")
 )
 
 // Client is a minimal OpenAI-compatible /chat/completions client bound to
@@ -185,6 +200,12 @@ type wireResponse struct {
 		Message struct {
 			Content string `json:"content"`
 		} `json:"message"`
+		// FinishReason distinguishes a real answer from a failed turn
+		// delivered with a 200. Ordinary values ("stop", "length",
+		// "tool_calls", "content_filter", or absent) all describe an
+		// answer, and whether a truncated one is usable is the caller's
+		// decision, not this client's.
+		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
 	Usage struct {
 		PromptTokens     int `json:"prompt_tokens"`
@@ -252,7 +273,23 @@ func (c *Client) Complete(ctx context.Context, req CompleteRequest) (*Completion
 		return nil, fmt.Errorf("modelclient: decoding response: %w", err)
 	}
 
-	if len(wireResp.Choices) == 0 || wireResp.Choices[0].Message.Content == "" {
+	if len(wireResp.Choices) == 0 {
+		return nil, ErrEmptyResponse
+	}
+
+	// Checked before the empty-content check on purpose: a failed turn can
+	// come back with no content at all, and reporting that as "the provider
+	// returned nothing" would send an operator looking for a parsing bug
+	// instead of an outage.
+	if wireResp.Choices[0].FinishReason == finishReasonError {
+		cause := strings.TrimSpace(wireResp.Choices[0].Message.Content)
+		if cause == "" {
+			cause = "no cause reported"
+		}
+		return nil, fmt.Errorf("%w: %s", ErrProviderFailure, cause)
+	}
+
+	if wireResp.Choices[0].Message.Content == "" {
 		return nil, ErrEmptyResponse
 	}
 
