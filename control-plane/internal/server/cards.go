@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/tuckermclean/strange-company/control-plane/internal/card"
+	"github.com/tuckermclean/strange-company/control-plane/internal/store"
 )
 
 // defaultLease is used when a claim or heartbeat request omits
@@ -34,6 +35,9 @@ type CardStore interface {
 	// it currently reads (spec §10.2). Promotion to Ready is the control
 	// plane's consequence of this, not a second human action.
 	ApproveSpec(ctx context.Context, cardID uuid.UUID, approvedBy string) error
+
+	// ListArtifacts returns the evidence recorded against a card (spec §20).
+	ListArtifacts(ctx context.Context, cardID uuid.UUID) ([]*store.Artifact, error)
 }
 
 // ErrorClassifier lets the server map a store error to an HTTP status
@@ -377,4 +381,55 @@ func (s *Server) handleApproveSpec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// artifactView is one artifact as the API renders it.
+//
+// §21: this is what the stakeholder view is built from, and it must answer
+// "what happened to card X?" WITHOUT exposing chain-of-thought. Everything
+// here is an output a run produced. SHA256, SizeBytes and Truncated travel
+// together on purpose -- without them a capped log reads as a complete one.
+type artifactView struct {
+	ID          string `json:"id"`
+	Type        string `json:"type"`
+	Actor       string `json:"actor"`
+	Model       string `json:"model,omitempty"`
+	CommitSHA   string `json:"commit_sha,omitempty"`
+	ContentType string `json:"content_type"`
+	StorageURI  string `json:"storage_uri,omitempty"`
+	Content     string `json:"content,omitempty"`
+	SHA256      string `json:"sha256"`
+	SizeBytes   int64  `json:"size_bytes"`
+	Truncated   bool   `json:"truncated"`
+}
+
+// handleListArtifacts serves GET /cards/{id}/artifacts.
+func (s *Server) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
+	cd, ok := s.cardsOrError(w)
+	if !ok {
+		return
+	}
+	id, ok := parseCardID(w, r)
+	if !ok {
+		return
+	}
+
+	artifacts, err := cd.store.ListArtifacts(r.Context(), id)
+	if err != nil {
+		s.writeStoreError(w, cd, err)
+		return
+	}
+
+	// Non-nil so a card with no artifacts renders as [] rather than null,
+	// and a client iterating the list needs no special case.
+	views := make([]artifactView, 0, len(artifacts))
+	for _, a := range artifacts {
+		views = append(views, artifactView{
+			ID: a.ID.String(), Type: a.Type, Actor: a.Actor, Model: a.Model,
+			CommitSHA: a.CommitSHA, ContentType: a.ContentType, StorageURI: a.StorageURI,
+			Content: a.Content, SHA256: a.SHA256, SizeBytes: a.SizeBytes, Truncated: a.Truncated,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"artifacts": views})
 }

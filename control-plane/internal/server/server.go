@@ -56,6 +56,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /cards/{id}/release", s.handleRelease)
 	mux.HandleFunc("POST /cards/{id}/transition", s.handleTransition)
 	mux.HandleFunc("POST /cards/{id}/approve-spec", s.handleApproveSpec)
+	mux.HandleFunc("GET /cards/{id}/artifacts", s.handleListArtifacts)
 
 	return mux
 }
