@@ -32,6 +32,11 @@ func (a *apiStub) start(t *testing.T) *github.Client {
 		page := 1
 		fmt.Sscanf(r.URL.Query().Get("page"), "%d", &page)
 		w.Header().Set("Content-Type", "application/json")
+		// GitHub advertises the next page in a Link header; a short page
+		// is only a hint, and on the last page there is no next link.
+		if page < len(a.pages) {
+			w.Header().Set("Link", fmt.Sprintf(`<%s?page=%d>; rel="next"`, r.URL.Path, page+1))
+		}
 		if page >= 1 && page <= len(a.pages) {
 			_, _ = io.WriteString(w, a.pages[page-1])
 			return
@@ -104,7 +109,9 @@ func TestPullRequestsAreNotIssues(t *testing.T) {
 }
 
 // A backlog larger than one page must not be silently truncated to the first
-// hundred issues.
+// hundred issues. GitHub signals more pages with a Link header rather than by
+// returning a full page, so following the count alone would stop early on any
+// page that happened to be short.
 func TestEveryPageIsRead(t *testing.T) {
 	first := `[{"number":1,"title":"one","html_url":"u"},{"number":2,"title":"two","html_url":"u"}]`
 	second := `[{"number":3,"title":"three","html_url":"u"}]`

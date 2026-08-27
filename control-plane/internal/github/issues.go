@@ -100,7 +100,7 @@ func (c *Client) ListLabeledIssues(ctx context.Context, repository, label string
 		}
 		path := fmt.Sprintf("/repos/%s/%s/issues?%s", url.PathEscape(owner), url.PathEscape(name), q.Encode())
 
-		batch, err := c.getIssues(ctx, path)
+		batch, next, err := c.getIssues(ctx, path)
 		if err != nil {
 			return nil, err
 		}
@@ -112,17 +112,47 @@ func (c *Client) ListLabeledIssues(ctx context.Context, repository, label string
 			issue.Repository = repository
 			issues = append(issues, issue)
 		}
-		if len(batch) < perPage {
+		// GitHub advertises the next page in a Link header. Deciding from
+		// the item count alone stops early on any page that happens to be
+		// short, which silently truncates a backlog.
+		if next == "" {
 			break
 		}
 	}
 	return issues, nil
 }
 
-func (c *Client) getIssues(ctx context.Context, path string) ([]Issue, error) {
+// nextPageLink returns the URL marked rel="next" in a Link header, or "".
+func nextPageLink(header string) string {
+	for _, part := range strings.Split(header, ",") {
+		segments := strings.Split(part, ";")
+		if len(segments) < 2 {
+			continue
+		}
+		isNext := false
+		for _, s := range segments[1:] {
+			if strings.Contains(strings.ToLower(s), `rel="next"`) {
+				isNext = true
+				break
+			}
+		}
+		if !isNext {
+			continue
+		}
+		url := strings.TrimSpace(segments[0])
+		url = strings.TrimPrefix(url, "<")
+		url = strings.TrimSuffix(url, ">")
+		if url != "" {
+			return url
+		}
+	}
+	return ""
+}
+
+func (c *Client) getIssues(ctx context.Context, path string) ([]Issue, string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
 	if err != nil {
-		return nil, fmt.Errorf("github: building request: %w", err)
+		return nil, "", fmt.Errorf("github: building request: %w", err)
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
@@ -134,20 +164,20 @@ func (c *Client) getIssues(ctx context.Context, path string) ([]Issue, error) {
 	if err != nil {
 		// net/http error strings can include the request URL but never a
 		// header, so the token cannot appear here.
-		return nil, fmt.Errorf("github: request failed: %w", err)
+		return nil, "", fmt.Errorf("github: request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
-		return nil, fmt.Errorf("github: %s: status %d: %s", path, resp.StatusCode, strings.TrimSpace(string(snippet)))
+		return nil, "", fmt.Errorf("github: %s: status %d: %s", path, resp.StatusCode, strings.TrimSpace(string(snippet)))
 	}
 
 	var issues []Issue
 	if err := json.NewDecoder(resp.Body).Decode(&issues); err != nil {
-		return nil, fmt.Errorf("github: decoding issues: %w", err)
+		return nil, "", fmt.Errorf("github: decoding issues: %w", err)
 	}
-	return issues, nil
+	return issues, nextPageLink(resp.Header.Get("Link")), nil
 }
 
 // splitRepository requires exactly "owner/name".
