@@ -13,7 +13,6 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/tuckermclean/strange-company/control-plane/internal/card"
-	"github.com/tuckermclean/strange-company/control-plane/internal/store"
 )
 
 // --- fakes -----------------------------------------------------------------
@@ -78,7 +77,7 @@ func (f *fakeStore) Transition(ctx context.Context, cardID uuid.UUID, to card.St
 
 // ListArtifacts satisfies CardStore for tests that predate artifacts.
 // artifactStore in artifacts_test.go overrides it.
-func (f *fakeStore) ListArtifacts(context.Context, uuid.UUID) ([]*store.Artifact, error) {
+func (f *fakeStore) ListArtifacts(context.Context, uuid.UUID) ([]Artifact, error) {
 	return nil, nil
 }
 

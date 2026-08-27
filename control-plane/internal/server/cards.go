@@ -12,7 +12,6 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/tuckermclean/strange-company/control-plane/internal/card"
-	"github.com/tuckermclean/strange-company/control-plane/internal/store"
 )
 
 // defaultLease is used when a claim or heartbeat request omits
@@ -37,7 +36,35 @@ type CardStore interface {
 	ApproveSpec(ctx context.Context, cardID uuid.UUID, approvedBy string) error
 
 	// ListArtifacts returns the evidence recorded against a card (spec §20).
-	ListArtifacts(ctx context.Context, cardID uuid.UUID) ([]*store.Artifact, error)
+	//
+	// It returns this package's Artifact rather than the store's, for the
+	// same reason this whole interface is declared here: importing the
+	// store would drag the concrete storage engine into the server.
+	ListArtifacts(ctx context.Context, cardID uuid.UUID) ([]Artifact, error)
+}
+
+// Artifact is one piece of evidence about a card, as this package needs it.
+//
+// Structurally a subset of store.Artifact; main adapts between them. §21: the
+// stakeholder view is built from these and must answer "what happened to card
+// X?" WITHOUT exposing chain-of-thought, so every field here is an output a
+// run produced, never reasoning.
+type Artifact struct {
+	ID          string
+	Type        string
+	Actor       string
+	Model       string
+	CommitSHA   string
+	ContentType string
+	StorageURI  string
+	Content     string
+
+	// SHA256, SizeBytes and Truncated describe the COMPLETE content even
+	// when Content holds only the capped prefix. Without them a truncated
+	// log reads as a complete one.
+	SHA256    string
+	SizeBytes int64
+	Truncated bool
 }
 
 // ErrorClassifier lets the server map a store error to an HTTP status
@@ -425,7 +452,7 @@ func (s *Server) handleListArtifacts(w http.ResponseWriter, r *http.Request) {
 	views := make([]artifactView, 0, len(artifacts))
 	for _, a := range artifacts {
 		views = append(views, artifactView{
-			ID: a.ID.String(), Type: a.Type, Actor: a.Actor, Model: a.Model,
+			ID: a.ID, Type: a.Type, Actor: a.Actor, Model: a.Model,
 			CommitSHA: a.CommitSHA, ContentType: a.ContentType, StorageURI: a.StorageURI,
 			Content: a.Content, SHA256: a.SHA256, SizeBytes: a.SizeBytes, Truncated: a.Truncated,
 		})

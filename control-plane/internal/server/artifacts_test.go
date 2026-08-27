@@ -13,11 +13,11 @@ import (
 
 type artifactStore struct {
 	fakeStore
-	artifacts []*store.Artifact
+	artifacts []Artifact
 	err       error
 }
 
-func (a *artifactStore) ListArtifacts(context.Context, uuid.UUID) ([]*store.Artifact, error) {
+func (a *artifactStore) ListArtifacts(context.Context, uuid.UUID) ([]Artifact, error) {
 	return a.artifacts, a.err
 }
 
@@ -32,8 +32,8 @@ func getJSON(t *testing.T, s *Server, path string) *httptest.ResponseRecorder {
 // §21: the stakeholder view answers "what happened to card X?" from artifacts.
 // Without an endpoint the evidence exists and nobody can read it.
 func TestListArtifactsReturnsTheEvidence(t *testing.T) {
-	fake := &artifactStore{artifacts: []*store.Artifact{
-		{ID: uuid.New(), Type: store.ArtifactImplementationPlan, Actor: "control-plane",
+	fake := &artifactStore{artifacts: []Artifact{
+		{ID: uuid.New().String(), Type: store.ArtifactImplementationPlan, Actor: "control-plane",
 			ContentType: "text/plain", Content: "step one", SHA256: "abc", SizeBytes: 8},
 	}}
 	s := newCardsTestServer(t, fake)
