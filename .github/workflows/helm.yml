@@ -170,7 +170,27 @@ jobs:
       - name: Install k3d
         run: |
           set -euo pipefail
-          curl -sSfL "https://raw.githubusercontent.com/k3d-io/k3d/${K3D_VERSION}/install.sh" | TAG="${K3D_VERSION}" bash
+          # Retried because this is a network fetch of a third-party script,
+          # and a connection reset here reddens a pull request that has
+          # nothing wrong with it. Same distinction the attempt ledger draws
+          # in 12.1: an infrastructure failure is not a failed test.
+          for attempt in 1 2 3 4 5; do
+            # Both fetch and run are guarded by `if`: under `set -e` an
+            # AND-list whose left side fails aborts the script, so
+            # `install && exit 0` would exit on the first failure instead of
+            # retrying -- the opposite of what this loop is for.
+            if curl -fsSL --retry 3 --retry-connrefused --retry-delay 2 --connect-timeout 10 \
+                 "https://raw.githubusercontent.com/k3d-io/k3d/${K3D_VERSION}/install.sh" \
+                 -o /tmp/k3d-install.sh; then
+              if TAG="${K3D_VERSION}" bash /tmp/k3d-install.sh; then
+                exit 0
+              fi
+            fi
+            echo "k3d install attempt $attempt failed; retrying"
+            sleep $(( attempt * 5 ))
+          done
+          echo "::error::could not install k3d after 5 attempts"
+          exit 1
           k3d version
 
       - name: Create K3s cluster
@@ -324,7 +344,27 @@ jobs:
       - name: Install k3d
         run: |
           set -euo pipefail
-          curl -sSfL "https://raw.githubusercontent.com/k3d-io/k3d/${K3D_VERSION}/install.sh" | TAG="${K3D_VERSION}" bash
+          # Retried because this is a network fetch of a third-party script,
+          # and a connection reset here reddens a pull request that has
+          # nothing wrong with it. Same distinction the attempt ledger draws
+          # in 12.1: an infrastructure failure is not a failed test.
+          for attempt in 1 2 3 4 5; do
+            # Both fetch and run are guarded by `if`: under `set -e` an
+            # AND-list whose left side fails aborts the script, so
+            # `install && exit 0` would exit on the first failure instead of
+            # retrying -- the opposite of what this loop is for.
+            if curl -fsSL --retry 3 --retry-connrefused --retry-delay 2 --connect-timeout 10 \
+                 "https://raw.githubusercontent.com/k3d-io/k3d/${K3D_VERSION}/install.sh" \
+                 -o /tmp/k3d-install.sh; then
+              if TAG="${K3D_VERSION}" bash /tmp/k3d-install.sh; then
+                exit 0
+              fi
+            fi
+            echo "k3d install attempt $attempt failed; retrying"
+            sleep $(( attempt * 5 ))
+          done
+          echo "::error::could not install k3d after 5 attempts"
+          exit 1
 
       - name: Create K3s cluster
         run: |
@@ -428,7 +468,27 @@ jobs:
       - name: Install k3d
         run: |
           set -euo pipefail
-          curl -sSfL "https://raw.githubusercontent.com/k3d-io/k3d/${K3D_VERSION}/install.sh" | TAG="${K3D_VERSION}" bash
+          # Retried because this is a network fetch of a third-party script,
+          # and a connection reset here reddens a pull request that has
+          # nothing wrong with it. Same distinction the attempt ledger draws
+          # in 12.1: an infrastructure failure is not a failed test.
+          for attempt in 1 2 3 4 5; do
+            # Both fetch and run are guarded by `if`: under `set -e` an
+            # AND-list whose left side fails aborts the script, so
+            # `install && exit 0` would exit on the first failure instead of
+            # retrying -- the opposite of what this loop is for.
+            if curl -fsSL --retry 3 --retry-connrefused --retry-delay 2 --connect-timeout 10 \
+                 "https://raw.githubusercontent.com/k3d-io/k3d/${K3D_VERSION}/install.sh" \
+                 -o /tmp/k3d-install.sh; then
+              if TAG="${K3D_VERSION}" bash /tmp/k3d-install.sh; then
+                exit 0
+              fi
+            fi
+            echo "k3d install attempt $attempt failed; retrying"
+            sleep $(( attempt * 5 ))
+          done
+          echo "::error::could not install k3d after 5 attempts"
+          exit 1
 
       - name: Create K3s cluster
         run: |
@@ -658,7 +718,27 @@ jobs:
       - name: Install k3d
         run: |
           set -euo pipefail
-          curl -sSfL "https://raw.githubusercontent.com/k3d-io/k3d/${K3D_VERSION}/install.sh" | TAG="${K3D_VERSION}" bash
+          # Retried because this is a network fetch of a third-party script,
+          # and a connection reset here reddens a pull request that has
+          # nothing wrong with it. Same distinction the attempt ledger draws
+          # in 12.1: an infrastructure failure is not a failed test.
+          for attempt in 1 2 3 4 5; do
+            # Both fetch and run are guarded by `if`: under `set -e` an
+            # AND-list whose left side fails aborts the script, so
+            # `install && exit 0` would exit on the first failure instead of
+            # retrying -- the opposite of what this loop is for.
+            if curl -fsSL --retry 3 --retry-connrefused --retry-delay 2 --connect-timeout 10 \
+                 "https://raw.githubusercontent.com/k3d-io/k3d/${K3D_VERSION}/install.sh" \
+                 -o /tmp/k3d-install.sh; then
+              if TAG="${K3D_VERSION}" bash /tmp/k3d-install.sh; then
+                exit 0
+              fi
+            fi
+            echo "k3d install attempt $attempt failed; retrying"
+            sleep $(( attempt * 5 ))
+          done
+          echo "::error::could not install k3d after 5 attempts"
+          exit 1
 
       - name: Build the control-plane image
         run: docker build -t strange-company-control-plane:ci --build-arg VERSION=ci control-plane
@@ -805,7 +885,27 @@ jobs:
       - name: Install k3d
         run: |
           set -euo pipefail
-          curl -sSfL "https://raw.githubusercontent.com/k3d-io/k3d/${K3D_VERSION}/install.sh" | TAG="${K3D_VERSION}" bash
+          # Retried because this is a network fetch of a third-party script,
+          # and a connection reset here reddens a pull request that has
+          # nothing wrong with it. Same distinction the attempt ledger draws
+          # in 12.1: an infrastructure failure is not a failed test.
+          for attempt in 1 2 3 4 5; do
+            # Both fetch and run are guarded by `if`: under `set -e` an
+            # AND-list whose left side fails aborts the script, so
+            # `install && exit 0` would exit on the first failure instead of
+            # retrying -- the opposite of what this loop is for.
+            if curl -fsSL --retry 3 --retry-connrefused --retry-delay 2 --connect-timeout 10 \
+                 "https://raw.githubusercontent.com/k3d-io/k3d/${K3D_VERSION}/install.sh" \
+                 -o /tmp/k3d-install.sh; then
+              if TAG="${K3D_VERSION}" bash /tmp/k3d-install.sh; then
+                exit 0
+              fi
+            fi
+            echo "k3d install attempt $attempt failed; retrying"
+            sleep $(( attempt * 5 ))
+          done
+          echo "::error::could not install k3d after 5 attempts"
+          exit 1
 
       - name: Resolve dependencies and package
         run: |
