@@ -58,6 +58,13 @@ const (
 	// requested transition was illegal. The claim is always released in
 	// this case.
 	OutcomeReleased Outcome = "released"
+	// OutcomeAdvanced means the step finished a phase rather than moving
+	// the card: the card is still InProgress, still claimed, and the next
+	// phase is what a following RunOnce will work on. §11's phases all
+	// happen while a card is InProgress, and the state machine has no
+	// InProgress -> InProgress transition, so this is how "planning is
+	// done, write the tests next" is expressed.
+	OutcomeAdvanced Outcome = "advanced"
 	// OutcomeEscalated means the phase's escalation ladder (spec 12.3) was
 	// exhausted for this card's attempt count, and the card was moved to
 	// NeedsHuman instead of being handed to another Meeseeks.
@@ -81,9 +88,19 @@ type Step interface {
 // Evidence is what a Step attaches to a card to explain what happened, and
 // where it believes the card should go next.
 type Evidence struct {
-	Summary   string
-	Detail    map[string]any
-	NextState card.State // where the step believes the card should go
+	Summary string
+	Detail  map[string]any
+
+	// NextState is where the step believes the card should go. Exactly one
+	// of NextState and NextPhase must be set: they have opposite
+	// consequences for the claim -- one hands the card on, the other keeps
+	// it -- and guessing between them is worse than refusing.
+	NextState card.State
+
+	// NextPhase is the §11 phase to move to, leaving the card InProgress
+	// and claimed. Set when a step finished its phase and the work
+	// continues.
+	NextPhase card.Phase
 }
 
 // CardStore is the narrow slice of *store.Store's persistence operations a
@@ -112,6 +129,10 @@ type CardStore interface {
 	// so the audit log (spec 21) can answer "what happened to card X?"
 	// without exposing model chain-of-thought.
 	AttachEvidence(ctx context.Context, cardID uuid.UUID, ev Evidence) error
+
+	// AdvancePhase moves cardID to its next §11 phase without changing its
+	// state, for a step that finished a phase rather than the card.
+	AdvancePhase(ctx context.Context, cardID uuid.UUID, to card.Phase, actor card.ActorType, actorID, reason string) error
 }
 
 // Meeseeks is one short-lived worker: spawn it, call RunOnce exactly once,
@@ -189,9 +210,11 @@ func (m *Meeseeks) RunOnce(ctx context.Context) (Outcome, error) {
 		return OutcomeReleased, fmt.Errorf("worker %s: resolve policy for card %s phase %q: %w", m.id, c.ID, c.Phase, err)
 	}
 
-	// From here on, the claim MUST be released on every path except a
+	// From here on, the claim MUST be released on every path except two: a
 	// successful transition (which moves the card out of InProgress
-	// itself). Guarded with a flag rather than relying on a single return
+	// itself), and a successful phase advance (which deliberately keeps the
+	// claim, because the same worker continues into the next phase).
+	// Guarded with a flag rather than relying on a single return
 	// statement, since a step failure, an evidence-attach failure and an
 	// illegal transition all need the same guarantee -- and it must hold
 	// even if something above this line panics or the step's goroutine
@@ -253,6 +276,34 @@ func (m *Meeseeks) RunOnce(ctx context.Context) (Outcome, error) {
 			log.Error("release after attach-evidence failure also failed", "error", rerr)
 		}
 		return OutcomeReleased, fmt.Errorf("worker %s: attach evidence for card %s: %w", m.id, c.ID, err)
+	}
+
+	// Exactly one of the two, checked after evidence is recorded so the
+	// attempt is on the audit log either way.
+	hasState, hasPhase := ev.NextState != "", ev.NextPhase != ""
+	if hasState == hasPhase {
+		reason := "step named neither a next state nor a next phase"
+		if hasState {
+			reason = "step named both a next state and a next phase"
+		}
+		if rerr := release(reason); rerr != nil {
+			log.Error("release after an ambiguous step also failed", "error", rerr)
+		}
+		return OutcomeReleased, fmt.Errorf("worker %s: card %s: %s", m.id, c.ID, reason)
+	}
+
+	if hasPhase {
+		if err := m.cards.AdvancePhase(ctx, c.ID, ev.NextPhase, card.ActorAgent, m.id, ev.Summary); err != nil {
+			if rerr := release(fmt.Sprintf("advance to phase %q failed: %v", ev.NextPhase, err)); rerr != nil {
+				log.Error("release after a failed phase advance also failed", "error", rerr)
+			}
+			return OutcomeReleased, fmt.Errorf("worker %s: advance card %s to phase %q: %w", m.id, c.ID, ev.NextPhase, err)
+		}
+		// Suppress the deferred release: the card is still InProgress,
+		// still ours, and the work continues in the next phase. The flag
+		// means "nothing left for the defer to do", not "handed back".
+		released = true
+		return OutcomeAdvanced, nil
 	}
 
 	if err := m.cards.Transition(ctx, c.ID, ev.NextState, card.ActorAgent, m.id, ev.Summary); err != nil {
