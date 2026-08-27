@@ -27,6 +27,12 @@ type SourceCard struct {
 	Body    string
 	RepoURL string
 	RepoRef string
+
+	// PermittedActions is the allowlist to stamp on the card at creation
+	// (spec §5, §24). Written only when the card is new: re-ingestion
+	// overwriting it would silently re-widen an allowlist someone narrowed
+	// by hand, once per reconcile pass.
+	PermittedActions []byte
 }
 
 func (s SourceCard) validate() error {
@@ -71,8 +77,9 @@ func (s *Store) UpsertSourceCard(ctx context.Context, in SourceCard) (uuid.UUID,
 	// concurrent passes could interleave.
 	const q = `
 		INSERT INTO cards (id, title, source_type, source_url, source_external_id,
-		                   repo_url, repo_base_ref, state, phase)
-		VALUES ($1, $2, $3, nullif($4,''), $5, nullif($6,''), nullif($7,''), 'Backlog', 'specification')
+		                   repo_url, repo_base_ref, state, phase, permitted_actions)
+		VALUES ($1, $2, $3, nullif($4,''), $5, nullif($6,''), nullif($7,''), 'Backlog', 'specification',
+		        nullif($8,'')::jsonb)
 		ON CONFLICT (source_type, source_external_id) WHERE source_external_id IS NOT NULL
 		DO UPDATE SET
 		    title         = EXCLUDED.title,
@@ -87,7 +94,7 @@ func (s *Store) UpsertSourceCard(ctx context.Context, in SourceCard) (uuid.UUID,
 		created bool
 	)
 	err := s.pool.QueryRow(ctx, q, uuid.New(), in.Title, in.SourceType, in.URL, in.ExternalID,
-		in.RepoURL, in.RepoRef).Scan(&id, &created)
+		in.RepoURL, in.RepoRef, string(in.PermittedActions)).Scan(&id, &created)
 	if err != nil {
 		return uuid.Nil, false, fmt.Errorf("store: ingesting %s %s: %w", in.SourceType, in.ExternalID, err)
 	}
@@ -112,4 +119,73 @@ func (s *Store) putSpecIfChanged(ctx context.Context, cardID uuid.UUID, content,
 		return err
 	}
 	return s.PutSpec(ctx, cardID, content, updatedBy)
+}
+
+// HasPermittedActions reports whether a card carries an allowlist.
+//
+// §10's gate needs only this boolean; the block's contents are the sandbox's
+// business, not the gate's.
+func (s *Store) HasPermittedActions(ctx context.Context, cardID uuid.UUID) (bool, error) {
+	var has bool
+	err := s.pool.QueryRow(ctx,
+		`SELECT permitted_actions IS NOT NULL FROM cards WHERE id = $1`, cardID).Scan(&has)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, ErrCardNotFound
+		}
+		return false, fmt.Errorf("store: reading permitted actions: %w", err)
+	}
+	return has, nil
+}
+
+// PermittedActions returns a card's allowlist as stored, or nil.
+func (s *Store) PermittedActions(ctx context.Context, cardID uuid.UUID) ([]byte, error) {
+	var raw []byte
+	err := s.pool.QueryRow(ctx,
+		`SELECT coalesce(permitted_actions::text, '')::bytea FROM cards WHERE id = $1`, cardID).Scan(&raw)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrCardNotFound
+		}
+		return nil, fmt.Errorf("store: reading permitted actions: %w", err)
+	}
+	return raw, nil
+}
+
+// ListApprovedAwaitingPromotion returns Backlog cards whose specification a
+// human has approved as it currently reads.
+//
+// The hash comparison is what makes approval an approval OF A DOCUMENT: an
+// edit after approval withdraws the card from this queue rather than promoting
+// new text on an old approval.
+func (s *Store) ListApprovedAwaitingPromotion(ctx context.Context, limit int) ([]uuid.UUID, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+
+	const q = `
+		SELECT c.id
+		  FROM cards c
+		  JOIN card_specs s ON s.card_id = c.id
+		 WHERE c.state = 'Backlog'
+		   AND s.approved_sha256 IS NOT NULL
+		   AND s.approved_sha256 = encode(sha256(s.content::bytea), 'hex')
+		 ORDER BY s.approved_at
+		 LIMIT $1`
+
+	rows, err := s.pool.Query(ctx, q, limit)
+	if err != nil {
+		return nil, fmt.Errorf("store: listing cards awaiting promotion: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("store: reading card awaiting promotion: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
