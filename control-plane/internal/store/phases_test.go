@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/tuckermclean/strange-company/control-plane/internal/card"
+	"github.com/tuckermclean/strange-company/control-plane/internal/specgate"
 )
 
 func inProgressCard(t *testing.T, s *Store) uuid.UUID {
@@ -16,7 +17,9 @@ func inProgressCard(t *testing.T, s *Store) uuid.UUID {
 	if err := s.PutSpec(ctx, id, "# Context\n\nx", "someone"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Transition(ctx, id, card.Ready, card.ActorHuman, "test", "ready for work"); err != nil {
+	// Backlog -> Ready only goes through the gate, which is the guard doing
+	// its job: nothing may promote a card by transitioning around it.
+	if err := s.PromoteToReady(ctx, id, specgate.Result{Passed: true}, card.ActorHuman, "test"); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Transition(ctx, id, card.InProgress, card.ActorAgent, "worker-1", "claimed"); err != nil {
