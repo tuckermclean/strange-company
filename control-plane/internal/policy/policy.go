@@ -95,6 +95,11 @@ type Policy struct {
 	Providers map[string]Provider `yaml:"providers"`
 	Aliases   map[string]Alias    `yaml:"aliases"`
 	Phases    map[string][]Rung   `yaml:"phases"`
+
+	// actions is the allowlist stamped onto new cards. Unexported and read
+	// through DefaultPermittedActions so it cannot be swapped after load --
+	// spec §2.5: models may read policy, never silently rewrite it.
+	actions *PermittedActions
 }
 
 // Resolution is the answer to "for this phase, on this attempt, which
@@ -306,7 +311,7 @@ func (p *Policy) Validate() error {
 }
 
 
-//go:embed defaults/providers.yaml defaults/models.yaml
+//go:embed defaults/providers.yaml defaults/models.yaml defaults/actions.yaml
 var defaultsFS embed.FS
 
 // Defaults returns the policy compiled into the binary.
@@ -325,7 +330,19 @@ func Defaults() (*Policy, error) {
 	if err != nil {
 		return nil, fmt.Errorf("policy: read embedded models: %w", err)
 	}
-	return Load(providers, models)
+	actions, err := defaultsFS.ReadFile("defaults/actions.yaml")
+	if err != nil {
+		return nil, fmt.Errorf("policy: read embedded actions: %w", err)
+	}
+
+	p, err := Load(providers, models)
+	if err != nil {
+		return nil, err
+	}
+	if err := p.loadActions(actions); err != nil {
+		return nil, err
+	}
+	return p, nil
 }
 
 // LoadOrDefaults loads policy from dir when dir is non-empty and readable, and
@@ -341,5 +358,67 @@ func LoadOrDefaults(dir string) (*Policy, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
+
+	// actions.yaml is optional in an operator directory. Someone who only
+	// wanted to change models must not have to restate the allowlist, and
+	// silently leaving them without one would make every card unpromotable.
+	raw, err := os.ReadFile(filepath.Join(dir, "actions.yaml"))
+	switch {
+	case err == nil:
+		if err := p.loadActions(raw); err != nil {
+			return nil, false, err
+		}
+	case errors.Is(err, os.ErrNotExist):
+		defaults, dErr := defaultsFS.ReadFile("defaults/actions.yaml")
+		if dErr != nil {
+			return nil, false, fmt.Errorf("policy: read embedded actions: %w", dErr)
+		}
+		if err := p.loadActions(defaults); err != nil {
+			return nil, false, err
+		}
+	default:
+		return nil, false, fmt.Errorf("policy: read %s: %w", filepath.Join(dir, "actions.yaml"), err)
+	}
+
 	return p, true, nil
+}
+
+// PermittedActions is a card's allowlist (spec §5's permitted_actions block).
+//
+// It is an ALLOWLIST. §24's forbidden set is forbidden by absence from these
+// lists, not by a denylist beside them -- a denylist alongside an allowlist
+// invites the reading that anything not denied is allowed.
+type PermittedActions struct {
+	Files struct {
+		Include []string `yaml:"include" json:"include"`
+		Exclude []string `yaml:"exclude" json:"exclude"`
+	} `yaml:"files" json:"files"`
+	Commands  []string `yaml:"commands" json:"commands"`
+	Endpoints []string `yaml:"endpoints" json:"endpoints"`
+	Network   []string `yaml:"network" json:"network"`
+}
+
+// DefaultPermittedActions is the allowlist stamped onto a card at creation.
+//
+// Per-card rather than global on purpose: §10's gate asks whether a policy
+// exists FOR THIS CARD, and a global default consulted at gate time would make
+// that check unfailable -- turning a real rule into a rubber stamp. A card that
+// reaches the gate without one still fails, which is the check working.
+func (p *Policy) DefaultPermittedActions() *PermittedActions {
+	return p.actions
+}
+
+func (p *Policy) loadActions(raw []byte) error {
+	var a PermittedActions
+	if err := yaml.Unmarshal(raw, &a); err != nil {
+		return fmt.Errorf("policy: parsing actions.yaml: %w", err)
+	}
+	if len(a.Files.Include) == 0 {
+		return errors.New("policy: actions.yaml permits no files, so no card could do any work")
+	}
+	if len(a.Commands) == 0 {
+		return errors.New("policy: actions.yaml permits no commands, so no card could run its tests")
+	}
+	p.actions = &a
+	return nil
 }
