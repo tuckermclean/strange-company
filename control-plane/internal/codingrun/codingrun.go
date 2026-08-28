@@ -96,6 +96,7 @@ func New(api JobAPI, namespace, image string, poll time.Duration, log *slog.Logg
 		adapters: map[string]runner.Adapter{
 			"claude-code": runner.ClaudeCodeAdapter{},
 			"codex":       runner.CodexAdapter{},
+			"opencode":    runner.OpenCodeAdapter{},
 		},
 	}
 }
