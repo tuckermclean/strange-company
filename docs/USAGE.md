@@ -260,3 +260,62 @@ hard-coded, including K3s's `local-path`.
 No Kanban logic, no agent orchestration, no model routing, no GitHub issue
 automation, no coding-agent Jobs, no RBAC for spawning workloads. It is
 plumbing. Behavior belongs to the control plane, later.
+
+## How a card's tests are verified
+
+The §11.3 red gate and the §19 green gate both need one fact about a ref: did
+its tests pass. Two backends can answer, chosen by
+`controlPlane.verification.mode`.
+
+### `github-actions` (default)
+
+The control plane reads the check runs your own workflows produced. Nothing is
+added to your repository, and the tests are whatever CI already says they are.
+
+**Your workflows must trigger on `agent/**` branches.** The agent pushes its
+work to `agent/<card-id>`, and if no workflow runs there the ref has no checks
+at all — which the control plane refuses rather than reading as a pass, because
+"nothing failed" and "nothing ran" look identical and only one is safe.
+
+```yaml
+on:
+  push:
+    branches: ["main", "agent/**"]
+```
+
+The red gate compares the checks on your base ref with the checks on the agent
+branch. The baseline costs nothing: those checks already ran when the commit
+landed.
+
+### `test-command`
+
+For repositories with no CI to read. Commit an executable script at
+`.strange-company/test-command` that runs the tests:
+
+```sh
+#!/bin/sh
+set -eu
+exec npm test
+```
+
+It must exist **at your base ref before the first card**, because the red gate
+runs it there to establish a baseline. A missing script exits 64, which is
+reported as a malformed test phase rather than a failing suite.
+
+An empty suite must exit 0. The baseline has to be green for anything in the
+candidate run to be attributable to the new tests.
+
+### What the gates cannot check
+
+The red gate proves the new tests fail, and that they fail because of the new
+tests — the same command passes at the base ref. It cannot tell a correct
+failing test from one that runs, fails, and asserts the wrong thing. Nothing
+short of judgement can, and §11.3 forbids a model from grading.
+
+### Agents never change CI
+
+The runner refuses to commit anything under `.github/workflows`. The gates
+derive their authority from those workflows, so an agent able to edit them
+could weaken the checks that verify it. Give the control plane's GitHub token
+`contents:write` **without** `workflows:write` — then it is not merely policy,
+it is a credential that cannot do it.

@@ -29,6 +29,10 @@ data:
   GITHUB_API_URL: {{ .Values.github.apiUrl | quote }}
   GITHUB_REPOSITORIES: {{ join "," .Values.github.repositories | quote }}
   GITHUB_INGEST_LABEL: {{ .Values.github.label | quote }}
+  # Which backend answers the red and green gates. "github-actions" reads the
+  # checks the repository's own workflows produced; "test-command" runs
+  # .strange-company/test-command in a Job, for repositories with no CI.
+  VERIFICATION_MODE: {{ .Values.controlPlane.verification.mode | quote }}
   # Spec 10.2: a human approves a specification by adding this label to the
   # card in Vikunja. The board is a surface no model can reach, which is what
   # makes the label a human decision rather than an assertion.

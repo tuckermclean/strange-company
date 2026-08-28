@@ -520,6 +520,20 @@ controlPlane:
     hosts: []
     tls: []
 
+  # -- How the red and green gates decide whether a ref's tests pass.
+  #
+  # `github-actions` reads the checks the repository's own workflows produced.
+  # It is the default because a repository with CI has already declared its
+  # tests, and a second declaration inside the repository is the one that
+  # drifts. Your workflows must trigger on `agent/**` branches, or the agent
+  # branch produces no checks at all -- which the control plane refuses rather
+  # than reading as a pass.
+  #
+  # `test-command` instead runs an executable `.strange-company/test-command`
+  # committed at the base ref, for repositories with no CI to read.
+  verification:
+    mode: github-actions
+
   # -- Permission to run coding agents as isolated Kubernetes Jobs.
   #
   # Default off. Enabling this is the ONLY thing in this chart that gives the
