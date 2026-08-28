@@ -30,6 +30,7 @@ import (
 	"github.com/tuckermclean/strange-company/control-plane/internal/implstep"
 	"github.com/tuckermclean/strange-company/control-plane/internal/ingest"
 	"github.com/tuckermclean/strange-company/control-plane/internal/kube"
+	"github.com/tuckermclean/strange-company/control-plane/internal/mcp"
 	"github.com/tuckermclean/strange-company/control-plane/internal/plan"
 	"github.com/tuckermclean/strange-company/control-plane/internal/policy"
 	"github.com/tuckermclean/strange-company/control-plane/internal/promote"
@@ -122,7 +123,10 @@ func main() {
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           server.New(cfg, checks, version).SetCards(cardStore{st}, storeErrorClassifier{}).Handler(),
+		Handler:           server.New(cfg, checks, version).
+			SetCards(cardStore{st}, storeErrorClassifier{}).
+			SetMCP(mcp.NewServer(mcpCards{st}).SetEvidence(st).Handler()).
+			Handler(),
 		ReadHeaderTimeout: readHeaderTimeout,
 		ReadTimeout:       readTimeout,
 		WriteTimeout:      writeTimeout,
@@ -729,3 +733,16 @@ const workerLease = 10 * time.Minute
 // codingRunPoll is how often a running coding Job's status is checked. Coding
 // runs take minutes, so a tighter poll only adds API calls.
 const codingRunPoll = 10 * time.Second
+
+// mcpCards adapts *store.Store to mcp.CardService. Only ClaimReady needs
+// translating: the MCP package declares its own ErrNoWork so it never imports
+// the storage engine.
+type mcpCards struct{ *store.Store }
+
+func (m mcpCards) ClaimReady(ctx context.Context, workerID string, lease time.Duration) (*card.Card, error) {
+	c, err := m.Store.ClaimReady(ctx, workerID, lease)
+	if errors.Is(err, store.ErrNoWork) {
+		return nil, mcp.ErrNoWork
+	}
+	return c, err
+}

@@ -22,6 +22,15 @@ type Server struct {
 	version string
 	log     *slog.Logger
 	cards   *cardsDeps
+
+	// mcp is the Company MCP server (spec §9), mounted under /mcp when set.
+	mcp http.Handler
+}
+
+// SetMCP mounts the Company MCP server under /mcp.
+func (s *Server) SetMCP(h http.Handler) *Server {
+	s.mcp = h
+	return s
 }
 
 // New builds a Server. checks may be empty, which makes readiness trivially true.
@@ -57,6 +66,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /cards/{id}/transition", s.handleTransition)
 	mux.HandleFunc("POST /cards/{id}/approve-spec", s.handleApproveSpec)
 	mux.HandleFunc("GET /cards/{id}/artifacts", s.handleListArtifacts)
+
+	// The Company MCP server (spec §9). Mounted here rather than on its own
+	// listener so it shares this server's lifecycle -- it had a package and
+	// tests and nothing serving it, which meant Hermes could not reach any
+	// of it.
+	if s.mcp != nil {
+		mux.Handle("/mcp/", http.StripPrefix("/mcp", s.mcp))
+	}
 
 	return mux
 }
