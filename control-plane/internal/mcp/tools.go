@@ -208,7 +208,10 @@ var toolRegistry = []toolSpec{
 	},
 	{
 		Name:        "cards.comment",
-		Description: "Attach a human-readable comment to a card. M2 stores comments in an in-memory map, not Postgres; a durable table is a later migration.",
+		Description: "Attach a human-readable comment to a card. This is how the specification " +
+			"conversation reports what a human said -- including that they approve. It records a " +
+			"statement and approves nothing: §10.2 needs a human, and everything reaching this " +
+			"interface is an agent. The human approves on the board.",
 		Schema: schemaObject(map[string]any{
 			"card_id": stringProp("UUID of the card."),
 			"author":  stringProp("Who is commenting."),
@@ -225,19 +228,6 @@ var toolRegistry = []toolSpec{
 			"actor_id": stringProp(`Identity of the requesting agent. Defaults to "hermes".`),
 		}, "card_id", "reason"),
 		Handler: handleCardsRequestHuman,
-	},
-	{
-		Name: "specs.report_human_approval",
-		Description: "Record that a human said they approve this card's specification. " +
-			"This is EVIDENCE, not an approval: it does not approve the specification and " +
-			"does not let the card be promoted. §10.2 requires a human, and everything " +
-			"reaching this interface is an agent. The human approves on the board.",
-		Schema: schemaObject(map[string]any{
-			"card_id":     stringProp("UUID of the card."),
-			"approved_by": stringProp("The human who said they approve."),
-			"note":        stringProp("What they said, in their words where possible."),
-		}, "card_id", "approved_by"),
-		Handler: handleReportHumanApproval,
 	},
 	{
 		Name:        "artifacts.attach",
@@ -559,6 +549,20 @@ func handleCardsComment(ctx context.Context, s *Server, raw json.RawMessage) (an
 		Body:      args.Body,
 		CreatedAt: time.Now().UTC(),
 	}
+
+	// Durable when the server has somewhere to put it. A comment that dies
+	// with the process answers nothing when §21 asks what happened to a
+	// card -- and this is the channel the specification conversation uses
+	// to report a human's decision.
+	if s.evidence != nil {
+		if err := s.evidence.AttachEvidence(ctx, id, store.CardEvidence{
+			ActorID: args.Author,
+			Summary: args.Body,
+		}); err != nil {
+			return nil, err
+		}
+	}
+
 	s.records.addComment(c)
 	return c, nil
 }
@@ -683,54 +687,3 @@ func handleArtifactsList(ctx context.Context, s *Server, raw json.RawMessage) (a
 	return artifactsListResult{Artifacts: s.records.listArtifacts(id)}, nil
 }
 
-type reportApprovalArgs struct {
-	CardID     string `json:"card_id"`
-	ApprovedBy string `json:"approved_by"`
-	Note       string `json:"note"`
-}
-
-// handleReportHumanApproval records a model's report that a human approved.
-//
-// It deliberately does NOT call ApproveSpec. §10.2 requires a human, everything
-// reaching MCP is an agent, and a tool that turned a model's assertion into an
-// approval would let a model approve its own specification -- the same failure
-// as a model naming itself "human" on a transition.
-//
-// What it does is still worth doing: the human's decision, in the conversation
-// where it was made, is evidence a later reader needs.
-func handleReportHumanApproval(ctx context.Context, s *Server, raw json.RawMessage) (any, error) {
-	var args reportApprovalArgs
-	if err := decodeArgs(raw, &args); err != nil {
-		return nil, err
-	}
-	id, err := requireUUID(args.CardID, "card_id")
-	if err != nil {
-		return nil, err
-	}
-	if err := requireString(args.ApprovedBy, "approved_by"); err != nil {
-		return nil, err
-	}
-	if s.artifacts == nil {
-		return nil, newToolError("card_id", "this control plane has nowhere to record evidence")
-	}
-
-	content := fmt.Sprintf("%s reported that %s approves this specification.",
-		"The specification conversation", args.ApprovedBy)
-	if note := strings.TrimSpace(args.Note); note != "" {
-		content += "\n\n" + note
-	}
-
-	if _, err := s.artifacts.PutArtifact(ctx, store.Artifact{
-		CardID: id, Type: store.ArtifactHumanDecision, Actor: "hermes",
-		ContentType: "text/markdown", Content: content,
-	}); err != nil {
-		return nil, err
-	}
-
-	return map[string]any{
-		"recorded": true,
-		"approved": false,
-		"note": "Recorded as evidence. This is not an approval: the specification is " +
-			"approved by a human on the board, and the card cannot be promoted until then.",
-	}, nil
-}

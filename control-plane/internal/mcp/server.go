@@ -159,21 +159,21 @@ func (m *memoryRecords) listArtifacts(cardID uuid.UUID) []Artifact {
 // Server is the Company MCP server. It holds only what tools.go's handlers
 // need: a CardService and the M2 in-memory records store.
 type Server struct {
-	cards     CardService
-	records   recordStore
-	artifacts Artifacts
+	cards    CardService
+	records  recordStore
+	evidence Evidence
 }
 
-// Artifacts records durable evidence (spec §20). Optional: a Server without
-// one still serves every other tool, and specs.report_human_approval refuses
-// rather than pretending to have recorded something.
-type Artifacts interface {
-	PutArtifact(ctx context.Context, a store.Artifact) (*store.Artifact, error)
+// Evidence records durable notes against a card (spec §21). Optional: without
+// one, cards.comment falls back to the in-memory map M2 shipped -- which is
+// what a comment nobody can read after a restart is worth.
+type Evidence interface {
+	AttachEvidence(ctx context.Context, cardID uuid.UUID, ev store.CardEvidence) error
 }
 
-// SetArtifacts gives the server somewhere durable to record evidence.
-func (s *Server) SetArtifacts(a Artifacts) *Server {
-	s.artifacts = a
+// SetEvidence gives the server somewhere durable to record comments.
+func (s *Server) SetEvidence(e Evidence) *Server {
+	s.evidence = e
 	return s
 }
 
