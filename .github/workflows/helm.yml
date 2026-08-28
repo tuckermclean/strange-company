@@ -145,9 +145,28 @@ jobs:
       - name: Install helm-unittest
         run: |
           set -euo pipefail
-          helm plugin install https://github.com/helm-unittest/helm-unittest --version "${HELM_UNITTEST_VERSION}" \
-            || helm plugin install https://github.com/helm-unittest/helm-unittest --version "v${HELM_UNITTEST_VERSION}"
-          helm unittest --help >/dev/null
+          # Retried for the same reason the k3d installs are: this fetches a
+          # third-party release over the network, and a connection reset
+          # reddens a pull request that has nothing wrong with it.
+          #
+          # The uninstall between attempts is the part that is easy to miss.
+          # A failed plugin install leaves the directory behind, so the naive
+          # retry fails with "plugin already exists" -- a different error
+          # about a different problem, which is how one flake turns into a
+          # confusing one.
+          for attempt in 1 2 3 4 5; do
+            helm plugin uninstall unittest >/dev/null 2>&1 || true
+            if helm plugin install https://github.com/helm-unittest/helm-unittest --version "${HELM_UNITTEST_VERSION}" \
+               || helm plugin install https://github.com/helm-unittest/helm-unittest --version "v${HELM_UNITTEST_VERSION}"; then
+              if helm unittest --help >/dev/null 2>&1; then
+                exit 0
+              fi
+            fi
+            echo "helm-unittest install attempt $attempt failed; retrying"
+            sleep $(( attempt * 5 ))
+          done
+          echo "::error::could not install helm-unittest after 5 attempts"
+          exit 1
 
       - name: Resolve dependencies
         run: helm dependency build "$CHART"
