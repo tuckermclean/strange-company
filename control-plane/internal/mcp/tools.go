@@ -194,14 +194,15 @@ var toolRegistry = []toolSpec{
 	},
 	{
 		Name:        "cards.transition",
-		Description: "Move a card to a new state, subject to the card state machine (card.CanTransition).",
+		Description: "Move a card to a new state, subject to the card state machine (card.CanTransition). " +
+			"The transition is always recorded as an agent: human-only moves (Review -> Done, Blocked -> Ready, " +
+			"NeedsHuman -> Ready) are not reachable through this interface and will be refused.",
 		Schema: schemaObject(map[string]any{
 			"card_id":    stringProp("UUID of the card to transition."),
 			"to":         stringProp("Target state, e.g. Review, Done, Blocked, NeedsHuman."),
-			"actor_type": stringProp("One of human, agent, system."),
-			"actor_id":   stringProp("Identity of the actor requesting the transition."),
-			"reason":     stringProp("Why the transition is happening."),
-		}, "card_id", "to", "actor_type", "actor_id"),
+			"actor_id": stringProp("Identity of the agent requesting the transition."),
+			"reason":   stringProp("Why the transition is happening."),
+		}, "card_id", "to", "actor_id"),
 		Handler: handleCardsTransition,
 	},
 	{
@@ -467,8 +468,8 @@ func handleCardsRelease(ctx context.Context, s *Server, raw json.RawMessage) (an
 type cardsTransitionArgs struct {
 	CardID    string `json:"card_id"`
 	To        string `json:"to"`
-	ActorType string `json:"actor_type"`
-	ActorID   string `json:"actor_id"`
+	// ActorType is deliberately absent: see handleCardsTransition.
+	ActorID string `json:"actor_id"`
 	Reason    string `json:"reason"`
 }
 
@@ -484,14 +485,16 @@ func handleCardsTransition(ctx context.Context, s *Server, raw json.RawMessage) 
 	if err := requireString(args.To, "to"); err != nil {
 		return nil, err
 	}
-	if err := requireString(args.ActorType, "actor_type"); err != nil {
-		return nil, err
-	}
 	if err := requireString(args.ActorID, "actor_id"); err != nil {
 		return nil, err
 	}
 
-	if err := s.cards.Transition(ctx, id, card.State(args.To), card.ActorType(args.ActorType), args.ActorID, args.Reason); err != nil {
+	// Stamped, never taken from the caller. Everything reaching the control
+	// plane through MCP is an agent, and a model able to name itself
+	// "human" would inherit the entire human-only column of the state
+	// machine -- §18's "automated review cannot move a card to Done", and
+	// the rule that an agent must never un-block itself.
+	if err := s.cards.Transition(ctx, id, card.State(args.To), card.ActorAgent, args.ActorID, args.Reason); err != nil {
 		// card.CanTransition's error already says exactly which rule
 		// fired and why; surface it verbatim (on the "to" field, since
 		// that is what made the request illegal) rather than hiding it

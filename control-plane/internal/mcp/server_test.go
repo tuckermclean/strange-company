@@ -228,7 +228,6 @@ func TestTransitionSurfacesTheStateMachinesRejection(t *testing.T) {
 	resp := callTool(t, s, "cards.transition", map[string]any{
 		"card_id":    uuid.New().String(),
 		"to":         "Ready",
-		"actor_type": "agent",
 		"actor_id":   "meeseeks-1",
 	})
 
@@ -269,8 +268,7 @@ func TestEveryToolValidatesItsArguments(t *testing.T) {
 
 		{"cards.transition", map[string]any{"to": "Ready", "actor_type": "agent", "actor_id": "a1"}, "card_id"},
 		{"cards.transition", map[string]any{"card_id": someID, "actor_type": "agent", "actor_id": "a1"}, "to"},
-		{"cards.transition", map[string]any{"card_id": someID, "to": "Ready", "actor_id": "a1"}, "actor_type"},
-		{"cards.transition", map[string]any{"card_id": someID, "to": "Ready", "actor_type": "agent"}, "actor_id"},
+		{"cards.transition", map[string]any{"card_id": someID, "to": "Ready"}, "actor_id"},
 
 		{"cards.comment", map[string]any{"author": "a", "body": "b"}, "card_id"},
 		{"cards.comment", map[string]any{"card_id": someID, "body": "b"}, "author"},
