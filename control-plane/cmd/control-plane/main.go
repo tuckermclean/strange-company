@@ -34,6 +34,7 @@ import (
 	"github.com/tuckermclean/strange-company/control-plane/internal/policy"
 	"github.com/tuckermclean/strange-company/control-plane/internal/promote"
 	"github.com/tuckermclean/strange-company/control-plane/internal/providerclient"
+	"github.com/tuckermclean/strange-company/control-plane/internal/reviewstep"
 	"github.com/tuckermclean/strange-company/control-plane/internal/server"
 	"github.com/tuckermclean/strange-company/control-plane/internal/specsession"
 	"github.com/tuckermclean/strange-company/control-plane/internal/store"
@@ -666,6 +667,24 @@ func runWorkerSupervisor(ctx context.Context, logger *slog.Logger, cfg *config.C
 		steps[card.PhaseImplementation] = implstep.New(st, st, st, runs, log)
 		log.Info("coding phases enabled",
 			"namespace", cfg.AgentRunsNamespace, "image", cfg.RunnerImage)
+
+		// §18's review needs somewhere to open the pull request §19
+		// requires. Without a GitHub token a reviewed card would pass
+		// review and have nowhere to go, so the phase stays absent and
+		// the dispatcher sends such a card to a human instead.
+		if cfg.GitHubToken == "" {
+			log.Warn("review phase disabled: no GitHub token, so no pull request could be opened")
+			break
+		}
+		gh, err := github.New(cfg.GitHubAPIURL, cfg.GitHubToken, nil)
+		if err != nil {
+			log.Error("review phase disabled: could not build a GitHub client", "error", err)
+			break
+		}
+		steps[card.PhaseReview] = reviewstep.New(st, st, gh, func(res *policy.Resolution) (reviewstep.Completer, error) {
+			return providerclient.New(res, credentials.Dir(cfg.CredentialsDir))
+		}, log)
+		log.Info("review phase enabled")
 	}
 	step := dispatch.New(steps, log)
 

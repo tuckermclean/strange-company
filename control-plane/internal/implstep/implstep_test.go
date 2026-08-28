@@ -87,7 +87,7 @@ func done() *runner.CodingRunResult {
 
 // The green gate (§19): the tests the red gate proved failing now pass. That,
 // not the model's own account, is what moves a card to Review.
-func TestAGreenVerificationSendsTheCardToReview(t *testing.T) {
+func TestAGreenVerificationSendsTheCardToTheReviewPhase(t *testing.T) {
 	b := board()
 	r := &fakeRunner{result: done(), verify: redgate.RunOutcome{Completed: true, ExitCode: 0}}
 
@@ -95,8 +95,10 @@ func TestAGreenVerificationSendsTheCardToReview(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Do: %v", err)
 	}
-	if ev.NextState != card.Review {
-		t.Fatalf("next state = %q, want Review", ev.NextState)
+	// The review PHASE: §18's automated review runs before a human sees
+	// anything, and a card in the Review state is not claimable.
+	if ev.NextPhase != card.PhaseReview {
+		t.Fatalf("next phase = %q, want review", ev.NextPhase)
 	}
 	if r.verifies != 1 {
 		t.Errorf("ran verification %d times", r.verifies)

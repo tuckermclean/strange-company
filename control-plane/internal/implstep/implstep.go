@@ -124,10 +124,14 @@ func (s *Step) Do(ctx context.Context, c *card.Card, res *policy.Resolution) (wo
 
 	if verdict.ExitCode == 0 {
 		s.record(ctx, c, res, runID, result)
+		// To the review PHASE, not the Review state. §18's automated
+		// review runs after the green gate and before a human sees
+		// anything, and a card in the Review state is not claimable --
+		// moving there now would strand it before it was reviewed.
 		return worker.Evidence{
 			Summary:   "implementation verified: the acceptance tests pass",
 			Detail:    map[string]any{"harness": result.Harness, "model": result.Model, "attempt": res.Attempt},
-			NextState: card.Review,
+			NextPhase: card.PhaseReview,
 		}, nil
 	}
 
