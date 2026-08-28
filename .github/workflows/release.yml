@@ -78,6 +78,27 @@ jobs:
           done
           echo "$image is published"
 
+      # The chart's default runnerImage.tag follows appVersion too, so the
+      # runner needs the same check: a chart that installs cleanly and then
+      # cannot start a coding Job has failed later and less legibly than one
+      # that never shipped.
+      - name: Verify the runner image exists for this appVersion
+        run: |
+          set -euo pipefail
+          appversion=$(helm show chart "$CHART" | awk '/^appVersion:/ {gsub(/"/,"",$2); print $2}')
+          image="ghcr.io/${{ github.repository_owner }}/strange-company-runner:${appversion}"
+
+          deadline=$(( $(date +%s) + 900 ))
+          until docker manifest inspect "$image" >/dev/null 2>&1; do
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::error::$image was never published; coding Jobs would fail to pull"
+              exit 1
+            fi
+            echo "waiting for $image ..."
+            sleep 20
+          done
+          echo "$image is published"
+
       - name: Push
         run: |
           set -euo pipefail

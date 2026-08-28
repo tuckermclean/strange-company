@@ -3,6 +3,11 @@ name: runner
 on:
   push:
     branches: ["**"]
+    # Without this the image job never receives a release tag, so the chart's
+    # default runnerImage.tag -- which follows appVersion -- names an image
+    # that was never built, and the first coding Job dies in ImagePullBackOff.
+    # Exactly the defect fixed for control-plane.yml in #17, missed here.
+    tags: ["v*"]
     paths:
       - "runner/**"
       - ".github/workflows/runner.yml"
