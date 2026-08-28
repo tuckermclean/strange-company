@@ -86,7 +86,7 @@ func Evaluate(baseline, candidate RunOutcome) (Outcome, string) {
 	// tests, and calling that red would be a guess dressed as a verdict.
 	if baseline.ExitCode != 0 {
 		return BaselineBroken, fmt.Sprintf(
-			"the test suite already fails at the base ref (exit %d), so a failure with the new tests cannot be attributed to them",
+			"the baseline already fails at the base ref (exit %d), so a failure with the new tests cannot be attributed to them",
 			baseline.ExitCode)
 	}
 
