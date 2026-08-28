@@ -174,6 +174,10 @@ func task(c *card.Card, spec, plan string) string {
 	b.WriteString("passes right now is a test that is not testing this work.\n\n")
 	b.WriteString("Produce: the test changes themselves, a mapping from each acceptance\n")
 	b.WriteString("criterion to the test that covers it, and the command that runs them.\n\n")
+	fmt.Fprintf(&b, "Commit the test command as an executable shell script at %s.\n", codingrun.TestCommandPath)
+	b.WriteString("Both gates run that script and nothing else: the red gate to prove your\n")
+	b.WriteString("tests fail now, and the green gate to prove they pass once the feature\n")
+	b.WriteString("exists. Without it neither gate can run and the card stops here.\n\n")
 	fmt.Fprintf(&b, "# Card\n\n%s\n\n# Specification\n\n%s\n\n# Implementation plan\n\n%s\n",
 		strings.TrimSpace(c.Title), strings.TrimSpace(spec), strings.TrimSpace(plan))
 	return b.String()

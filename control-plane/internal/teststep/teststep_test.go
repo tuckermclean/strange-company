@@ -127,6 +127,9 @@ func TestTheTaskForbidsImplementingTheFeature(t *testing.T) {
 	if _, err := teststep.New(b, b, r, nil).Do(context.Background(), testCard(), res()); err != nil {
 		t.Fatal(err)
 	}
+	if !strings.Contains(r.req.Task, codingrun.TestCommandPath) {
+		t.Errorf("the task does not ask for the test command script both gates run:\n%s", r.req.Task)
+	}
 	if !strings.Contains(strings.ToLower(r.req.Task), "must not implement") {
 		t.Errorf("the task does not forbid implementing the feature:\n%s", r.req.Task)
 	}

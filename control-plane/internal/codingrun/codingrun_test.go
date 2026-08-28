@@ -2,6 +2,7 @@ package codingrun_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -25,11 +26,20 @@ type fakeAPI struct {
 	logs      string
 	createErr error
 	logsErr   error
+	lastJob   any
 }
 
-func (f *fakeAPI) CreateJob(context.Context, string, any) error {
+func (f *fakeAPI) CreateJob(_ context.Context, _ string, job any) error {
 	f.created++
+	f.lastJob = job
 	return f.createErr
+}
+
+// lastArgv renders the argv of the last Job created, for tests that care what
+// the container was actually told to run.
+func (f *fakeAPI) lastArgv() string {
+	b, _ := json.Marshal(f.lastJob)
+	return string(b)
 }
 func (f *fakeAPI) DeleteJob(context.Context, string, string) error { f.deleted++; return nil }
 func (f *fakeAPI) JobStatus(context.Context, string, string) (kube.JobPhase, error) {
