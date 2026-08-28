@@ -40,6 +40,7 @@ func (f *fakeBoard) RecordAttempt(_ context.Context, rec store.AttemptRecord) (*
 
 type fakeRunner struct {
 	req     codingrun.Request
+	err     error
 	result  *runner.CodingRunResult
 	verify  redgate.RunOutcome
 	calls   int
@@ -49,7 +50,7 @@ type fakeRunner struct {
 func (f *fakeRunner) Run(_ context.Context, req codingrun.Request) (*runner.CodingRunResult, error) {
 	f.calls++
 	f.req = req
-	return f.result, nil
+	return f.result, f.err
 }
 func (f *fakeRunner) Verify(context.Context, codingrun.VerifyRequest) (redgate.RunOutcome, error) {
 	f.verifies++
@@ -204,5 +205,27 @@ func TestAnIncompleteVerificationDoesNotCountAsAnAttempt(t *testing.T) {
 		if rec.Result.Status == runner.StatusFailed {
 			t.Fatal("counted an attempt on a verification that never ran")
 		}
+	}
+}
+
+// A provider whose harness cannot run a coding Job -- a chat-completion
+// endpoint pointed at the implementation ladder -- is a policy mistake, not a
+// transient failure. Returning an error would hand the card back, and the next
+// Meeseeks would claim it and fail identically every reconcile interval,
+// forever, looking like progress the whole time.
+func TestAHarnessThatCannotCodeStopsTheCardInsteadOfSpinning(t *testing.T) {
+	b := board()
+	r := &fakeRunner{err: codingrun.ErrNoAdapter}
+
+	ev, err := implstep.New(b, b, b, r, nil).Do(context.Background(), testCard(), res(1))
+	if err != nil {
+		t.Fatalf("Do returned an error, so the card would be handed back and retried: %v", err)
+	}
+	if ev.NextState != card.NeedsHuman {
+		t.Fatalf("next state = %q, want NeedsHuman", ev.NextState)
+	}
+	// The operator has to learn which alias to repoint.
+	if ev.Detail["alias"] != "implement-cheap" {
+		t.Errorf("the evidence does not name the alias to fix: %+v", ev.Detail)
 	}
 }

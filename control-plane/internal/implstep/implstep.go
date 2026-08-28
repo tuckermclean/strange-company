@@ -91,6 +91,17 @@ func (s *Step) Do(ctx context.Context, c *card.Card, res *policy.Resolution) (wo
 		Phase: string(card.PhaseImplementation), Attempt: res.Attempt,
 	})
 	if err != nil {
+		// A harness that cannot run a coding Job is a policy mistake, and
+		// retrying it forever would claim and release this card every
+		// reconcile interval -- which looks like progress. Stop, and say
+		// what to change.
+		if errors.Is(err, codingrun.ErrNoAdapter) {
+			return worker.Evidence{
+				Summary:   fmt.Sprintf("implementation cannot run: %v", err),
+				Detail:    map[string]any{"provider": res.ProviderName, "harness": string(res.Harness), "alias": res.Alias},
+				NextState: card.NeedsHuman,
+			}, nil
+		}
 		return worker.Evidence{}, fmt.Errorf("implstep: %w", err)
 	}
 

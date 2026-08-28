@@ -34,6 +34,14 @@ type JobAPI interface {
 	PodLogs(ctx context.Context, namespace, jobName string) ([]byte, error)
 }
 
+// ErrNoAdapter means the resolved provider's harness cannot run a coding Job.
+//
+// A configuration mistake, not a transient one: a provider with harness
+// "hermes" is a chat-completion endpoint, and no amount of retrying will give
+// it a working tree to edit. Typed so a caller can stop the card instead of
+// handing it back to be claimed and failed again every reconcile interval.
+var ErrNoAdapter = errors.New("codingrun: this provider's harness cannot run a coding job")
+
 // Request is one coding run.
 type Request struct {
 	CardID string
@@ -107,7 +115,8 @@ func (s *Service) Run(ctx context.Context, req Request) (*runner.CodingRunResult
 	if !ok {
 		// Refused before anything launches: a Job whose output nothing can
 		// parse is a model call spent for nothing.
-		return nil, fmt.Errorf("codingrun: no adapter for harness %q", harness)
+		return nil, fmt.Errorf("%w: provider %q uses harness %q; the coding phases need claude-code or codex",
+			ErrNoAdapter, req.Resolution.ProviderName, harness)
 	}
 
 	timeout := req.Timeout
