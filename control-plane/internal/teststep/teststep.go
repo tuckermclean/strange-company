@@ -94,6 +94,15 @@ func (s *Step) Do(ctx context.Context, c *card.Card, res *policy.Resolution) (wo
 		Attempt: res.Attempt,
 	})
 	if err != nil {
+		// See implstep: a harness with no adapter is a policy mistake, and
+		// handing the card back would spin on it forever.
+		if errors.Is(err, codingrun.ErrNoAdapter) {
+			return worker.Evidence{
+				Summary:   fmt.Sprintf("test-writing cannot run: %v", err),
+				Detail:    map[string]any{"provider": res.ProviderName, "harness": string(res.Harness), "alias": res.Alias},
+				NextState: card.NeedsHuman,
+			}, nil
+		}
 		return worker.Evidence{}, fmt.Errorf("teststep: %w", err)
 	}
 
