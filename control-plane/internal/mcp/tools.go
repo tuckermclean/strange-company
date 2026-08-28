@@ -24,6 +24,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/tuckermclean/strange-company/control-plane/internal/card"
+	"github.com/tuckermclean/strange-company/control-plane/internal/store"
 )
 
 // ErrNotImplementedYet is returned by tools whose contract is declared in M2
@@ -224,6 +225,19 @@ var toolRegistry = []toolSpec{
 			"actor_id": stringProp(`Identity of the requesting agent. Defaults to "hermes".`),
 		}, "card_id", "reason"),
 		Handler: handleCardsRequestHuman,
+	},
+	{
+		Name: "specs.report_human_approval",
+		Description: "Record that a human said they approve this card's specification. " +
+			"This is EVIDENCE, not an approval: it does not approve the specification and " +
+			"does not let the card be promoted. §10.2 requires a human, and everything " +
+			"reaching this interface is an agent. The human approves on the board.",
+		Schema: schemaObject(map[string]any{
+			"card_id":     stringProp("UUID of the card."),
+			"approved_by": stringProp("The human who said they approve."),
+			"note":        stringProp("What they said, in their words where possible."),
+		}, "card_id", "approved_by"),
+		Handler: handleReportHumanApproval,
 	},
 	{
 		Name:        "artifacts.attach",
@@ -667,4 +681,56 @@ func handleArtifactsList(ctx context.Context, s *Server, raw json.RawMessage) (a
 	}
 
 	return artifactsListResult{Artifacts: s.records.listArtifacts(id)}, nil
+}
+
+type reportApprovalArgs struct {
+	CardID     string `json:"card_id"`
+	ApprovedBy string `json:"approved_by"`
+	Note       string `json:"note"`
+}
+
+// handleReportHumanApproval records a model's report that a human approved.
+//
+// It deliberately does NOT call ApproveSpec. §10.2 requires a human, everything
+// reaching MCP is an agent, and a tool that turned a model's assertion into an
+// approval would let a model approve its own specification -- the same failure
+// as a model naming itself "human" on a transition.
+//
+// What it does is still worth doing: the human's decision, in the conversation
+// where it was made, is evidence a later reader needs.
+func handleReportHumanApproval(ctx context.Context, s *Server, raw json.RawMessage) (any, error) {
+	var args reportApprovalArgs
+	if err := decodeArgs(raw, &args); err != nil {
+		return nil, err
+	}
+	id, err := requireUUID(args.CardID, "card_id")
+	if err != nil {
+		return nil, err
+	}
+	if err := requireString(args.ApprovedBy, "approved_by"); err != nil {
+		return nil, err
+	}
+	if s.artifacts == nil {
+		return nil, newToolError("card_id", "this control plane has nowhere to record evidence")
+	}
+
+	content := fmt.Sprintf("%s reported that %s approves this specification.",
+		"The specification conversation", args.ApprovedBy)
+	if note := strings.TrimSpace(args.Note); note != "" {
+		content += "\n\n" + note
+	}
+
+	if _, err := s.artifacts.PutArtifact(ctx, store.Artifact{
+		CardID: id, Type: store.ArtifactHumanDecision, Actor: "hermes",
+		ContentType: "text/markdown", Content: content,
+	}); err != nil {
+		return nil, err
+	}
+
+	return map[string]any{
+		"recorded": true,
+		"approved": false,
+		"note": "Recorded as evidence. This is not an approval: the specification is " +
+			"approved by a human on the board, and the card cannot be promoted until then.",
+	}, nil
 }
