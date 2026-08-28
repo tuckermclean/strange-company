@@ -5,6 +5,7 @@
 package github
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -187,4 +188,52 @@ func splitRepository(repository string) (owner, name string, err error) {
 		return "", "", fmt.Errorf("%w (got %q)", ErrBadRepository, repository)
 	}
 	return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]), nil
+}
+
+// request performs one API call and returns the response body.
+//
+// Shared with getIssues' transport concerns -- auth, versioning, error shape --
+// so a caller cannot accidentally omit the API version header or leak the
+// token into an error.
+func (c *Client) request(ctx context.Context, method, path string, body any) ([]byte, error) {
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, defaultTimeout)
+		defer cancel()
+	}
+
+	var reader io.Reader
+	if body != nil {
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			return nil, fmt.Errorf("github: encoding request: %w", err)
+		}
+		reader = bytes.NewReader(encoded)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, reader)
+	if err != nil {
+		return nil, fmt.Errorf("github: building request: %w", err)
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("github: request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
+		return nil, fmt.Errorf("github: %s %s: status %d: %s",
+			method, path, resp.StatusCode, strings.TrimSpace(string(snippet)))
+	}
+	return io.ReadAll(resp.Body)
 }
