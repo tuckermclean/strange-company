@@ -51,6 +51,7 @@ type fakeCardStore struct {
 	releaseCalls    []releaseCall
 	transitionCalls []transitionCall
 	evidenceCalls   []Evidence
+	advancedTo      card.Phase
 	callOrder       []string
 }
 
@@ -99,6 +100,16 @@ func (f *fakeCardStore) Transition(ctx context.Context, cardID uuid.UUID, to car
 	if fn != nil {
 		return fn(cardID, to, actor, actorID, reason)
 	}
+	return nil
+}
+
+// AdvancePhase satisfies CardStore for the tests written before a step could
+// finish a phase. phaseStore in phases_test.go exercises it properly.
+func (f *fakeCardStore) AdvancePhase(_ context.Context, _ uuid.UUID, to card.Phase, _ card.ActorType, _, _ string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.callOrder = append(f.callOrder, "advance")
+	f.advancedTo = to
 	return nil
 }
 
