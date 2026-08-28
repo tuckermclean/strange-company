@@ -213,7 +213,7 @@ func infra(req Request, harness string, started time.Time, summary string) *runn
 	return &runner.CodingRunResult{
 		Status: runner.StatusInfraError, Harness: harness,
 		Model: req.Resolution.Model, Summary: summary,
-		Duration: time.Since(started),
+		DurationMS: time.Since(started).Milliseconds(),
 	}
 }
 
@@ -222,6 +222,6 @@ func timedOut(req Request, harness string, started time.Time) *runner.CodingRunR
 		Status: runner.StatusTimeout, Harness: harness,
 		Model:    req.Resolution.Model,
 		Summary:  "the run did not finish within its wall-clock budget",
-		Duration: time.Since(started),
+		DurationMS: time.Since(started).Milliseconds(),
 	}
 }
