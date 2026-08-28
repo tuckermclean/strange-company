@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -186,5 +187,58 @@ func TestAnAlreadyExistingJobIsAdopted(t *testing.T) {
 	}
 	if res.Status != runner.StatusCompleted {
 		t.Fatalf("status = %q; an existing Job for this run id was not adopted", res.Status)
+	}
+}
+
+// opencode addresses a model as provider/model and needs to be told where the
+// provider lives. The key travels by NAME so the secret reaches opencode
+// through the environment Kubernetes injected, never through a config file
+// this code wrote or a command line anyone in the container can read.
+func TestAnOpenCodeRunCarriesItsProviderConfig(t *testing.T) {
+	api := &fakeAPI{phases: []kube.JobPhase{kube.JobSucceeded}, logs: `{"type":"text","text":"done"}`}
+	req := request()
+	req.Resolution = &policy.Resolution{
+		Phase: "implementation", Alias: "implement-cheap", ProviderName: "deepseek",
+		Model: "deepseek-v4-pro", Harness: policy.Harness("opencode"),
+		BaseURL: "https://api.deepseek.com",
+		Env:     map[string]policy.CredentialRef{"DEEPSEEK_API_KEY": {Secret: "deepseek-credentials", Key: "api-key"}},
+	}
+
+	if _, err := service(api).Run(context.Background(), req); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	sent := api.lastArgv()
+	for _, want := range []string{
+		"SC_OPENCODE_PROVIDER", "deepseek",
+		"SC_OPENCODE_BASE_URL", "https://api.deepseek.com",
+		"SC_OPENCODE_API_KEY_ENV", "DEEPSEEK_API_KEY",
+		"deepseek/deepseek-v4-pro",
+	} {
+		if !strings.Contains(sent, want) {
+			t.Errorf("the job does not carry %q", want)
+		}
+	}
+	// The key's VALUE must never appear in the manifest.
+	if strings.Contains(sent, "sk-") {
+		t.Error("a credential value reached the job manifest")
+	}
+}
+
+// opencode cannot reach a provider it has no address for, and that is a policy
+// mistake rather than a transient one.
+func TestAnOpenCodeProviderWithoutABaseURLIsRefused(t *testing.T) {
+	api := &fakeAPI{phases: []kube.JobPhase{kube.JobSucceeded}}
+	req := request()
+	req.Resolution = &policy.Resolution{
+		ProviderName: "deepseek", Model: "m", Harness: policy.Harness("opencode"),
+	}
+
+	_, err := service(api).Run(context.Background(), req)
+	if !errors.Is(err, codingrun.ErrNoAdapter) {
+		t.Fatalf("error = %v, want ErrNoAdapter", err)
+	}
+	if api.created != 0 {
+		t.Fatal("launched a job opencode could not have used")
 	}
 }
