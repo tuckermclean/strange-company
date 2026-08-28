@@ -527,6 +527,11 @@ controlPlane:
     namespace: agent-runs
     # -- Create the namespace as part of this release.
     createNamespace: false
+    # -- The image coding Jobs run. Empty tag follows the chart appVersion, so
+    # a release never ships a runner pinned to `latest`.
+    runnerImage:
+      repository: ghcr.io/tuckermclean/strange-company-runner
+      tag: ""
 
 # ---------------------------------------------------------------------------
 # Helm test pod

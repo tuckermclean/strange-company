@@ -612,6 +612,19 @@
             },
             "createNamespace": {
               "type": "boolean"
+            },
+            "runnerImage": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "repository": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "tag": {
+                  "type": "string"
+                }
+              }
             }
           }
         }
