@@ -71,7 +71,11 @@ fi
 [ -n "${SC_HARNESS:-}" ] || log "warning: SC_HARNESS not set"
 [ -n "${SC_MODEL:-}" ] || log "warning: SC_MODEL not set"
 
-# SC_BASE_REF is NOT currently emitted by control-plane/internal/jobs/spec.go
+# SC_BASE_REF IS emitted by control-plane/internal/jobs/spec.go (buildEnv), and
+# jobs.Build refuses a Spec without a BaseRef. The default below is therefore a
+# belt-and-braces fallback for a hand-run container, not the normal path -- an
+# earlier comment here claimed the variable was never sent, which would lead
+# someone to "fix" a problem that does not exist.
 # (see runner/README.md, "Known gap"). Default it rather than fail, since
 # failing fast here would make this image non-functional against today's
 # control plane; a future spec.go change should add it explicitly.
