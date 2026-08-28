@@ -73,3 +73,50 @@ func (s *Store) GetSpecSession(ctx context.Context, cardID uuid.UUID) (string, e
 	}
 	return sessionID, nil
 }
+
+// CardTask pairs a card with the Vikunja task projecting it.
+type CardTask struct {
+	CardID uuid.UUID
+	TaskID int64
+}
+
+// ListUnapprovedWithTasks returns Backlog cards that have a specification, are
+// projected onto a Vikunja task, and whose specification no human has approved
+// as it currently reads.
+//
+// These are exactly the cards a human could approve from the board, and no
+// others: a card already approved must not be looked at again, or the approval
+// label would be re-applied to text that has since changed.
+func (s *Store) ListUnapprovedWithTasks(ctx context.Context, limit int) ([]CardTask, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+
+	const q = `
+		SELECT c.id, c.vikunja_task_id
+		  FROM cards c
+		  JOIN card_specs s ON s.card_id = c.id
+		 WHERE c.state = 'Backlog'
+		   AND c.vikunja_task_id IS NOT NULL
+		   AND s.content <> ''
+		   AND (s.approved_sha256 IS NULL
+		        OR s.approved_sha256 IS DISTINCT FROM encode(sha256(s.content::bytea), 'hex'))
+		 ORDER BY s.updated_at
+		 LIMIT $1`
+
+	rows, err := s.pool.Query(ctx, q, limit)
+	if err != nil {
+		return nil, fmt.Errorf("store: listing cards awaiting approval: %w", err)
+	}
+	defer rows.Close()
+
+	var out []CardTask
+	for rows.Next() {
+		var ct CardTask
+		if err := rows.Scan(&ct.CardID, &ct.TaskID); err != nil {
+			return nil, fmt.Errorf("store: reading a card awaiting approval: %w", err)
+		}
+		out = append(out, ct)
+	}
+	return out, rows.Err()
+}
