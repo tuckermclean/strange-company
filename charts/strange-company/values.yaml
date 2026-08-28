@@ -527,8 +527,9 @@ controlPlane:
   # workflows:write: an agent able to rewrite CI can weaken the very checks
   # that verify it, and the runner refuses such a commit for the same reason.
   #
-  # Name a Secret you created, or leave empty to use the chart's own
-  # github-token (which the ingestion token already populates).
+  # Deliberately NOT defaulted to the chart's own github-token. That token is
+  # the operator's, and if it ever carries workflows:write for day-0 setup the
+  # agent would silently inherit it. Name a Secret you created for this.
   gitCredential:
     secret: ""
     key: github-token
