@@ -107,7 +107,7 @@ func TestANonZeroExitIsAFailedRun(t *testing.T) {
 // is an error rather than a silent zero-value result.
 func TestUnreadableOutputIsAnError(t *testing.T) {
 	for _, in := range []string{"", "   ", "not json at all\nnor this\n"} {
-		if _, err := OpenCodeAdapter{}.Parse([]byte(in), 0, time.Second); err == nil {
+		if _, err := (OpenCodeAdapter{}).Parse([]byte(in), 0, time.Second); err == nil {
 			t.Errorf("Parse(%q) returned no error", in)
 		}
 	}
@@ -126,7 +126,7 @@ func TestTheRawStreamIsKept(t *testing.T) {
 }
 
 func TestOpenCodeIdentifiesItself(t *testing.T) {
-	if OpenCodeAdapter{}.Name() != "opencode" {
-		t.Fatalf("name = %q", OpenCodeAdapter{}.Name())
+	if (OpenCodeAdapter{}).Name() != "opencode" {
+		t.Fatalf("name = %q", (OpenCodeAdapter{}).Name())
 	}
 }
