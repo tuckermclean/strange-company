@@ -58,6 +58,7 @@ func request() codingrun.Request {
 		RepoURL: "https://github.com/example/repo",
 		BaseRef: "main",
 		Branch:  "agent/card-1",
+		Phase:   "tests",
 		Attempt: 1,
 	}
 }
