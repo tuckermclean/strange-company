@@ -62,6 +62,21 @@ type Config struct {
 	// GitHubIngestLabel is the label that makes an issue eligible (spec §25).
 	GitHubIngestLabel string
 
+	// AgentRunsNamespace is where coding Jobs run (spec §16). Empty
+	// disables coding phases entirely: without a namespace there is nowhere
+	// to run them, and guessing one would create Jobs in a namespace nobody
+	// granted access to.
+	AgentRunsNamespace string
+
+	// RunnerImage is the image coding Jobs run. Empty disables coding
+	// phases: there is no sensible default, and a wrong one fails at pod
+	// start rather than at configuration time.
+	RunnerImage string
+
+	// ServiceAccountDir is where the projected Kubernetes service account
+	// lives.
+	ServiceAccountDir string
+
 	// PolicyDir is where operator-supplied policy is mounted. Empty means use
 	// the policy compiled into the binary.
 	PolicyDir string
@@ -83,6 +98,7 @@ const (
 	defaultBoardPermission   = 1
 	defaultGitHubAPIURL      = "https://api.github.com"
 	defaultIngestLabel       = "agent-ready"
+	defaultServiceAcctDir    = "/var/run/secrets/kubernetes.io/serviceaccount"
 )
 
 // secretVars are never rendered verbatim by Redacted.
@@ -128,6 +144,9 @@ func Load(getenv func(string) string) (*Config, error) {
 		// Optional: only needed to bootstrap a Vikunja token on first boot.
 		// When VikunjaToken is already set, or when both of these are absent,
 		// bootstrap is skipped entirely.
+		AgentRunsNamespace:       strings.TrimSpace(getenv("AGENT_RUNS_NAMESPACE")),
+		RunnerImage:              strings.TrimSpace(getenv("RUNNER_IMAGE")),
+		ServiceAccountDir:        valueOr(getenv("SERVICE_ACCOUNT_DIR"), defaultServiceAcctDir),
 		GitHubAPIURL:             valueOr(getenv("GITHUB_API_URL"), defaultGitHubAPIURL),
 		GitHubToken:              strings.TrimSpace(getenv("GITHUB_TOKEN")),
 		GitHubRepositories:       splitList(getenv("GITHUB_REPOSITORIES")),
@@ -225,6 +244,8 @@ func (c *Config) Redacted() map[string]string {
 		"VIKUNJA_URL":                c.VikunjaURL,
 		"VIKUNJA_BOOTSTRAP_USERNAME": c.VikunjaBootstrapUsername,
 		"CREDENTIALS_DIR":            c.CredentialsDir,
+		"AGENT_RUNS_NAMESPACE":       c.AgentRunsNamespace,
+		"RUNNER_IMAGE":               c.RunnerImage,
 		"GITHUB_API_URL":             c.GitHubAPIURL,
 		"GITHUB_REPOSITORIES":        strings.Join(c.GitHubRepositories, ","),
 		"GITHUB_INGEST_LABEL":        c.GitHubIngestLabel,

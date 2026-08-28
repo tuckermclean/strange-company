@@ -20,13 +20,16 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/tuckermclean/strange-company/control-plane/internal/card"
+	"github.com/tuckermclean/strange-company/control-plane/internal/codingrun"
 	"github.com/tuckermclean/strange-company/control-plane/internal/config"
 	"github.com/tuckermclean/strange-company/control-plane/internal/credentials"
 	"github.com/tuckermclean/strange-company/control-plane/internal/dispatch"
 	"github.com/tuckermclean/strange-company/control-plane/internal/github"
 	"github.com/tuckermclean/strange-company/control-plane/internal/health"
 	"github.com/tuckermclean/strange-company/control-plane/internal/hermes"
+	"github.com/tuckermclean/strange-company/control-plane/internal/implstep"
 	"github.com/tuckermclean/strange-company/control-plane/internal/ingest"
+	"github.com/tuckermclean/strange-company/control-plane/internal/kube"
 	"github.com/tuckermclean/strange-company/control-plane/internal/plan"
 	"github.com/tuckermclean/strange-company/control-plane/internal/policy"
 	"github.com/tuckermclean/strange-company/control-plane/internal/promote"
@@ -34,6 +37,7 @@ import (
 	"github.com/tuckermclean/strange-company/control-plane/internal/server"
 	"github.com/tuckermclean/strange-company/control-plane/internal/specsession"
 	"github.com/tuckermclean/strange-company/control-plane/internal/store"
+	"github.com/tuckermclean/strange-company/control-plane/internal/teststep"
 	"github.com/tuckermclean/strange-company/control-plane/internal/vikunja"
 	"github.com/tuckermclean/strange-company/control-plane/internal/worker"
 )
@@ -639,6 +643,30 @@ func runWorkerSupervisor(ctx context.Context, logger *slog.Logger, cfg *config.C
 			return providerclient.New(res, credentials.Dir(cfg.CredentialsDir))
 		}, log),
 	}
+
+	// The coding phases need somewhere to run. Both values are required
+	// rather than defaulted: without a namespace there is nowhere to put a
+	// Job, and there is no sensible default runner image -- a wrong one
+	// fails at pod start rather than at configuration time.
+	switch {
+	case cfg.AgentRunsNamespace == "" || cfg.RunnerImage == "":
+		log.Warn("coding phases disabled: set controlPlane.agentRuns and the runner image",
+			"agent_runs_namespace", cfg.AgentRunsNamespace, "runner_image", cfg.RunnerImage)
+	default:
+		kc, err := kube.InCluster(cfg.ServiceAccountDir)
+		if err != nil {
+			// Not fatal. Everything up to Ready still works, and a
+			// board that fills but does not build is far better than a
+			// control plane that will not start.
+			log.Error("coding phases disabled: no Kubernetes access", "error", err)
+			break
+		}
+		runs := codingrun.New(kc, cfg.AgentRunsNamespace, cfg.RunnerImage, codingRunPoll, log)
+		steps[card.PhaseTests] = teststep.New(st, st, runs, log)
+		steps[card.PhaseImplementation] = implstep.New(st, st, st, runs, log)
+		log.Info("coding phases enabled",
+			"namespace", cfg.AgentRunsNamespace, "image", cfg.RunnerImage)
+	}
 	step := dispatch.New(steps, log)
 
 	host, err := os.Hostname()
@@ -678,3 +706,7 @@ func runWorkerSupervisor(ctx context.Context, logger *slog.Logger, cfg *config.C
 // it. Long enough for a model call, short enough that a dead worker does not
 // strand a card for an hour.
 const workerLease = 10 * time.Minute
+
+// codingRunPoll is how often a running coding Job's status is checked. Coding
+// runs take minutes, so a tighter poll only adds API calls.
+const codingRunPoll = 10 * time.Second
