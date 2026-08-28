@@ -135,6 +135,10 @@ vikunja:
     # -- 0 read, 1 read & write, 2 admin. Read & write by default: a human
     # moving a card is a real input, and read-only silently breaks it.
     permission: 1
+    # -- Add this label to a card in Vikunja to approve its specification
+    # (spec 10.2). The control plane applies the approval and removes the
+    # label, so it never approves a later edit nobody consented to.
+    approvalLabel: spec-approved
 
   # -- Render the upstream Vikunja dependency.
   enabled: true

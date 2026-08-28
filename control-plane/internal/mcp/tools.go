@@ -24,6 +24,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/tuckermclean/strange-company/control-plane/internal/card"
+	"github.com/tuckermclean/strange-company/control-plane/internal/store"
 )
 
 // ErrNotImplementedYet is returned by tools whose contract is declared in M2
@@ -207,7 +208,10 @@ var toolRegistry = []toolSpec{
 	},
 	{
 		Name:        "cards.comment",
-		Description: "Attach a human-readable comment to a card. M2 stores comments in an in-memory map, not Postgres; a durable table is a later migration.",
+		Description: "Attach a human-readable comment to a card. This is how the specification " +
+			"conversation reports what a human said -- including that they approve. It records a " +
+			"statement and approves nothing: §10.2 needs a human, and everything reaching this " +
+			"interface is an agent. The human approves on the board.",
 		Schema: schemaObject(map[string]any{
 			"card_id": stringProp("UUID of the card."),
 			"author":  stringProp("Who is commenting."),
@@ -545,6 +549,20 @@ func handleCardsComment(ctx context.Context, s *Server, raw json.RawMessage) (an
 		Body:      args.Body,
 		CreatedAt: time.Now().UTC(),
 	}
+
+	// Durable when the server has somewhere to put it. A comment that dies
+	// with the process answers nothing when §21 asks what happened to a
+	// card -- and this is the channel the specification conversation uses
+	// to report a human's decision.
+	if s.evidence != nil {
+		if err := s.evidence.AttachEvidence(ctx, id, store.CardEvidence{
+			ActorID: args.Author,
+			Summary: args.Body,
+		}); err != nil {
+			return nil, err
+		}
+	}
+
 	s.records.addComment(c)
 	return c, nil
 }
@@ -668,3 +686,4 @@ func handleArtifactsList(ctx context.Context, s *Server, raw json.RawMessage) (a
 
 	return artifactsListResult{Artifacts: s.records.listArtifacts(id)}, nil
 }
+

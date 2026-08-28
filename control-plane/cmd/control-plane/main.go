@@ -30,12 +30,14 @@ import (
 	"github.com/tuckermclean/strange-company/control-plane/internal/implstep"
 	"github.com/tuckermclean/strange-company/control-plane/internal/ingest"
 	"github.com/tuckermclean/strange-company/control-plane/internal/kube"
+	"github.com/tuckermclean/strange-company/control-plane/internal/mcp"
 	"github.com/tuckermclean/strange-company/control-plane/internal/plan"
 	"github.com/tuckermclean/strange-company/control-plane/internal/policy"
 	"github.com/tuckermclean/strange-company/control-plane/internal/promote"
 	"github.com/tuckermclean/strange-company/control-plane/internal/providerclient"
 	"github.com/tuckermclean/strange-company/control-plane/internal/reviewstep"
 	"github.com/tuckermclean/strange-company/control-plane/internal/server"
+	"github.com/tuckermclean/strange-company/control-plane/internal/specapproval"
 	"github.com/tuckermclean/strange-company/control-plane/internal/specsession"
 	"github.com/tuckermclean/strange-company/control-plane/internal/store"
 	"github.com/tuckermclean/strange-company/control-plane/internal/teststep"
@@ -122,7 +124,10 @@ func main() {
 	addr := fmt.Sprintf(":%d", cfg.Port)
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           server.New(cfg, checks, version).SetCards(cardStore{st}, storeErrorClassifier{}).Handler(),
+		Handler:           server.New(cfg, checks, version).
+			SetCards(cardStore{st}, storeErrorClassifier{}).
+			SetMCP(mcp.NewServer(mcpCards{st}).SetEvidence(st).Handler()).
+			Handler(),
 		ReadHeaderTimeout: readHeaderTimeout,
 		ReadTimeout:       readTimeout,
 		WriteTimeout:      writeTimeout,
@@ -268,6 +273,10 @@ func runVikunjaSupervisor(ctx context.Context, logger *slog.Logger, cfg *config.
 		client     *vikunja.Client
 		board      *vikunja.Board
 		reconciler *vikunja.Reconciler
+
+		// approvals turns a label on the board into a §10.2 approval. It
+		// needs the same client, so it appears once the board is ready.
+		approvals *specapproval.Reconciler
 	)
 
 	for {
@@ -313,6 +322,8 @@ func runVikunjaSupervisor(ctx context.Context, logger *slog.Logger, cfg *config.
 						"project_id", b.ProjectID)
 				}
 
+				approvals = specapproval.New(st, client, cfg.SpecApprovalLabel, specScreeningLimit, logger)
+
 				logger.Info("vikunja board ready",
 					"project_id", board.ProjectID,
 					"kanban_view_id", board.KanbanViewID,
@@ -330,6 +341,15 @@ func runVikunjaSupervisor(ctx context.Context, logger *slog.Logger, cfg *config.
 					"accepted", res.Accepted, "rejected", res.Rejected)
 			}
 			interval = cfg.ReconcileInterval
+		}
+
+		if approvals != nil {
+			if res, err := approvals.RunOnce(ctx); err != nil {
+				logger.Warn("approval pass failed", "error", err)
+			} else if res.Approved+res.Failed > 0 {
+				logger.Info("approvals from the board",
+					"approved", res.Approved, "failed", res.Failed)
+			}
 		}
 
 		select {
@@ -729,3 +749,16 @@ const workerLease = 10 * time.Minute
 // codingRunPoll is how often a running coding Job's status is checked. Coding
 // runs take minutes, so a tighter poll only adds API calls.
 const codingRunPoll = 10 * time.Second
+
+// mcpCards adapts *store.Store to mcp.CardService. Only ClaimReady needs
+// translating: the MCP package declares its own ErrNoWork so it never imports
+// the storage engine.
+type mcpCards struct{ *store.Store }
+
+func (m mcpCards) ClaimReady(ctx context.Context, workerID string, lease time.Duration) (*card.Card, error) {
+	c, err := m.Store.ClaimReady(ctx, workerID, lease)
+	if errors.Is(err, store.ErrNoWork) {
+		return nil, mcp.ErrNoWork
+	}
+	return c, err
+}

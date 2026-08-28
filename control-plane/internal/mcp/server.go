@@ -35,6 +35,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/tuckermclean/strange-company/control-plane/internal/card"
+	"github.com/tuckermclean/strange-company/control-plane/internal/store"
 )
 
 // CardService is the narrow slice of persistence operations the cards.* and
@@ -158,8 +159,22 @@ func (m *memoryRecords) listArtifacts(cardID uuid.UUID) []Artifact {
 // Server is the Company MCP server. It holds only what tools.go's handlers
 // need: a CardService and the M2 in-memory records store.
 type Server struct {
-	cards   CardService
-	records recordStore
+	cards    CardService
+	records  recordStore
+	evidence Evidence
+}
+
+// Evidence records durable notes against a card (spec §21). Optional: without
+// one, cards.comment falls back to the in-memory map M2 shipped -- which is
+// what a comment nobody can read after a restart is worth.
+type Evidence interface {
+	AttachEvidence(ctx context.Context, cardID uuid.UUID, ev store.CardEvidence) error
+}
+
+// SetEvidence gives the server somewhere durable to record comments.
+func (s *Server) SetEvidence(e Evidence) *Server {
+	s.evidence = e
+	return s
 }
 
 // NewServer builds a Server backed by cards. cards is typically *store.Store

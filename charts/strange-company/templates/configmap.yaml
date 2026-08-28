@@ -29,6 +29,10 @@ data:
   GITHUB_API_URL: {{ .Values.github.apiUrl | quote }}
   GITHUB_REPOSITORIES: {{ join "," .Values.github.repositories | quote }}
   GITHUB_INGEST_LABEL: {{ .Values.github.label | quote }}
+  # Spec 10.2: a human approves a specification by adding this label to the
+  # card in Vikunja. The board is a surface no model can reach, which is what
+  # makes the label a human decision rather than an assertion.
+  SPEC_APPROVAL_LABEL: {{ .Values.vikunja.board.approvalLabel | quote }}
   # Without at least one username here the board belongs to the bootstrap
   # user alone and no human can see the cards.
   VIKUNJA_BOARD_SHARE_WITH: {{ join "," .Values.vikunja.board.shareWith | quote }}
