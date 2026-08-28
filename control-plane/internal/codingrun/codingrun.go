@@ -42,6 +42,18 @@ type JobAPI interface {
 // handing it back to be claimed and failed again every reconcile interval.
 var ErrNoAdapter = errors.New("codingrun: this provider's harness cannot run a coding job")
 
+
+// GitIdentity is how a coding Job authenticates and signs its commits.
+//
+// The token is a Secret reference, never a value: it reaches the Job the same
+// way every other credential does, and this process never reads it.
+type GitIdentity struct {
+	Token       *policy.CredentialRef
+	Username    string
+	AuthorName  string
+	AuthorEmail string
+}
+
 // Request is one coding run.
 type Request struct {
 	CardID string

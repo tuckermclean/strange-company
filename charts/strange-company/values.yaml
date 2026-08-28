@@ -520,6 +520,21 @@ controlPlane:
     hosts: []
     tls: []
 
+  # -- The credential coding Jobs push their agent branch with.
+  #
+  # A DIFFERENT token from the one used for day-0 repository setup. This one is
+  # handed to a coding agent, so give it contents:write and NOT
+  # workflows:write: an agent able to rewrite CI can weaken the very checks
+  # that verify it, and the runner refuses such a commit for the same reason.
+  #
+  # Name a Secret you created, or leave empty to use the chart's own
+  # github-token (which the ingestion token already populates).
+  gitCredential:
+    secret: ""
+    key: github-token
+    authorName: strange-company agent
+    authorEmail: agent@strange-company.invalid
+
   # -- How the red and green gates decide whether a ref's tests pass.
   #
   # `github-actions` reads the checks the repository's own workflows produced.

@@ -713,8 +713,21 @@ func runWorkerSupervisor(ctx context.Context, logger *slog.Logger, cfg *config.C
 				": GitHub Actions was asked for but there is no GitHub token")
 		}
 
-		steps[card.PhaseTests] = teststep.New(st, st, runs, verifier, log)
-		steps[card.PhaseImplementation] = implstep.New(st, st, st, runs, verifier, log)
+		// The credential a coding Job pushes its agent branch with. Without
+		// it the Job clones and never pushes: no agent branch, no checks
+		// on it, and the red gate has nothing to compare.
+		git := codingrun.GitIdentity{
+			Username: cfg.GitUsername, AuthorName: cfg.GitAuthorName, AuthorEmail: cfg.GitAuthorEmail,
+		}
+		if cfg.GitTokenSecret != "" && cfg.GitTokenKey != "" {
+			git.Token = &policy.CredentialRef{Secret: cfg.GitTokenSecret, Key: cfg.GitTokenKey}
+		} else {
+			log.Warn("no git credential configured for coding Jobs; agents will clone but cannot push their branch",
+				"set", "controlPlane.gitCredential")
+		}
+
+		steps[card.PhaseTests] = teststep.New(st, st, runs, verifier, git, log)
+		steps[card.PhaseImplementation] = implstep.New(st, st, st, runs, verifier, git, log)
 		log.Info("coding phases enabled",
 			"namespace", cfg.AgentRunsNamespace, "image", cfg.RunnerImage)
 

@@ -112,7 +112,7 @@ func ok() *runner.CodingRunResult {
 func TestWritingTestsAdvancesToImplementation(t *testing.T) {
 	b, r, v := board(), &fakeRunner{result: ok()}, redGate()
 
-	ev, err := teststep.New(b, b, r, v, nil).Do(context.Background(), testCard(), res())
+	ev, err := teststep.New(b, b, r, v, codingrun.GitIdentity{Username: "x"}, nil).Do(context.Background(), testCard(), res())
 	if err != nil {
 		t.Fatalf("Do: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestWritingTestsAdvancesToImplementation(t *testing.T) {
 func TestTheTaskCarriesTheSpecificationAndThePlan(t *testing.T) {
 	b, r, v := board(), &fakeRunner{result: ok()}, redGate()
 
-	if _, err := teststep.New(b, b, r, v, nil).Do(context.Background(), testCard(), res()); err != nil {
+	if _, err := teststep.New(b, b, r, v, codingrun.GitIdentity{Username: "x"}, nil).Do(context.Background(), testCard(), res()); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"AC1", "add a handler"} {
@@ -154,7 +154,7 @@ func TestTheTaskCarriesTheSpecificationAndThePlan(t *testing.T) {
 func TestTheTaskForbidsImplementingTheFeature(t *testing.T) {
 	b, r, v := board(), &fakeRunner{result: ok()}, redGate()
 
-	if _, err := teststep.New(b, b, r, v, nil).Do(context.Background(), testCard(), res()); err != nil {
+	if _, err := teststep.New(b, b, r, v, codingrun.GitIdentity{Username: "x"}, nil).Do(context.Background(), testCard(), res()); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(r.req.Task, codingrun.TestCommandPath) {
@@ -172,7 +172,7 @@ func TestTestsAreNotWrittenWithoutAPlan(t *testing.T) {
 	b.artifacts = nil
 	r, v := &fakeRunner{result: ok()}, redGate()
 
-	if _, err := teststep.New(b, b, r, v, nil).Do(context.Background(), testCard(), res()); err == nil {
+	if _, err := teststep.New(b, b, r, v, codingrun.GitIdentity{Username: "x"}, nil).Do(context.Background(), testCard(), res()); err == nil {
 		t.Fatal("expected an error")
 	}
 	if r.calls != 0 {
@@ -189,7 +189,7 @@ func TestAnInfrastructureFailureNeitherAdvancesNorCounts(t *testing.T) {
 		Status: runner.StatusInfraError, Harness: "claude-code", Summary: "pod evicted",
 	}}
 
-	ev, err := teststep.New(b, b, r, v, nil).Do(context.Background(), testCard(), res())
+	ev, err := teststep.New(b, b, r, v, codingrun.GitIdentity{Username: "x"}, nil).Do(context.Background(), testCard(), res())
 	if err == nil {
 		t.Fatal("expected an error so the worker hands the card back")
 	}
@@ -207,7 +207,7 @@ func TestAFailedRunDoesNotAdvanceToImplementation(t *testing.T) {
 		Status: runner.StatusFailed, Harness: "claude-code", Summary: "could not write tests",
 	}}
 
-	ev, err := teststep.New(b, b, r, v, nil).Do(context.Background(), testCard(), res())
+	ev, err := teststep.New(b, b, r, v, codingrun.GitIdentity{Username: "x"}, nil).Do(context.Background(), testCard(), res())
 	if err != nil {
 		t.Fatalf("Do: %v", err)
 	}
@@ -224,7 +224,7 @@ func TestAMissingSpecificationIsRefused(t *testing.T) {
 	b.specErr = errors.New("no spec")
 	r, v := &fakeRunner{result: ok()}, redGate()
 
-	if _, err := teststep.New(b, b, r, v, nil).Do(context.Background(), testCard(), res()); err == nil {
+	if _, err := teststep.New(b, b, r, v, codingrun.GitIdentity{Username: "x"}, nil).Do(context.Background(), testCard(), res()); err == nil {
 		t.Fatal("expected an error")
 	}
 	if r.calls != 0 {
@@ -241,7 +241,7 @@ func TestTestsThatPassWithoutTheFeatureStopTheCard(t *testing.T) {
 		{Completed: true, ExitCode: 0}, // and still green WITH the new tests
 	}}
 
-	ev, err := teststep.New(b, b, r, v, nil).Do(context.Background(), testCard(), res())
+	ev, err := teststep.New(b, b, r, v, codingrun.GitIdentity{Username: "x"}, nil).Do(context.Background(), testCard(), res())
 	if err != nil {
 		t.Fatalf("Do: %v", err)
 	}
@@ -259,7 +259,7 @@ func TestTestsThatPassWithoutTheFeatureStopTheCard(t *testing.T) {
 func TestTheGateComparesTheBaseRefWithTheAgentBranch(t *testing.T) {
 	b, r, v := board(), &fakeRunner{result: ok()}, redGate()
 
-	if _, err := teststep.New(b, b, r, v, nil).Do(context.Background(), testCard(), res()); err != nil {
+	if _, err := teststep.New(b, b, r, v, codingrun.GitIdentity{Username: "x"}, nil).Do(context.Background(), testCard(), res()); err != nil {
 		t.Fatal(err)
 	}
 	if len(v.refs) != 2 {
@@ -279,7 +279,7 @@ func TestABrokenBaselineStopsTheCard(t *testing.T) {
 		{Completed: true, ExitCode: 1},
 	}}
 
-	ev, err := teststep.New(b, b, r, v, nil).Do(context.Background(), testCard(), res())
+	ev, err := teststep.New(b, b, r, v, codingrun.GitIdentity{Username: "x"}, nil).Do(context.Background(), testCard(), res())
 	if err != nil {
 		t.Fatalf("Do: %v", err)
 	}
@@ -297,7 +297,7 @@ func TestAnInconclusiveGateHandsTheCardBack(t *testing.T) {
 	b, r := board(), &fakeRunner{result: ok()}
 	v := &fakeVerifier{outcomes: []redgate.RunOutcome{{Completed: false}}}
 
-	if _, err := teststep.New(b, b, r, v, nil).Do(context.Background(), testCard(), res()); err == nil {
+	if _, err := teststep.New(b, b, r, v, codingrun.GitIdentity{Username: "x"}, nil).Do(context.Background(), testCard(), res()); err == nil {
 		t.Fatal("expected an error so the worker hands the card back")
 	}
 }
