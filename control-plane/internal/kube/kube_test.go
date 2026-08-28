@@ -52,6 +52,7 @@ func aJob(t *testing.T) *jobs.Job {
 		Image: "runner:1", Harness: "claude-code", Model: "m",
 		RepoURL: "https://github.com/example/repo", Branch: "agent/card-1",
 		BaseRef: "main", Command: []string{"claude"}, Timeout: 60_000_000_000,
+		Phase: "implementation", Attempt: 1,
 	})
 	if err != nil {
 		t.Fatalf("jobs.Build: %v", err)
