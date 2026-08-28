@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,6 +20,7 @@ type phaseStore struct {
 	released   string
 	transition card.State
 	evidence   []Evidence
+	order      []string
 }
 
 func (p *phaseStore) ClaimReady(context.Context, string, time.Duration) (*card.Card, error) {
@@ -30,6 +32,7 @@ func (p *phaseStore) ClaimReady(context.Context, string, time.Duration) (*card.C
 func (p *phaseStore) Heartbeat(context.Context, uuid.UUID, string, time.Duration) error { return nil }
 func (p *phaseStore) Release(_ context.Context, _ uuid.UUID, _, reason string) error {
 	p.released = reason
+	p.order = append(p.order, "release")
 	return nil
 }
 func (p *phaseStore) Transition(_ context.Context, _ uuid.UUID, to card.State, _ card.ActorType, _, _ string) error {
@@ -45,6 +48,7 @@ func (p *phaseStore) AdvancePhase(_ context.Context, _ uuid.UUID, to card.Phase,
 		return p.advanceErr
 	}
 	p.advancedTo = to
+	p.order = append(p.order, "advance")
 	return nil
 }
 
@@ -70,10 +74,15 @@ func runWith(t *testing.T, st *phaseStore, ev Evidence) (Outcome, error) {
 	return m.RunOnce(context.Background())
 }
 
-// §11's phases happen while a card is InProgress and the state machine has no
-// InProgress -> InProgress transition, so a step that finished a phase has to
-// be able to say so without naming a state.
-func TestAStepThatAdvancesAPhaseKeepsTheCardInProgress(t *testing.T) {
+// §7.1: "perform exactly one workflow ... release claim → EXIT", and "a card
+// may require several Meeseeks over its lifetime. That is desirable."
+//
+// So a step that finishes a phase advances it and then HANDS THE CARD BACK.
+// Keeping the claim would make one worker carry a card through planning,
+// tests and implementation -- exactly the long-running assistant with an
+// ever-growing pile of context §7 forbids -- and would also park the card
+// under a live lease no other worker could take.
+func TestAdvancingAPhaseHandsTheCardBack(t *testing.T) {
 	st := &phaseStore{claimed: inProgress()}
 
 	outcome, err := runWith(t, st, Evidence{Summary: "plan written", NextPhase: card.PhaseTests})
@@ -89,8 +98,38 @@ func TestAStepThatAdvancesAPhaseKeepsTheCardInProgress(t *testing.T) {
 	if st.transition != "" {
 		t.Errorf("also transitioned the card to %q", st.transition)
 	}
-	if st.released != "" {
-		t.Errorf("released a card that is still being worked on: %q", st.released)
+	if st.released == "" {
+		t.Error("kept the claim; the next phase needs a fresh Meeseeks (§7.1)")
+	}
+	// The reason names the phase, so the audit log says why the card came
+	// back rather than implying the worker gave up.
+	if !strings.Contains(st.released, string(card.PhaseTests)) {
+		t.Errorf("release reason %q does not name the new phase", st.released)
+	}
+}
+
+// The phase must be advanced BEFORE the card is released, or the next
+// Meeseeks claims it and re-runs the phase that just finished.
+func TestThePhaseAdvancesBeforeTheCardIsHandedBack(t *testing.T) {
+	st := &phaseStore{claimed: inProgress()}
+
+	if _, err := runWith(t, st, Evidence{Summary: "plan written", NextPhase: card.PhaseTests}); err != nil {
+		t.Fatal(err)
+	}
+	if len(st.order) < 2 {
+		t.Fatalf("order = %v", st.order)
+	}
+	var advanceAt, releaseAt = -1, -1
+	for i, step := range st.order {
+		switch step {
+		case "advance":
+			advanceAt = i
+		case "release":
+			releaseAt = i
+		}
+	}
+	if advanceAt == -1 || releaseAt == -1 || advanceAt > releaseAt {
+		t.Fatalf("phase advanced after the release: %v", st.order)
 	}
 }
 

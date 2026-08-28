@@ -59,11 +59,12 @@ const (
 	// this case.
 	OutcomeReleased Outcome = "released"
 	// OutcomeAdvanced means the step finished a phase rather than moving
-	// the card: the card is still InProgress, still claimed, and the next
-	// phase is what a following RunOnce will work on. §11's phases all
-	// happen while a card is InProgress, and the state machine has no
-	// InProgress -> InProgress transition, so this is how "planning is
-	// done, write the tests next" is expressed.
+	// the card: the phase moved on and the card was handed back, so the
+	// next Meeseeks continues from there. §11's phases all happen while a
+	// card is InProgress and the state machine has no InProgress ->
+	// InProgress transition, so this is how "planning is done, write the
+	// tests next" is expressed without one worker carrying the card
+	// through every phase (§7.1).
 	OutcomeAdvanced Outcome = "advanced"
 	// OutcomeEscalated means the phase's escalation ladder (spec 12.3) was
 	// exhausted for this card's attempt count, and the card was moved to
@@ -210,10 +211,11 @@ func (m *Meeseeks) RunOnce(ctx context.Context) (Outcome, error) {
 		return OutcomeReleased, fmt.Errorf("worker %s: resolve policy for card %s phase %q: %w", m.id, c.ID, c.Phase, err)
 	}
 
-	// From here on, the claim MUST be released on every path except two: a
+	// From here on, the claim MUST be released on every path except a
 	// successful transition (which moves the card out of InProgress
-	// itself), and a successful phase advance (which deliberately keeps the
-	// claim, because the same worker continues into the next phase).
+	// itself). A phase advance releases too -- §7.1 ends every lifecycle
+	// with "release claim → EXIT" -- it just advances the phase first, so
+	// the next Meeseeks picks up where this one stopped.
 	// Guarded with a flag rather than relying on a single return
 	// statement, since a step failure, an evidence-attach failure and an
 	// illegal transition all need the same guarantee -- and it must hold
@@ -299,10 +301,21 @@ func (m *Meeseeks) RunOnce(ctx context.Context) (Outcome, error) {
 			}
 			return OutcomeReleased, fmt.Errorf("worker %s: advance card %s to phase %q: %w", m.id, c.ID, ev.NextPhase, err)
 		}
-		// Suppress the deferred release: the card is still InProgress,
-		// still ours, and the work continues in the next phase. The flag
-		// means "nothing left for the defer to do", not "handed back".
-		released = true
+		// Hand the card back. §7.1: "perform exactly one workflow ...
+		// release claim → EXIT", and "a card may require several Meeseeks
+		// over its lifetime. That is desirable." Keeping the claim would
+		// make one worker carry a card through planning, tests and
+		// implementation -- the long-running assistant with an
+		// ever-growing pile of context §7 forbids -- and would park the
+		// card under a live lease no other worker could take.
+		//
+		// Released AFTER the advance, so the next Meeseeks claims a card
+		// already in its new phase rather than re-running the one that
+		// just finished.
+		if rerr := release(fmt.Sprintf("phase advanced to %q; next phase needs a fresh Meeseeks", ev.NextPhase)); rerr != nil {
+			log.Error("release after a phase advance failed", "error", rerr)
+			return OutcomeReleased, fmt.Errorf("worker %s: release card %s after advancing to %q: %w", m.id, c.ID, ev.NextPhase, rerr)
+		}
 		return OutcomeAdvanced, nil
 	}
 
