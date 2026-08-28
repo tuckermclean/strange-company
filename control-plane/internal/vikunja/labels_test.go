@@ -46,7 +46,7 @@ func TestTaskLabelsAreReadFromTheTask(t *testing.T) {
 	if len(labels) != 2 || labels[0].Title != "spec-approved" || labels[0].ID != 3 {
 		t.Fatalf("labels = %+v", labels)
 	}
-	if s.paths[0] != "GET /api/v1/tasks/42/labels" {
+	if s.paths[0] != "GET /tasks/42/labels" {
 		t.Fatalf("path = %q", s.paths[0])
 	}
 }
