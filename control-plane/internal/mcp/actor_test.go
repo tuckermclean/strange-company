@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/tuckermclean/strange-company/control-plane/internal/card"
@@ -12,11 +13,25 @@ import (
 
 // recordingCards captures the actor a transition was actually attempted with.
 type recordingCards struct {
-	CardService
 	actor   card.ActorType
 	actorID string
 	called  bool
 }
+
+// The rest of CardService is unused by cards.transition beyond the read-back
+// below, and is implemented rather than embedded so a nil interface cannot
+// turn a behavioural failure into a panic.
+func (r *recordingCards) ListCards(context.Context) ([]*card.Card, error) { return nil, nil }
+func (r *recordingCards) GetCard(_ context.Context, id uuid.UUID) (*card.Card, error) {
+	return &card.Card{ID: id, Title: "t", State: card.Review}, nil
+}
+func (r *recordingCards) ClaimReady(context.Context, string, time.Duration) (*card.Card, error) {
+	return nil, ErrNoWork
+}
+func (r *recordingCards) Heartbeat(context.Context, uuid.UUID, string, time.Duration) error {
+	return nil
+}
+func (r *recordingCards) Release(context.Context, uuid.UUID, string, string) error { return nil }
 
 func (r *recordingCards) Transition(_ context.Context, _ uuid.UUID, _ card.State, actor card.ActorType, actorID, _ string) error {
 	r.called = true
