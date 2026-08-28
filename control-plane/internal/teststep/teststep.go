@@ -17,6 +17,7 @@ import (
 	"github.com/tuckermclean/strange-company/control-plane/internal/card"
 	"github.com/tuckermclean/strange-company/control-plane/internal/codingrun"
 	"github.com/tuckermclean/strange-company/control-plane/internal/policy"
+	"github.com/tuckermclean/strange-company/control-plane/internal/redgate"
 	"github.com/tuckermclean/strange-company/control-plane/internal/runner"
 	"github.com/tuckermclean/strange-company/control-plane/internal/store"
 	"github.com/tuckermclean/strange-company/control-plane/internal/worker"
@@ -38,20 +39,27 @@ type Runner interface {
 	Run(ctx context.Context, req codingrun.Request) (*runner.CodingRunResult, error)
 }
 
+// Verifier answers "did this ref's tests pass". Either backend satisfies it:
+// a script in the repository, or the checks GitHub Actions already produced.
+type Verifier interface {
+	Verify(ctx context.Context, req codingrun.VerifyRequest) (redgate.RunOutcome, error)
+}
+
 // Step is §11.2 as a worker step.
 type Step struct {
 	board     Board
 	artifacts Artifacts
 	runner    Runner
+	verifier  Verifier
 	log       *slog.Logger
 }
 
 // New builds the test-writing step.
-func New(b Board, a Artifacts, r Runner, log *slog.Logger) *Step {
+func New(b Board, a Artifacts, r Runner, v Verifier, log *slog.Logger) *Step {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	return &Step{board: b, artifacts: a, runner: r, log: log}
+	return &Step{board: b, artifacts: a, runner: r, verifier: v, log: log}
 }
 
 // Do writes the acceptance tests for one card.
@@ -80,6 +88,7 @@ func (s *Step) Do(ctx context.Context, c *card.Card, res *policy.Resolution) (wo
 		baseRef = *c.RepoBaseRef
 	}
 
+	branch := fmt.Sprintf("agent/%s", c.ID)
 	runID := fmt.Sprintf("tests-%s-%d", shortID(c.ID), res.Attempt)
 	result, err := s.runner.Run(ctx, codingrun.Request{
 		CardID:     c.ID.String(),
@@ -89,7 +98,7 @@ func (s *Step) Do(ctx context.Context, c *card.Card, res *policy.Resolution) (wo
 		RepoURL:    *c.RepoURL,
 		BaseRef:    baseRef,
 		// §16.2: agents only ever push their own agent/ branch.
-		Branch:  fmt.Sprintf("agent/%s", c.ID),
+		Branch:  branch,
 		Phase:   string(card.PhaseTests),
 		Attempt: res.Attempt,
 	})
@@ -119,11 +128,7 @@ func (s *Step) Do(ctx context.Context, c *card.Card, res *policy.Resolution) (wo
 
 	switch result.Status {
 	case runner.StatusCompleted:
-		return worker.Evidence{
-			Summary:   "acceptance tests written",
-			Detail:    map[string]any{"harness": result.Harness, "model": result.Model},
-			NextPhase: card.PhaseImplementation,
-		}, nil
+		return s.redGate(ctx, c, result, baseRef, branch)
 
 	case runner.StatusInfraError, runner.StatusTimeout:
 		// Returned as an error so the worker hands the card back for
@@ -190,4 +195,79 @@ func task(c *card.Card, spec, plan string) string {
 	fmt.Fprintf(&b, "# Card\n\n%s\n\n# Specification\n\n%s\n\n# Implementation plan\n\n%s\n",
 		strings.TrimSpace(c.Title), strings.TrimSpace(spec), strings.TrimSpace(plan))
 	return b.String()
+}
+
+// redGate is §11.3: the tests are executed against the unimplemented state, and
+// no model grades them.
+//
+// Two runs of the same verification at two refs. The suite must pass at the
+// base ref and fail with the new tests -- the difference is then the tests
+// themselves, which is what makes the failure attributable without judgement.
+// internal/redgate holds the comparison and states what it cannot catch.
+func (s *Step) redGate(ctx context.Context, c *card.Card, result *runner.CodingRunResult, baseRef, branch string) (worker.Evidence, error) {
+	repo := repositorySlug(c)
+
+	baseline, err := s.verifier.Verify(ctx, codingrun.VerifyRequest{
+		CardID: c.ID.String(), RunID: fmt.Sprintf("redbase-%s", shortID(c.ID)),
+		Repository: repo, Ref: baseRef,
+		RepoURL: *c.RepoURL, BaseRef: baseRef, Branch: branch,
+		Phase: string(card.PhaseTests),
+	})
+	if err != nil {
+		return worker.Evidence{}, fmt.Errorf("teststep: baseline verification: %w", err)
+	}
+
+	candidate, err := s.verifier.Verify(ctx, codingrun.VerifyRequest{
+		CardID: c.ID.String(), RunID: fmt.Sprintf("redhead-%s", shortID(c.ID)),
+		Repository: repo, Ref: branch,
+		RepoURL: *c.RepoURL, BaseRef: baseRef, Branch: branch,
+		Phase: string(card.PhaseTests),
+	})
+	if err != nil {
+		return worker.Evidence{}, fmt.Errorf("teststep: verification of the new tests: %w", err)
+	}
+
+	outcome, why := redgate.Evaluate(baseline, candidate)
+
+	if _, aerr := s.artifacts.PutArtifact(ctx, store.Artifact{
+		CardID: c.ID, Type: store.ArtifactTestOutput, Actor: "red-gate",
+		ContentType: "text/plain",
+		Content:     fmt.Sprintf("red gate: %s\n\n%s", outcome, why),
+	}); aerr != nil {
+		s.log.Error("could not record the red gate result", "card_id", c.ID, "error", aerr)
+	}
+
+	if outcome == redgate.Inconclusive {
+		// Not a verdict about the tests. Hand the card back so another
+		// Meeseeks tries, rather than stopping it for an outage.
+		return worker.Evidence{}, fmt.Errorf("teststep: red gate inconclusive: %s", why)
+	}
+
+	if !outcome.Proceeds() {
+		// §11.3: the card does not proceed until a valid red state exists.
+		return worker.Evidence{
+			Summary:   fmt.Sprintf("red gate: %s", why),
+			Detail:    map[string]any{"outcome": string(outcome), "harness": result.Harness},
+			NextState: card.NeedsHuman,
+		}, nil
+	}
+
+	return worker.Evidence{
+		Summary:   fmt.Sprintf("acceptance tests written and red: %s", why),
+		Detail:    map[string]any{"harness": result.Harness, "model": result.Model},
+		NextPhase: card.PhaseImplementation,
+	}, nil
+}
+
+// repositorySlug recovers "owner/name" for the checks API.
+func repositorySlug(c *card.Card) string {
+	if c.SourceExternalID != nil {
+		if slug, _, ok := strings.Cut(*c.SourceExternalID, "#"); ok && slug != "" {
+			return slug
+		}
+	}
+	if c.RepoURL != nil {
+		return strings.TrimSuffix(strings.TrimPrefix(*c.RepoURL, "https://github.com/"), ".git")
+	}
+	return ""
 }

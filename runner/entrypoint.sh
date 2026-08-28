@@ -300,6 +300,18 @@ log "harness exited with code ${harness_exit}"
     fi
     commit_msg="${phase}(card-${SC_CARD_ID}): ${summary}"
 
+    # An agent must never change CI. The red and green gates derive their
+    # authority from the repository's own workflows: an agent that can edit
+    # .github/workflows/ can weaken or delete the checks that gate it, and the
+    # gate becomes advisory. §24's forbidden set is the same idea one level up.
+    #
+    # Enforced here as well as by withholding the `workflow` token scope,
+    # because a scope rejection arrives as an opaque git push error long after
+    # the work, while this says what happened and why at the moment it happens.
+    if ! git diff --cached --quiet -- .github/workflows 2>/dev/null; then
+      die "refusing to commit: this change touches .github/workflows, and an agent must not alter the checks that verify it"
+    fi
+
     if git commit -m "$commit_msg"; then
       log "committed: ${commit_msg}"
       if git push origin "HEAD:refs/heads/${SC_BRANCH}" </dev/null; then

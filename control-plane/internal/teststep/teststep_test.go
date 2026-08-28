@@ -10,6 +10,7 @@ import (
 	"github.com/tuckermclean/strange-company/control-plane/internal/card"
 	"github.com/tuckermclean/strange-company/control-plane/internal/codingrun"
 	"github.com/tuckermclean/strange-company/control-plane/internal/policy"
+	"github.com/tuckermclean/strange-company/control-plane/internal/redgate"
 	"github.com/tuckermclean/strange-company/control-plane/internal/runner"
 	"github.com/tuckermclean/strange-company/control-plane/internal/store"
 	"github.com/tuckermclean/strange-company/control-plane/internal/teststep"
@@ -47,6 +48,35 @@ func (f *fakeRunner) Run(_ context.Context, req codingrun.Request) (*runner.Codi
 	return f.result, f.err
 }
 
+// fakeVerifier answers the red gate. Green baseline, failing candidate is the
+// state §11.3 requires before a card may proceed.
+type fakeVerifier struct {
+	outcomes []redgate.RunOutcome
+	err      error
+	calls    int
+	refs     []string
+}
+
+func (f *fakeVerifier) Verify(_ context.Context, req codingrun.VerifyRequest) (redgate.RunOutcome, error) {
+	f.refs = append(f.refs, req.Ref)
+	i := f.calls
+	f.calls++
+	if f.err != nil {
+		return redgate.RunOutcome{}, f.err
+	}
+	if i >= len(f.outcomes) {
+		i = len(f.outcomes) - 1
+	}
+	return f.outcomes[i], nil
+}
+
+func redGate() *fakeVerifier {
+	return &fakeVerifier{outcomes: []redgate.RunOutcome{
+		{Completed: true, ExitCode: 0}, // baseline green
+		{Completed: true, ExitCode: 1}, // new tests fail
+	}}
+}
+
 func board() *fakeBoard {
 	return &fakeBoard{
 		spec: &store.CardSpec{Content: "# Context\n\nx\n\n# Acceptance criteria\n\n- AC1: returns 200 — verified by: `go test ./...`", Approved: true},
@@ -80,9 +110,9 @@ func ok() *runner.CodingRunResult {
 }
 
 func TestWritingTestsAdvancesToImplementation(t *testing.T) {
-	b, r := board(), &fakeRunner{result: ok()}
+	b, r, v := board(), &fakeRunner{result: ok()}, redGate()
 
-	ev, err := teststep.New(b, b, r, nil).Do(context.Background(), testCard(), res())
+	ev, err := teststep.New(b, b, r, v, nil).Do(context.Background(), testCard(), res())
 	if err != nil {
 		t.Fatalf("Do: %v", err)
 	}
@@ -101,9 +131,9 @@ func TestWritingTestsAdvancesToImplementation(t *testing.T) {
 // plan is the whole reason planning ran first; a test-writer that never sees
 // it is starting from scratch on work already paid for.
 func TestTheTaskCarriesTheSpecificationAndThePlan(t *testing.T) {
-	b, r := board(), &fakeRunner{result: ok()}
+	b, r, v := board(), &fakeRunner{result: ok()}, redGate()
 
-	if _, err := teststep.New(b, b, r, nil).Do(context.Background(), testCard(), res()); err != nil {
+	if _, err := teststep.New(b, b, r, v, nil).Do(context.Background(), testCard(), res()); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"AC1", "add a handler"} {
@@ -122,9 +152,9 @@ func TestTheTaskCarriesTheSpecificationAndThePlan(t *testing.T) {
 // "The test-writing agent MUST NOT implement the requested feature" is §11.2
 // in capitals. It cannot be enforced from here, but it must at least be said.
 func TestTheTaskForbidsImplementingTheFeature(t *testing.T) {
-	b, r := board(), &fakeRunner{result: ok()}
+	b, r, v := board(), &fakeRunner{result: ok()}, redGate()
 
-	if _, err := teststep.New(b, b, r, nil).Do(context.Background(), testCard(), res()); err != nil {
+	if _, err := teststep.New(b, b, r, v, nil).Do(context.Background(), testCard(), res()); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(r.req.Task, codingrun.TestCommandPath) {
@@ -140,9 +170,9 @@ func TestTheTaskForbidsImplementingTheFeature(t *testing.T) {
 func TestTestsAreNotWrittenWithoutAPlan(t *testing.T) {
 	b := board()
 	b.artifacts = nil
-	r := &fakeRunner{result: ok()}
+	r, v := &fakeRunner{result: ok()}, redGate()
 
-	if _, err := teststep.New(b, b, r, nil).Do(context.Background(), testCard(), res()); err == nil {
+	if _, err := teststep.New(b, b, r, v, nil).Do(context.Background(), testCard(), res()); err == nil {
 		t.Fatal("expected an error")
 	}
 	if r.calls != 0 {
@@ -154,12 +184,12 @@ func TestTestsAreNotWrittenWithoutAPlan(t *testing.T) {
 // advance the phase either -- there are no tests, so nothing can be
 // implemented against them.
 func TestAnInfrastructureFailureNeitherAdvancesNorCounts(t *testing.T) {
-	b := board()
+	b, v := board(), redGate()
 	r := &fakeRunner{result: &runner.CodingRunResult{
 		Status: runner.StatusInfraError, Harness: "claude-code", Summary: "pod evicted",
 	}}
 
-	ev, err := teststep.New(b, b, r, nil).Do(context.Background(), testCard(), res())
+	ev, err := teststep.New(b, b, r, v, nil).Do(context.Background(), testCard(), res())
 	if err == nil {
 		t.Fatal("expected an error so the worker hands the card back")
 	}
@@ -172,12 +202,12 @@ func TestAnInfrastructureFailureNeitherAdvancesNorCounts(t *testing.T) {
 // happens next -- but the card must not advance to implementation with no
 // tests written.
 func TestAFailedRunDoesNotAdvanceToImplementation(t *testing.T) {
-	b := board()
+	b, v := board(), redGate()
 	r := &fakeRunner{result: &runner.CodingRunResult{
 		Status: runner.StatusFailed, Harness: "claude-code", Summary: "could not write tests",
 	}}
 
-	ev, err := teststep.New(b, b, r, nil).Do(context.Background(), testCard(), res())
+	ev, err := teststep.New(b, b, r, v, nil).Do(context.Background(), testCard(), res())
 	if err != nil {
 		t.Fatalf("Do: %v", err)
 	}
@@ -192,12 +222,82 @@ func TestAFailedRunDoesNotAdvanceToImplementation(t *testing.T) {
 func TestAMissingSpecificationIsRefused(t *testing.T) {
 	b := board()
 	b.specErr = errors.New("no spec")
-	r := &fakeRunner{result: ok()}
+	r, v := &fakeRunner{result: ok()}, redGate()
 
-	if _, err := teststep.New(b, b, r, nil).Do(context.Background(), testCard(), res()); err == nil {
+	if _, err := teststep.New(b, b, r, v, nil).Do(context.Background(), testCard(), res()); err == nil {
 		t.Fatal("expected an error")
 	}
 	if r.calls != 0 {
 		t.Fatal("started a coding run with no specification")
+	}
+}
+
+// §11.3: "If the new tests pass without implementation, the test phase fails."
+// The card must not reach an implementer with tests that prove nothing.
+func TestTestsThatPassWithoutTheFeatureStopTheCard(t *testing.T) {
+	b, r := board(), &fakeRunner{result: ok()}
+	v := &fakeVerifier{outcomes: []redgate.RunOutcome{
+		{Completed: true, ExitCode: 0}, // baseline green
+		{Completed: true, ExitCode: 0}, // and still green WITH the new tests
+	}}
+
+	ev, err := teststep.New(b, b, r, v, nil).Do(context.Background(), testCard(), res())
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	if ev.NextPhase == card.PhaseImplementation {
+		t.Fatal("advanced with tests that pass against the unimplemented state")
+	}
+	if ev.NextState != card.NeedsHuman {
+		t.Fatalf("next state = %q", ev.NextState)
+	}
+}
+
+// The gate compares the base ref with the agent branch. Verifying the same ref
+// twice would compare a thing with itself and always report a broken baseline
+// or a green candidate.
+func TestTheGateComparesTheBaseRefWithTheAgentBranch(t *testing.T) {
+	b, r, v := board(), &fakeRunner{result: ok()}, redGate()
+
+	if _, err := teststep.New(b, b, r, v, nil).Do(context.Background(), testCard(), res()); err != nil {
+		t.Fatal(err)
+	}
+	if len(v.refs) != 2 {
+		t.Fatalf("verified %d refs, want two", len(v.refs))
+	}
+	if v.refs[0] != "main" || !strings.HasPrefix(v.refs[1], "agent/") {
+		t.Fatalf("compared %q with %q", v.refs[0], v.refs[1])
+	}
+}
+
+// A baseline that was already failing makes nothing attributable to the new
+// tests, so the card stops rather than being called red.
+func TestABrokenBaselineStopsTheCard(t *testing.T) {
+	b, r := board(), &fakeRunner{result: ok()}
+	v := &fakeVerifier{outcomes: []redgate.RunOutcome{
+		{Completed: true, ExitCode: 1}, // baseline already failing
+		{Completed: true, ExitCode: 1},
+	}}
+
+	ev, err := teststep.New(b, b, r, v, nil).Do(context.Background(), testCard(), res())
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	if ev.NextState != card.NeedsHuman {
+		t.Fatalf("next state = %q", ev.NextState)
+	}
+	if !strings.Contains(strings.ToLower(ev.Summary), "baseline") {
+		t.Errorf("the summary does not explain what is wrong: %q", ev.Summary)
+	}
+}
+
+// Checks that never finished are an outage, not a verdict. The card is handed
+// back rather than stopped.
+func TestAnInconclusiveGateHandsTheCardBack(t *testing.T) {
+	b, r := board(), &fakeRunner{result: ok()}
+	v := &fakeVerifier{outcomes: []redgate.RunOutcome{{Completed: false}}}
+
+	if _, err := teststep.New(b, b, r, v, nil).Do(context.Background(), testCard(), res()); err == nil {
+		t.Fatal("expected an error so the worker hands the card back")
 	}
 }

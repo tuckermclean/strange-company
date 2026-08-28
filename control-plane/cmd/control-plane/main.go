@@ -24,6 +24,7 @@ import (
 	"github.com/tuckermclean/strange-company/control-plane/internal/config"
 	"github.com/tuckermclean/strange-company/control-plane/internal/credentials"
 	"github.com/tuckermclean/strange-company/control-plane/internal/dispatch"
+	"github.com/tuckermclean/strange-company/control-plane/internal/ghverify"
 	"github.com/tuckermclean/strange-company/control-plane/internal/github"
 	"github.com/tuckermclean/strange-company/control-plane/internal/health"
 	"github.com/tuckermclean/strange-company/control-plane/internal/hermes"
@@ -683,22 +684,42 @@ func runWorkerSupervisor(ctx context.Context, logger *slog.Logger, cfg *config.C
 			break
 		}
 		runs := codingrun.New(kc, cfg.AgentRunsNamespace, cfg.RunnerImage, codingRunPoll, log)
-		steps[card.PhaseTests] = teststep.New(st, st, runs, log)
-		steps[card.PhaseImplementation] = implstep.New(st, st, st, runs, log)
+
+		// §18's review and the GitHub Actions gate both need a client.
+		// Without a token a reviewed card would pass review and have
+		// nowhere to open the pull request §19 requires, so the review
+		// phase stays absent and the dispatcher sends such a card to a
+		// human instead.
+		var gh *github.Client
+		if cfg.GitHubToken != "" {
+			if gh, err = github.New(cfg.GitHubAPIURL, cfg.GitHubToken, nil); err != nil {
+				log.Error("could not build a GitHub client", "error", err)
+				gh = nil
+			}
+		}
+
+		// Which backend answers §11.3 and §19. Reading CI is the default:
+		// a repository with workflows has already declared its tests, and
+		// a second declaration in the repository is the one that drifts.
+		var verifier implstep.Verifier = runs
+		switch {
+		case cfg.VerificationMode == config.VerificationTestCommand:
+			log.Info("verification reads " + codingrun.TestCommandPath)
+		case gh != nil:
+			verifier = ghverify.New(gh, checksPoll, checksWait, log)
+			log.Info("verification reads GitHub Actions checks")
+		default:
+			log.Warn("verification falls back to " + codingrun.TestCommandPath +
+				": GitHub Actions was asked for but there is no GitHub token")
+		}
+
+		steps[card.PhaseTests] = teststep.New(st, st, runs, verifier, log)
+		steps[card.PhaseImplementation] = implstep.New(st, st, st, runs, verifier, log)
 		log.Info("coding phases enabled",
 			"namespace", cfg.AgentRunsNamespace, "image", cfg.RunnerImage)
 
-		// §18's review needs somewhere to open the pull request §19
-		// requires. Without a GitHub token a reviewed card would pass
-		// review and have nowhere to go, so the phase stays absent and
-		// the dispatcher sends such a card to a human instead.
-		if cfg.GitHubToken == "" {
-			log.Warn("review phase disabled: no GitHub token, so no pull request could be opened")
-			break
-		}
-		gh, err := github.New(cfg.GitHubAPIURL, cfg.GitHubToken, nil)
-		if err != nil {
-			log.Error("review phase disabled: could not build a GitHub client", "error", err)
+		if gh == nil {
+			log.Warn("review phase disabled: no GitHub client")
 			break
 		}
 		steps[card.PhaseReview] = reviewstep.New(st, st, gh, func(res *policy.Resolution) (reviewstep.Completer, error) {
@@ -749,6 +770,14 @@ const workerLease = 10 * time.Minute
 // codingRunPoll is how often a running coding Job's status is checked. Coding
 // runs take minutes, so a tighter poll only adds API calls.
 const codingRunPoll = 10 * time.Second
+
+// checksPoll and checksWait bound how long a card waits on CI. A workflow run
+// takes minutes; waiting past checksWait leaves the outcome incomplete, which
+// the gate reads as inconclusive rather than as a failure of the work.
+const (
+	checksPoll = 15 * time.Second
+	checksWait = 20 * time.Minute
+)
 
 // mcpCards adapts *store.Store to mcp.CardService. Only ClaimReady needs
 // translating: the MCP package declares its own ErrNoWork so it never imports

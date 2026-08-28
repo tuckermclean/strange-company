@@ -32,9 +32,19 @@ const TestCommandPath = ".strange-company/test-command"
 const ExitNoTestCommand = 64
 
 // VerifyRequest is one execution of a repository's tests.
+//
+// It carries what BOTH verification backends need. The script backend clones
+// and runs; the GitHub Actions backend reads the checks CI already produced for
+// a ref. Repository and Ref are for the latter, and are ignored by the former.
 type VerifyRequest struct {
 	CardID  string
 	RunID   string
+
+	// Repository is "owner/name", and Ref is the commit or branch whose
+	// checks answer the question. Used by the GitHub Actions backend.
+	Repository string
+	Ref        string
+
 	RepoURL string
 	BaseRef string
 	Branch  string

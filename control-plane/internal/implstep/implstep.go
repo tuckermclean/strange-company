@@ -39,9 +39,15 @@ type Attempts interface {
 	RecordAttempt(ctx context.Context, rec store.AttemptRecord) (*store.AttemptOutcome, error)
 }
 
-// Runner performs coding and verification runs.
+// Runner performs coding runs.
 type Runner interface {
 	Run(ctx context.Context, req codingrun.Request) (*runner.CodingRunResult, error)
+}
+
+// Verifier answers §19's green gate. Split from Runner because the two can have
+// different backends: the harness always runs as a Job, while verification may
+// instead read the checks GitHub Actions already produced.
+type Verifier interface {
 	Verify(ctx context.Context, req codingrun.VerifyRequest) (redgate.RunOutcome, error)
 }
 
@@ -51,15 +57,16 @@ type Step struct {
 	artifacts Artifacts
 	attempts  Attempts
 	runner    Runner
+	verifier  Verifier
 	log       *slog.Logger
 }
 
 // New builds the implementation step.
-func New(b Board, a Artifacts, at Attempts, r Runner, log *slog.Logger) *Step {
+func New(b Board, a Artifacts, at Attempts, r Runner, v Verifier, log *slog.Logger) *Step {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	return &Step{board: b, artifacts: a, attempts: at, runner: r, log: log}
+	return &Step{board: b, artifacts: a, attempts: at, runner: r, verifier: v, log: log}
 }
 
 // Do performs one implementation attempt.
@@ -115,9 +122,10 @@ func (s *Step) Do(ctx context.Context, c *card.Card, res *policy.Resolution) (wo
 
 	// §19's green gate: the tests the red gate proved failing must now pass.
 	// The model's own account of success is not evidence of it.
-	verdict, err := s.runner.Verify(ctx, codingrun.VerifyRequest{
+	verdict, err := s.verifier.Verify(ctx, codingrun.VerifyRequest{
 		CardID: c.ID.String(), RunID: runID + "-verify",
-		RepoURL: *c.RepoURL, BaseRef: baseRef, Branch: branch,
+		Repository: repositorySlug(c), Ref: branch,
+		RepoURL:    *c.RepoURL, BaseRef: baseRef, Branch: branch,
 		Phase: string(card.PhaseImplementation), Attempt: res.Attempt,
 	})
 	if err != nil {
@@ -217,4 +225,17 @@ func latest(artifacts []*store.Artifact, kind string) string {
 		}
 	}
 	return strings.TrimSpace(found)
+}
+
+// repositorySlug recovers "owner/name" for the checks API.
+func repositorySlug(c *card.Card) string {
+	if c.SourceExternalID != nil {
+		if slug, _, ok := strings.Cut(*c.SourceExternalID, "#"); ok && slug != "" {
+			return slug
+		}
+	}
+	if c.RepoURL != nil {
+		return strings.TrimSuffix(strings.TrimPrefix(*c.RepoURL, "https://github.com/"), ".git")
+	}
+	return ""
 }

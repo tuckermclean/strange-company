@@ -62,6 +62,11 @@ type Config struct {
 	// GitHubIngestLabel is the label that makes an issue eligible (spec §25).
 	GitHubIngestLabel string
 
+	// VerificationMode chooses which backend answers the §11.3 and §19
+	// gates: "github-actions" reads the checks CI already produced,
+	// "test-command" runs .strange-company/test-command in a Job.
+	VerificationMode string
+
 	// SpecApprovalLabel is the Vikunja label a human adds to approve a
 	// specification (spec §10.2). The board is a surface no model can
 	// reach, which is what makes a label there a human decision.
@@ -105,6 +110,15 @@ const (
 	defaultIngestLabel       = "agent-ready"
 	defaultServiceAcctDir    = "/var/run/secrets/kubernetes.io/serviceaccount"
 	defaultSpecApprovalLabel = "spec-approved"
+
+	// VerificationGitHubActions reads the checks the repository's own
+	// workflows produced. The default: a repository that has CI has already
+	// declared its tests, and a second declaration is the one that drifts.
+	VerificationGitHubActions = "github-actions"
+
+	// VerificationTestCommand runs .strange-company/test-command, for
+	// repositories with no CI to read.
+	VerificationTestCommand = "test-command"
 )
 
 // secretVars are never rendered verbatim by Redacted.
@@ -150,6 +164,7 @@ func Load(getenv func(string) string) (*Config, error) {
 		// Optional: only needed to bootstrap a Vikunja token on first boot.
 		// When VikunjaToken is already set, or when both of these are absent,
 		// bootstrap is skipped entirely.
+		VerificationMode:         valueOr(getenv("VERIFICATION_MODE"), VerificationGitHubActions),
 		SpecApprovalLabel:        valueOr(getenv("SPEC_APPROVAL_LABEL"), defaultSpecApprovalLabel),
 		AgentRunsNamespace:       strings.TrimSpace(getenv("AGENT_RUNS_NAMESPACE")),
 		RunnerImage:              strings.TrimSpace(getenv("RUNNER_IMAGE")),
@@ -251,6 +266,7 @@ func (c *Config) Redacted() map[string]string {
 		"VIKUNJA_URL":                c.VikunjaURL,
 		"VIKUNJA_BOOTSTRAP_USERNAME": c.VikunjaBootstrapUsername,
 		"CREDENTIALS_DIR":            c.CredentialsDir,
+		"VERIFICATION_MODE":          c.VerificationMode,
 		"SPEC_APPROVAL_LABEL":        c.SpecApprovalLabel,
 		"AGENT_RUNS_NAMESPACE":       c.AgentRunsNamespace,
 		"RUNNER_IMAGE":               c.RunnerImage,
