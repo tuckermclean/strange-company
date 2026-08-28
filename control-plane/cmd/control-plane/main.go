@@ -5,7 +5,6 @@ package main
 
 import (
 	"net/url"
-	"strings"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,17 +13,21 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/tuckermclean/strange-company/control-plane/internal/card"
 	"github.com/tuckermclean/strange-company/control-plane/internal/config"
 	"github.com/tuckermclean/strange-company/control-plane/internal/credentials"
+	"github.com/tuckermclean/strange-company/control-plane/internal/dispatch"
 	"github.com/tuckermclean/strange-company/control-plane/internal/github"
 	"github.com/tuckermclean/strange-company/control-plane/internal/health"
 	"github.com/tuckermclean/strange-company/control-plane/internal/hermes"
 	"github.com/tuckermclean/strange-company/control-plane/internal/ingest"
+	"github.com/tuckermclean/strange-company/control-plane/internal/plan"
 	"github.com/tuckermclean/strange-company/control-plane/internal/policy"
 	"github.com/tuckermclean/strange-company/control-plane/internal/promote"
 	"github.com/tuckermclean/strange-company/control-plane/internal/providerclient"
@@ -32,6 +35,7 @@ import (
 	"github.com/tuckermclean/strange-company/control-plane/internal/specsession"
 	"github.com/tuckermclean/strange-company/control-plane/internal/store"
 	"github.com/tuckermclean/strange-company/control-plane/internal/vikunja"
+	"github.com/tuckermclean/strange-company/control-plane/internal/worker"
 )
 
 // version is overridden at build time via -ldflags "-X main.version=...".
@@ -100,6 +104,9 @@ func main() {
 	// Moves approved cards into Ready when the deterministic gate agrees
 	// (spec 10.2).
 	go runPromotionSupervisor(ctx, logger, cfg, st)
+
+	// Spawns the short-lived workers that actually do the work (spec 7).
+	go runWorkerSupervisor(ctx, logger, cfg, st, pol)
 
 	checks := []health.Checker{
 		&postgresChecker{store: st},
@@ -589,3 +596,85 @@ func (c cardStore) ListArtifacts(ctx context.Context, cardID uuid.UUID) ([]serve
 	}
 	return out, nil
 }
+
+// workerCards adapts *store.Store to worker.CardStore.
+//
+// Two things need translating and both are load-bearing: store.ErrNoWork must
+// become worker.ErrNoWork (the worker package declares its own so it never
+// imports the storage engine), and worker.Evidence must become the store's,
+// which is where §21's "a card never arrives in a new state unexplained"
+// actually lands.
+type workerCards struct{ *store.Store }
+
+func (w workerCards) ClaimReady(ctx context.Context, workerID string, lease time.Duration) (*card.Card, error) {
+	c, err := w.Store.ClaimReady(ctx, workerID, lease)
+	if errors.Is(err, store.ErrNoWork) {
+		return nil, worker.ErrNoWork
+	}
+	return c, err
+}
+
+func (w workerCards) AttachEvidence(ctx context.Context, cardID uuid.UUID, ev worker.Evidence) error {
+	return w.Store.AttachEvidence(ctx, cardID, store.CardEvidence{
+		ActorID: "meeseeks",
+		Summary: ev.Summary,
+		Detail:  ev.Detail,
+	})
+}
+
+// runWorkerSupervisor spawns one short-lived Meeseeks per tick.
+//
+// §7: "Claim one thing. Make the thing stop being your problem. Cease to
+// exist." Each RunOnce claims at most one card, performs exactly one workflow
+// step, and exits -- so a card moving through planning, tests and
+// implementation is carried by a succession of workers, never one.
+func runWorkerSupervisor(ctx context.Context, logger *slog.Logger, cfg *config.Config, st *store.Store, pol *policy.Policy) {
+	log := logger.With("supervisor", "worker")
+
+	// Every step this control plane knows how to run. A phase absent here
+	// sends its card to a human rather than being retried forever; see
+	// internal/dispatch.
+	steps := map[card.Phase]worker.Step{
+		card.PhasePlanning: plan.New(st, st, func(res *policy.Resolution) (plan.Completer, error) {
+			return providerclient.New(res, credentials.Dir(cfg.CredentialsDir))
+		}, log),
+	}
+	step := dispatch.New(steps, log)
+
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		host = "control-plane"
+	}
+
+	log.Info("worker supervisor running", "phases_implemented", len(steps))
+
+	for n := 0; ; n++ {
+		id := fmt.Sprintf("meeseeks-%s-%d", host, n)
+		outcome, err := worker.New(id, workerCards{st}, pol, step, log, workerLease).RunOnce(ctx)
+		switch {
+		case err != nil:
+			log.Warn("worker exited with an error", "worker", id, "outcome", outcome, "error", err)
+		case outcome != worker.OutcomeNoWork:
+			log.Info("worker finished", "worker", id, "outcome", outcome)
+		}
+
+		// A worker that found work looks again immediately: a board with a
+		// queue should drain at the speed of the work, not the tick.
+		delay := cfg.ReconcileInterval
+		if outcome != worker.OutcomeNoWork && err == nil {
+			delay = 0
+		}
+
+		select {
+		case <-ctx.Done():
+			log.Info("worker supervisor stopping")
+			return
+		case <-time.After(delay):
+		}
+	}
+}
+
+// workerLease is how long a Meeseeks holds a card before another may reclaim
+// it. Long enough for a model call, short enough that a dead worker does not
+// strand a card for an hour.
+const workerLease = 10 * time.Minute
