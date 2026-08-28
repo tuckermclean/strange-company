@@ -58,15 +58,16 @@ type Step struct {
 	attempts  Attempts
 	runner    Runner
 	verifier  Verifier
+	git       codingrun.GitIdentity
 	log       *slog.Logger
 }
 
 // New builds the implementation step.
-func New(b Board, a Artifacts, at Attempts, r Runner, v Verifier, log *slog.Logger) *Step {
+func New(b Board, a Artifacts, at Attempts, r Runner, v Verifier, git codingrun.GitIdentity, log *slog.Logger) *Step {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	return &Step{board: b, artifacts: a, attempts: at, runner: r, verifier: v, log: log}
+	return &Step{board: b, artifacts: a, attempts: at, runner: r, verifier: v, git: git, log: log}
 }
 
 // Do performs one implementation attempt.
@@ -96,6 +97,11 @@ func (s *Step) Do(ctx context.Context, c *card.Card, res *policy.Resolution) (wo
 		Resolution: res,
 		RepoURL:    *c.RepoURL, BaseRef: baseRef, Branch: branch,
 		Phase: string(card.PhaseImplementation), Attempt: res.Attempt,
+
+		// See teststep: no credential means no push, so no agent branch
+		// and nothing for the green gate to look at.
+		GitToken: s.git.Token, GitUsername: s.git.Username,
+		GitAuthorName: s.git.AuthorName, GitAuthorEmail: s.git.AuthorEmail,
 	})
 	if err != nil {
 		// A harness that cannot run a coding Job is a policy mistake, and

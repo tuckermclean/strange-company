@@ -29,6 +29,15 @@ data:
   GITHUB_API_URL: {{ .Values.github.apiUrl | quote }}
   GITHUB_REPOSITORIES: {{ join "," .Values.github.repositories | quote }}
   GITHUB_INGEST_LABEL: {{ .Values.github.label | quote }}
+  {{- if .Values.controlPlane.gitCredential.secret }}
+  # The credential a coding Job pushes its agent branch with. Give it
+  # contents:write and NOT workflows:write -- an agent that can rewrite CI can
+  # weaken the gates that verify it.
+  GIT_TOKEN_SECRET: {{ .Values.controlPlane.gitCredential.secret | quote }}
+  GIT_TOKEN_KEY: {{ .Values.controlPlane.gitCredential.key | quote }}
+  {{- end }}
+  GIT_AUTHOR_NAME: {{ .Values.controlPlane.gitCredential.authorName | quote }}
+  GIT_AUTHOR_EMAIL: {{ .Values.controlPlane.gitCredential.authorEmail | quote }}
   # Which backend answers the red and green gates. "github-actions" reads the
   # checks the repository's own workflows produced; "test-command" runs
   # .strange-company/test-command in a Job, for repositories with no CI.

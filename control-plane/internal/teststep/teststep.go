@@ -51,15 +51,16 @@ type Step struct {
 	artifacts Artifacts
 	runner    Runner
 	verifier  Verifier
+	git       codingrun.GitIdentity
 	log       *slog.Logger
 }
 
 // New builds the test-writing step.
-func New(b Board, a Artifacts, r Runner, v Verifier, log *slog.Logger) *Step {
+func New(b Board, a Artifacts, r Runner, v Verifier, git codingrun.GitIdentity, log *slog.Logger) *Step {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	return &Step{board: b, artifacts: a, runner: r, verifier: v, log: log}
+	return &Step{board: b, artifacts: a, runner: r, verifier: v, git: git, log: log}
 }
 
 // Do writes the acceptance tests for one card.
@@ -101,6 +102,12 @@ func (s *Step) Do(ctx context.Context, c *card.Card, res *policy.Resolution) (wo
 		Branch:  branch,
 		Phase:   string(card.PhaseTests),
 		Attempt: res.Attempt,
+
+		// Without this the Job clones and never pushes: the agent branch
+		// is never created, so nothing has checks and the red gate has
+		// nothing to compare.
+		GitToken: s.git.Token, GitUsername: s.git.Username,
+		GitAuthorName: s.git.AuthorName, GitAuthorEmail: s.git.AuthorEmail,
 	})
 	if err != nil {
 		// See implstep: a harness with no adapter is a policy mistake, and

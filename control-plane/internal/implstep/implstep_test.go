@@ -92,7 +92,7 @@ func TestAGreenVerificationSendsTheCardToTheReviewPhase(t *testing.T) {
 	b := board()
 	r := &fakeRunner{result: done(), verify: redgate.RunOutcome{Completed: true, ExitCode: 0}}
 
-	ev, err := implstep.New(b, b, b, r, r, nil).Do(context.Background(), testCard(), res(1))
+	ev, err := implstep.New(b, b, b, r, r, codingrun.GitIdentity{Username: "x"}, nil).Do(context.Background(), testCard(), res(1))
 	if err != nil {
 		t.Fatalf("Do: %v", err)
 	}
@@ -118,7 +118,7 @@ func TestAFailingVerificationCountsAnAttemptAndRetries(t *testing.T) {
 	b := board()
 	r := &fakeRunner{result: done(), verify: redgate.RunOutcome{Completed: true, ExitCode: 1}}
 
-	ev, err := implstep.New(b, b, b, r, r, nil).Do(context.Background(), testCard(), res(1))
+	ev, err := implstep.New(b, b, b, r, r, codingrun.GitIdentity{Username: "x"}, nil).Do(context.Background(), testCard(), res(1))
 	if err != nil {
 		t.Fatalf("Do: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestAnInfrastructureFailureIsRecordedButNotAsAnAttempt(t *testing.T) {
 		Status: runner.StatusInfraError, Harness: "claude-code", Summary: "pod evicted",
 	}}
 
-	_, err := implstep.New(b, b, b, r, r, nil).Do(context.Background(), testCard(), res(1))
+	_, err := implstep.New(b, b, b, r, r, codingrun.GitIdentity{Username: "x"}, nil).Do(context.Background(), testCard(), res(1))
 	if err == nil {
 		t.Fatal("expected an error so the worker hands the card back")
 	}
@@ -164,7 +164,7 @@ func TestARetryReceivesEvidenceNotMonologue(t *testing.T) {
 	)
 	r := &fakeRunner{result: done(), verify: redgate.RunOutcome{Completed: true, ExitCode: 0}}
 
-	if _, err := implstep.New(b, b, b, r, r, nil).Do(context.Background(), testCard(), res(2)); err != nil {
+	if _, err := implstep.New(b, b, b, r, r, codingrun.GitIdentity{Username: "x"}, nil).Do(context.Background(), testCard(), res(2)); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(r.req.Task, "expected 200 got 404") {
@@ -181,7 +181,7 @@ func TestTheTaskForbidsChangingTheTests(t *testing.T) {
 	b := board()
 	r := &fakeRunner{result: done(), verify: redgate.RunOutcome{Completed: true}}
 
-	if _, err := implstep.New(b, b, b, r, r, nil).Do(context.Background(), testCard(), res(1)); err != nil {
+	if _, err := implstep.New(b, b, b, r, r, codingrun.GitIdentity{Username: "x"}, nil).Do(context.Background(), testCard(), res(1)); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(strings.ToLower(r.req.Task), "must not") ||
@@ -197,7 +197,7 @@ func TestAnIncompleteVerificationDoesNotCountAsAnAttempt(t *testing.T) {
 	b := board()
 	r := &fakeRunner{result: done(), verify: redgate.RunOutcome{Completed: false}}
 
-	_, err := implstep.New(b, b, b, r, r, nil).Do(context.Background(), testCard(), res(1))
+	_, err := implstep.New(b, b, b, r, r, codingrun.GitIdentity{Username: "x"}, nil).Do(context.Background(), testCard(), res(1))
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -217,7 +217,7 @@ func TestAHarnessThatCannotCodeStopsTheCardInsteadOfSpinning(t *testing.T) {
 	b := board()
 	r := &fakeRunner{err: codingrun.ErrNoAdapter}
 
-	ev, err := implstep.New(b, b, b, r, r, nil).Do(context.Background(), testCard(), res(1))
+	ev, err := implstep.New(b, b, b, r, r, codingrun.GitIdentity{Username: "x"}, nil).Do(context.Background(), testCard(), res(1))
 	if err != nil {
 		t.Fatalf("Do returned an error, so the card would be handed back and retried: %v", err)
 	}

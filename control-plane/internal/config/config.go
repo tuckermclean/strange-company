@@ -62,6 +62,25 @@ type Config struct {
 	// GitHubIngestLabel is the label that makes an issue eligible (spec §25).
 	GitHubIngestLabel string
 
+	// GitTokenSecret and GitTokenKey name the Kubernetes Secret holding the
+	// credential a coding Job pushes its agent branch with.
+	//
+	// Deliberately separate from the token the control plane itself uses:
+	// this one is handed to a coding agent, so it should carry the narrowest
+	// scope that lets it push a branch -- contents:write, and NOT
+	// workflows:write. An agent that can rewrite CI can weaken the gates
+	// that verify it.
+	GitTokenSecret string
+	GitTokenKey    string
+
+	// GitUsername is the HTTPS username paired with the token. GitHub
+	// ignores it; it must simply be non-empty.
+	GitUsername string
+
+	// GitAuthorName and GitAuthorEmail identify the bot in commit metadata.
+	GitAuthorName  string
+	GitAuthorEmail string
+
 	// VerificationMode chooses which backend answers the §11.3 and §19
 	// gates: "github-actions" reads the checks CI already produced,
 	// "test-command" runs .strange-company/test-command in a Job.
@@ -110,6 +129,9 @@ const (
 	defaultIngestLabel       = "agent-ready"
 	defaultServiceAcctDir    = "/var/run/secrets/kubernetes.io/serviceaccount"
 	defaultSpecApprovalLabel = "spec-approved"
+	defaultGitUsername       = "strange-company"
+	defaultGitAuthorName     = "strange-company agent"
+	defaultGitAuthorEmail    = "agent@strange-company.invalid"
 
 	// VerificationGitHubActions reads the checks the repository's own
 	// workflows produced. The default: a repository that has CI has already
@@ -164,6 +186,11 @@ func Load(getenv func(string) string) (*Config, error) {
 		// Optional: only needed to bootstrap a Vikunja token on first boot.
 		// When VikunjaToken is already set, or when both of these are absent,
 		// bootstrap is skipped entirely.
+		GitTokenSecret:           strings.TrimSpace(getenv("GIT_TOKEN_SECRET")),
+		GitTokenKey:              strings.TrimSpace(getenv("GIT_TOKEN_KEY")),
+		GitUsername:              valueOr(getenv("GIT_USERNAME"), defaultGitUsername),
+		GitAuthorName:            valueOr(getenv("GIT_AUTHOR_NAME"), defaultGitAuthorName),
+		GitAuthorEmail:           valueOr(getenv("GIT_AUTHOR_EMAIL"), defaultGitAuthorEmail),
 		VerificationMode:         valueOr(getenv("VERIFICATION_MODE"), VerificationGitHubActions),
 		SpecApprovalLabel:        valueOr(getenv("SPEC_APPROVAL_LABEL"), defaultSpecApprovalLabel),
 		AgentRunsNamespace:       strings.TrimSpace(getenv("AGENT_RUNS_NAMESPACE")),
@@ -266,6 +293,9 @@ func (c *Config) Redacted() map[string]string {
 		"VIKUNJA_URL":                c.VikunjaURL,
 		"VIKUNJA_BOOTSTRAP_USERNAME": c.VikunjaBootstrapUsername,
 		"CREDENTIALS_DIR":            c.CredentialsDir,
+		"GIT_TOKEN_SECRET":           c.GitTokenSecret,
+		"GIT_TOKEN_KEY":              c.GitTokenKey,
+		"GIT_AUTHOR_NAME":            c.GitAuthorName,
 		"VERIFICATION_MODE":          c.VerificationMode,
 		"SPEC_APPROVAL_LABEL":        c.SpecApprovalLabel,
 		"AGENT_RUNS_NAMESPACE":       c.AgentRunsNamespace,

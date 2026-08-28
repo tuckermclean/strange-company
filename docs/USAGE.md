@@ -319,3 +319,28 @@ derive their authority from those workflows, so an agent able to edit them
 could weaken the checks that verify it. Give the control plane's GitHub token
 `contents:write` **without** `workflows:write` — then it is not merely policy,
 it is a credential that cannot do it.
+
+## Two GitHub tokens, on purpose
+
+They do different jobs at different moments, and the second must be weaker than
+the first.
+
+**Day-0, the operator's token.** Used by you or your deployment tooling to
+prepare a repository: adding a workflow, adding the `agent/**` trigger. Creating
+or updating anything under `.github/workflows/` requires `workflow` scope on a
+classic PAT, or `workflows:write` on a fine-grained one. This token never
+reaches the control plane.
+
+**Runtime, the agent's token** (`controlPlane.gitCredential`). Handed to coding
+Jobs so they can push `agent/<card-id>`. It needs `contents:write` and
+**must not** have `workflows:write`.
+
+A token without workflow scope still triggers CI on push — the restriction is
+only on modifying workflow *files*. So withholding it costs nothing and buys
+the guarantee that an agent cannot weaken the checks that verify it. The runner
+refuses to commit under `.github/workflows` for the same reason; the scope makes
+it impossible rather than merely forbidden.
+
+The control plane's own `github.token` is a third use again: reading issues,
+reading checks, opening pull requests. It needs `contents:read`, `issues:read`,
+`checks:read` and `pull_requests:write`, and likewise no workflow scope.

@@ -644,6 +644,24 @@
               ]
             }
           }
+        },
+        "gitCredential": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "secret": {
+              "type": "string"
+            },
+            "key": {
+              "type": "string"
+            },
+            "authorName": {
+              "type": "string"
+            },
+            "authorEmail": {
+              "type": "string"
+            }
+          }
         }
       },
       "allOf": [
