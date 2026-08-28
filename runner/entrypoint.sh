@@ -203,6 +203,63 @@ cd "$REPO_DIR" || die "cannot cd into cloned repository ${REPO_DIR}"
 # §12.1 infra-failure classification) detects that a run was cut short,
 # so deliberately not faking one here is load-bearing, not an oversight.
 # ---------------------------------------------------------------------
+# ---------------------------------------------------------------------
+# opencode configuration.
+#
+# Written here rather than passed on the harness argv, because a command line
+# is visible in every process listing in this container and this file carries
+# an API key. The adapter (control-plane/internal/runner/opencode.go) knows
+# only the model string; everything about WHICH provider serves it comes from
+# policy and arrives as environment.
+#
+# Permissions are explicit allow/deny and never "ask". An "ask" in a Job with
+# no terminal is a run waiting for an answer nobody can give, and the adapter
+# deliberately does not pass --auto (that flag is a permission bypass, spec
+# §24). The allowed set below is §24's "permitted by default": read the
+# repository, modify files in the workspace, run project tests and build tools.
+# ---------------------------------------------------------------------
+if [ "${SC_HARNESS:-}" = "opencode" ]; then
+  if [ -z "${SC_OPENCODE_PROVIDER:-}" ] || [ -z "${SC_OPENCODE_BASE_URL:-}" ]; then
+    die "SC_HARNESS=opencode but SC_OPENCODE_PROVIDER/SC_OPENCODE_BASE_URL are not set"
+  fi
+  api_key_ref=""
+  if [ -n "${SC_OPENCODE_API_KEY_ENV:-}" ]; then
+    api_key_ref="\"apiKey\": \"{env:${SC_OPENCODE_API_KEY_ENV}}\","
+  fi
+  cat > opencode.json <<OPENCODE_JSON
+{
+  "\$schema": "https://opencode.ai/config.json",
+  "permission": {
+    "*": "deny",
+    "read": "allow",
+    "glob": "allow",
+    "grep": "allow",
+    "edit": "allow",
+    "bash": "allow"
+  },
+  "provider": {
+    "${SC_OPENCODE_PROVIDER}": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "${SC_OPENCODE_PROVIDER}",
+      "options": {
+        ${api_key_ref}
+        "baseURL": "${SC_OPENCODE_BASE_URL}"
+      },
+      "models": {
+        "${SC_MODEL#*/}": {}
+      }
+    }
+  }
+}
+OPENCODE_JSON
+  log "wrote opencode.json for provider ${SC_OPENCODE_PROVIDER}"
+  # Not committed: it carries a credential reference and belongs to this run,
+  # not to the repository.
+  if [ -f .gitignore ] && ! grep -qx 'opencode.json' .gitignore; then
+    printf '\nopencode.json\n' >> .gitignore
+  fi
+fi
+
 printf '%s\n' "$STREAM_BEGIN"
 
 "$@" </dev/null &

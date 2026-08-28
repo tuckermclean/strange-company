@@ -96,8 +96,49 @@ func New(api JobAPI, namespace, image string, poll time.Duration, log *slog.Logg
 		adapters: map[string]runner.Adapter{
 			"claude-code": runner.ClaudeCodeAdapter{},
 			"codex":       runner.CodexAdapter{},
+			"opencode":    runner.OpenCodeAdapter{},
 		},
 	}
+}
+
+// harnessOpenCode is the one harness whose provider must be described to it at
+// runtime; the others know their vendor already.
+const harnessOpenCode = "opencode"
+
+// openCodeEnv tells the runner entrypoint which provider to declare in
+// opencode.json.
+//
+// The API key is passed by NAME, not by value: the entrypoint writes
+// "{env:NAME}" into the config, so the secret reaches opencode through the
+// environment Kubernetes already injected and never through a file this code
+// wrote or a command line anyone can read.
+func openCodeEnv(res *policy.Resolution, existing map[string]string) (map[string]string, error) {
+	if res.BaseURL == "" {
+		return nil, fmt.Errorf("%w: provider %q has no baseUrl, and opencode needs one to reach it",
+			ErrNoAdapter, res.ProviderName)
+	}
+
+	out := map[string]string{}
+	for k, v := range existing {
+		out[k] = v
+	}
+	out["SC_OPENCODE_PROVIDER"] = res.ProviderName
+	out["SC_OPENCODE_BASE_URL"] = res.BaseURL
+
+	switch len(res.Env) {
+	case 0:
+		// A credential-free endpoint is valid -- providers.yaml's ollama
+		// entry is exactly that -- so no key name is set and the config
+		// omits apiKey entirely.
+	case 1:
+		for name := range res.Env {
+			out["SC_OPENCODE_API_KEY_ENV"] = name
+		}
+	default:
+		return nil, fmt.Errorf("%w: provider %q declares more than one credential, so there is no way to know which is opencode's API key",
+			ErrNoAdapter, res.ProviderName)
+	}
+	return out, nil
 }
 
 // defaultTimeout bounds a run that named none.
@@ -124,20 +165,34 @@ func (s *Service) Run(ctx context.Context, req Request) (*runner.CodingRunResult
 		timeout = defaultTimeout
 	}
 
+	// opencode addresses a model as provider/model, and its provider is
+	// declared in the config the entrypoint writes. Composed here rather
+	// than in policy: models.yaml names a model, and which provider serves
+	// it is already providers.yaml's answer.
+	model := req.Resolution.Model
+	plainEnv := req.Resolution.PlainEnv
+	if harness == harnessOpenCode {
+		model = fmt.Sprintf("%s/%s", req.Resolution.ProviderName, req.Resolution.Model)
+		var err error
+		if plainEnv, err = openCodeEnv(req.Resolution, plainEnv); err != nil {
+			return nil, err
+		}
+	}
+
 	argv := adapter.Command(runner.Request{
 		Task:         req.Task,
-		Model:        req.Resolution.Model,
+		Model:        model,
 		AllowedTools: req.AllowedTools,
 	})
 
 	job, err := jobs.Build(jobs.Spec{
 		CardID: req.CardID, RunID: req.RunID, Namespace: s.namespace,
-		Image: s.image, Harness: harness, Model: req.Resolution.Model,
+		Image: s.image, Harness: harness, Model: model,
 		RepoURL: req.RepoURL, Branch: req.Branch, BaseRef: req.BaseRef,
 		Command: argv, Phase: req.Phase, Attempt: req.Attempt,
 		GitToken: req.GitToken, GitUsername: req.GitUsername,
 		GitAuthorName: req.GitAuthorName, GitAuthorEmail: req.GitAuthorEmail,
-		Env: req.Resolution.Env, PlainEnv: req.Resolution.PlainEnv,
+		Env: req.Resolution.Env, PlainEnv: plainEnv,
 		CPULimit: req.CPULimit, MemoryLimit: req.MemoryLimit,
 		Timeout: timeout,
 	})
