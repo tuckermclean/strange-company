@@ -62,6 +62,11 @@ type Config struct {
 	// GitHubIngestLabel is the label that makes an issue eligible (spec §25).
 	GitHubIngestLabel string
 
+	// SpecApprovalLabel is the Vikunja label a human adds to approve a
+	// specification (spec §10.2). The board is a surface no model can
+	// reach, which is what makes a label there a human decision.
+	SpecApprovalLabel string
+
 	// AgentRunsNamespace is where coding Jobs run (spec §16). Empty
 	// disables coding phases entirely: without a namespace there is nowhere
 	// to run them, and guessing one would create Jobs in a namespace nobody
@@ -99,6 +104,7 @@ const (
 	defaultGitHubAPIURL      = "https://api.github.com"
 	defaultIngestLabel       = "agent-ready"
 	defaultServiceAcctDir    = "/var/run/secrets/kubernetes.io/serviceaccount"
+	defaultSpecApprovalLabel = "spec-approved"
 )
 
 // secretVars are never rendered verbatim by Redacted.
@@ -144,6 +150,7 @@ func Load(getenv func(string) string) (*Config, error) {
 		// Optional: only needed to bootstrap a Vikunja token on first boot.
 		// When VikunjaToken is already set, or when both of these are absent,
 		// bootstrap is skipped entirely.
+		SpecApprovalLabel:        valueOr(getenv("SPEC_APPROVAL_LABEL"), defaultSpecApprovalLabel),
 		AgentRunsNamespace:       strings.TrimSpace(getenv("AGENT_RUNS_NAMESPACE")),
 		RunnerImage:              strings.TrimSpace(getenv("RUNNER_IMAGE")),
 		ServiceAccountDir:        valueOr(getenv("SERVICE_ACCOUNT_DIR"), defaultServiceAcctDir),
@@ -244,6 +251,7 @@ func (c *Config) Redacted() map[string]string {
 		"VIKUNJA_URL":                c.VikunjaURL,
 		"VIKUNJA_BOOTSTRAP_USERNAME": c.VikunjaBootstrapUsername,
 		"CREDENTIALS_DIR":            c.CredentialsDir,
+		"SPEC_APPROVAL_LABEL":        c.SpecApprovalLabel,
 		"AGENT_RUNS_NAMESPACE":       c.AgentRunsNamespace,
 		"RUNNER_IMAGE":               c.RunnerImage,
 		"GITHUB_API_URL":             c.GitHubAPIURL,

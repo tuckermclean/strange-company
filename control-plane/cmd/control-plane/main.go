@@ -37,6 +37,7 @@ import (
 	"github.com/tuckermclean/strange-company/control-plane/internal/providerclient"
 	"github.com/tuckermclean/strange-company/control-plane/internal/reviewstep"
 	"github.com/tuckermclean/strange-company/control-plane/internal/server"
+	"github.com/tuckermclean/strange-company/control-plane/internal/specapproval"
 	"github.com/tuckermclean/strange-company/control-plane/internal/specsession"
 	"github.com/tuckermclean/strange-company/control-plane/internal/store"
 	"github.com/tuckermclean/strange-company/control-plane/internal/teststep"
@@ -272,6 +273,10 @@ func runVikunjaSupervisor(ctx context.Context, logger *slog.Logger, cfg *config.
 		client     *vikunja.Client
 		board      *vikunja.Board
 		reconciler *vikunja.Reconciler
+
+		// approvals turns a label on the board into a §10.2 approval. It
+		// needs the same client, so it appears once the board is ready.
+		approvals *specapproval.Reconciler
 	)
 
 	for {
@@ -317,6 +322,8 @@ func runVikunjaSupervisor(ctx context.Context, logger *slog.Logger, cfg *config.
 						"project_id", b.ProjectID)
 				}
 
+				approvals = specapproval.New(st, client, cfg.SpecApprovalLabel, specScreeningLimit, logger)
+
 				logger.Info("vikunja board ready",
 					"project_id", board.ProjectID,
 					"kanban_view_id", board.KanbanViewID,
@@ -334,6 +341,15 @@ func runVikunjaSupervisor(ctx context.Context, logger *slog.Logger, cfg *config.
 					"accepted", res.Accepted, "rejected", res.Rejected)
 			}
 			interval = cfg.ReconcileInterval
+		}
+
+		if approvals != nil {
+			if res, err := approvals.RunOnce(ctx); err != nil {
+				logger.Warn("approval pass failed", "error", err)
+			} else if res.Approved+res.Failed > 0 {
+				logger.Info("approvals from the board",
+					"approved", res.Approved, "failed", res.Failed)
+			}
 		}
 
 		select {

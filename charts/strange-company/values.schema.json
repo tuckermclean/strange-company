@@ -305,6 +305,10 @@
                 1,
                 2
               ]
+            },
+            "approvalLabel": {
+              "type": "string",
+              "minLength": 1
             }
           }
         }
