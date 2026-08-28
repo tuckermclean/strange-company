@@ -53,7 +53,7 @@ func TestATransitionThroughMCPIsAlwaysAnAgent(t *testing.T) {
 // The tool must not advertise a field that cannot be honoured: a caller told
 // it may choose an actor will believe the choice mattered.
 func TestTheTransitionToolDoesNotOfferAnActorType(t *testing.T) {
-	for _, tool := range tools {
+	for _, tool := range toolRegistry {
 		if tool.Name != "cards.transition" {
 			continue
 		}
@@ -91,7 +91,7 @@ func TestTheCallingAgentIsStillRecorded(t *testing.T) {
 
 func toolByName(t *testing.T, name string) toolSpec {
 	t.Helper()
-	for _, tool := range tools {
+	for _, tool := range toolRegistry {
 		if tool.Name == name {
 			return tool
 		}
