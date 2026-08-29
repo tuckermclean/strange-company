@@ -52,9 +52,11 @@ type Artifacts interface {
 	PutArtifact(ctx context.Context, a store.Artifact) (*store.Artifact, error)
 }
 
-// Pulls opens the pull request a human reviews.
+// Pulls opens the pull request a human reviews, and supplies the diff §18
+// requires the reviewer to see.
 type Pulls interface {
 	EnsurePullRequest(ctx context.Context, pr github.PullRequest) (*github.OpenPullRequest, error)
+	CompareDiff(ctx context.Context, repository, base, head string) (string, error)
 }
 
 // Step is §18 and §19 as a worker step.
@@ -90,10 +92,27 @@ func (s *Step) Do(ctx context.Context, c *card.Card, res *policy.Resolution) (wo
 		return worker.Evidence{}, fmt.Errorf("reviewstep: no model client: %w", err)
 	}
 
+	// §18: the reviewer receives the final diff. Fetched and refused-without,
+	// because a reviewer with no code in front of it does not decline to
+	// review -- it reviews the specification and describes an implementation
+	// it has never seen. The first run to reach here passed a change while
+	// confidently describing an export that was not in it.
+	diff, err := s.diffFor(ctx, c)
+	if err != nil {
+		return worker.Evidence{}, fmt.Errorf("reviewstep: %w", err)
+	}
+
+	if _, aerr := s.artifacts.PutArtifact(ctx, store.Artifact{
+		CardID: c.ID, Type: store.ArtifactDiff, Actor: "control-plane",
+		ContentType: "text/x-diff", Content: diff,
+	}); aerr != nil {
+		s.log.Error("could not record the diff", "card_id", c.ID, "error", aerr)
+	}
+
 	completion, err := client.Complete(ctx, modelclient.CompleteRequest{
 		Messages: []modelclient.Message{
 			{Role: "system", Content: systemPrompt},
-			{Role: "user", Content: reviewInput(c, cardSpec.Content, artifacts)},
+			{Role: "user", Content: reviewInput(c, cardSpec.Content, artifacts, diff)},
 		},
 		MaxTokens: maxReviewTokens,
 	})
@@ -261,15 +280,13 @@ Then explain, briefly, in terms of the change itself.`
 // The exclusion is the point: "The reviewer does NOT receive the implementer's
 // private reasoning." Failure summaries carry a model's own account of itself,
 // so they are deliberately not gathered here.
-func reviewInput(c *card.Card, specText string, artifacts []*store.Artifact) string {
+func reviewInput(c *card.Card, specText string, artifacts []*store.Artifact, diff string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Card\n\n%s\n\n# Specification\n\n%s\n", strings.TrimSpace(c.Title), strings.TrimSpace(specText))
 	if plan := latest(artifacts, store.ArtifactImplementationPlan); plan != "" {
 		fmt.Fprintf(&b, "\n# Implementation plan\n\n%s\n", plan)
 	}
-	if diff := latest(artifacts, store.ArtifactDiff); diff != "" {
-		fmt.Fprintf(&b, "\n# Final diff\n\n```diff\n%s\n```\n", diff)
-	}
+	fmt.Fprintf(&b, "\n# Final diff\n\n```diff\n%s\n```\n", diff)
 	if out := latest(artifacts, store.ArtifactTestOutput); out != "" {
 		fmt.Fprintf(&b, "\n# Verification (passing)\n\n```\n%s\n```\n", out)
 	}
@@ -284,4 +301,17 @@ func latest(artifacts []*store.Artifact, kind string) string {
 		}
 	}
 	return strings.TrimSpace(found)
+}
+
+// diffFor returns the change this card actually made.
+func (s *Step) diffFor(ctx context.Context, c *card.Card) (string, error) {
+	repo, err := repositorySlug(c)
+	if err != nil {
+		return "", err
+	}
+	base := "main"
+	if c.RepoBaseRef != nil && *c.RepoBaseRef != "" {
+		base = *c.RepoBaseRef
+	}
+	return s.pulls.CompareDiff(ctx, repo, base, fmt.Sprintf("agent/%s", c.ID))
 }
