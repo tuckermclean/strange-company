@@ -3,12 +3,15 @@ package vikunja
 import (
 	"context"
 	"fmt"
+	"html"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/tuckermclean/strange-company/control-plane/internal/card"
+	"github.com/tuckermclean/strange-company/control-plane/internal/store"
 )
 
 // CardRepo is the persistence dependency Reconciler needs. It is satisfied
@@ -29,6 +32,12 @@ type CardRepo interface {
 	// SetVikunjaTaskID links a previously-unlinked card to the Vikunja task
 	// created for it.
 	SetVikunjaTaskID(ctx context.Context, id uuid.UUID, taskID int64) error
+
+	// ListEvidence returns what the workers recorded about a card, oldest
+	// first. It is the only account of WHY a card is where it is, and until
+	// now nothing read it: a card moved column and the reason stayed in the
+	// database.
+	ListEvidence(ctx context.Context, cardID uuid.UUID) ([]store.CardEvidence, error)
 }
 
 // Result summarizes the outcome of a single reconciliation pass.
@@ -130,9 +139,11 @@ func (r *Reconciler) RunOnce(ctx context.Context) (Result, error) {
 	// taskBucket maps every task currently on the board to the id of the
 	// bucket it sits in.
 	taskBucket := make(map[int64]int64)
+	taskByID := make(map[int64]*Task)
 	for _, b := range buckets {
 		for _, t := range b.Tasks {
 			taskBucket[t.ID] = b.ID
+			taskByID[t.ID] = t
 		}
 	}
 
@@ -156,6 +167,18 @@ func (r *Reconciler) RunOnce(ctx context.Context) (Result, error) {
 
 		taskID := *cd.VikunjaTaskID
 		linkedTaskIDs[taskID] = true
+
+		// Keep the summary current. A description written once at create
+		// and never touched again is worse than none: it describes a card
+		// that has since moved on, and a reader has no way to tell.
+		if task, ok := taskByID[taskID]; ok {
+			if want := r.describe(ctx, cd); !sameDescription(task.Description, want) {
+				if err := r.client.UpdateTask(ctx, taskID, cd.Title, want); err != nil {
+					r.log.Warn("vikunja reconcile: could not refresh a task description",
+						"card_id", cd.ID, "vikunja_task_id", taskID, "error", err)
+				}
+			}
+		}
 
 		bucketID, onBoard := taskBucket[taskID]
 		if !onBoard {
@@ -218,6 +241,12 @@ func (r *Reconciler) push(ctx context.Context, cd *card.Card) error {
 		return fmt.Errorf("create task: %w", err)
 	}
 
+	if err := r.client.UpdateTask(ctx, task.ID, cd.Title, r.describe(ctx, cd)); err != nil {
+		// Not fatal. A card on the board without its description is worse
+		// than one with it, and far better than one that never appeared.
+		r.log.Error("could not describe a new task", "card_id", cd.ID, "task", task.ID, "error", err)
+	}
+
 	if err := r.client.MoveTaskToBucket(ctx, r.board.ProjectID, r.board.KanbanViewID, bucketID, task.ID); err != nil {
 		return fmt.Errorf("move new task %d to bucket %d: %w", task.ID, bucketID, err)
 	}
@@ -260,4 +289,82 @@ func (r *Reconciler) revert(ctx context.Context, cd *card.Card) error {
 		return fmt.Errorf("move task %d back to bucket %d: %w", *cd.VikunjaTaskID, bucketID, err)
 	}
 	return nil
+}
+
+// describe renders what a human needs to know about a card, for the task body.
+//
+// A board of bare titles tells a reader nothing they did not already know from
+// the issue. This is what the card IS, where it came from, and -- the part
+// that was previously unreachable outside the database -- why it is in the
+// column it is in.
+//
+// Vikunja stores descriptions as HTML.
+func (r *Reconciler) describe(ctx context.Context, cd *card.Card) string {
+	var b strings.Builder
+
+	fmt.Fprintf(&b, "<p><strong>%s</strong> \u00b7 phase <strong>%s</strong></p>",
+		html.EscapeString(string(cd.State)), html.EscapeString(string(cd.Phase)))
+
+	b.WriteString("<ul>")
+	if cd.SourceURL != nil && *cd.SourceURL != "" {
+		fmt.Fprintf(&b, "<li>Source: %s</li>", html.EscapeString(*cd.SourceURL))
+	}
+	if cd.RepoURL != nil && *cd.RepoURL != "" {
+		fmt.Fprintf(&b, "<li>Repository: %s", html.EscapeString(*cd.RepoURL))
+		if cd.RepoBaseRef != nil && *cd.RepoBaseRef != "" {
+			fmt.Fprintf(&b, " (%s)", html.EscapeString(*cd.RepoBaseRef))
+		}
+		b.WriteString("</li>")
+	}
+	// Only when they have moved. A counter reading zero on every card is
+	// noise that trains a reader to skip the list.
+	if cd.ImplementationAttempt > 0 {
+		fmt.Fprintf(&b, "<li>Implementation attempts: %d</li>", cd.ImplementationAttempt)
+	}
+	if cd.InfrastructureFailures > 0 {
+		fmt.Fprintf(&b, "<li>Infrastructure failures: %d</li>", cd.InfrastructureFailures)
+	}
+	fmt.Fprintf(&b, "<li>Card <code>%s</code></li>", html.EscapeString(cd.ID.String()))
+	b.WriteString("</ul>")
+
+	// The most recent account of what happened. §21 wants "what happened to
+	// card X?" answerable; this is the one line of it that matters most --
+	// the reason this card is sitting where it is.
+	if evidence, err := r.repo.ListEvidence(ctx, cd.ID); err != nil {
+		r.log.Warn("could not read evidence for a task description", "card_id", cd.ID, "error", err)
+	} else if len(evidence) > 0 {
+		last := evidence[len(evidence)-1]
+		fmt.Fprintf(&b, "<p><em>%s</em><br>%s</p>",
+			html.EscapeString(last.Summary), html.EscapeString(last.ActorID))
+	}
+
+	return b.String()
+}
+
+// sameDescription reports whether two descriptions say the same thing.
+//
+// Comparing the HTML directly does not work: Vikunja sanitises what it stores,
+// so the text read back is never byte-identical to the text sent -- and a
+// reconciler that believes every description is stale rewrites every card on
+// the board once a tick, churning "recently updated" for a human who is trying
+// to use it. Compare what a reader would actually see instead.
+func sameDescription(a, b string) bool {
+	return descriptionText(a) == descriptionText(b)
+}
+
+func descriptionText(s string) string {
+	var out strings.Builder
+	depth := 0
+	for _, r := range s {
+		switch {
+		case r == '<':
+			depth++
+			out.WriteRune(' ') // a dropped tag is still a word boundary
+		case r == '>' && depth > 0:
+			depth--
+		case depth == 0:
+			out.WriteRune(r)
+		}
+	}
+	return strings.Join(strings.Fields(html.UnescapeString(out.String())), " ")
 }

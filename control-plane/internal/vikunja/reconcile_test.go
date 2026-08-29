@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/tuckermclean/strange-company/control-plane/internal/card"
+	"github.com/tuckermclean/strange-company/control-plane/internal/store"
 )
 
 // --- fake Vikunja board server -------------------------------------------------
@@ -77,6 +78,9 @@ type fakeBoard struct {
 	bucketTasks map[int64][]int64
 	// tasks maps task id -> title, for every task ever created or seeded.
 	tasks map[int64]string
+	// descriptions maps task id -> description, so a test can assert what a
+	// human would actually read on the card.
+	descriptions map[int64]string
 
 	nextTaskID int64
 
@@ -98,14 +102,16 @@ func newFakeBoard(t *testing.T) *fakeBoard {
 			bucketBlocked:    nil,
 			bucketNeedsHuman: nil,
 		},
-		tasks:      make(map[int64]string),
-		nextTaskID: 1000,
+		tasks:        make(map[int64]string),
+		descriptions: make(map[int64]string),
+		nextTaskID:   1000,
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc(fmt.Sprintf("/api/v1/projects/%d/views/%d/tasks", testProjectID, testViewID), f.handleListBoardTasks)
 	mux.HandleFunc(fmt.Sprintf("/api/v1/projects/%d/tasks", testProjectID), f.handleCreateTask)
 	mux.HandleFunc(fmt.Sprintf("/api/v1/projects/%d/views/%d/buckets/", testProjectID, testViewID), f.handleMoveTask)
+	mux.HandleFunc("/api/v1/tasks/", f.handleUpdateTask)
 
 	f.server = httptest.NewServer(mux)
 	t.Cleanup(f.server.Close)
@@ -167,7 +173,12 @@ func (f *fakeBoard) handleListBoardTasks(w http.ResponseWriter, r *http.Request)
 	for _, id := range ids {
 		b := &Bucket{ID: id, Title: bucketTitleByID[id]}
 		for _, taskID := range f.bucketTasks[id] {
-			b.Tasks = append(b.Tasks, &Task{ID: taskID, Title: f.tasks[taskID], BucketID: id})
+			b.Tasks = append(b.Tasks, &Task{
+				ID:          taskID,
+				Title:       f.tasks[taskID],
+				BucketID:    id,
+				Description: f.descriptions[taskID],
+			})
 		}
 		resp = append(resp, b)
 	}
@@ -203,6 +214,39 @@ func (f *fakeBoard) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(&Task{ID: id, Title: body.Title})
+}
+
+func (f *fakeBoard) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.record(r)
+
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	id, err := strconv.ParseInt(strings.TrimPrefix(r.URL.Path, "/api/v1/tasks/"), 10, 64)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	var body Task
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	f.descriptions[id] = body.Description
+	if body.Title != "" {
+		f.tasks[id] = body.Title
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(&Task{ID: id, Title: f.tasks[id], Description: f.descriptions[id]})
+}
+
+func (f *fakeBoard) descriptionOf(taskID int64) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.descriptions[taskID]
 }
 
 func (f *fakeBoard) handleMoveTask(w http.ResponseWriter, r *http.Request) {
@@ -280,6 +324,15 @@ type memRepo struct {
 	// return for that specific card, letting a test fail one card without
 	// affecting others.
 	setTaskIDErrFor map[uuid.UUID]error
+
+	// evidence is what the workers would have recorded about each card.
+	evidence map[uuid.UUID][]store.CardEvidence
+}
+
+func (m *memRepo) ListEvidence(_ context.Context, cardID uuid.UUID) ([]store.CardEvidence, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.evidence[cardID], nil
 }
 
 func (m *memRepo) ListCards(_ context.Context) ([]*card.Card, error) {
@@ -475,6 +528,10 @@ func TestReconcilerIsANoOpWhenBoardAndDatabaseAgree(t *testing.T) {
 	repo := &memRepo{cards: []*card.Card{c}}
 
 	r := newTestReconciler(t, board, repo)
+	// Seed the description this card already has, so this stays a test of
+	// "nothing to do" rather than of the first description write.
+	board.descriptions[taskID] = r.describe(context.Background(), c)
+
 	result, err := r.RunOnce(context.Background())
 	if err != nil {
 		t.Fatalf("RunOnce() error = %v, want nil", err)

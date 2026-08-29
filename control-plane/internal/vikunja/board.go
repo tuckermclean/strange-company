@@ -68,6 +68,11 @@ type Task struct {
 	Title    string `json:"title"`
 	Done     bool   `json:"done"`
 	BucketID int64  `json:"bucket_id,omitempty"`
+
+	// Description is read back so the reconciler can tell whether the card's
+	// summary has actually changed. Without it every pass would rewrite
+	// every task on the board once a minute.
+	Description string `json:"description"`
 }
 
 // TaskBucket is the payload sent to, and the shape returned from, the
