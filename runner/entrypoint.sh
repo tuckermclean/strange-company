@@ -307,7 +307,16 @@ log "harness exited with code ${harness_exit}"
     if [ -n "${SC_COMMIT_SUMMARY:-}" ]; then
       summary="$SC_COMMIT_SUMMARY"
     else
-      summary="implementation attempt ${SC_ATTEMPT:-1}"
+      # Worded per phase. Every commit used to read "implementation
+      # attempt N" whatever produced it, so a tests-phase commit announced
+      # an implementation -- the one thing §11.2 forbids that phase from
+      # doing, claimed in its own commit message.
+      case "$phase" in
+        tests)          summary="acceptance tests, attempt ${SC_ATTEMPT:-1}" ;;
+        implementation) summary="implementation attempt ${SC_ATTEMPT:-1}" ;;
+        review)         summary="review changes, attempt ${SC_ATTEMPT:-1}" ;;
+        *)              summary="${phase}, attempt ${SC_ATTEMPT:-1}" ;;
+      esac
     fi
     commit_msg="${phase}(card-${SC_CARD_ID}): ${summary}"
 

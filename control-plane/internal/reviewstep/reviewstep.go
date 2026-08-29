@@ -213,7 +213,15 @@ func pullRequestBody(c *card.Card, specText, review string) string {
 		for _, cr := range doc.Criteria {
 			// Checked because the green gate passed: §19 only reaches a
 			// pull request when the deterministic verification is green.
-			fmt.Fprintf(&b, "- [x] %s: %s\n", strings.TrimSpace(cr.ID), strings.TrimSpace(cr.Text))
+			//
+			// The id is optional -- a criterion written without an "AC1:"
+			// prefix parses with an empty one -- so it is only rendered
+			// when there is one. Otherwise every line began "- [x] : ".
+			if id := strings.TrimSpace(cr.ID); id != "" {
+				fmt.Fprintf(&b, "- [x] %s: %s\n", id, strings.TrimSpace(cr.Text))
+				continue
+			}
+			fmt.Fprintf(&b, "- [x] %s\n", strings.TrimSpace(cr.Text))
 		}
 		b.WriteString("\n")
 	}
