@@ -213,7 +213,16 @@ and must be one of 0, 1, 2, or 3.
 // defaultMaxTokens bounds the cheap screen's completion. Classification and
 // a short rationale do not need a large budget, and this is a cost-control
 // concern (spec §22/§23), not a correctness one.
-const defaultMaxTokens = 1024
+// Sized for a reasoning model, not for the answer.
+//
+// The screen's output is a small JSON object -- a score, a rationale and a few
+// findings -- and 1024 was ample for that. But a reasoning model spends
+// completion tokens thinking first, billed against the same budget, so a cap
+// sized for the answer alone is spent before the answer starts: empty content,
+// finish_reason "length", and every card stalled at the specification gate.
+//
+// Headroom is cheap here and the failure it prevents is total.
+const defaultMaxTokens = 8192
 
 // screeningTemperature is fixed low so the classification is as
 // repeatable as a model call can be made to be; this is a classification

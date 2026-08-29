@@ -98,3 +98,46 @@ func TestAnEmptyErrorTurnIsReportedAsAProviderFailure(t *testing.T) {
 		t.Fatalf("error %v is not ErrProviderFailure", err)
 	}
 }
+
+// A reasoning model spends completion tokens thinking before it writes
+// anything, and those tokens are billed against max_tokens. With a tight
+// budget it returns empty content and finish_reason "length" -- the whole
+// budget went on reasoning and the answer never started.
+//
+// Reported as "empty response" this is undiagnosable: it looks like the
+// provider returned nothing, when in fact it returned a great deal and none of
+// it was the answer.
+func TestABudgetExhaustedBeforeAnyContentSaysSo(t *testing.T) {
+	c := clientAgainst(t, `{"choices":[{"message":{"content":"","reasoning_content":"We need to answer. User"},`+
+		`"finish_reason":"length"}],"usage":{"completion_tokens":5,"completion_tokens_details":{"reasoning_tokens":5}}}`)
+
+	_, err := complete(t, c)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !errors.Is(err, modelclient.ErrBudgetExhausted) {
+		t.Fatalf("error = %v, want ErrBudgetExhausted", err)
+	}
+	if errors.Is(err, modelclient.ErrEmptyResponse) {
+		t.Error("reported as an empty response, which hides what happened")
+	}
+	// The message has to name the budget, or an operator cannot tell which
+	// number to raise.
+	if !strings.Contains(err.Error(), "16") {
+		t.Errorf("error does not name the token budget that was too small: %v", err)
+	}
+}
+
+// Truncation AFTER some content is different: there is an answer, just a
+// clipped one, and whether that is usable is the caller's decision.
+func TestTruncationAfterSomeContentIsStillAnAnswer(t *testing.T) {
+	c := clientAgainst(t, `{"choices":[{"message":{"content":"partial ans"},"finish_reason":"length"}]}`)
+
+	got, err := complete(t, c)
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if got.Text != "partial ans" {
+		t.Fatalf("text = %q", got.Text)
+	}
+}

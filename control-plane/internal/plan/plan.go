@@ -30,8 +30,11 @@ import (
 // to a human" depend on phrasing.
 const insufficientPrefix = "SPEC_INSUFFICIENT"
 
-// maxPlanTokens bounds one plan. A plan longer than this is not a plan.
-const maxPlanTokens = 4000
+// maxPlanTokens bounds one plan. A plan longer than this is not a plan --
+// but a reasoning model's thinking is billed against the same budget, so this
+// covers thinking plus the plan rather than the plan alone (see
+// internal/ambiguity for what a budget sized for the answer alone does).
+const maxPlanTokens = 8192
 
 // Completer performs one model completion.
 type Completer interface {

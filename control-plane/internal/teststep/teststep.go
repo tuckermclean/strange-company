@@ -122,6 +122,19 @@ func (s *Step) Do(ctx context.Context, c *card.Card, res *policy.Resolution) (wo
 		return worker.Evidence{}, fmt.Errorf("teststep: %w", err)
 	}
 
+	// The complete output, not just the summary's excerpt, and only when the
+	// run went wrong -- a healthy run's stream is large and says nothing a
+	// human needs. The Job is already deleted by now, so this is the only
+	// copy that survives.
+	if result.Status != runner.StatusCompleted && len(result.Raw) > 0 {
+		if _, aerr := s.artifacts.PutArtifact(ctx, store.Artifact{
+			CardID: c.ID, Type: store.ArtifactTestOutput, Actor: res.ProviderName,
+			Model: result.Model, ContentType: "text/plain", Content: string(result.Raw),
+		}); aerr != nil {
+			s.log.Error("could not record the harness output", "card_id", c.ID, "error", aerr)
+		}
+	}
+
 	if _, aerr := s.artifacts.PutArtifact(ctx, store.Artifact{
 		CardID:      c.ID,
 		Type:        store.ArtifactTestMapping,

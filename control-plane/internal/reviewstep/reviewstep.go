@@ -29,7 +29,9 @@ import (
 // merely sounded approving would ship code.
 const verdictPrefix = "VERDICT:"
 
-const maxReviewTokens = 4000
+// See internal/ambiguity: a reasoning model's thinking is billed against this
+// budget, so it is sized for thinking plus the answer, not the answer alone.
+const maxReviewTokens = 8192
 
 // Completer performs one model completion.
 type Completer interface {
