@@ -547,3 +547,49 @@ func TestBuild_RejectsAnAttemptBelowOne(t *testing.T) {
 		}
 	}
 }
+
+// §16.1 requires readOnlyRootFilesystem, which leaves a CLI harness nowhere to
+// put its own state. opencode failed the first real end-to-end run with
+// "EROFS: read-only file system, mkdir '/home/runner/.local'".
+func TestTheAgentHasAWritableHome(t *testing.T) {
+	job, err := Build(validSpec())
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	c := job.Spec.Template.Spec.Containers[0]
+
+	var home string
+	for _, e := range c.Env {
+		if e.Name == "HOME" {
+			home = e.Value
+		}
+	}
+	if home == "" {
+		t.Fatal("no HOME is set, so a harness writes to the read-only root")
+	}
+
+	// The workspace is the git checkout. A harness dropping dotfiles there
+	// would commit them into the agent branch.
+	if home == "/workspace" || strings.HasPrefix(home, "/workspace/") {
+		t.Fatalf("HOME is %q, inside the checkout", home)
+	}
+
+	var mounted bool
+	for _, m := range c.VolumeMounts {
+		if m.MountPath == home {
+			mounted = true
+		}
+	}
+	if !mounted {
+		t.Fatalf("HOME is %q but nothing writable is mounted there", home)
+	}
+
+	// Every XDG path must land under it, or a harness that honours XDG
+	// rather than HOME still writes to the read-only root.
+	for _, e := range c.Env {
+		if strings.HasPrefix(e.Name, "XDG_") && !strings.HasPrefix(e.Value, home) {
+			t.Errorf("%s = %q, outside the writable home", e.Name, e.Value)
+		}
+	}
+}
