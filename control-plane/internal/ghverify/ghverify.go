@@ -81,3 +81,11 @@ func (v *Verifier) Verify(ctx context.Context, req codingrun.VerifyRequest) (red
 		}
 	}
 }
+
+// TaskRequirement is empty: this backend reads the checks the repository's own
+// workflows already produce, so there is nothing for the agent to write.
+//
+// Asking anyway is not harmless. The first successful run committed a
+// .strange-company/test-command into a repository whose gates never open it --
+// a file that will now drift, unread, forever.
+func (v *Verifier) TaskRequirement() string { return "" }

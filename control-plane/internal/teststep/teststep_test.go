@@ -51,11 +51,14 @@ func (f *fakeRunner) Run(_ context.Context, req codingrun.Request) (*runner.Codi
 // fakeVerifier answers the red gate. Green baseline, failing candidate is the
 // state §11.3 requires before a card may proceed.
 type fakeVerifier struct {
-	outcomes []redgate.RunOutcome
+	requirement string
+	outcomes    []redgate.RunOutcome
 	err      error
 	calls    int
 	refs     []string
 }
+
+func (f *fakeVerifier) TaskRequirement() string { return f.requirement }
 
 func (f *fakeVerifier) Verify(_ context.Context, req codingrun.VerifyRequest) (redgate.RunOutcome, error) {
 	f.refs = append(f.refs, req.Ref)
@@ -156,9 +159,6 @@ func TestTheTaskForbidsImplementingTheFeature(t *testing.T) {
 
 	if _, err := teststep.New(b, b, r, v, codingrun.GitIdentity{Username: "x"}, nil).Do(context.Background(), testCard(), res()); err != nil {
 		t.Fatal(err)
-	}
-	if !strings.Contains(r.req.Task, codingrun.TestCommandPath) {
-		t.Errorf("the task does not ask for the test command script both gates run:\n%s", r.req.Task)
 	}
 	if !strings.Contains(strings.ToLower(r.req.Task), "must not implement") {
 		t.Errorf("the task does not forbid implementing the feature:\n%s", r.req.Task)
@@ -299,5 +299,31 @@ func TestAnInconclusiveGateHandsTheCardBack(t *testing.T) {
 
 	if _, err := teststep.New(b, b, r, v, codingrun.GitIdentity{Username: "x"}, nil).Do(context.Background(), testCard(), res()); err == nil {
 		t.Fatal("expected an error so the worker hands the card back")
+	}
+}
+
+// The backend says what it needs. Asking for a test-command script when the
+// gates read GitHub Actions had the first successful run commit one into a
+// repository that will never open it.
+func TestTheTaskAsksOnlyForWhatTheBackendNeeds(t *testing.T) {
+	b, r := board(), &fakeRunner{result: ok()}
+
+	silent := redGate()
+	if _, err := teststep.New(b, b, r, silent, codingrun.GitIdentity{Username: "x"}, nil).
+		Do(context.Background(), testCard(), res()); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(r.req.Task, ".strange-company") {
+		t.Errorf("asked for a file this backend never reads:\n%s", r.req.Task)
+	}
+
+	demanding := redGate()
+	demanding.requirement = "Commit the test command at .strange-company/test-command."
+	if _, err := teststep.New(b, b, r, demanding, codingrun.GitIdentity{Username: "x"}, nil).
+		Do(context.Background(), testCard(), res()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(r.req.Task, ".strange-company/test-command") {
+		t.Errorf("a backend that needs a file did not get to ask for it:\n%s", r.req.Task)
 	}
 }
