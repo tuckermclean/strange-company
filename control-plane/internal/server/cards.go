@@ -41,6 +41,11 @@ type CardStore interface {
 	// same reason this whole interface is declared here: importing the
 	// store would drag the concrete storage engine into the server.
 	ListArtifacts(ctx context.Context, cardID uuid.UUID) ([]Artifact, error)
+
+	// AttemptStore is the read side of the attempt and cost ledger. §12
+	// records every run and §22 attributes spend per card; both were
+	// write-only until /cards/{id}/attempts and /cards/{id}/cost existed.
+	AttemptStore
 }
 
 // Artifact is one piece of evidence about a card, as this package needs it.
