@@ -35,7 +35,13 @@ import (
 // defaultTimeout bounds a Complete call when the caller's context carries
 // no deadline of its own, so a hung or slow provider cannot wedge a caller
 // forever.
-const defaultTimeout = 60 * time.Second
+const defaultTimeout = 3 * time.Minute
+
+// Sized for a model that thinks before it answers. A reasoning model with a
+// generous completion budget routinely takes well over a minute, and a
+// deployment reported screening failing on "context deadline exceeded" that
+// cleared on retry -- a timeout that trips sometimes is worse than one that
+// never does, because it looks like an intermittent provider fault.
 
 // maxRawBytes caps how much of a successful response body Completion.Raw
 // retains as evidence. A chat-completion response is small JSON; nothing
