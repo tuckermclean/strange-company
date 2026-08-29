@@ -121,7 +121,10 @@ func TestAPassingReviewOpensThePullRequestAndMovesToReview(t *testing.T) {
 
 // §18: "The reviewer does NOT receive the implementer's private reasoning."
 func TestTheReviewerNeverSeesTheImplementersReasoning(t *testing.T) {
-	b, m, p := board(), &fakeModel{reply: "VERDICT: PASS"}, &fakePulls{}
+	b, m := board(), &fakeModel{reply: "VERDICT: PASS"}
+	// The diff now comes from the compare API rather than from an artifact:
+	// what a human reviewer would see, from the same source of truth.
+	p := &fakePulls{diff: "+func healthz() {}"}
 
 	if _, err := step(b, m, p).Do(context.Background(), testCard(), res()); err != nil {
 		t.Fatal(err)
