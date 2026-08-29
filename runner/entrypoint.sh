@@ -253,6 +253,12 @@ if [ "${SC_HARNESS:-}" = "opencode" ]; then
 }
 OPENCODE_JSON
   log "wrote opencode.json for provider ${SC_OPENCODE_PROVIDER}"
+  # Printed so a "no readable events" report arrives with the facts that
+  # distinguish its causes: which build ran, whether it found its config, and
+  # whether HOME is somewhere it can actually write.
+  log "opencode version: $(opencode --version 2>&1 | head -1 || echo unavailable)"
+  log "opencode.json: $(wc -c < opencode.json 2>/dev/null || echo 0) bytes at $(pwd)"
+  log "HOME=${HOME:-unset} writable: $(touch "${HOME:-/nonexistent}/.sc-write-probe" 2>/dev/null && echo yes && rm -f "${HOME}/.sc-write-probe" || echo NO)"
   # Not committed: it carries a credential reference and belongs to this run,
   # not to the repository.
   if [ -f .gitignore ] && ! grep -qx 'opencode.json' .gitignore; then
