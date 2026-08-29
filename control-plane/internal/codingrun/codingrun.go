@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/tuckermclean/strange-company/control-plane/internal/jobs"
@@ -263,7 +264,16 @@ func (s *Service) Run(ctx context.Context, req Request) (*runner.CodingRunResult
 	if err != nil {
 		// Unparseable output is not a verdict. §12.1's attempt counter must
 		// not move on a stream we could not read.
-		return infra(req, harness, started, fmt.Sprintf("could not parse the run's output: %v", err)), nil
+		//
+		// The output travels with the failure. The Job is deleted as soon
+		// as its logs are collected, so a result that says only "could not
+		// parse" leaves nothing anywhere to look at -- and "no readable
+		// events" is precisely the failure that cannot be diagnosed
+		// without seeing what the harness actually printed.
+		out := infra(req, harness, started, fmt.Sprintf("could not parse the run's output: %v", err))
+		out.Raw = logs
+		out.Summary += "\n\n" + excerpt(logs)
+		return out, nil
 	}
 	return result, nil
 }
@@ -288,6 +298,27 @@ func (s *Service) wait(ctx context.Context, name string) (kube.JobPhase, error) 
 		case <-ticker.C:
 		}
 	}
+}
+
+// excerptHead and excerptTail bound what a failure summary quotes. The head
+// shows how the run started and the tail shows how it died; the middle of a
+// long log is rarely where the answer is.
+const (
+	excerptHead = 2000
+	excerptTail = 2000
+)
+
+// excerpt renders a bounded, labelled view of a run's output.
+func excerpt(out []byte) string {
+	text := strings.TrimSpace(string(out))
+	if text == "" {
+		return "the harness printed nothing at all"
+	}
+	if len(text) <= excerptHead+excerptTail {
+		return "harness output:\n" + text
+	}
+	return fmt.Sprintf("harness output (first %d and last %d bytes of %d):\n%s\n\n[...]\n\n%s",
+		excerptHead, excerptTail, len(text), text[:excerptHead], text[len(text)-excerptTail:])
 }
 
 func infra(req Request, harness string, started time.Time, summary string) *runner.CodingRunResult {

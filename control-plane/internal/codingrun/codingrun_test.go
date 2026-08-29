@@ -287,3 +287,42 @@ func TestTheJobIsPolledByTheNameItWasCreatedWith(t *testing.T) {
 		t.Fatalf("read logs for %q, created %q", api.logNames[0], created)
 	}
 }
+
+// "opencode produced no readable events" cannot be diagnosed without seeing
+// what the harness printed -- and the Job is deleted as soon as its logs are
+// collected, so a result that says only "could not parse" leaves nothing
+// anywhere to look at.
+func TestUnparseableOutputTravelsWithTheFailure(t *testing.T) {
+	api := &fakeAPI{
+		phases: []kube.JobPhase{kube.JobSucceeded},
+		logs:   "opencode: EROFS something\nnot json at all\n",
+	}
+
+	res, err := service(api).Run(context.Background(), request())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Status != runner.StatusInfraError {
+		t.Fatalf("status = %q", res.Status)
+	}
+	if len(res.Raw) == 0 {
+		t.Fatal("the harness output was discarded; nothing survives the Job's deletion")
+	}
+	if !strings.Contains(res.Summary, "EROFS something") {
+		t.Errorf("the summary does not show what the harness printed:\n%s", res.Summary)
+	}
+}
+
+// A harness that printed nothing at all is a different fact from one that
+// printed something unparseable, and the summary must not imply the second.
+func TestSilenceIsReportedAsSilence(t *testing.T) {
+	api := &fakeAPI{phases: []kube.JobPhase{kube.JobSucceeded}, logs: "   "}
+
+	res, err := service(api).Run(context.Background(), request())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.Summary, "printed nothing at all") {
+		t.Errorf("summary = %q", res.Summary)
+	}
+}
