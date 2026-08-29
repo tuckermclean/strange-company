@@ -130,3 +130,14 @@ func (s *Service) Verify(ctx context.Context, req VerifyRequest) (redgate.RunOut
 	}
 	return out, nil
 }
+
+// TaskRequirement tells the test-writing agent to commit the script this
+// backend runs. Without it neither gate can run.
+func (s *Service) TaskRequirement() string {
+	return fmt.Sprintf(
+		"Commit the test command as an executable shell script at %s.\n"+
+			"Both gates run that script and nothing else: the red gate to prove your\n"+
+			"tests fail now, and the green gate to prove they pass once the feature\n"+
+			"exists. Without it neither gate can run and the card stops here.",
+		TestCommandPath)
+}

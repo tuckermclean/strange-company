@@ -199,3 +199,23 @@ func TestTheReviewIsRecorded(t *testing.T) {
 		t.Fatalf("the review was not recorded: %+v", b.put)
 	}
 }
+
+// A criterion written without an "AC1:" prefix parses with an empty id, and
+// the checklist rendered "- [x] : the criterion" for every line of the first
+// successful run's pull request.
+func TestTheChecklistOmitsAnAbsentCriterionID(t *testing.T) {
+	b := board()
+	b.spec = &store.CardSpec{Approved: true, Content: "# Context\n\nx\n\n" +
+		"# Acceptance criteria\n\n- `clamp(5, 0, 10)` returns `5` — verified by: `node --test`"}
+	m, p := &fakeModel{reply: "VERDICT: PASS"}, &fakePulls{}
+
+	if _, err := step(b, m, p).Do(context.Background(), testCard(), res()); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(p.opened.Body, "[x] :") {
+		t.Errorf("checklist renders an empty id:\n%s", p.opened.Body)
+	}
+	if !strings.Contains(p.opened.Body, "clamp(5, 0, 10)") {
+		t.Errorf("the criterion is missing entirely:\n%s", p.opened.Body)
+	}
+}

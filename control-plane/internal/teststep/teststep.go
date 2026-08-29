@@ -43,6 +43,14 @@ type Runner interface {
 // a script in the repository, or the checks GitHub Actions already produced.
 type Verifier interface {
 	Verify(ctx context.Context, req codingrun.VerifyRequest) (redgate.RunOutcome, error)
+
+	// TaskRequirement is what this backend needs the repository to provide,
+	// in words for the test-writing agent, or "" when it needs nothing.
+	//
+	// The backend answers because the backend knows: asking unconditionally
+	// for a test-command script had the agent commit one into a repository
+	// whose gates read GitHub Actions and never open it.
+	TaskRequirement() string
 }
 
 // Step is §11.2 as a worker step.
@@ -94,7 +102,7 @@ func (s *Step) Do(ctx context.Context, c *card.Card, res *policy.Resolution) (wo
 	result, err := s.runner.Run(ctx, codingrun.Request{
 		CardID:     c.ID.String(),
 		RunID:      runID,
-		Task:       task(c, spec.Content, plan),
+		Task:       task(c, spec.Content, plan, s.verifier.TaskRequirement()),
 		Resolution: res,
 		RepoURL:    *c.RepoURL,
 		BaseRef:    baseRef,
@@ -200,7 +208,7 @@ func shortID(id uuid.UUID) string {
 // enforced from here -- the red gate is what actually catches an implementation
 // that slipped in, by failing when the new tests pass without one -- but a
 // requirement that is never stated cannot be met either.
-func task(c *card.Card, spec, plan string) string {
+func task(c *card.Card, spec, plan, requirement string) string {
 	var b strings.Builder
 	b.WriteString("Write the acceptance tests for this work, using test-driven development.\n\n")
 	b.WriteString("You MUST NOT implement the requested feature. Write only tests, and\n")
@@ -208,10 +216,10 @@ func task(c *card.Card, spec, plan string) string {
 	b.WriteString("passes right now is a test that is not testing this work.\n\n")
 	b.WriteString("Produce: the test changes themselves, a mapping from each acceptance\n")
 	b.WriteString("criterion to the test that covers it, and the command that runs them.\n\n")
-	fmt.Fprintf(&b, "Commit the test command as an executable shell script at %s.\n", codingrun.TestCommandPath)
-	b.WriteString("Both gates run that script and nothing else: the red gate to prove your\n")
-	b.WriteString("tests fail now, and the green gate to prove they pass once the feature\n")
-	b.WriteString("exists. Without it neither gate can run and the card stops here.\n\n")
+	if requirement != "" {
+		b.WriteString(requirement)
+		b.WriteString("\n\n")
+	}
 	fmt.Fprintf(&b, "# Card\n\n%s\n\n# Specification\n\n%s\n\n# Implementation plan\n\n%s\n",
 		strings.TrimSpace(c.Title), strings.TrimSpace(spec), strings.TrimSpace(plan))
 	return b.String()
