@@ -220,11 +220,40 @@ cd "$REPO_DIR" || die "cannot cd into cloned repository ${REPO_DIR}"
 # NAME -- the config holds {env:NAME} and the value arrives through the
 # environment Kubernetes already injected.
 #
-# Permissions are explicit allow/deny and never "ask". An "ask" in a Job with
-# no terminal is a run waiting for an answer nobody can give, and the adapter
-# deliberately does not pass --auto (a permission bypass, spec §24). The
-# allowed set is §24's "permitted by default": read the repository, modify
-# files in the workspace, run project tests and build tools.
+# Permissions are explicit and never "ask". An "ask" in a Job with no terminal
+# is a run waiting for an answer nobody can give, and the adapter deliberately
+# does not pass --auto (a permission bypass, spec §24).
+#
+# The permission block does NOT enforce §24, and used to pretend it did. It was
+# a default-deny with a hand-written allow-list -- read, glob, grep, edit, bash
+# -- and "write" was not on it. opencode uses "write" to create a NEW file, and
+# every card here is fundamentally about creating new files, so the harness
+# spent its turns being refused and falling back to bash heredocs. On a card
+# with three new files that burned the entire implementation ladder and
+# escalated a branch that was, in fact, green (issue #70).
+#
+# The list bought nothing while it did that. "bash" was allowed, and a shell
+# strictly subsumes every other tool: an agent that can run bash can write any
+# file, read any path and reach any network -- which is precisely how opencode
+# worked around the denial. A deny-list the shell walks around is not a
+# control. It is a trap that fires on our own harness rather than on an
+# attacker, has to be hand-updated whenever opencode renames or adds a tool,
+# and fails silently in a way that looks like a bad model.
+#
+# §24 is enforced where it actually can be, and every one of those places is
+# outside this file:
+#
+#   * no cluster credentials to steal -- the Job runs with
+#     automountServiceAccountToken false (§16.1, internal/jobs/spec.go), so
+#     there is no token with which to read Secrets or reach the API server
+#   * no unrelated repositories -- the git credential is scoped to the single
+#     repository the card names
+#   * no protected branches -- this script refuses any SC_BRANCH that is not
+#     agent/*, and refuses to commit a change touching .github/workflows
+#   * no production anything -- no such credentials are in the pod at all
+#
+# So the harness is allowed to do its work inside the workspace, and the walls
+# are the sandbox.
 # ---------------------------------------------------------------------
 if [ "${SC_HARNESS:-}" = "opencode" ]; then
   if [ -z "${SC_OPENCODE_PROVIDER:-}" ] || [ -z "${SC_OPENCODE_BASE_URL:-}" ]; then
@@ -243,12 +272,7 @@ if [ "${SC_HARNESS:-}" = "opencode" ]; then
 {
   "\$schema": "https://opencode.ai/config.json",
   "permission": {
-    "*": "deny",
-    "read": "allow",
-    "glob": "allow",
-    "grep": "allow",
-    "edit": "allow",
-    "bash": "allow"
+    "*": "allow"
   },
   "provider": {
     "${SC_OPENCODE_PROVIDER}": {
