@@ -27,7 +27,22 @@ type fakeAPI struct {
 	logs      string
 	createErr error
 	logsErr   error
-	lastJob   any
+	lastJob      any
+	statusNames  []string
+	deletedNames []string
+	logNames     []string
+}
+
+// createdName is the object name the manifest actually carried.
+func (f *fakeAPI) createdName() string {
+	b, _ := json.Marshal(f.lastJob)
+	var parsed struct {
+		Metadata struct {
+			Name string `json:"name"`
+		} `json:"metadata"`
+	}
+	_ = json.Unmarshal(b, &parsed)
+	return parsed.Metadata.Name
 }
 
 func (f *fakeAPI) CreateJob(_ context.Context, _ string, job any) error {
@@ -42,15 +57,21 @@ func (f *fakeAPI) lastArgv() string {
 	b, _ := json.Marshal(f.lastJob)
 	return string(b)
 }
-func (f *fakeAPI) DeleteJob(context.Context, string, string) error { f.deleted++; return nil }
-func (f *fakeAPI) JobStatus(context.Context, string, string) (kube.JobPhase, error) {
+func (f *fakeAPI) DeleteJob(_ context.Context, _, name string) error {
+	f.deleted++
+	f.deletedNames = append(f.deletedNames, name)
+	return nil
+}
+func (f *fakeAPI) JobStatus(_ context.Context, _, name string) (kube.JobPhase, error) {
+	f.statusNames = append(f.statusNames, name)
 	p := f.phases[f.phaseIdx]
 	if f.phaseIdx < len(f.phases)-1 {
 		f.phaseIdx++
 	}
 	return p, nil
 }
-func (f *fakeAPI) PodLogs(context.Context, string, string) ([]byte, error) {
+func (f *fakeAPI) PodLogs(_ context.Context, _, name string) ([]byte, error) {
+	f.logNames = append(f.logNames, name)
 	if f.logsErr != nil {
 		return nil, f.logsErr
 	}
@@ -240,5 +261,29 @@ func TestAnOpenCodeProviderWithoutABaseURLIsRefused(t *testing.T) {
 	}
 	if api.created != 0 {
 		t.Fatal("launched a job opencode could not have used")
+	}
+}
+
+// jobs.Build slugifies and prefixes the object name ("coding-<run id>").
+// Polling the raw run id asked Kubernetes about an object that never existed,
+// so a perfectly healthy run came back 404 and was classified infra_error --
+// on every card, forever, with the pod sitting there having done the work.
+func TestTheJobIsPolledByTheNameItWasCreatedWith(t *testing.T) {
+	api := &fakeAPI{phases: []kube.JobPhase{kube.JobSucceeded}, logs: claudeResult}
+
+	if _, err := service(api).Run(context.Background(), request()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if api.statusNames == nil {
+		t.Fatal("never polled for status")
+	}
+	created := api.createdName()
+	for _, asked := range append(api.statusNames, api.deletedNames...) {
+		if asked != created {
+			t.Fatalf("created %q but asked about %q", created, asked)
+		}
+	}
+	if api.logNames[0] != created {
+		t.Fatalf("read logs for %q, created %q", api.logNames[0], created)
 	}
 }

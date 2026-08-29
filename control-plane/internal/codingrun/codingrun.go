@@ -212,6 +212,11 @@ func (s *Service) Run(ctx context.Context, req Request) (*runner.CodingRunResult
 		return nil, fmt.Errorf("codingrun: building the job: %w", err)
 	}
 
+	// The name Build chose, not the run id. Build slugifies and prefixes
+	// ("coding-<run id>"), and polling the raw id asked Kubernetes about an
+	// object that never existed -- so a perfectly healthy run came back as
+	// a 404 and was classified infra_error, forever.
+	jobName := job.Metadata.Name
 	started := time.Now()
 
 	if err := s.api.CreateJob(ctx, s.namespace, job); err != nil {
@@ -229,12 +234,12 @@ func (s *Service) Run(ctx context.Context, req Request) (*runner.CodingRunResult
 	// result are recorded as artifacts, and Jobs left behind fill the
 	// namespace with completed pods nobody reads.
 	defer func() {
-		if err := s.api.DeleteJob(context.WithoutCancel(ctx), s.namespace, req.RunID); err != nil {
-			s.log.Warn("could not delete the coding job", "run_id", req.RunID, "error", err)
+		if err := s.api.DeleteJob(context.WithoutCancel(ctx), s.namespace, jobName); err != nil {
+			s.log.Warn("could not delete the coding job", "job", jobName, "error", err)
 		}
 	}()
 
-	phase, err := s.wait(ctx, req.RunID)
+	phase, err := s.wait(ctx, jobName)
 	switch {
 	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
 		return timedOut(req, harness, started), nil
@@ -242,7 +247,7 @@ func (s *Service) Run(ctx context.Context, req Request) (*runner.CodingRunResult
 		return infra(req, harness, started, fmt.Sprintf("could not read the job's status: %v", err)), nil
 	}
 
-	logs, err := s.api.PodLogs(ctx, s.namespace, req.RunID)
+	logs, err := s.api.PodLogs(ctx, s.namespace, jobName)
 	if err != nil {
 		// The run may well have done the work. Calling this a failed
 		// attempt would be a guess about something we cannot see.

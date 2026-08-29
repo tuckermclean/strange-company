@@ -527,6 +527,10 @@ controlPlane:
   # workflows:write: an agent able to rewrite CI can weaken the very checks
   # that verify it, and the runner refuses such a commit for the same reason.
   #
+  # Put this credential in the `credentials:` block above so the chart renders
+  # it into the agent-runs namespace too -- a Job's Secret reference resolves in
+  # the pod's namespace, not the release's.
+  #
   # Deliberately NOT defaulted to the chart's own github-token. That token is
   # the operator's, and if it ever carries workflows:write for day-0 setup the
   # agent would silently inherit it. Name a Secret you created for this.

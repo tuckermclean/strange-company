@@ -84,7 +84,7 @@ func (c *Client) EnsureProjectShares(ctx context.Context, projectID int64, usern
 // listProjectShares returns username -> permission for a project.
 func (c *Client) listProjectShares(ctx context.Context, projectID int64) (map[string]int, error) {
 	var users []projectUser
-	if err := c.do(ctx, "GET", fmt.Sprintf("/projects/%d/users", projectID), nil, &users); err != nil {
+	if err := c.do(ctx, "GET", fmt.Sprintf("/api/v1/projects/%d/users", projectID), nil, &users); err != nil {
 		return nil, fmt.Errorf("vikunja: list shares for project %d: %w", projectID, err)
 	}
 
@@ -101,7 +101,7 @@ func (c *Client) listProjectShares(ctx context.Context, projectID int64) (map[st
 // ProjectUser.Create in Vikunja v2.5.0.
 func (c *Client) putProjectShare(ctx context.Context, projectID int64, username string, permission int) error {
 	body := projectUser{Username: username, Permission: permission}
-	if err := c.do(ctx, "PUT", fmt.Sprintf("/projects/%d/users", projectID), body, nil); err != nil {
+	if err := c.do(ctx, "PUT", fmt.Sprintf("/api/v1/projects/%d/users", projectID), body, nil); err != nil {
 		return err
 	}
 	return nil

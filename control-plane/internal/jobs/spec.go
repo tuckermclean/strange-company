@@ -210,6 +210,16 @@ const (
 	workspaceVolumeName = "workspace"
 	workspaceMountPath  = "/workspace"
 
+	// homeVolumeName/homeMountPath back a writable HOME.
+	//
+	// §16.1 requires readOnlyRootFilesystem, which leaves a CLI harness
+	// nowhere to put its own state: opencode failed the first real run with
+	// EROFS creating /home/runner/.local. The workspace cannot double as
+	// HOME -- it is the git checkout, and a harness dropping dotfiles there
+	// would commit them.
+	homeVolumeName = "home"
+	homeMountPath  = "/home/agent"
+
 	// containerName is the name of the sole container in the pod template.
 	containerName = "coding-agent"
 
@@ -379,6 +389,10 @@ func Build(s Spec) (*Job, error) {
 							Resources:  resources,
 							VolumeMounts: []VolumeMount{
 								{
+									Name:      homeVolumeName,
+									MountPath: homeMountPath,
+								},
+								{
 									Name:      workspaceVolumeName,
 									MountPath: workspaceMountPath,
 								},
@@ -396,6 +410,10 @@ func Build(s Spec) (*Job, error) {
 						},
 					},
 					Volumes: []Volume{
+						{
+							Name:     homeVolumeName,
+							EmptyDir: &EmptyDirVolumeSource{},
+						},
 						{
 							Name:     workspaceVolumeName,
 							EmptyDir: &EmptyDirVolumeSource{},
@@ -419,7 +437,21 @@ func Build(s Spec) (*Job, error) {
 // branch"). Iteration is over sorted keys so the resulting manifest is
 // deterministic across calls, which matters for diffing and for tests.
 func buildEnv(s Spec) []EnvVar {
-	var env []EnvVar
+	// HOME and the XDG paths point at the writable emptyDir. Without them a
+	// harness under readOnlyRootFilesystem has nowhere for its own state:
+	// opencode failed the first real run with
+	// EROFS: read-only file system, mkdir '/home/runner/.local'.
+	//
+	// Set before anything else so they cannot silently override a value the
+	// caller meant, and pointed away from the workspace on purpose -- that
+	// is the git checkout, and dotfiles written there would be committed.
+	env := []EnvVar{
+		{Name: "HOME", Value: homeMountPath},
+		{Name: "XDG_CONFIG_HOME", Value: homeMountPath + "/.config"},
+		{Name: "XDG_DATA_HOME", Value: homeMountPath + "/.local/share"},
+		{Name: "XDG_STATE_HOME", Value: homeMountPath + "/.local/state"},
+		{Name: "XDG_CACHE_HOME", Value: homeMountPath + "/.cache"},
+	}
 
 	secretKeys := make([]string, 0, len(s.Env))
 	for k := range s.Env {

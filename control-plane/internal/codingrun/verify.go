@@ -99,17 +99,20 @@ func (s *Service) Verify(ctx context.Context, req VerifyRequest) (redgate.RunOut
 		return redgate.RunOutcome{}, fmt.Errorf("codingrun: building the verification job: %w", err)
 	}
 
+	// See Run: the object's name comes from Build, never from the run id.
+	jobName := job.Metadata.Name
+
 	if err := s.api.CreateJob(ctx, s.namespace, job); err != nil && !errors.Is(err, kube.ErrAlreadyExists) {
 		return redgate.RunOutcome{}, fmt.Errorf("codingrun: creating the verification job: %w", err)
 	}
 
 	defer func() {
-		if err := s.api.DeleteJob(context.WithoutCancel(ctx), s.namespace, req.RunID); err != nil {
-			s.log.Warn("could not delete the verification job", "run_id", req.RunID, "error", err)
+		if err := s.api.DeleteJob(context.WithoutCancel(ctx), s.namespace, jobName); err != nil {
+			s.log.Warn("could not delete the verification job", "job", jobName, "error", err)
 		}
 	}()
 
-	phase, err := s.wait(ctx, req.RunID)
+	phase, err := s.wait(ctx, jobName)
 	if err != nil {
 		// Completed stays false. redgate.Evaluate reads that as
 		// inconclusive, which is the honest answer: a run that never

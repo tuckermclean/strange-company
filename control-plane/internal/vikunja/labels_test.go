@@ -33,6 +33,11 @@ func (l *labelServer) client(t *testing.T) *Client {
 	return New(srv.URL, "token", nil)
 }
 
+// Every path in this client carries /api/v1 explicitly -- the base URL is the
+// instance root, not the API root. An earlier version of this test asserted the
+// prefix, the code was missing it, and I changed the TEST. That shipped, and
+// the first real run found it as HTML where JSON should have been.
+//
 // Verified against Vikunja v2.5.0 (pkg/models/label_task.go):
 // GET /tasks/{task}/labels, DELETE /tasks/{task}/labels/{label}.
 func TestTaskLabelsAreReadFromTheTask(t *testing.T) {
@@ -46,7 +51,7 @@ func TestTaskLabelsAreReadFromTheTask(t *testing.T) {
 	if len(labels) != 2 || labels[0].Title != "spec-approved" || labels[0].ID != 3 {
 		t.Fatalf("labels = %+v", labels)
 	}
-	if s.paths[0] != "GET /tasks/42/labels" {
+	if s.paths[0] != "GET /api/v1/tasks/42/labels" {
 		t.Fatalf("path = %q", s.paths[0])
 	}
 }
@@ -85,5 +90,26 @@ func TestLabelsDecodeIndependentlyOfFieldOrder(t *testing.T) {
 	b, _ := json.Marshal(labels)
 	if !strings.Contains(string(b), `"spec-approved"`) {
 		t.Fatalf("labels = %s", b)
+	}
+}
+
+// The failure mode this guards against is specific: without /api/v1 the request
+// reaches Vikunja's single-page app, which answers 200 with HTML, and the JSON
+// decoder reports "invalid character '<'" -- an error that says nothing about
+// the missing prefix.
+func TestEveryLabelPathCarriesTheAPIPrefix(t *testing.T) {
+	s := &labelServer{labels: `[]`}
+	c := s.client(t)
+
+	if _, err := c.TaskLabels(context.Background(), 42); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.RemoveTaskLabel(context.Background(), 42, 3); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range s.paths {
+		if !strings.Contains(p, "/api/v1/") {
+			t.Errorf("path %q would reach the SPA, not the API", p)
+		}
 	}
 }

@@ -18,7 +18,7 @@ type Label struct {
 // TaskLabels returns the labels on a task.
 func (c *Client) TaskLabels(ctx context.Context, taskID int64) ([]Label, error) {
 	var labels []Label
-	if err := c.do(ctx, "GET", fmt.Sprintf("/tasks/%d/labels", taskID), nil, &labels); err != nil {
+	if err := c.do(ctx, "GET", fmt.Sprintf("/api/v1/tasks/%d/labels", taskID), nil, &labels); err != nil {
 		return nil, fmt.Errorf("vikunja: reading labels on task %d: %w", taskID, err)
 	}
 	return labels, nil
@@ -31,7 +31,7 @@ func (c *Client) TaskLabels(ctx context.Context, taskID int64) ([]Label, error) 
 // noisy but wrong: editing a specification revokes its approval, and a label
 // nobody re-added would silently re-approve the new text.
 func (c *Client) RemoveTaskLabel(ctx context.Context, taskID, labelID int64) error {
-	if err := c.do(ctx, "DELETE", fmt.Sprintf("/tasks/%d/labels/%d", taskID, labelID), nil, nil); err != nil {
+	if err := c.do(ctx, "DELETE", fmt.Sprintf("/api/v1/tasks/%d/labels/%d", taskID, labelID), nil, nil); err != nil {
 		return fmt.Errorf("vikunja: removing label %d from task %d: %w", labelID, taskID, err)
 	}
 	return nil
