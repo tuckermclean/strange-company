@@ -53,6 +53,9 @@ const maxErrorBodyBytes = 512
 // returns, verified against a live gateway (docs/reference/hermes-integration-notes.md).
 const finishReasonError = "error"
 
+// finishReasonLength means the completion hit max_tokens.
+const finishReasonLength = "length"
+
 // maxResponseBodyBytes is an outer safety cap on how much of any response
 // body this client will ever read into memory, success or failure.
 const maxResponseBodyBytes = 10 * 1024 * 1024
@@ -88,6 +91,17 @@ var (
 	// then counts it as an implementation attempt and burns a rung of the
 	// escalation ladder on a problem no model was ever asked to solve.
 	ErrProviderFailure = errors.New("modelclient: provider reported a failed turn")
+
+	// ErrBudgetExhausted is returned when the completion budget ran out
+	// before the model wrote any content.
+	//
+	// Reasoning models spend completion tokens thinking, and those tokens
+	// are billed against max_tokens. With a tight budget the whole
+	// allowance goes on reasoning and the answer never starts: empty
+	// content, finish_reason "length". Reporting that as an empty response
+	// is undiagnosable -- it reads as "the provider returned nothing" when
+	// the provider returned a great deal and none of it was the answer.
+	ErrBudgetExhausted = errors.New("modelclient: the completion budget ran out before the model wrote any content")
 )
 
 // Client is a minimal OpenAI-compatible /chat/completions client bound to
@@ -199,6 +213,13 @@ type wireResponse struct {
 	Choices []struct {
 		Message struct {
 			Content string `json:"content"`
+
+			// ReasoningContent is where a reasoning model puts its
+			// thinking. Never returned to a caller -- §21 forbids
+			// chain-of-thought in the record -- but its presence
+			// distinguishes "the budget was too small" from "the
+			// provider said nothing".
+			ReasoningContent string `json:"reasoning_content"`
 		} `json:"message"`
 		// FinishReason distinguishes a real answer from a failed turn
 		// delivered with a 200. Ordinary values ("stop", "length",
@@ -211,6 +232,12 @@ type wireResponse struct {
 		PromptTokens     int `json:"prompt_tokens"`
 		CompletionTokens int `json:"completion_tokens"`
 		TotalTokens      int `json:"total_tokens"`
+
+		// CompletionTokensDetails carries a reasoning model's thinking
+		// budget, which is what makes an exhausted allowance legible.
+		CompletionTokensDetails struct {
+			ReasoningTokens int `json:"reasoning_tokens"`
+		} `json:"completion_tokens_details"`
 	} `json:"usage"`
 }
 
@@ -290,6 +317,12 @@ func (c *Client) Complete(ctx context.Context, req CompleteRequest) (*Completion
 	}
 
 	if wireResp.Choices[0].Message.Content == "" {
+		// Checked before ErrEmptyResponse: both have no content, and only
+		// this one tells an operator which number to raise.
+		if wireResp.Choices[0].FinishReason == finishReasonLength {
+			return nil, fmt.Errorf("%w (max_tokens %d; the model produced %d reasoning tokens and no answer)",
+				ErrBudgetExhausted, req.MaxTokens, wireResp.Usage.CompletionTokensDetails.ReasoningTokens)
+		}
 		return nil, ErrEmptyResponse
 	}
 
