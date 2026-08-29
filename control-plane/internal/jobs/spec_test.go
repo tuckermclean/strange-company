@@ -593,3 +593,49 @@ func TestTheAgentHasAWritableHome(t *testing.T) {
 		}
 	}
 }
+
+// Kubernetes maps `command` to the image's ENTRYPOINT and `args` to its CMD.
+// The runner image's whole purpose lives in its ENTRYPOINT -- clone the repo,
+// cut the agent branch, write the harness config, commit and push -- and a Job
+// that sets `command` replaces all of it.
+//
+// That is exactly what happened: the harness ran alone in an empty workspace,
+// no entrypoint log line ever appeared, and every failure downstream looked
+// like a harness problem.
+func TestTheHarnessArgvDoesNotReplaceTheImageEntrypoint(t *testing.T) {
+	job, err := Build(validSpec())
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	c := job.Spec.Template.Spec.Containers[0]
+
+	if len(c.Command) != 0 {
+		t.Fatalf("container sets command %v, which replaces the runner's entrypoint", c.Command)
+	}
+	if len(c.Args) == 0 {
+		t.Fatal("the harness argv is not passed as args, so the entrypoint gets nothing to run")
+	}
+	if c.Args[0] != validSpec().Command[0] {
+		t.Fatalf("args = %v, want the harness argv", c.Args)
+	}
+}
+
+// The rendered manifest is what Kubernetes reads, so assert on the JSON rather
+// than only on the struct: a mis-tagged field would pass the check above and
+// still ship the wrong thing.
+func TestTheRenderedManifestCarriesArgsNotCommand(t *testing.T) {
+	job, err := Build(validSpec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), `"command"`) {
+		t.Errorf("manifest sets command, replacing the entrypoint: %s", encoded)
+	}
+	if !strings.Contains(string(encoded), `"args"`) {
+		t.Errorf("manifest has no args: %s", encoded)
+	}
+}
