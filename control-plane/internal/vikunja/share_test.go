@@ -15,6 +15,7 @@ import (
 type shareServer struct {
 	existing []map[string]any
 	puts     []map[string]any
+	paths    []string
 	status   int
 	body     string
 }
@@ -22,6 +23,7 @@ type shareServer struct {
 func (s *shareServer) start(t *testing.T) *Client {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.paths = append(s.paths, r.URL.Path)
 		switch {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/users"):
 			w.Header().Set("Content-Type", "application/json")
@@ -50,6 +52,21 @@ func (s *shareServer) start(t *testing.T) *Client {
 // {"username": ..., "permission": ...}. `main` renamed nothing here, but older
 // releases called the field `right` -- sending the wrong name is accepted and
 // silently produces read-only access.
+// Same prefix rule as every other call: the base URL is the instance root.
+func TestSharingUsesTheAPIPrefix(t *testing.T) {
+	s := &shareServer{}
+	c := s.start(t)
+
+	if err := c.EnsureProjectShares(context.Background(), 2, []string{"tucker"}, 1); err != nil {
+		t.Fatalf("EnsureProjectShares: %v", err)
+	}
+	for _, p := range s.paths {
+		if !strings.Contains(p, "/api/v1/") {
+			t.Errorf("path %q would reach the SPA, not the API", p)
+		}
+	}
+}
+
 func TestSharingSendsTheV250FieldNames(t *testing.T) {
 	s := &shareServer{}
 	c := s.start(t)
