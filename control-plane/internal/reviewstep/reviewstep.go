@@ -380,6 +380,10 @@ func (s *Step) record(ctx context.Context, c *card.Card, res *policy.Resolution,
 		result.Model = res.Model
 	}
 
+	// The gateway reports no cost at all, so this phase counted thousands of
+	// tokens against nothing until the alias carried a rate card.
+	runner.Price(result, res.Pricing)
+
 	if _, err := s.attempts.RecordAttempt(ctx, store.AttemptRecord{
 		CardID: c.ID, RunID: fmt.Sprintf("review-%s-%d", shortID(c.ID), res.Attempt),
 		Phase: string(card.PhaseReview), ModelAlias: res.Alias, Provider: res.ProviderName,

@@ -148,3 +148,88 @@ func TestOpenCodeIsAskedForItsLogs(t *testing.T) {
 		t.Errorf("argv = %v", argv)
 	}
 }
+
+// opencode nests an event's content under "part". This adapter read "tokens"
+// and "cost" from the top level, where they are never present -- so every run
+// was recorded with no usage and no narrative, and both symptoms were blamed
+// on an upstream bug that drops events in containers. The events were in the
+// stream all along, one level down.
+//
+// The shape here is from a real 0.10.2 coding run on the operator's cluster.
+func TestUsageIsReadFromTheNestedPart(t *testing.T) {
+	stream := `{"type":"step_finish","part":{"tokens":{"total":9832,"input":7699,"output":164,"reasoning":49,"cache":{"write":0,"read":1920}},"cost":0}}
+`
+	res, err := OpenCodeAdapter{}.Parse([]byte(stream), 0, time.Second)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	if res.Usage.InputTokens != 7699 || res.Usage.OutputTokens != 164 {
+		t.Errorf("usage = %+v, want the tokens opencode actually reported", res.Usage)
+	}
+	if res.Usage.CachedInputTokens != 1920 {
+		t.Errorf("cached input = %d, want 1920", res.Usage.CachedInputTokens)
+	}
+	if res.Usage.ReasoningTokens != 49 {
+		t.Errorf("reasoning = %d, want 49", res.Usage.ReasoningTokens)
+	}
+	// opencode reports 0 for a provider models.dev cannot price. Reported
+	// zero is not the same as unreported, and the ledger needs to tell them
+	// apart to know whether to price it itself.
+	if res.CostUSD == nil || *res.CostUSD != 0 {
+		t.Errorf("cost = %v, want a reported zero", res.CostUSD)
+	}
+}
+
+// A run makes many steps and each reports its own usage. Keeping only the last
+// one charged a whole card for its final turn.
+func TestUsageAccumulatesAcrossSteps(t *testing.T) {
+	stream := `{"type":"step_finish","part":{"tokens":{"input":100,"output":10,"cache":{"read":5,"write":1}},"cost":0.01}}
+{"type":"step_finish","part":{"tokens":{"input":200,"output":20,"cache":{"read":7,"write":2}},"cost":0.02}}
+`
+	res, err := OpenCodeAdapter{}.Parse([]byte(stream), 0, time.Second)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	if res.Usage.InputTokens != 300 || res.Usage.OutputTokens != 30 {
+		t.Errorf("usage = %+v, want both steps summed", res.Usage)
+	}
+	if res.Usage.CachedInputTokens != 12 || res.Usage.CacheCreationTokens != 3 {
+		t.Errorf("cache = read %d write %d, want 12 and 3",
+			res.Usage.CachedInputTokens, res.Usage.CacheCreationTokens)
+	}
+	if res.CostUSD == nil || *res.CostUSD < 0.0299 || *res.CostUSD > 0.0301 {
+		t.Errorf("cost = %v, want the steps summed to 0.03", res.CostUSD)
+	}
+}
+
+// The other half of the same bug: a run's narrative is nested too, which is
+// why every summary read "opencode exited 0 with no narrative output".
+func TestNarrativeIsReadFromTheNestedPart(t *testing.T) {
+	stream := `{"type":"text","part":{"text":"wrote src/tictactoe.js and its tests"}}
+{"type":"step_finish","part":{"tokens":{"input":1,"output":1,"cache":{}},"cost":0}}
+`
+	res, err := OpenCodeAdapter{}.Parse([]byte(stream), 0, time.Second)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if !strings.Contains(res.Summary, "wrote src/tictactoe.js") {
+		t.Errorf("summary = %q, want the model's own account", res.Summary)
+	}
+}
+
+// Kept because the evidence for the nested shape is one real run: if opencode
+// ever emits the flat shape, this still reads it.
+func TestTheFlatShapeStillParses(t *testing.T) {
+	stream := `{"type":"text","text":"done"}
+{"type":"step_finish","tokens":{"input":5,"output":2,"cache":{}},"cost":0.5}
+`
+	res, err := OpenCodeAdapter{}.Parse([]byte(stream), 0, time.Second)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if res.Usage.InputTokens != 5 || res.Summary != "done" {
+		t.Errorf("usage = %+v summary = %q", res.Usage, res.Summary)
+	}
+}

@@ -61,38 +61,77 @@ func (OpenCodeAdapter) Command(req Request) []string {
 	}
 }
 
+// openCodeTokens is opencode's usage report for one step.
+type openCodeTokens struct {
+	Input     int `json:"input"`
+	Output    int `json:"output"`
+	Reasoning int `json:"reasoning"`
+	Cache     struct {
+		Read  int `json:"read"`
+		Write int `json:"write"`
+	} `json:"cache"`
+}
+
+// openCodePayload is the part of an event that carries content, whether it
+// arrives at the top level of the event or nested under "part".
+type openCodePayload struct {
+	Text   string          `json:"text"`
+	Tokens *openCodeTokens `json:"tokens"`
+
+	// Cost is a pointer so "not reported" stays distinguishable from a
+	// reported zero -- and opencode really does report zero, for any
+	// provider models.dev has no pricing for. See pricing in internal/policy.
+	Cost *float64 `json:"cost"`
+}
+
 // openCodeEvent is the subset of opencode's newline-delimited JSON events this
 // adapter reads. Other event types and fields are ignored, not rejected.
+//
+// The payload is read from BOTH shapes on purpose. opencode nests it under
+// "part":
+//
+//	{"type":"step_finish","part":{...,"tokens":{"input":7699,...},"cost":0}}
+//
+// and this adapter previously read "tokens" and "cost" from the top level
+// only, where they are never present. Every field came back empty, and the
+// two symptoms that produced -- every run priced at zero, and summaries
+// reading "opencode exited 0 with no narrative output" -- were both attributed
+// to an upstream bug that drops events in containers. The events were in the
+// stream the whole time. They were being read at the wrong depth.
+//
+// Both shapes are accepted rather than just the nested one because the flat
+// shape costs a struct embed to keep and the evidence for the nested shape is
+// one real run: if opencode ever emits either, this reads it.
 type openCodeEvent struct {
 	Type string `json:"type"`
-	Text string `json:"text"`
 
-	Tokens *struct {
-		Input     int `json:"input"`
-		Output    int `json:"output"`
-		Reasoning int `json:"reasoning"`
-		Cache     struct {
-			Read  int `json:"read"`
-			Write int `json:"write"`
-		} `json:"cache"`
-	} `json:"tokens"`
+	openCodePayload
+	Part *openCodePayload `json:"part"`
+}
 
-	// Cost is a pointer so "not reported" stays distinguishable from zero.
-	Cost *float64 `json:"cost"`
+// payload returns wherever this event actually put its content.
+func (e openCodeEvent) payload() openCodePayload {
+	if e.Part != nil {
+		return *e.Part
+	}
+	return e.openCodePayload
 }
 
 // Parse implements Adapter.
 //
-// One behaviour here is a deliberate concession to a documented upstream bug:
-// opencode can exit before emitting its final step_finish event, and drops
-// text and step-finish events specifically in containerised environments --
-// which is exactly where this runs (anomalyco/opencode issues 26855, 31435).
-//
-// So a stream with no step_finish is still a completed run when the process
+// A stream with no step_finish is still a completed run when the process
 // exited zero. Reporting it as unparseable would make every successful run an
 // infrastructure failure and the escalation ladder would never move. The cost
 // stays nil rather than 0: a ledger that silently records zero is worse than
 // one that honestly records nothing.
+//
+// That tolerance was originally written for a supposed upstream bug dropping
+// events in containers (anomalyco/opencode 26855, 31435). It was not the
+// cause: see openCodeEvent, where the events were being read at the wrong
+// depth. The tolerance is kept anyway, because a genuinely truncated stream --
+// an eviction, a deadline -- is real and must not be scored as a failed
+// attempt. It is now a guard against truncation rather than an explanation for
+// empty usage.
 func (OpenCodeAdapter) Parse(stdout []byte, exitCode int, dur time.Duration) (*CodingRunResult, error) {
 	result := &CodingRunResult{
 		Harness:    "opencode",
@@ -116,23 +155,30 @@ func (OpenCodeAdapter) Parse(stdout []byte, exitCode int, dur time.Duration) (*C
 		}
 		sawEvent = true
 
+		p := ev.payload()
 		switch ev.Type {
 		case "text":
-			if t := strings.TrimSpace(ev.Text); t != "" {
+			if t := strings.TrimSpace(p.Text); t != "" {
 				text = append(text, t)
 			}
 		case "step_finish":
 			sawFinish = true
-			if ev.Tokens != nil {
-				result.Usage.InputTokens = ev.Tokens.Input
-				result.Usage.OutputTokens = ev.Tokens.Output
-				result.Usage.CachedInputTokens = ev.Tokens.Cache.Read
-				result.Usage.CacheCreationTokens = ev.Tokens.Cache.Write
-				result.Usage.ReasoningTokens = ev.Tokens.Reasoning
+			// Accumulated, not assigned. A run makes many steps and each
+			// reports its own usage; keeping only the last one charged a
+			// whole card for its final turn.
+			if p.Tokens != nil {
+				result.Usage.InputTokens += p.Tokens.Input
+				result.Usage.OutputTokens += p.Tokens.Output
+				result.Usage.CachedInputTokens += p.Tokens.Cache.Read
+				result.Usage.CacheCreationTokens += p.Tokens.Cache.Write
+				result.Usage.ReasoningTokens += p.Tokens.Reasoning
 			}
-			if ev.Cost != nil {
-				cost := *ev.Cost
-				result.CostUSD = &cost
+			if p.Cost != nil {
+				total := *p.Cost
+				if result.CostUSD != nil {
+					total += *result.CostUSD
+				}
+				result.CostUSD = &total
 			}
 		}
 	}
