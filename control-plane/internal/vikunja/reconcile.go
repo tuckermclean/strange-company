@@ -2,6 +2,7 @@ package vikunja
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"html"
 	"log/slog"
@@ -314,7 +315,54 @@ func (r *Reconciler) project(ctx context.Context, cd *card.Card) error {
 	if err := r.client.MoveTaskToBucket(ctx, r.board.ProjectID, r.board.KanbanViewID, bucketID, *cd.VikunjaTaskID); err != nil {
 		return fmt.Errorf("project card %s to bucket %d: %w", cd.ID, bucketID, err)
 	}
+
+	r.comment(ctx, cd, r.moveNote(ctx, cd))
+
 	return r.repo.SetVikunjaSyncedState(ctx, cd.ID, cd.State)
+}
+
+// moveNote is the running account of a state change, for a task comment.
+//
+// The description says where a card is now. This says how it got there, which
+// is the question actually asked about any card that has been sitting still.
+func (r *Reconciler) moveNote(ctx context.Context, cd *card.Card) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "<p>Moved to <strong>%s</strong>", html.EscapeString(string(cd.State)))
+	if cd.VikunjaSyncedState != nil {
+		fmt.Fprintf(&b, " from <strong>%s</strong>", html.EscapeString(*cd.VikunjaSyncedState))
+	}
+	fmt.Fprintf(&b, ", phase <strong>%s</strong>.</p>", html.EscapeString(string(cd.Phase)))
+
+	if evidence, err := r.repo.ListEvidence(ctx, cd.ID); err != nil {
+		r.log.Warn("vikunja reconcile: could not read evidence for a comment", "card_id", cd.ID, "error", err)
+	} else if len(evidence) > 0 {
+		last := evidence[len(evidence)-1]
+		fmt.Fprintf(&b, "<p>%s<br>%s</p>",
+			html.EscapeString(last.Summary), html.EscapeString(last.ActorID))
+	}
+	return b.String()
+}
+
+// comment posts a note against a card's task, and treats failing to do so as
+// not worth failing a reconciliation pass over.
+//
+// A missing comment costs a human some context. A failed pass costs them a
+// board that has stopped tracking reality, which is far worse. Installs with
+// comments disabled are a deployment choice and are logged once, quietly.
+func (r *Reconciler) comment(ctx context.Context, cd *card.Card, note string) {
+	if cd.VikunjaTaskID == nil || note == "" {
+		return
+	}
+	err := r.client.CreateTaskComment(ctx, *cd.VikunjaTaskID, note)
+	switch {
+	case err == nil:
+	case errors.Is(err, ErrCommentsDisabled):
+		r.log.Debug("vikunja reconcile: not commenting; this instance has task comments disabled",
+			"card_id", cd.ID)
+	default:
+		r.log.Warn("vikunja reconcile: could not comment on a card",
+			"card_id", cd.ID, "vikunja_task_id", *cd.VikunjaTaskID, "error", err)
+	}
 }
 
 // reconcileDisagreement handles a linked card whose board bucket disagrees
@@ -330,6 +378,14 @@ func (r *Reconciler) reconcileDisagreement(ctx context.Context, cd *card.Card, b
 		if err := r.revert(ctx, cd); err != nil {
 			return false, err
 		}
+		// A card that snaps back to where it was, with no explanation, is
+		// the worst version of this: the human cannot tell a rejection
+		// from a bug.
+		r.comment(ctx, cd, fmt.Sprintf(
+			"<p>Moved back to <strong>%s</strong>. <strong>%s</strong> to <strong>%s</strong> is not a move a human can make on this card.</p>",
+			html.EscapeString(string(cd.State)),
+			html.EscapeString(string(cd.State)),
+			html.EscapeString(string(boardState))))
 		return false, r.repo.SetVikunjaSyncedState(ctx, cd.ID, cd.State)
 	}
 

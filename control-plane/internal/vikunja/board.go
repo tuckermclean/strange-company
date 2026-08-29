@@ -2,6 +2,7 @@ package vikunja
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -348,4 +349,32 @@ func (c *Client) UpdateTask(ctx context.Context, taskID int64, title, descriptio
 
 	path := fmt.Sprintf("/api/v1/tasks/%d", taskID)
 	return c.do(ctx, http.MethodPost, path, req, nil)
+}
+
+// ErrCommentsDisabled reports that this Vikunja has task comments turned off.
+//
+// The routes are registered only when service.enabletaskcomments is set
+// (pkg/routes/routes.go), so on an install without it the endpoint is simply
+// not there. That is a deployment choice, not a failure: the caller should
+// carry on without the running account rather than fail the pass.
+var ErrCommentsDisabled = errors.New("vikunja: task comments are disabled on this instance")
+
+// CreateTaskComment appends a comment to a task.
+//
+// This is where a card's history reaches a human. The description says where a
+// card is now; the comments say how it got there, which is the question asked
+// about any card that has been sitting still.
+func (c *Client) CreateTaskComment(ctx context.Context, taskID int64, comment string) error {
+	req := struct {
+		Comment string `json:"comment"`
+	}{Comment: comment}
+
+	path := fmt.Sprintf("/api/v1/tasks/%d/comments", taskID)
+	err := c.do(ctx, http.MethodPut, path, req, nil)
+
+	var reqErr *RequestError
+	if errors.As(err, &reqErr) && reqErr.Status == http.StatusNotFound {
+		return ErrCommentsDisabled
+	}
+	return err
 }

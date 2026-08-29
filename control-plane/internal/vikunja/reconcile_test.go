@@ -81,6 +81,11 @@ type fakeBoard struct {
 	// descriptions maps task id -> description, so a test can assert what a
 	// human would actually read on the card.
 	descriptions map[int64]string
+	// comments maps task id -> the notes posted against it, in order.
+	comments map[int64][]string
+	// commentsDisabled makes the comment route 404, as it does on an
+	// install with service.enabletaskcomments off.
+	commentsDisabled bool
 
 	nextTaskID int64
 
@@ -104,6 +109,7 @@ func newFakeBoard(t *testing.T) *fakeBoard {
 		},
 		tasks:        make(map[int64]string),
 		descriptions: make(map[int64]string),
+		comments:     make(map[int64][]string),
 		nextTaskID:   1000,
 	}
 
@@ -111,7 +117,7 @@ func newFakeBoard(t *testing.T) *fakeBoard {
 	mux.HandleFunc(fmt.Sprintf("/api/v1/projects/%d/views/%d/tasks", testProjectID, testViewID), f.handleListBoardTasks)
 	mux.HandleFunc(fmt.Sprintf("/api/v1/projects/%d/tasks", testProjectID), f.handleCreateTask)
 	mux.HandleFunc(fmt.Sprintf("/api/v1/projects/%d/views/%d/buckets/", testProjectID, testViewID), f.handleMoveTask)
-	mux.HandleFunc("/api/v1/tasks/", f.handleUpdateTask)
+	mux.HandleFunc("/api/v1/tasks/", f.handleTask)
 
 	f.server = httptest.NewServer(mux)
 	t.Cleanup(f.server.Close)
@@ -216,17 +222,44 @@ func (f *fakeBoard) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(&Task{ID: id, Title: body.Title})
 }
 
-func (f *fakeBoard) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
+// handleTask serves both POST /tasks/{id} (update) and PUT
+// /tasks/{id}/comments (comment), which share a path prefix.
+func (f *fakeBoard) handleTask(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.record(r)
+
+	rest := strings.TrimPrefix(r.URL.Path, "/api/v1/tasks/")
+	if idPart, ok := strings.CutSuffix(rest, "/comments"); ok {
+		if f.commentsDisabled {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if r.Method != http.MethodPut {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		id, err := strconv.ParseInt(idPart, 10, 64)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		var body struct {
+			Comment string `json:"comment"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		f.comments[id] = append(f.comments[id], body.Comment)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id":1}`))
+		return
+	}
 
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
 
-	id, err := strconv.ParseInt(strings.TrimPrefix(r.URL.Path, "/api/v1/tasks/"), 10, 64)
+	id, err := strconv.ParseInt(rest, 10, 64)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		return
@@ -247,6 +280,12 @@ func (f *fakeBoard) descriptionOf(taskID int64) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.descriptions[taskID]
+}
+
+func (f *fakeBoard) commentsOn(taskID int64) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.comments[taskID]...)
 }
 
 func (f *fakeBoard) handleMoveTask(w http.ResponseWriter, r *http.Request) {
