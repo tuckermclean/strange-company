@@ -106,6 +106,7 @@ type Container struct {
 	Name            string                    `json:"name"`
 	Image           string                    `json:"image"`
 	Command         []string                  `json:"command,omitempty"`
+	Args            []string                  `json:"args,omitempty"`
 	WorkingDir      string                    `json:"workingDir,omitempty"`
 	Env             []EnvVar                  `json:"env,omitempty"`
 	Resources       ResourceRequirements      `json:"resources,omitempty"`
@@ -383,7 +384,17 @@ func Build(s Spec) (*Job, error) {
 						{
 							Name:       containerName,
 							Image:      s.Image,
-							Command:    s.Command,
+							// args, NOT command.
+							//
+							// Kubernetes maps `command` to the image's
+							// ENTRYPOINT and `args` to its CMD. Putting the
+							// harness argv in `command` REPLACED the runner
+							// image's entrypoint, so entrypoint.sh never ran:
+							// no clone, no agent branch, no harness config, no
+							// commit and no push. The harness executed alone in
+							// an empty workspace and everything the entrypoint
+							// exists to do silently did not happen.
+							Args:       s.Command,
 							WorkingDir: workspaceMountPath,
 							Env:        env,
 							Resources:  resources,
