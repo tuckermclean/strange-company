@@ -15,6 +15,34 @@
 #     <alias-name>:
 #       provider: <name of a provider defined in providers.yaml>
 #       model: <the literal model string that provider/harness expects>
+#       pricing:                      # OPTIONAL. See "Pricing" below.
+#         inputPerMTok: <float>       # US dollars per MILLION tokens
+#         outputPerMTok: <float>
+#         cachedInputPerMTok: <float> # what a cache READ costs
+#         cacheWritePerMTok: <float>  # usually 0: not charged separately
+#
+# PRICING
+#
+# A harness prices its own run when it can, and is believed when it does.
+# Two of the three paths here cannot:
+#
+#   * opencode reports cost 0 for any provider models.dev has no rates for,
+#     which is every custom OpenAI-compatible provider -- including the
+#     DeepSeek one below;
+#   * the Hermes gateway reports no cost at all.
+#
+# So §22's per-card ledger sits at zero however well the tokens are counted,
+# and `max_cost_usd` is enforced against a number that can never move. An
+# alias carrying `pricing` is priced from its own tokens instead.
+#
+# No rates are shipped, deliberately. A table written here would be a guess
+# at someone else's contract, would go stale silently, and would be wrong for
+# any install with a negotiated rate -- and a budget enforced against a wrong
+# number is worse than one enforced against an admittedly missing one. An
+# alias with no `pricing` records its runs as UNPRICED, which
+# GET /cards/{id}/cost reports as `cost_complete: false`.
+#
+# Fill in your provider's published rates to turn the ledger on.
 #
 #   phases:
 #     <phase-name>:

@@ -177,6 +177,11 @@ func (s *Step) Do(ctx context.Context, c *card.Card, res *policy.Resolution) (wo
 // record writes the ledger row. A failure to record is logged, never fatal:
 // losing the card would be worse than losing one row of accounting.
 func (s *Step) record(ctx context.Context, c *card.Card, res *policy.Resolution, runID string, result *runner.CodingRunResult) {
+	// The harness prices its own run when it can. When it cannot -- opencode
+	// reports zero for any provider models.dev does not know -- the rate
+	// card from the alias does it, so §22's ledger stops reading zero.
+	runner.Price(result, res.Pricing)
+
 	if _, err := s.attempts.RecordAttempt(ctx, store.AttemptRecord{
 		CardID: c.ID, RunID: runID, Phase: string(card.PhaseImplementation),
 		ModelAlias: res.Alias, Provider: res.ProviderName,

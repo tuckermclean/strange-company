@@ -80,6 +80,57 @@ type Provider struct {
 type Alias struct {
 	Provider string `yaml:"provider"`
 	Model    string `yaml:"model"`
+
+	// Pricing is what this model costs, when the harness will not say.
+	//
+	// opencode reports cost 0 for any provider models.dev has no pricing
+	// for -- which is every custom OpenAI-compatible provider, including
+	// the DeepSeek one this runs on -- and the gateway reports no cost at
+	// all. So §22's ledger stays at zero however well the tokens are
+	// counted, and max_cost_usd is enforced against a number that cannot
+	// move.
+	//
+	// Configured rather than compiled in: the operator knows what they are
+	// actually paying, a table in Go would go stale silently, and an
+	// install with a negotiated rate would be wrong for everyone.
+	Pricing *Pricing `yaml:"pricing,omitempty"`
+}
+
+// Pricing is a model's rate card, in US dollars per million tokens.
+//
+// Per million rather than per token because that is the unit every provider
+// publishes, and a price written as 0.00000028 in YAML is a typo waiting to
+// happen.
+type Pricing struct {
+	InputPerMTok  float64 `yaml:"inputPerMTok"`
+	OutputPerMTok float64 `yaml:"outputPerMTok"`
+
+	// CachedInputPerMTok is what a cache READ costs. Providers discount it
+	// heavily, and a run that reads 9728 cached tokens against 552 fresh
+	// ones -- a real ratio from this system -- is billed almost entirely
+	// wrong if cache reads are charged at the full input rate.
+	CachedInputPerMTok float64 `yaml:"cachedInputPerMTok"`
+
+	// CacheWritePerMTok is what creating a cache entry costs. Some
+	// providers charge a premium for it, some charge nothing; zero means
+	// "not charged separately", which is the common case.
+	CacheWritePerMTok float64 `yaml:"cacheWritePerMTok"`
+}
+
+// CostUSD prices one run's usage.
+//
+// Reasoning tokens are deliberately not charged here: providers bill them as
+// output tokens and report them inside the output count, so adding them again
+// would double-charge the thinking.
+func (p *Pricing) CostUSD(input, output, cachedInput, cacheWrite int) float64 {
+	if p == nil {
+		return 0
+	}
+	const perMillion = 1_000_000.0
+	return float64(input)*p.InputPerMTok/perMillion +
+		float64(output)*p.OutputPerMTok/perMillion +
+		float64(cachedInput)*p.CachedInputPerMTok/perMillion +
+		float64(cacheWrite)*p.CacheWritePerMTok/perMillion
 }
 
 // Rung is one step of a phase's escalation ladder: an alias to use, and how
@@ -109,6 +160,7 @@ type Policy struct {
 type Resolution struct {
 	Phase, Alias, ProviderName, Model string
 	Harness                           Harness
+	Pricing                           *Pricing
 	BaseURL                           string
 	Env                               map[string]CredentialRef
 	PlainEnv                          map[string]string
@@ -234,6 +286,7 @@ func (p *Policy) Resolve(phase string, attempt int) (*Resolution, error) {
 			BaseURL:      provider.BaseURL,
 			Env:          copyEnv(provider.Env),
 			PlainEnv:     copyPlainEnv(provider.PlainEnv),
+			Pricing:      alias.Pricing,
 			Attempt:      attempt,
 		}, nil
 	}
