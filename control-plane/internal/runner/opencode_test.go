@@ -130,3 +130,21 @@ func TestOpenCodeIdentifiesItself(t *testing.T) {
 		t.Fatalf("name = %q", (OpenCodeAdapter{}).Name())
 	}
 }
+
+// A run that dies before emitting an event has to explain itself. The first
+// real end-to-end attempt produced no events and no reason, and diagnosing it
+// cost a round trip: opencode's logs go to stderr and were simply never asked
+// for.
+func TestOpenCodeIsAskedForItsLogs(t *testing.T) {
+	argv := OpenCodeAdapter{}.Command(Request{Task: "t", Model: "m"})
+
+	joined := strings.Join(argv, " ")
+	if !strings.Contains(joined, "--print-logs") {
+		t.Errorf("argv does not ask for logs, so a silent failure stays silent: %v", argv)
+	}
+	// Still JSON on stdout: Parse skips what it cannot read, so the logs
+	// interleaving in a pod log costs nothing.
+	if !strings.Contains(joined, "--format json") {
+		t.Errorf("argv = %v", argv)
+	}
+}

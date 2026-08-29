@@ -17,6 +17,11 @@ import (
 // DeepSeek cannot implement anything on its own: it has no working tree and no
 // branch. opencode gives it both.
 //
+// VERSION MATTERS. --format was added after opencode 0.4.x: an older build
+// rejects it, prints the `run` help and exits non-zero, which reaches the
+// control plane as "produced no readable events" and looks exactly like a
+// dropped event stream. The runner image pins a version that has it.
+//
 // Provider configuration lives in opencode.json in the workspace, written by
 // the runner entrypoint, not on this argv. That is deliberate: an API key on a
 // command line is visible in every process listing in the container.
@@ -45,6 +50,12 @@ func (OpenCodeAdapter) Command(req Request) []string {
 	return []string{
 		"opencode", "run",
 		"--format", "json",
+		// Logs to stderr, JSON to stdout. A Job's pod log merges the two,
+		// and Parse skips lines it cannot read -- so this costs nothing
+		// and means a run that dies before emitting any event still
+		// explains itself. The first real run produced no events and no
+		// reason, which took a round trip to diagnose.
+		"--print-logs", "--log-level", "INFO",
 		"--model", req.Model,
 		req.Task,
 	}
