@@ -34,6 +34,7 @@ var ErrCardNotFound = errors.New("card not found")
 const cardColumns = `
 	id::text,
 	vikunja_task_id,
+	vikunja_synced_state,
 	title,
 	source_type,
 	source_url,
@@ -76,6 +77,7 @@ func scanCard(row rowScanner) (*card.Card, error) {
 	err := row.Scan(
 		&idText,
 		&c.VikunjaTaskID,
+		&c.VikunjaSyncedState,
 		&c.Title,
 		&c.SourceType,
 		&c.SourceURL,
@@ -455,6 +457,28 @@ func (s *Store) SetVikunjaTaskID(ctx context.Context, cardID uuid.UUID, taskID i
 	`, taskID, cardID.String())
 	if err != nil {
 		return fmt.Errorf("store: link card %s to vikunja task %d: %w", cardID, taskID, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrCardNotFound
+	}
+	return nil
+}
+
+// SetVikunjaSyncedState records the state the reconciler has just projected
+// onto the Vikunja board.
+//
+// It is what lets the next pass tell a board a human moved from a board that
+// has simply not caught up yet. Like SetVikunjaTaskID it is not a Transition:
+// the projection catching up is not a workflow event and must not append a
+// history row.
+func (s *Store) SetVikunjaSyncedState(ctx context.Context, cardID uuid.UUID, state card.State) error {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE cards
+		SET vikunja_synced_state = $1
+		WHERE id = $2::uuid
+	`, string(state), cardID.String())
+	if err != nil {
+		return fmt.Errorf("store: record synced state %q for card %s: %w", state, cardID, err)
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrCardNotFound

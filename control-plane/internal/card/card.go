@@ -15,6 +15,13 @@ import (
 type Card struct {
 	ID                     uuid.UUID `json:"id"`
 	VikunjaTaskID          *int64 `json:"vikunja_task_id,omitempty"`
+
+	// VikunjaSyncedState is the state the reconciler last projected onto
+	// the board. It is not workflow state -- it is how the reconciler tells
+	// a board a human moved from a board that has not caught up yet. nil
+	// means never synced.
+	VikunjaSyncedState *string `json:"vikunja_synced_state,omitempty"`
+
 	Title                  string `json:"title"`
 	SourceType             string `json:"source_type"`
 	SourceURL              *string `json:"source_url,omitempty"`

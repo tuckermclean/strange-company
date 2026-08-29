@@ -66,6 +66,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /cards/{id}/transition", s.handleTransition)
 	mux.HandleFunc("POST /cards/{id}/approve-spec", s.handleApproveSpec)
 	mux.HandleFunc("GET /cards/{id}/artifacts", s.handleListArtifacts)
+	mux.HandleFunc("GET /cards/{id}/attempts", s.handleListAttempts)
+	mux.HandleFunc("GET /cards/{id}/cost", s.handleCardCost)
 
 	// The Company MCP server (spec §9). Mounted here rather than on its own
 	// listener so it shares this server's lifecycle -- it had a package and

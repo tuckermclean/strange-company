@@ -602,9 +602,9 @@ func runPromotionSupervisor(ctx context.Context, logger *slog.Logger, cfg *confi
 
 // cardStore adapts *store.Store to server.CardStore.
 //
-// Only ListArtifacts needs adapting: the server declares its own Artifact so
-// that package never imports the concrete storage engine, which is the same
-// reason CardStore itself is declared there rather than here.
+// Only the list endpoints need adapting: the server declares its own Artifact
+// and Attempt so that package never imports the concrete storage engine, which
+// is the same reason CardStore itself is declared there rather than here.
 type cardStore struct{ *store.Store }
 
 func (c cardStore) ListArtifacts(ctx context.Context, cardID uuid.UUID) ([]server.Artifact, error) {
@@ -618,6 +618,25 @@ func (c cardStore) ListArtifacts(ctx context.Context, cardID uuid.UUID) ([]serve
 			ID: a.ID.String(), Type: a.Type, Actor: a.Actor, Model: a.Model,
 			CommitSHA: a.CommitSHA, ContentType: a.ContentType, StorageURI: a.StorageURI,
 			Content: a.Content, SHA256: a.SHA256, SizeBytes: a.SizeBytes, Truncated: a.Truncated,
+		})
+	}
+	return out, nil
+}
+
+func (c cardStore) ListAttempts(ctx context.Context, cardID uuid.UUID) ([]server.Attempt, error) {
+	stored, err := c.Store.ListAttempts(ctx, cardID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]server.Attempt, 0, len(stored))
+	for _, a := range stored {
+		out = append(out, server.Attempt{
+			ID: a.ID, RunID: a.RunID, Phase: a.Phase, Number: a.AttemptNumber,
+			ModelAlias: a.ModelAlias, Provider: a.Provider, Harness: a.Harness, Model: a.Model,
+			Status: string(a.Status), CountedAsAttempt: a.CountedAsAttempt, Summary: a.Summary,
+			InputTokens: a.InputTokens, OutputTokens: a.OutputTokens, CachedTokens: a.CachedTokens,
+			CostUSD: a.CostUSD, DurationMS: a.DurationMS,
+			StartedAt: a.StartedAt, CreatedAt: a.CreatedAt,
 		})
 	}
 	return out, nil

@@ -2,6 +2,7 @@ package vikunja
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -48,6 +49,11 @@ type Bucket struct {
 	ID    int64   `json:"id"`
 	Title string  `json:"title"`
 	Tasks []*Task `json:"tasks,omitempty"`
+
+	// Position is what orders the columns. Vikunja returns it as a float
+	// (pkg/models/kanban.go), and reading it is what lets an existing,
+	// wrongly-ordered board be corrected rather than only new ones.
+	Position float64 `json:"position"`
 }
 
 // Task mirrors the subset of Vikunja's Task JSON fields this package needs.
@@ -63,6 +69,11 @@ type Task struct {
 	Title    string `json:"title"`
 	Done     bool   `json:"done"`
 	BucketID int64  `json:"bucket_id,omitempty"`
+
+	// Description is read back so the reconciler can tell whether the card's
+	// summary has actually changed. Without it every pass would rewrite
+	// every task on the board once a minute.
+	Description string `json:"description"`
 }
 
 // TaskBucket is the payload sent to, and the shape returned from, the
@@ -124,15 +135,32 @@ func (c *Client) EnsureBoard(ctx context.Context, projectTitle string) (*Board, 
 		byTitle[b.Title] = b.ID
 	}
 
+	byPosition := make(map[string]float64, len(buckets))
+	for _, b := range buckets {
+		byPosition[b.Title] = b.Position
+	}
+
 	bucketByState := make(map[card.State]int64, len(boardStates))
-	for _, state := range boardStates {
+	for i, state := range boardStates {
 		title := string(state)
+		// Positions are spaced rather than 0..n so a human can drag a
+		// column between two of ours without Vikunja having to renumber.
+		want := float64(i+1) * 100
+
 		if id, ok := byTitle[title]; ok {
 			bucketByState[state] = id
+			// Correct an existing board rather than only new ones. A board
+			// created before this stays scrambled forever otherwise, and
+			// "delete your board" is not a fix.
+			if byPosition[title] != want {
+				if err := c.SetBucketPosition(ctx, project.ID, view.ID, id, title, want); err != nil {
+					return nil, fmt.Errorf("vikunja: position bucket %q: %w", title, err)
+				}
+			}
 			continue
 		}
 
-		created, err := c.CreateBucket(ctx, project.ID, view.ID, title)
+		created, err := c.CreateBucket(ctx, project.ID, view.ID, title, want)
 		if err != nil {
 			return nil, fmt.Errorf("vikunja: create bucket %q: %w", title, err)
 		}
@@ -226,10 +254,15 @@ func (c *Client) ListBuckets(ctx context.Context, projectID, viewID int64) ([]*B
 
 // CreateBucket calls PUT /api/v1/projects/{project}/views/{view}/buckets
 // (v1 create verb) with body {"title": title}.
-func (c *Client) CreateBucket(ctx context.Context, projectID, viewID int64, title string) (*Bucket, error) {
+func (c *Client) CreateBucket(ctx context.Context, projectID, viewID int64, title string, position float64) (*Bucket, error) {
+	// position is sent explicitly. Without it Vikunja orders buckets however
+	// it likes, and a board whose columns do not run Backlog to Done is one
+	// a human has to read rather than glance at -- which is the whole point
+	// of a board.
 	req := struct {
-		Title string `json:"title"`
-	}{Title: title}
+		Title    string  `json:"title"`
+		Position float64 `json:"position"`
+	}{Title: title, Position: position}
 
 	var resp Bucket
 	path := fmt.Sprintf("/api/v1/projects/%d/views/%d/buckets", projectID, viewID)
@@ -281,4 +314,67 @@ func (c *Client) MoveTaskToBucket(ctx context.Context, projectID, viewID, bucket
 	req := TaskBucket{TaskID: taskID}
 	path := fmt.Sprintf("/api/v1/projects/%d/views/%d/buckets/%d/tasks", projectID, viewID, bucketID)
 	return c.do(ctx, http.MethodPost, path, req, nil)
+}
+
+// SetBucketPosition moves an existing bucket to a position.
+//
+// VERIFIED against Vikunja v2.5.0 (pkg/models/kanban.go): position is a
+// float64, and a bucket is updated with
+// POST /projects/{project}/views/{view}/buckets/{bucket}.
+//
+// Existing boards need this, not just new ones. A board created before the
+// order was set stays scrambled forever otherwise, and telling an operator to
+// delete their board to get readable columns is not a fix.
+func (c *Client) SetBucketPosition(ctx context.Context, projectID, viewID, bucketID int64, title string, position float64) error {
+	req := struct {
+		Title    string  `json:"title"`
+		Position float64 `json:"position"`
+	}{Title: title, Position: position}
+
+	path := fmt.Sprintf("/api/v1/projects/%d/views/%d/buckets/%d", projectID, viewID, bucketID)
+	return c.do(ctx, http.MethodPost, path, req, nil)
+}
+
+// UpdateTask writes a task's title and description.
+//
+// The description is where a card stops being a bare title: what it is, where
+// it came from, and why it is in the column it is in. A board of titles alone
+// tells a human nothing they did not already know.
+func (c *Client) UpdateTask(ctx context.Context, taskID int64, title, description string) error {
+	req := struct {
+		ID          int64  `json:"id"`
+		Title       string `json:"title"`
+		Description string `json:"description"`
+	}{ID: taskID, Title: title, Description: description}
+
+	path := fmt.Sprintf("/api/v1/tasks/%d", taskID)
+	return c.do(ctx, http.MethodPost, path, req, nil)
+}
+
+// ErrCommentsDisabled reports that this Vikunja has task comments turned off.
+//
+// The routes are registered only when service.enabletaskcomments is set
+// (pkg/routes/routes.go), so on an install without it the endpoint is simply
+// not there. That is a deployment choice, not a failure: the caller should
+// carry on without the running account rather than fail the pass.
+var ErrCommentsDisabled = errors.New("vikunja: task comments are disabled on this instance")
+
+// CreateTaskComment appends a comment to a task.
+//
+// This is where a card's history reaches a human. The description says where a
+// card is now; the comments say how it got there, which is the question asked
+// about any card that has been sitting still.
+func (c *Client) CreateTaskComment(ctx context.Context, taskID int64, comment string) error {
+	req := struct {
+		Comment string `json:"comment"`
+	}{Comment: comment}
+
+	path := fmt.Sprintf("/api/v1/tasks/%d/comments", taskID)
+	err := c.do(ctx, http.MethodPut, path, req, nil)
+
+	var reqErr *RequestError
+	if errors.As(err, &reqErr) && reqErr.Status == http.StatusNotFound {
+		return ErrCommentsDisabled
+	}
+	return err
 }
