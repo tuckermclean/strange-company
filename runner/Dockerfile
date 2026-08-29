@@ -15,7 +15,7 @@ FROM node:20.18.1-bookworm-slim
 # coding Job in the cluster runs.
 ARG CLAUDE_CODE_VERSION=2.1.246
 ARG CODEX_VERSION=0.149.1
-ARG OPENCODE_VERSION=0.4.45
+ARG OPENCODE_VERSION=1.18.25
 
 # git: the persistent workspace (spec 16.2) — this image's whole reason to
 # exist. ca-certificates: TLS for git-over-https and both CLIs' API calls.
