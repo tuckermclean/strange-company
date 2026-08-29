@@ -2,6 +2,7 @@ package reviewstep_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -42,8 +43,22 @@ func (f *fakeModel) Complete(_ context.Context, req modelclient.CompleteRequest)
 }
 
 type fakePulls struct {
-	opened github.PullRequest
-	calls  int
+	opened   github.PullRequest
+	calls    int
+	diff     string
+	diffErr  error
+	diffRefs [2]string
+}
+
+func (f *fakePulls) CompareDiff(_ context.Context, _, base, head string) (string, error) {
+	f.diffRefs = [2]string{base, head}
+	if f.diffErr != nil {
+		return "", f.diffErr
+	}
+	if f.diff == "" {
+		return "diff --git a/src/math.js b/src/math.js\n+function mean(nums) {}\n", nil
+	}
+	return f.diff, nil
 }
 
 func (f *fakePulls) EnsurePullRequest(_ context.Context, pr github.PullRequest) (*github.OpenPullRequest, error) {
@@ -217,5 +232,64 @@ func TestTheChecklistOmitsAnAbsentCriterionID(t *testing.T) {
 	}
 	if !strings.Contains(p.opened.Body, "clamp(5, 0, 10)") {
 		t.Errorf("the criterion is missing entirely:\n%s", p.opened.Body)
+	}
+}
+
+// §18: "The reviewer receives the approved spec, implementation plan,
+// acceptance criteria, final diff and passing verification summary."
+//
+// It never received the diff. Nothing wrote a diff artifact and the reviewer
+// read one that was not there, so it reviewed the specification and described
+// an implementation it had never seen -- passing a change while asserting an
+// export the change did not contain.
+func TestTheReviewerReceivesTheActualDiff(t *testing.T) {
+	b, m := board(), &fakeModel{reply: "VERDICT: PASS"}
+	p := &fakePulls{diff: "diff --git a/src/math.js\n+function mean(nums) { return 1 }\n"}
+
+	if _, err := step(b, m, p).Do(context.Background(), testCard(), res()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(m.prompt, "function mean(nums) { return 1 }") {
+		t.Fatalf("the reviewer did not receive the code it is judging:\n%s", m.prompt)
+	}
+	// Compared against the card's base, not against itself.
+	if p.diffRefs[0] != "main" || !strings.HasPrefix(p.diffRefs[1], "agent/") {
+		t.Errorf("compared %q with %q", p.diffRefs[0], p.diffRefs[1])
+	}
+}
+
+// A reviewer with no code does not decline to review; it reviews the
+// specification and invents the rest. So no diff is a refusal, not a warning.
+func TestNoDiffMeansNoReview(t *testing.T) {
+	b, m := board(), &fakeModel{reply: "VERDICT: PASS"}
+	p := &fakePulls{diffErr: errors.New("compare failed")}
+
+	if _, err := step(b, m, p).Do(context.Background(), testCard(), res()); err == nil {
+		t.Fatal("reviewed without the diff")
+	}
+	if m.prompt != "" {
+		t.Error("spent a model call on a review with no code in it")
+	}
+	if p.calls != 0 {
+		t.Error("opened a pull request off a review that never happened")
+	}
+}
+
+// §20: the diff is evidence in its own right, and §21's "what happened to card
+// X?" cannot be answered from a review that quotes code nobody kept.
+func TestTheDiffIsRecordedAsAnArtifact(t *testing.T) {
+	b, m, p := board(), &fakeModel{reply: "VERDICT: PASS"}, &fakePulls{}
+
+	if _, err := step(b, m, p).Do(context.Background(), testCard(), res()); err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, a := range b.put {
+		if a.Type == store.ArtifactDiff {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no diff artifact recorded: %+v", b.put)
 	}
 }
