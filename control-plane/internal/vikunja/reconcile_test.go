@@ -327,6 +327,26 @@ type memRepo struct {
 
 	// evidence is what the workers would have recorded about each card.
 	evidence map[uuid.UUID][]store.CardEvidence
+
+	syncedStates []syncedStateCall
+}
+
+type syncedStateCall struct {
+	id    uuid.UUID
+	state card.State
+}
+
+func (m *memRepo) SetVikunjaSyncedState(_ context.Context, id uuid.UUID, state card.State) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.syncedStates = append(m.syncedStates, syncedStateCall{id: id, state: state})
+	for _, c := range m.cards {
+		if c.ID == id {
+			s := string(state)
+			c.VikunjaSyncedState = &s
+		}
+	}
+	return nil
 }
 
 func (m *memRepo) ListEvidence(_ context.Context, cardID uuid.UUID) ([]store.CardEvidence, error) {

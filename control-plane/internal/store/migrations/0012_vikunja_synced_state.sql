@@ -1,0 +1,18 @@
+-- The reconciler cannot tell a board a human moved from a board that is
+-- merely out of date.
+--
+-- When an agent moves a card in the database, the Vikunja task stays where it
+-- was until the next reconciliation pass. Until now that pass read the stale
+-- bucket as a human move and validated it in reverse. Most reversals happen to
+-- be illegal, so the task was pushed back and the effect was invisible -- but
+-- two are legal, and those silently undid the agent:
+--
+--   Ready -> Blocked      reverted to Ready
+--   Ready -> NeedsHuman   reverted to Ready, un-escalating the exact card
+--                         that had asked for a human
+--
+-- vikunja_synced_state records the state the reconciler last projected onto
+-- the board. A board bucket that still matches it is stale, not a human's
+-- intent. NULL means never synced, which reads as "treat as a human move" so
+-- rows written before this migration behave exactly as they did.
+ALTER TABLE cards ADD COLUMN vikunja_synced_state text;

@@ -38,6 +38,11 @@ type CardRepo interface {
 	// now nothing read it: a card moved column and the reason stayed in the
 	// database.
 	ListEvidence(ctx context.Context, cardID uuid.UUID) ([]store.CardEvidence, error)
+
+	// SetVikunjaSyncedState records the state just projected onto the
+	// board, so the next pass can tell a board a human moved from a board
+	// that has not caught up yet.
+	SetVikunjaSyncedState(ctx context.Context, id uuid.UUID, state card.State) error
 }
 
 // Result summarizes the outcome of a single reconciliation pass.
@@ -55,6 +60,10 @@ type Result struct {
 	// Rejected is the number of illegal human moves that were reverted by
 	// moving the task back to the bucket matching the card's real state.
 	Rejected int
+	// Projected is the number of cards whose task was moved to catch the
+	// board up with a state change made in the database. These are not
+	// human moves and are never validated as one.
+	Projected int
 }
 
 // Reconciler periodically reconciles the control plane's canonical card
@@ -195,7 +204,37 @@ func (r *Reconciler) RunOnce(ctx context.Context) (Result, error) {
 		}
 
 		if boardState == cd.State {
-			// Board and database agree: nothing to do.
+			// Board and database agree. Record that, if it is not already
+			// recorded: a card that happens to be in the right bucket would
+			// otherwise read as never-synced forever, and the first agent
+			// move after it would be misread as a human's.
+			if cd.VikunjaSyncedState == nil || *cd.VikunjaSyncedState != string(cd.State) {
+				if err := r.repo.SetVikunjaSyncedState(ctx, cd.ID, cd.State); err != nil {
+					r.log.Warn("vikunja reconcile: failed to record synced state",
+						"card_id", cd.ID, "state", cd.State, "error", err)
+					noteErr(err)
+				}
+			}
+			continue
+		}
+
+		// The board disagrees with the database. Before reading that as a
+		// human's intent, rule out the far more common cause: an agent
+		// moved the card and the board has not caught up. A bucket that
+		// still matches what we last projected is stale, not a decision.
+		//
+		// Read as a human move, a stale board is validated in reverse, and
+		// two reversals are legal: Ready->Blocked and Ready->NeedsHuman
+		// would both be undone -- the second un-escalating the very card
+		// that had asked for a human.
+		if cd.VikunjaSyncedState != nil && card.State(*cd.VikunjaSyncedState) == boardState {
+			if err := r.project(ctx, cd); err != nil {
+				r.log.Warn("vikunja reconcile: failed to project a card onto the board",
+					"card_id", cd.ID, "state", cd.State, "error", err)
+				noteErr(err)
+				continue
+			}
+			result.Projected++
 			continue
 		}
 
@@ -255,7 +294,27 @@ func (r *Reconciler) push(ctx context.Context, cd *card.Card) error {
 		return fmt.Errorf("link card %s to task %d: %w", cd.ID, task.ID, err)
 	}
 
+	if err := r.repo.SetVikunjaSyncedState(ctx, cd.ID, cd.State); err != nil {
+		return fmt.Errorf("record synced state for card %s: %w", cd.ID, err)
+	}
+
 	return nil
+}
+
+// project moves a card's task into the bucket matching the card's real state
+// and records that projection.
+//
+// This is the agent's move reaching the board: the database is canonical here,
+// and Vikunja is the view of it.
+func (r *Reconciler) project(ctx context.Context, cd *card.Card) error {
+	bucketID, ok := r.board.BucketByState[cd.State]
+	if !ok {
+		return fmt.Errorf("no bucket mapped for state %q", cd.State)
+	}
+	if err := r.client.MoveTaskToBucket(ctx, r.board.ProjectID, r.board.KanbanViewID, bucketID, *cd.VikunjaTaskID); err != nil {
+		return fmt.Errorf("project card %s to bucket %d: %w", cd.ID, bucketID, err)
+	}
+	return r.repo.SetVikunjaSyncedState(ctx, cd.ID, cd.State)
 }
 
 // reconcileDisagreement handles a linked card whose board bucket disagrees
@@ -268,13 +327,16 @@ func (r *Reconciler) reconcileDisagreement(ctx context.Context, cd *card.Card, b
 	if err := card.CanTransition(cd.State, boardState, card.ActorHuman); err != nil {
 		r.log.Warn("vikunja reconcile: rejecting illegal human move",
 			"card_id", cd.ID, "from", cd.State, "to", boardState, "reason", err)
-		return false, r.revert(ctx, cd)
+		if err := r.revert(ctx, cd); err != nil {
+			return false, err
+		}
+		return false, r.repo.SetVikunjaSyncedState(ctx, cd.ID, cd.State)
 	}
 
 	if err := r.repo.Transition(ctx, cd.ID, boardState, card.ActorHuman, "vikunja", "moved in Vikunja"); err != nil {
 		return false, fmt.Errorf("apply accepted human move to %s: %w", boardState, err)
 	}
-	return true, nil
+	return true, r.repo.SetVikunjaSyncedState(ctx, cd.ID, boardState)
 }
 
 // revert moves cd's linked task back to the bucket matching cd's real
