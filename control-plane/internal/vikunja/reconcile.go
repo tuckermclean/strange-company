@@ -43,7 +43,7 @@ type CardRepo interface {
 	// SetVikunjaSyncedState records the state just projected onto the
 	// board, so the next pass can tell a board a human moved from a board
 	// that has not caught up yet.
-	SetVikunjaSyncedState(ctx context.Context, id uuid.UUID, state card.State) error
+	SetVikunjaSyncedState(ctx context.Context, id uuid.UUID, state card.State, phase card.Phase) error
 }
 
 // Result summarizes the outcome of a single reconciliation pass.
@@ -209,8 +209,8 @@ func (r *Reconciler) RunOnce(ctx context.Context) (Result, error) {
 			// recorded: a card that happens to be in the right bucket would
 			// otherwise read as never-synced forever, and the first agent
 			// move after it would be misread as a human's.
-			if cd.VikunjaSyncedState == nil || *cd.VikunjaSyncedState != string(cd.State) {
-				if err := r.repo.SetVikunjaSyncedState(ctx, cd.ID, cd.State); err != nil {
+			if !synced(cd) {
+				if err := r.repo.SetVikunjaSyncedState(ctx, cd.ID, cd.State, cd.Phase); err != nil {
 					r.log.Warn("vikunja reconcile: failed to record synced state",
 						"card_id", cd.ID, "state", cd.State, "error", err)
 					noteErr(err)
@@ -295,7 +295,7 @@ func (r *Reconciler) push(ctx context.Context, cd *card.Card) error {
 		return fmt.Errorf("link card %s to task %d: %w", cd.ID, task.ID, err)
 	}
 
-	if err := r.repo.SetVikunjaSyncedState(ctx, cd.ID, cd.State); err != nil {
+	if err := r.repo.SetVikunjaSyncedState(ctx, cd.ID, cd.State, cd.Phase); err != nil {
 		return fmt.Errorf("record synced state for card %s: %w", cd.ID, err)
 	}
 
@@ -316,9 +316,39 @@ func (r *Reconciler) project(ctx context.Context, cd *card.Card) error {
 		return fmt.Errorf("project card %s to bucket %d: %w", cd.ID, bucketID, err)
 	}
 
-	r.comment(ctx, cd, r.moveNote(ctx, cd))
+	if !churn(cd) {
+		r.comment(ctx, cd, r.moveNote(ctx, cd))
+	}
 
-	return r.repo.SetVikunjaSyncedState(ctx, cd.ID, cd.State)
+	return r.repo.SetVikunjaSyncedState(ctx, cd.ID, cd.State, cd.Phase)
+}
+
+// synced reports whether the board already reflects where this card is.
+func synced(cd *card.Card) bool {
+	return cd.VikunjaSyncedState != nil && *cd.VikunjaSyncedState == string(cd.State) &&
+		cd.VikunjaSyncedPhase != nil && *cd.VikunjaSyncedPhase == string(cd.Phase)
+}
+
+// churn reports whether a move is the Meeseeks lifecycle showing through
+// rather than anything a human wants told about.
+//
+// §7.1 makes every phase claim -> advance -> release -> fresh Meeseeks, so a
+// card bounces Ready <-> InProgress five times on its way to Review. Those
+// flips are real state and the board must show them; commenting on each one
+// buries the four moves that matter under ten that do not, and leaves a reader
+// unable to tell progress from thrashing.
+//
+// A flip within one phase is churn. A phase advance, or a move to Review,
+// Blocked, NeedsHuman or Done, is not.
+func churn(cd *card.Card) bool {
+	if cd.VikunjaSyncedState == nil || cd.VikunjaSyncedPhase == nil {
+		return false
+	}
+	if *cd.VikunjaSyncedPhase != string(cd.Phase) {
+		return false
+	}
+	inLoop := func(s string) bool { return s == string(card.Ready) || s == string(card.InProgress) }
+	return inLoop(*cd.VikunjaSyncedState) && inLoop(string(cd.State))
 }
 
 // moveNote is the running account of a state change, for a task comment.
@@ -386,13 +416,13 @@ func (r *Reconciler) reconcileDisagreement(ctx context.Context, cd *card.Card, b
 			html.EscapeString(string(cd.State)),
 			html.EscapeString(string(cd.State)),
 			html.EscapeString(string(boardState))))
-		return false, r.repo.SetVikunjaSyncedState(ctx, cd.ID, cd.State)
+		return false, r.repo.SetVikunjaSyncedState(ctx, cd.ID, cd.State, cd.Phase)
 	}
 
 	if err := r.repo.Transition(ctx, cd.ID, boardState, card.ActorHuman, "vikunja", "moved in Vikunja"); err != nil {
 		return false, fmt.Errorf("apply accepted human move to %s: %w", boardState, err)
 	}
-	return true, r.repo.SetVikunjaSyncedState(ctx, cd.ID, boardState)
+	return true, r.repo.SetVikunjaSyncedState(ctx, cd.ID, boardState, cd.Phase)
 }
 
 // revert moves cd's linked task back to the bucket matching cd's real

@@ -22,6 +22,11 @@ type Card struct {
 	// means never synced.
 	VikunjaSyncedState *string `json:"vikunja_synced_state,omitempty"`
 
+	// VikunjaSyncedPhase is the phase that went with it. Together they let
+	// the reconciler tell a phase advance (worth telling a human about)
+	// from a Ready/InProgress flip within one phase (not).
+	VikunjaSyncedPhase *string `json:"vikunja_synced_phase,omitempty"`
+
 	Title                  string `json:"title"`
 	SourceType             string `json:"source_type"`
 	SourceURL              *string `json:"source_url,omitempty"`

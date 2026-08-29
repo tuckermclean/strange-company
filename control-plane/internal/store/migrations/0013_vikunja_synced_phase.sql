@@ -1,0 +1,14 @@
+-- The board renders the worker lifecycle as card churn.
+--
+-- Every phase is claim -> advance -> release -> fresh Meeseeks (§7.1), so a
+-- card bounces Ready <-> InProgress five times on its way to Review. The
+-- reconciler commented on each of those, and a human reading the card saw it
+-- thrash between two columns with no way to tell that from progress. Worse, a
+-- comment on a re-claim carried whatever evidence was latest -- which, right
+-- after a failed step, was the failure. The same error appeared twice and the
+-- card looked like it had failed twice when it had failed once.
+--
+-- Recording the phase alongside the state lets the reconciler tell a phase
+-- advance (worth saying) from a Ready/InProgress flip within one phase (not).
+-- NULL means never synced, exactly as vikunja_synced_state does.
+ALTER TABLE cards ADD COLUMN vikunja_synced_phase text;

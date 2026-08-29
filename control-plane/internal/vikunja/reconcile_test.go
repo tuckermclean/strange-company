@@ -375,14 +375,14 @@ type syncedStateCall struct {
 	state card.State
 }
 
-func (m *memRepo) SetVikunjaSyncedState(_ context.Context, id uuid.UUID, state card.State) error {
+func (m *memRepo) SetVikunjaSyncedState(_ context.Context, id uuid.UUID, state card.State, phase card.Phase) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.syncedStates = append(m.syncedStates, syncedStateCall{id: id, state: state})
 	for _, c := range m.cards {
 		if c.ID == id {
-			s := string(state)
-			c.VikunjaSyncedState = &s
+			s, p := string(state), string(phase)
+			c.VikunjaSyncedState, c.VikunjaSyncedPhase = &s, &p
 		}
 	}
 	return nil

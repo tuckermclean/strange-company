@@ -7,9 +7,11 @@ import (
 	"github.com/tuckermclean/strange-company/control-plane/internal/card"
 )
 
-func synced(c *card.Card, s card.State) *card.Card {
-	v := string(s)
-	c.VikunjaSyncedState = &v
+// wasSynced marks a card as last projected onto the board in state s, with
+// whatever phase it currently carries.
+func wasSynced(c *card.Card, s card.State) *card.Card {
+	v, p := string(s), string(c.Phase)
+	c.VikunjaSyncedState, c.VikunjaSyncedPhase = &v, &p
 	return c
 }
 
@@ -24,7 +26,7 @@ func TestAnAgentEscalationIsNotUndoneByTheStaleBoard(t *testing.T) {
 
 	// The card was Ready when we last projected it; an agent has since
 	// escalated it. The board has not caught up.
-	c := synced(newCard("escalated", card.NeedsHuman, int64Ptr(taskID)), card.Ready)
+	c := wasSynced(newCard("escalated", card.NeedsHuman, int64Ptr(taskID)), card.Ready)
 	repo := &memRepo{cards: []*card.Card{c}}
 
 	r := newTestReconciler(t, board, repo)
@@ -53,7 +55,7 @@ func TestAnAgentBlockIsNotUndoneByTheStaleBoard(t *testing.T) {
 	board := newFakeBoard(t)
 	taskID := int64(902)
 	board.seedTask(bucketReady, taskID, "blocked")
-	c := synced(newCard("blocked", card.Blocked, int64Ptr(taskID)), card.Ready)
+	c := wasSynced(newCard("blocked", card.Blocked, int64Ptr(taskID)), card.Ready)
 	repo := &memRepo{cards: []*card.Card{c}}
 
 	if _, err := newTestReconciler(t, board, repo).RunOnce(context.Background()); err != nil {
@@ -75,7 +77,7 @@ func TestAHumanMoveIsStillReadAsOne(t *testing.T) {
 	taskID := int64(903)
 	board.seedTask(bucketDone, taskID, "approved")
 	// We projected Review; the human dragged it to Done.
-	c := synced(newCard("approved", card.Review, int64Ptr(taskID)), card.Review)
+	c := wasSynced(newCard("approved", card.Review, int64Ptr(taskID)), card.Review)
 	repo := &memRepo{cards: []*card.Card{c}}
 
 	result, err := newTestReconciler(t, board, repo).RunOnce(context.Background())
@@ -97,7 +99,7 @@ func TestARejectedMoveRecordsWhereTheBoardNowIs(t *testing.T) {
 	board := newFakeBoard(t)
 	taskID := int64(904)
 	board.seedTask(bucketDone, taskID, "not yours to finish")
-	c := synced(newCard("not yours to finish", card.Backlog, int64Ptr(taskID)), card.Backlog)
+	c := wasSynced(newCard("not yours to finish", card.Backlog, int64Ptr(taskID)), card.Backlog)
 	repo := &memRepo{cards: []*card.Card{c}}
 
 	result, err := newTestReconciler(t, board, repo).RunOnce(context.Background())

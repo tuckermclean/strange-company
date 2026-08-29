@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 
 	"github.com/tuckermclean/strange-company/control-plane/internal/card"
@@ -165,6 +166,40 @@ func (c *Client) EnsureBoard(ctx context.Context, projectTitle string) (*Board, 
 			return nil, fmt.Errorf("vikunja: create bucket %q: %w", title, err)
 		}
 		bucketByState[state] = created.ID
+	}
+
+	// Everything else on the view goes after ours.
+	//
+	// Vikunja gives every new project three default buckets. "Done" matches
+	// one of ours by title and is adopted; "To-Do" and "Doing" are left
+	// over, and they sit at the low positions -- exactly where Backlog and
+	// Ready belong. Positioning our seven correctly is not enough while two
+	// strangers share their positions and ties break arbitrarily.
+	//
+	// Moved rather than deleted. An unrecognised column might be Vikunja's
+	// leftovers or might be one a human added on purpose, and this code
+	// cannot tell the difference. Deleting the wrong one destroys work; the
+	// worst case for moving is a column further right than someone wanted.
+	ours := make(map[string]bool, len(boardStates))
+	for _, state := range boardStates {
+		ours[string(state)] = true
+	}
+	after := float64(len(boardStates)+1) * 100
+	for _, b := range buckets {
+		if ours[b.Title] {
+			continue
+		}
+		if b.Position >= after {
+			continue
+		}
+		if err := c.SetBucketPosition(ctx, project.ID, view.ID, b.ID, b.Title, after); err != nil {
+			// Not fatal. A board with our columns in order and a stray one
+			// among them is still usable; refusing to start is not.
+			slog.Default().Warn("vikunja: could not move a column out of the canonical order",
+				"bucket", b.Title, "bucket_id", b.ID, "error", err)
+			continue
+		}
+		after += 100
 	}
 
 	return &Board{
