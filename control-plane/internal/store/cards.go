@@ -35,6 +35,7 @@ const cardColumns = `
 	id::text,
 	vikunja_task_id,
 	vikunja_synced_state,
+	vikunja_synced_phase,
 	title,
 	source_type,
 	source_url,
@@ -78,6 +79,7 @@ func scanCard(row rowScanner) (*card.Card, error) {
 		&idText,
 		&c.VikunjaTaskID,
 		&c.VikunjaSyncedState,
+		&c.VikunjaSyncedPhase,
 		&c.Title,
 		&c.SourceType,
 		&c.SourceURL,
@@ -133,13 +135,24 @@ func (s *Store) ClaimReady(ctx context.Context, workerID string, lease time.Dura
 	}
 	defer tx.Rollback(ctx)
 
-	// Two kinds of card are claimable:
+	// Three kinds of card are claimable:
 	//
-	//   1. a Ready card nobody holds, and
+	//   1. a Ready card nobody holds;
 	//   2. an InProgress card whose lease has expired -- its worker died
 	//      without releasing it. Spec section 6 allows reclaiming only after
 	//      expiry, and a Meeseeks is expected to die, so this is the normal
-	//      recovery path rather than an edge case.
+	//      recovery path rather than an edge case; and
+	//   3. an InProgress card nobody holds at all.
+	//
+	// The third is not hypothetical, and leaving it out was a deadlock. A
+	// human dragging a card from Ready to InProgress on the Vikunja board
+	// takes the legal transition the board invites, and it sets the state
+	// without setting a claim or a lease. The card is then neither Ready nor
+	// lease-expired, so nothing could ever pick it up again -- it simply
+	// stopped, with no error anywhere and a column that looked like work in
+	// progress. A claimless InProgress card unambiguously means nobody is
+	// working on it, whether a human put it there or a worker vanished
+	// mid-claim, and the answer is the same: someone should take it.
 	//
 	// The current state is selected too, so the history row records where the
 	// card actually came from instead of assuming Ready.
@@ -147,7 +160,7 @@ func (s *Store) ClaimReady(ctx context.Context, workerID string, lease time.Dura
 	err = tx.QueryRow(ctx, `
 		SELECT id::text, state
 		FROM cards
-		WHERE (state = 'Ready' AND claimed_by IS NULL)
+		WHERE (state IN ('Ready', 'InProgress') AND claimed_by IS NULL)
 		   OR (state = 'InProgress'
 		       AND lease_expires_at IS NOT NULL
 		       AND lease_expires_at < now())
@@ -373,10 +386,17 @@ func (s *Store) transition(ctx context.Context, cardID uuid.UUID, to card.State,
 		return err
 	}
 
+	// A claim only means anything while a card is InProgress, so leaving
+	// one on a card that has moved elsewhere makes the board and the API
+	// report a worker that is not there. §7.1 ends every lifecycle with
+	// "release claim -> EXIT"; a transition out of InProgress is that exit,
+	// and until now it abandoned the claim rather than releasing it.
 	if _, err := tx.Exec(ctx, `
 		UPDATE cards
-		SET state = $1,
-		    updated_at = now()
+		SET state            = $1,
+		    claimed_by       = CASE WHEN $1 = 'InProgress' THEN claimed_by       ELSE NULL END,
+		    lease_expires_at = CASE WHEN $1 = 'InProgress' THEN lease_expires_at ELSE NULL END,
+		    updated_at       = now()
 		WHERE id = $2::uuid
 	`, string(to), idText); err != nil {
 		return fmt.Errorf("store: update state for card %s: %w", idText, err)
@@ -471,14 +491,15 @@ func (s *Store) SetVikunjaTaskID(ctx context.Context, cardID uuid.UUID, taskID i
 // has simply not caught up yet. Like SetVikunjaTaskID it is not a Transition:
 // the projection catching up is not a workflow event and must not append a
 // history row.
-func (s *Store) SetVikunjaSyncedState(ctx context.Context, cardID uuid.UUID, state card.State) error {
+func (s *Store) SetVikunjaSyncedState(ctx context.Context, cardID uuid.UUID, state card.State, phase card.Phase) error {
 	tag, err := s.pool.Exec(ctx, `
 		UPDATE cards
-		SET vikunja_synced_state = $1
-		WHERE id = $2::uuid
-	`, string(state), cardID.String())
+		SET vikunja_synced_state = $1,
+		    vikunja_synced_phase = $2
+		WHERE id = $3::uuid
+	`, string(state), string(phase), cardID.String())
 	if err != nil {
-		return fmt.Errorf("store: record synced state %q for card %s: %w", state, cardID, err)
+		return fmt.Errorf("store: record synced state %q/%q for card %s: %w", state, phase, cardID, err)
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrCardNotFound

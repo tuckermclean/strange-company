@@ -34,6 +34,15 @@ type Artifacts interface {
 	PutArtifact(ctx context.Context, a store.Artifact) (*store.Artifact, error)
 }
 
+// Attempts is the run ledger (§12, §22).
+//
+// The tests phase runs a model exactly as the implementation phase does, and
+// costs exactly as much. Recording only one of them left the ledger answering
+// "what has this card cost?" with a fraction of the truth.
+type Attempts interface {
+	RecordAttempt(ctx context.Context, rec store.AttemptRecord) (*store.AttemptOutcome, error)
+}
+
 // Runner performs one coding run.
 type Runner interface {
 	Run(ctx context.Context, req codingrun.Request) (*runner.CodingRunResult, error)
@@ -57,6 +66,7 @@ type Verifier interface {
 type Step struct {
 	board     Board
 	artifacts Artifacts
+	attempts  Attempts
 	runner    Runner
 	verifier  Verifier
 	git       codingrun.GitIdentity
@@ -64,11 +74,11 @@ type Step struct {
 }
 
 // New builds the test-writing step.
-func New(b Board, a Artifacts, r Runner, v Verifier, git codingrun.GitIdentity, log *slog.Logger) *Step {
+func New(b Board, a Artifacts, at Attempts, r Runner, v Verifier, git codingrun.GitIdentity, log *slog.Logger) *Step {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	return &Step{board: b, artifacts: a, runner: r, verifier: v, git: git, log: log}
+	return &Step{board: b, artifacts: a, attempts: at, runner: r, verifier: v, git: git, log: log}
 }
 
 // Do writes the acceptance tests for one card.
@@ -141,6 +151,19 @@ func (s *Step) Do(ctx context.Context, c *card.Card, res *policy.Resolution) (wo
 		}); aerr != nil {
 			s.log.Error("could not record the harness output", "card_id", c.ID, "error", aerr)
 		}
+	}
+
+	// Before the switch below: an infrastructure failure returns an error
+	// from here, and a run that cost money must be on the ledger whether or
+	// not it produced anything.
+	if _, rerr := s.attempts.RecordAttempt(ctx, store.AttemptRecord{
+		CardID: c.ID, RunID: runID, Phase: string(card.PhaseTests),
+		ModelAlias: res.Alias, Provider: res.ProviderName,
+		Harness: result.Harness, Model: result.Model, Result: result,
+	}); rerr != nil {
+		// Never fatal: losing the card would be worse than losing one row
+		// of accounting.
+		s.log.Error("could not record the attempt", "card_id", c.ID, "run_id", runID, "error", rerr)
 	}
 
 	if _, aerr := s.artifacts.PutArtifact(ctx, store.Artifact{

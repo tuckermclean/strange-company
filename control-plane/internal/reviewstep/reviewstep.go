@@ -17,6 +17,7 @@ import (
 	"github.com/tuckermclean/strange-company/control-plane/internal/github"
 	"github.com/tuckermclean/strange-company/control-plane/internal/modelclient"
 	"github.com/tuckermclean/strange-company/control-plane/internal/policy"
+	"github.com/tuckermclean/strange-company/control-plane/internal/runner"
 	"github.com/tuckermclean/strange-company/control-plane/internal/spec"
 	"github.com/tuckermclean/strange-company/control-plane/internal/store"
 	"github.com/tuckermclean/strange-company/control-plane/internal/worker"
@@ -31,7 +32,18 @@ const verdictPrefix = "VERDICT:"
 
 // See internal/ambiguity: a reasoning model's thinking is billed against this
 // budget, so it is sized for thinking plus the answer, not the answer alone.
-const maxReviewTokens = 8192
+//
+// 8192 was not enough. On a live card DeepSeek spent the entire budget on
+// reasoning and returned no answer, twice, before a retry happened to fit --
+// and a limit that trips only sometimes reads as an intermittent provider
+// fault rather than as a number set too low. No fixed number is safe against a
+// model that thinks as long as it likes, so the step also retries once with a
+// larger budget; see review().
+const maxReviewTokens = 32768
+
+// retryReviewTokens is the second and final budget. A model that cannot answer
+// within this is not going to, and spending more is throwing money at it.
+const retryReviewTokens = 4 * maxReviewTokens
 
 // Completer performs one model completion.
 type Completer interface {
@@ -52,6 +64,11 @@ type Artifacts interface {
 	PutArtifact(ctx context.Context, a store.Artifact) (*store.Artifact, error)
 }
 
+// Attempts is the run ledger (§12, §22).
+type Attempts interface {
+	RecordAttempt(ctx context.Context, rec store.AttemptRecord) (*store.AttemptOutcome, error)
+}
+
 // Pulls opens the pull request a human reviews, and supplies the diff §18
 // requires the reviewer to see.
 type Pulls interface {
@@ -63,17 +80,18 @@ type Pulls interface {
 type Step struct {
 	board     Board
 	artifacts Artifacts
+	attempts  Attempts
 	pulls     Pulls
 	clientFor ClientFor
 	log       *slog.Logger
 }
 
 // New builds the review step.
-func New(b Board, a Artifacts, p Pulls, clientFor ClientFor, log *slog.Logger) *Step {
+func New(b Board, a Artifacts, at Attempts, p Pulls, clientFor ClientFor, log *slog.Logger) *Step {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	return &Step{board: b, artifacts: a, pulls: p, clientFor: clientFor, log: log}
+	return &Step{board: b, artifacts: a, attempts: at, pulls: p, clientFor: clientFor, log: log}
 }
 
 // Do reviews one card.
@@ -109,13 +127,11 @@ func (s *Step) Do(ctx context.Context, c *card.Card, res *policy.Resolution) (wo
 		s.log.Error("could not record the diff", "card_id", c.ID, "error", aerr)
 	}
 
-	completion, err := client.Complete(ctx, modelclient.CompleteRequest{
-		Messages: []modelclient.Message{
-			{Role: "system", Content: systemPrompt},
-			{Role: "user", Content: reviewInput(c, cardSpec.Content, artifacts, diff)},
-		},
-		MaxTokens: maxReviewTokens,
+	completion, err := s.review(ctx, client, []modelclient.Message{
+		{Role: "system", Content: systemPrompt},
+		{Role: "user", Content: reviewInput(c, cardSpec.Content, artifacts, diff)},
 	})
+	s.record(ctx, c, res, completion, err)
 	if err != nil {
 		return worker.Evidence{}, fmt.Errorf("reviewstep: %w", err)
 	}
@@ -315,3 +331,62 @@ func (s *Step) diffFor(ctx context.Context, c *card.Card) (string, error) {
 	}
 	return s.pulls.CompareDiff(ctx, repo, base, fmt.Sprintf("agent/%s", c.ID))
 }
+
+// review asks for the verdict, and asks once more with a bigger budget if the
+// model spent the whole of the first one thinking.
+//
+// A reasoning model bills its thinking against max_tokens, so an exhausted
+// budget is not the model failing -- it is the model not having been given
+// room to answer. Retrying with the same number would just fail again.
+func (s *Step) review(ctx context.Context, client Completer, msgs []modelclient.Message) (*modelclient.Completion, error) {
+	completion, err := client.Complete(ctx, modelclient.CompleteRequest{Messages: msgs, MaxTokens: maxReviewTokens})
+	if !errors.Is(err, modelclient.ErrBudgetExhausted) {
+		return completion, err
+	}
+
+	s.log.Warn("the reviewer spent its whole budget thinking; retrying with a larger one",
+		"first", maxReviewTokens, "retry", retryReviewTokens, "error", err)
+	return client.Complete(ctx, modelclient.CompleteRequest{Messages: msgs, MaxTokens: retryReviewTokens})
+}
+
+// record puts the review on the run ledger (§12, §22).
+//
+// A review is a model call that costs money like any other. Recording only the
+// implementation phase left the ledger answering "what has this card cost?"
+// with a fraction of the truth, and left a card that failed review three times
+// looking like it had never been reviewed at all.
+func (s *Step) record(ctx context.Context, c *card.Card, res *policy.Resolution, completion *modelclient.Completion, runErr error) {
+	if s.attempts == nil {
+		return
+	}
+
+	result := &runner.CodingRunResult{
+		Status:  runner.StatusCompleted,
+		Harness: string(res.Harness),
+		Summary: "review completed",
+	}
+	if completion != nil {
+		result.Model = completion.Model
+		result.Usage.InputTokens = completion.Usage.PromptTokens
+		result.Usage.OutputTokens = completion.Usage.CompletionTokens
+	}
+	if runErr != nil {
+		// §12.1: a provider that could not answer is not the model failing
+		// the work, and must not burn a rung of the escalation ladder.
+		result.Status = runner.StatusInfraError
+		result.Summary = fmt.Sprintf("review did not complete: %v", runErr)
+	}
+	if result.Model == "" {
+		result.Model = res.Model
+	}
+
+	if _, err := s.attempts.RecordAttempt(ctx, store.AttemptRecord{
+		CardID: c.ID, RunID: fmt.Sprintf("review-%s-%d", shortID(c.ID), res.Attempt),
+		Phase: string(card.PhaseReview), ModelAlias: res.Alias, Provider: res.ProviderName,
+		Harness: result.Harness, Model: result.Model, Result: result,
+	}); err != nil {
+		s.log.Error("could not record the review attempt", "card_id", c.ID, "error", err)
+	}
+}
+
+func shortID(id uuid.UUID) string { return strings.SplitN(id.String(), "-", 2)[0] }

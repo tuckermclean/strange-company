@@ -294,6 +294,29 @@ trap - TERM INT
 printf '%s\n' "$STREAM_END"
 log "harness exited with code ${harness_exit}"
 
+# What opencode left on disk, when it ran.
+#
+# opencode drops its step_finish event in containers (anomalyco/opencode 26855,
+# 31435), and that event is where token counts and cost live -- so every coding
+# run on the live board is recorded with no price at all, and the §22 ledger
+# adds up to zero because it is blind rather than because the work was free.
+#
+# Fixing that means reading the usage from opencode's own storage instead of
+# from its event stream, and the shape of that storage cannot be established
+# from outside a real run. This lists it, bounded, so the next run is the
+# evidence. It never fails the Job: this is a diagnostic, not a step.
+if [ "${SC_HARNESS:-}" = "opencode" ]; then
+  opencode_data_dir="${XDG_DATA_HOME:-${HOME:-/home/agent}/.local/share}/opencode"
+  if [ -d "$opencode_data_dir" ]; then
+    log "opencode storage under ${opencode_data_dir}:"
+    find "$opencode_data_dir" -type f -size -1M 2>/dev/null | head -40 | while read -r f; do
+      log "  $(wc -c <"$f" 2>/dev/null || echo '?') bytes  ${f#"$opencode_data_dir"/}"
+    done
+  else
+    log "opencode left no storage directory at ${opencode_data_dir}"
+  fi
+fi
+
 # ---------------------------------------------------------------------
 # 6. Commit and push if the working tree changed. A push failure is
 # reported but must never turn a harness failure into a false success,

@@ -745,7 +745,7 @@ func runWorkerSupervisor(ctx context.Context, logger *slog.Logger, cfg *config.C
 				"set", "controlPlane.gitCredential")
 		}
 
-		steps[card.PhaseTests] = teststep.New(st, st, runs, verifier, git, log)
+		steps[card.PhaseTests] = teststep.New(st, st, st, runs, verifier, git, log)
 		steps[card.PhaseImplementation] = implstep.New(st, st, st, runs, verifier, git, log)
 		log.Info("coding phases enabled",
 			"namespace", cfg.AgentRunsNamespace, "image", cfg.RunnerImage)
@@ -754,7 +754,7 @@ func runWorkerSupervisor(ctx context.Context, logger *slog.Logger, cfg *config.C
 			log.Warn("review phase disabled: no GitHub client")
 			break
 		}
-		steps[card.PhaseReview] = reviewstep.New(st, st, gh, func(res *policy.Resolution) (reviewstep.Completer, error) {
+		steps[card.PhaseReview] = reviewstep.New(st, st, st, gh, func(res *policy.Resolution) (reviewstep.Completer, error) {
 			return providerclient.New(res, credentials.Dir(cfg.CredentialsDir))
 		}, log)
 		log.Info("review phase enabled")

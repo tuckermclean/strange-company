@@ -11,6 +11,7 @@ import (
 	"github.com/tuckermclean/strange-company/control-plane/internal/github"
 	"github.com/tuckermclean/strange-company/control-plane/internal/modelclient"
 	"github.com/tuckermclean/strange-company/control-plane/internal/policy"
+	"github.com/tuckermclean/strange-company/control-plane/internal/runner"
 	"github.com/tuckermclean/strange-company/control-plane/internal/reviewstep"
 	"github.com/tuckermclean/strange-company/control-plane/internal/store"
 )
@@ -19,6 +20,12 @@ type fakeBoard struct {
 	spec      *store.CardSpec
 	artifacts []*store.Artifact
 	put       []store.Artifact
+	attempts  []store.AttemptRecord
+}
+
+func (f *fakeBoard) RecordAttempt(_ context.Context, rec store.AttemptRecord) (*store.AttemptOutcome, error) {
+	f.attempts = append(f.attempts, rec)
+	return &store.AttemptOutcome{}, nil
 }
 
 func (f *fakeBoard) GetSpec(context.Context, uuid.UUID) (*store.CardSpec, error) { return f.spec, nil }
@@ -33,11 +40,27 @@ func (f *fakeBoard) PutArtifact(_ context.Context, a store.Artifact) (*store.Art
 type fakeModel struct {
 	prompt string
 	reply  string
+
+	// budgets records the max_tokens of every call, so a test can see the
+	// retry ask for more rather than repeating a number that just failed.
+	budgets []int
+	// errs is returned call-by-call; a nil entry means answer normally.
+	errs []error
+	err  error
 }
 
 func (f *fakeModel) Complete(_ context.Context, req modelclient.CompleteRequest) (*modelclient.Completion, error) {
 	for _, m := range req.Messages {
 		f.prompt += m.Content + "\n"
+	}
+	i := len(f.budgets)
+	f.budgets = append(f.budgets, req.MaxTokens)
+
+	if i < len(f.errs) && f.errs[i] != nil {
+		return nil, f.errs[i]
+	}
+	if f.err != nil {
+		return nil, f.err
 	}
 	return &modelclient.Completion{Text: f.reply, Model: "claude-sonnet-5"}, nil
 }
@@ -96,7 +119,7 @@ func res() *policy.Resolution {
 }
 
 func step(b *fakeBoard, m *fakeModel, p *fakePulls) *reviewstep.Step {
-	return reviewstep.New(b, b, p, func(*policy.Resolution) (reviewstep.Completer, error) { return m, nil }, nil)
+	return reviewstep.New(b, b, b, p, func(*policy.Resolution) (reviewstep.Completer, error) { return m, nil }, nil)
 }
 
 // §19: when all gates pass the pull request is created and the card moves to
@@ -294,5 +317,80 @@ func TestTheDiffIsRecordedAsAnArtifact(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("no diff artifact recorded: %+v", b.put)
+	}
+}
+
+// A reasoning model bills its thinking against max_tokens, so an exhausted
+// budget is not the model failing -- it is the model not having been given room
+// to answer. On a live card DeepSeek spent the whole budget thinking and
+// returned nothing, and only a retry that happened to fit saved the run.
+func TestAnExhaustedBudgetIsRetriedWithMoreRoom(t *testing.T) {
+	b, p := board(), &fakePulls{}
+	m := &fakeModel{
+		reply: "VERDICT: PASS\n\nFine.",
+		errs:  []error{modelclient.ErrBudgetExhausted},
+	}
+
+	ev, err := step(b, m, p).Do(context.Background(), testCard(), res())
+	if err != nil {
+		t.Fatalf("Do: %v; the retry did not happen", err)
+	}
+	if len(m.budgets) != 2 {
+		t.Fatalf("model called %d times, want a retry", len(m.budgets))
+	}
+	if m.budgets[1] <= m.budgets[0] {
+		t.Errorf("retried with max_tokens %d after %d; repeating a number that just failed is not a retry",
+			m.budgets[1], m.budgets[0])
+	}
+	if ev.NextState != card.Review {
+		t.Errorf("NextState = %q, want Review", ev.NextState)
+	}
+}
+
+// Retried once, not forever. A model that cannot answer within the larger
+// budget is not going to, and spending more is throwing money at it.
+func TestTheBudgetIsRaisedOnceAndOnlyOnce(t *testing.T) {
+	b, p := board(), &fakePulls{}
+	m := &fakeModel{err: modelclient.ErrBudgetExhausted}
+
+	if _, err := step(b, m, p).Do(context.Background(), testCard(), res()); err == nil {
+		t.Fatal("Do() succeeded; want the second exhaustion reported")
+	}
+	if len(m.budgets) != 2 {
+		t.Errorf("model called %d times, want exactly 2", len(m.budgets))
+	}
+}
+
+// A review is a model call that costs money like any other. Recording only the
+// implementation phase left a card that failed review three times looking like
+// it had never been reviewed at all.
+func TestAReviewReachesTheLedger(t *testing.T) {
+	b, p := board(), &fakePulls{}
+	m := &fakeModel{reply: "VERDICT: PASS\n\nFine."}
+
+	if _, err := step(b, m, p).Do(context.Background(), testCard(), res()); err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	if len(b.attempts) != 1 {
+		t.Fatalf("recorded %d attempts, want 1", len(b.attempts))
+	}
+	if got := b.attempts[0].Phase; got != string(card.PhaseReview) {
+		t.Errorf("phase = %q, want %q", got, card.PhaseReview)
+	}
+}
+
+// §12.1: a provider that could not answer is not the model failing the work,
+// and must not burn a rung of the escalation ladder.
+func TestAReviewThatCouldNotRunIsRecordedAsInfrastructure(t *testing.T) {
+	b, p := board(), &fakePulls{}
+	m := &fakeModel{err: modelclient.ErrBudgetExhausted}
+
+	_, _ = step(b, m, p).Do(context.Background(), testCard(), res())
+
+	if len(b.attempts) != 1 {
+		t.Fatalf("recorded %d attempts for a failed review, want 1", len(b.attempts))
+	}
+	if got := b.attempts[0].Result.Status; got != runner.StatusInfraError {
+		t.Errorf("status = %q, want %q so it does not burn a rung", got, runner.StatusInfraError)
 	}
 }

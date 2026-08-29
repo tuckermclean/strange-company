@@ -18,7 +18,7 @@ func TestAStateChangeLeavesAnAccountOnTheCard(t *testing.T) {
 	board := newFakeBoard(t)
 	taskID := int64(910)
 	board.seedTask(bucketInProgress, taskID, "moving")
-	c := synced(newCard("moving", card.Review, int64Ptr(taskID)), card.InProgress)
+	c := wasSynced(newCard("moving", card.Review, int64Ptr(taskID)), card.InProgress)
 	repo := &memRepo{
 		cards:    []*card.Card{c},
 		evidence: map[uuid.UUID][]store.CardEvidence{c.ID: {{ActorID: "meeseeks-9", Summary: "12 tests pass"}}},
@@ -46,7 +46,7 @@ func TestARejectedMoveSaysWhyItSnappedBack(t *testing.T) {
 	board := newFakeBoard(t)
 	taskID := int64(911)
 	board.seedTask(bucketDone, taskID, "not yours to finish")
-	c := synced(newCard("not yours to finish", card.Backlog, int64Ptr(taskID)), card.Backlog)
+	c := wasSynced(newCard("not yours to finish", card.Backlog, int64Ptr(taskID)), card.Backlog)
 	repo := &memRepo{cards: []*card.Card{c}}
 
 	if _, err := newTestReconciler(t, board, repo).RunOnce(context.Background()); err != nil {
@@ -68,7 +68,7 @@ func TestASettledCardIsNotCommentedOnAgain(t *testing.T) {
 	board := newFakeBoard(t)
 	taskID := int64(912)
 	board.seedTask(bucketInProgress, taskID, "moving")
-	c := synced(newCard("moving", card.Review, int64Ptr(taskID)), card.InProgress)
+	c := wasSynced(newCard("moving", card.Review, int64Ptr(taskID)), card.InProgress)
 	repo := &memRepo{cards: []*card.Card{c}}
 	r := newTestReconciler(t, board, repo)
 
@@ -90,7 +90,7 @@ func TestAnInstanceWithCommentsOffStillReconciles(t *testing.T) {
 	board.commentsDisabled = true
 	taskID := int64(913)
 	board.seedTask(bucketInProgress, taskID, "moving")
-	c := synced(newCard("moving", card.Review, int64Ptr(taskID)), card.InProgress)
+	c := wasSynced(newCard("moving", card.Review, int64Ptr(taskID)), card.InProgress)
 	repo := &memRepo{cards: []*card.Card{c}}
 
 	result, err := newTestReconciler(t, board, repo).RunOnce(context.Background())
@@ -102,5 +102,78 @@ func TestAnInstanceWithCommentsOffStillReconciles(t *testing.T) {
 	}
 	if got := board.tasksInBucket(bucketReview); len(got) != 1 {
 		t.Errorf("the card did not reach Review: %v", got)
+	}
+}
+
+// §7.1 makes every phase claim -> advance -> release -> fresh Meeseeks, so a
+// card bounces Ready <-> InProgress five times on its way to Review. A comment
+// on each buries the moves that matter under ones that do not, and leaves a
+// reader unable to tell progress from thrashing.
+func TestTheMeeseeksLifecycleDoesNotFillTheCardWithComments(t *testing.T) {
+	board := newFakeBoard(t)
+	taskID := int64(920)
+	board.seedTask(bucketReady, taskID, "working")
+
+	// Same phase, the card just came back under a fresh Meeseeks.
+	c := newCard("working", card.InProgress, int64Ptr(taskID))
+	c.Phase = card.PhaseImplementation
+	wasSynced(c, card.Ready)
+	repo := &memRepo{cards: []*card.Card{c}}
+
+	result, err := newTestReconciler(t, board, repo).RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	// The board must still show the move -- it is real state.
+	if result.Projected != 1 {
+		t.Errorf("result = %+v, want the move projected to the board", result)
+	}
+	if got := board.tasksInBucket(bucketInProgress); len(got) != 1 {
+		t.Errorf("the card did not move to InProgress: %v", got)
+	}
+	if notes := board.commentsOn(taskID); len(notes) != 0 {
+		t.Errorf("got %d comments for a within-phase flip: %v", len(notes), notes)
+	}
+}
+
+// The corollary: the moves that are not churn must still be told. Without
+// this, suppressing the flips would silence the card entirely.
+func TestAPhaseAdvanceIsStillWorthTelling(t *testing.T) {
+	board := newFakeBoard(t)
+	taskID := int64(921)
+	board.seedTask(bucketReady, taskID, "advancing")
+
+	c := newCard("advancing", card.InProgress, int64Ptr(taskID))
+	c.Phase = card.PhaseImplementation
+	wasSynced(c, card.Ready)
+	// The synced phase is the one before: this flip carries an advance.
+	prev := string(card.PhaseTests)
+	c.VikunjaSyncedPhase = &prev
+
+	repo := &memRepo{cards: []*card.Card{c}}
+	if _, err := newTestReconciler(t, board, repo).RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if notes := board.commentsOn(taskID); len(notes) != 1 {
+		t.Fatalf("got %d comments for a phase advance, want 1: %v", len(notes), notes)
+	}
+}
+
+// Moves out of the working loop always speak, whatever the phase does.
+func TestReachingReviewIsAlwaysTold(t *testing.T) {
+	board := newFakeBoard(t)
+	taskID := int64(922)
+	board.seedTask(bucketInProgress, taskID, "done working")
+
+	c := newCard("done working", card.Review, int64Ptr(taskID))
+	c.Phase = card.PhaseReview
+	wasSynced(c, card.InProgress)
+
+	repo := &memRepo{cards: []*card.Card{c}}
+	if _, err := newTestReconciler(t, board, repo).RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if notes := board.commentsOn(taskID); len(notes) != 1 {
+		t.Errorf("got %d comments for a card reaching Review: %v", len(notes), notes)
 	}
 }

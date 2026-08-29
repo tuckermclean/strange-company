@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -99,10 +101,26 @@ func (c *Client) listProjectShares(ctx context.Context, projectID int64) (map[st
 //
 // PUT /projects/{id}/users, verified from the @Router annotation on
 // ProjectUser.Create in Vikunja v2.5.0.
+// putProjectShare gives username the requested permission on a project,
+// whether or not they already have some access to it.
+//
+// Vikunja splits this across two routes: PUT on the collection creates a
+// share, POST on the member updates one (pkg/routes/routes.go). Sending only
+// the create means a user who already has access comes back 409 -- which is
+// what the control plane logged as a startup error on every restart, in the
+// one case where the share was already correct. It is also how a permission
+// would silently fail to be corrected: §4.3 treats the human's ability to move
+// a card as a real input to the state machine, so read-only access when admin
+// was asked for is not something to tolerate.
 func (c *Client) putProjectShare(ctx context.Context, projectID int64, username string, permission int) error {
 	body := projectUser{Username: username, Permission: permission}
-	if err := c.do(ctx, "PUT", fmt.Sprintf("/api/v1/projects/%d/users", projectID), body, nil); err != nil {
-		return err
+	err := c.do(ctx, http.MethodPut, fmt.Sprintf("/api/v1/projects/%d/users", projectID), body, nil)
+
+	var reqErr *RequestError
+	if errors.As(err, &reqErr) && reqErr.Status == http.StatusConflict {
+		// Already shared. Update the permission instead of creating.
+		return c.do(ctx, http.MethodPost,
+			fmt.Sprintf("/api/v1/projects/%d/users/%s", projectID, url.PathEscape(username)), body, nil)
 	}
-	return nil
+	return err
 }
