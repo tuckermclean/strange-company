@@ -701,7 +701,7 @@ func runWorkerSupervisor(ctx context.Context, logger *slog.Logger, cfg *config.C
 		// Which backend answers §11.3 and §19. Reading CI is the default:
 		// a repository with workflows has already declared its tests, and
 		// a second declaration in the repository is the one that drifts.
-		var verifier implstep.Verifier = runs
+		var verifier teststep.Verifier = runs
 		switch {
 		case cfg.VerificationMode == config.VerificationTestCommand:
 			log.Info("verification reads " + codingrun.TestCommandPath)
