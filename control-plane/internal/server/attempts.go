@@ -155,12 +155,20 @@ func (s *Server) handleCardCost(w http.ResponseWriter, r *http.Request) {
 	byPhase := map[string]*costBreakdown{}
 	byModel := map[string]*costBreakdown{}
 	var ledger float64
-	var counted int
+	var counted, unpriced int
 
 	for _, a := range attempts {
 		var cost float64
 		if a.CostUSD != nil {
 			cost = *a.CostUSD
+		} else {
+			// Counted, not silently treated as free. opencode drops the
+			// event carrying usage and cost when it runs in a container
+			// (the same upstream bug that swallows its narrative output),
+			// so a run whose price is simply unknown would otherwise be
+			// reported as $0 -- and a ledger that reads zero because it is
+			// blind is worse than one that says it cannot see.
+			unpriced++
 		}
 		ledger += cost
 		if a.CountedAsAttempt {
@@ -194,6 +202,11 @@ func (s *Server) handleCardCost(w http.ResponseWriter, r *http.Request) {
 		"attempts_cost_usd": ledger,
 		"attempts":          len(attempts),
 		"counted_attempts":  counted,
+		// How much of the ledger is missing. Non-zero means the totals
+		// above are a floor, not a figure -- and a budget checked against
+		// them is not being enforced.
+		"unpriced_attempts": unpriced,
+		"cost_complete":     unpriced == 0,
 		"by_phase":          sortedBreakdowns(byPhase),
 		"by_model_alias":    sortedBreakdowns(byModel),
 	})

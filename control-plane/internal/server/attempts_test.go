@@ -163,3 +163,46 @@ func TestAPhaseAndAnAliasSharingANameAreCountedSeparately(t *testing.T) {
 		t.Errorf("a shared name collapsed the breakdowns: %+v / %+v", got.ByPhase, got.ByModelAlias)
 	}
 }
+
+// opencode drops the event carrying usage and cost when it runs in a container
+// -- the same upstream bug that swallows its narrative output. A run whose
+// price is unknown reported as $0 makes a blind ledger look like a free one,
+// and a budget checked against it is not being enforced.
+func TestAnUnpricedRunIsNotReportedAsFree(t *testing.T) {
+	c := &card.Card{ID: uuid.New()}
+	s := newCardsTestServer(t, &attemptStore{card: c, attempts: []Attempt{
+		{ID: 1, Phase: "implementation", ModelAlias: "cheap", CostUSD: nil},
+		{ID: 2, Phase: "review", ModelAlias: "strong", CostUSD: f64(0.5)},
+	}})
+
+	rec := getJSON(t, s, "/cards/"+c.ID.String()+"/cost")
+	var got struct {
+		Unpriced     int  `json:"unpriced_attempts"`
+		CostComplete bool `json:"cost_complete"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Unpriced != 1 {
+		t.Errorf("unpriced_attempts = %d, want 1", got.Unpriced)
+	}
+	if got.CostComplete {
+		t.Error("cost_complete is true while a run's price is unknown")
+	}
+}
+
+func TestAFullyPricedCardSaysSo(t *testing.T) {
+	c := &card.Card{ID: uuid.New()}
+	s := newCardsTestServer(t, &attemptStore{card: c, attempts: []Attempt{
+		{ID: 1, Phase: "implementation", ModelAlias: "cheap", CostUSD: f64(0.25)},
+	}})
+
+	rec := getJSON(t, s, "/cards/"+c.ID.String()+"/cost")
+	var got struct {
+		CostComplete bool `json:"cost_complete"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &got)
+	if !got.CostComplete {
+		t.Error("cost_complete is false while every run reported its price")
+	}
+}

@@ -15,6 +15,7 @@ import (
 type shareServer struct {
 	existing []map[string]any
 	puts     []map[string]any
+	posts    []map[string]any
 	paths    []string
 	status   int
 	body     string
@@ -39,6 +40,13 @@ func (s *shareServer) start(t *testing.T) *Client {
 				return
 			}
 			w.WriteHeader(http.StatusCreated)
+			_, _ = io.WriteString(w, `{"id":1}`)
+		case r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/users/"):
+			b, _ := io.ReadAll(r.Body)
+			var got map[string]any
+			_ = json.Unmarshal(b, &got)
+			s.posts = append(s.posts, got)
+			w.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(w, `{"id":1}`)
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -175,5 +183,48 @@ func TestAnOutOfRangePermissionIsRefused(t *testing.T) {
 	}
 	if len(s.puts) != 0 {
 		t.Fatalf("called the API with an invalid permission: %v", s.puts)
+	}
+}
+
+// Vikunja splits this across two routes: PUT on the collection creates a
+// share, POST on the member updates one. Sending only the create means a user
+// who already has access comes back 409 -- which the control plane logged as a
+// startup error on every restart, in the one case where the share was already
+// there.
+func TestAUserWhoAlreadyHasAccessHasTheirPermissionUpdated(t *testing.T) {
+	s := &shareServer{
+		// Present, but read-only when admin was asked for.
+		existing: []map[string]any{{"username": "tucker", "permission": float64(0)}},
+		status:   http.StatusConflict,
+		body:     `{"code":7002,"message":"This user already has access to this project."}`,
+	}
+	c := s.start(t)
+
+	if err := c.EnsureProjectShares(context.Background(), 2, []string{"tucker"}, PermissionAdmin); err != nil {
+		t.Fatalf("EnsureProjectShares: %v; an existing share is not a failure", err)
+	}
+	if len(s.posts) != 1 {
+		t.Fatalf("posts = %v, want the permission updated on the member route", s.posts)
+	}
+	if got := s.posts[0]["permission"]; got != float64(PermissionAdmin) {
+		t.Errorf("permission = %v, want %d", got, PermissionAdmin)
+	}
+	if !strings.HasSuffix(s.paths[len(s.paths)-1], "/api/v1/projects/2/users/tucker") {
+		t.Errorf("update went to %q", s.paths[len(s.paths)-1])
+	}
+}
+
+// §4.3 treats the human's ability to move a card as a real input to the state
+// machine, so read-only access when admin was asked for is a correction to
+// make, not a state to tolerate.
+func TestAShareThatIsAlreadyCorrectIsLeftAlone(t *testing.T) {
+	s := &shareServer{existing: []map[string]any{{"username": "tucker", "permission": float64(PermissionAdmin)}}}
+	c := s.start(t)
+
+	if err := c.EnsureProjectShares(context.Background(), 2, []string{"tucker"}, PermissionAdmin); err != nil {
+		t.Fatalf("EnsureProjectShares: %v", err)
+	}
+	if len(s.puts) != 0 || len(s.posts) != 0 {
+		t.Errorf("wrote puts=%v posts=%v for a share that was already right", s.puts, s.posts)
 	}
 }
