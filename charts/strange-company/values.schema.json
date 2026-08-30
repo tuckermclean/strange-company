@@ -402,6 +402,10 @@
             },
             "password": {
               "type": "string"
+            },
+            "publicUrl": {
+              "type": "string",
+              "description": "Where a browser reaches the Hermes dashboard. Used to link a card to its specification conversation."
             }
           }
         },
@@ -759,6 +763,10 @@
         },
         "token": {
           "type": "string"
+        },
+        "dayZeroToken": {
+          "type": "string",
+          "description": "Optional GitHub credential for day-0 repository setup. Needs the `workflow` scope, and is deliberately separate from the agents' credential, which must never carry it."
         }
       }
     }

@@ -28,6 +28,10 @@ type Server struct {
 
 	// ui registers the operator console's routes, when one is wired.
 	ui func(*http.ServeMux)
+
+	// importer performs day-0 repository setup, when a credential carrying
+	// GitHub's `workflow` scope has been configured.
+	importer Importer
 }
 
 // SetMCP mounts the Company MCP server under /mcp.
@@ -73,6 +77,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /cards/{id}/cost", s.handleCardCost)
 	mux.HandleFunc("GET /cards/{id}/history", s.handleCardHistory)
 	mux.HandleFunc("GET /portfolio", s.handlePortfolio)
+	mux.HandleFunc("POST /repos/import", s.handleImportRepo)
 
 	// The operator's console, when one has been wired. Registered here so
 	// the UI shares the API's lifecycle and its ingress, and so nothing has

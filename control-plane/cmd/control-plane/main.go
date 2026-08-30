@@ -40,6 +40,7 @@ import (
 	"github.com/tuckermclean/strange-company/control-plane/internal/server"
 	"github.com/tuckermclean/strange-company/control-plane/internal/specapproval"
 	"github.com/tuckermclean/strange-company/control-plane/internal/specsession"
+	"github.com/tuckermclean/strange-company/control-plane/internal/onboard"
 	"github.com/tuckermclean/strange-company/control-plane/internal/store"
 	"github.com/tuckermclean/strange-company/control-plane/internal/ui"
 	"github.com/tuckermclean/strange-company/control-plane/internal/teststep"
@@ -144,13 +145,31 @@ func main() {
 		SetCards(cardStore{st}, storeErrorClassifier{}).
 		SetMCP(mcp.NewServer(mcpCards{st}).SetEvidence(st).Handler())
 
+	// Day-0 repository setup, only when a credential carrying GitHub's
+	// `workflow` scope has been supplied. Absent, the endpoint says so
+	// rather than failing in a way that reads as a bug: writing
+	// .github/workflows is more power than anything else here holds, and it
+	// should be an explicit choice to grant it.
+	if cfg.GitHubDayZeroToken != "" {
+		dayZero, err := github.New(cfg.GitHubAPIURL, cfg.GitHubDayZeroToken, nil)
+		if err != nil {
+			// Not fatal. A misconfigured day-0 credential must not stop the
+			// engine running for the repositories already prepared.
+			logger.Error("repository import is off; the day-0 credential could not be used", "error", err)
+		} else {
+			api = api.SetImporter(onboard.New(dayZero, cfg.GitHubIngestLabel, nil, logger))
+		}
+	} else {
+		logger.Info("repository import is off; no day-0 credential with the GitHub workflow scope is configured")
+	}
+
 	// The console is not load-bearing: the API and every supervisor work
 	// without it, so a template that failed to parse must not stop the
 	// engine from running.
 	if console, err := ui.New(st, logger); err != nil {
 		logger.Error("the operator console will not be served", "error", err)
 	} else {
-		api = api.SetUI(console.Routes)
+		api = api.SetUI(console.WithDashboard(cfg.HermesDashboardPublicURL).Routes)
 	}
 
 	srv := &http.Server{

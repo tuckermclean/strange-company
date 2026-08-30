@@ -23,6 +23,20 @@
   </div>
 </section>
 
+{{if .SpecSession}}
+<section>
+  <h2>Specification conversation</h2>
+  <div class="panel"><div class="row">
+    <span class="grow">A conversation is open for this card's specification.</span>
+    {{if .SpecSessionURL}}
+    <a href="{{.SpecSessionURL}}">Continue in Hermes</a>
+    {{else}}
+    <span class="dim">session {{.SpecSession}} &mdash; no dashboard URL configured</span>
+    {{end}}
+  </div></div>
+</section>
+{{end}}
+
 {{if or .CanApprove .CanBlock .CanSendBack}}
 <section>
   <h2>Act</h2>

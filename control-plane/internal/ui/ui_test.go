@@ -22,6 +22,7 @@ type fakeStore struct {
 	artifacts []*store.Artifact
 	history   []store.HistoryEntry
 	evidence  []store.CardEvidence
+	session   string
 
 	moves     []card.State
 	moveErr   error
@@ -49,6 +50,9 @@ func (f *fakeStore) ListHistory(context.Context, uuid.UUID, int) ([]store.Histor
 }
 func (f *fakeStore) ListEvidence(context.Context, uuid.UUID) ([]store.CardEvidence, error) {
 	return f.evidence, nil
+}
+func (f *fakeStore) GetSpecSession(context.Context, uuid.UUID) (string, error) {
+	return f.session, nil
 }
 func (f *fakeStore) Transition(_ context.Context, _ uuid.UUID, to card.State, _ card.ActorType, _, _ string) error {
 	if f.moveErr != nil {
@@ -324,5 +328,35 @@ func TestEachStepsAccountIsShown(t *testing.T) {
 
 	if body := get(t, h, "/ui/cards/"+c.ID.String()).Body.String(); !strings.Contains(body, "acceptance tests written and red") {
 		t.Error("the card shows no account of what each step did")
+	}
+}
+
+// The session id has been stored since M4 and surfaced nowhere, so finding a
+// conversation meant hunting the dashboard's list by title.
+func TestACardLinksToItsSpecificationConversation(t *testing.T) {
+	c := aCard("needs discussion", card.Backlog)
+	h, err := New(&fakeStore{cards: []*card.Card{c}, session: "api_1724_abc"}, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	h = h.WithDashboard("https://hermes.example.com/")
+	mux := http.NewServeMux()
+	h.Routes(mux)
+
+	body := get(t, mux, "/ui/cards/"+c.ID.String()).Body.String()
+	if !strings.Contains(body, "https://hermes.example.com/sessions/api_1724_abc") {
+		t.Errorf("the card does not link to its conversation:\n%s", body)
+	}
+}
+
+// Without a public dashboard URL the console must still say a conversation
+// exists, rather than silently hiding it.
+func TestAConversationIsReportedEvenWithoutADashboardURL(t *testing.T) {
+	c := aCard("needs discussion", card.Backlog)
+	h := serve(t, &fakeStore{cards: []*card.Card{c}, session: "api_1724_abc"})
+
+	body := get(t, h, "/ui/cards/"+c.ID.String()).Body.String()
+	if !strings.Contains(body, "api_1724_abc") {
+		t.Error("a card with an open conversation says nothing about it")
 	}
 }

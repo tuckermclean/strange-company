@@ -45,6 +45,10 @@ type Store interface {
 	ListHistory(ctx context.Context, cardID uuid.UUID, limit int) ([]store.HistoryEntry, error)
 	ListEvidence(ctx context.Context, cardID uuid.UUID) ([]store.CardEvidence, error)
 
+	// SpecSessionID returns the Hermes conversation opened for this card's
+	// specification (§10.2), or "" when none has been.
+	GetSpecSession(ctx context.Context, cardID uuid.UUID) (string, error)
+
 	Transition(ctx context.Context, cardID uuid.UUID, to card.State, actor card.ActorType, actorID, reason string) error
 	ApproveSpec(ctx context.Context, cardID uuid.UUID, approvedBy string) error
 }
@@ -54,6 +58,25 @@ type Handler struct {
 	store Store
 	log   *slog.Logger
 	tmpl  *template.Template
+
+	// dashboard is where a human continues a specification conversation.
+	//
+	// §10.2's conversation happens in Hermes, which is a real chat product
+	// with streaming, history and its own sign-in. Rebuilding that here
+	// would be the one part of this system that duplicates something rather
+	// than doing something nothing else does -- so the console links to it.
+	// What was missing was never the chat. It was the link: the session id
+	// has been stored since M4 and surfaced nowhere, so finding a
+	// conversation meant hunting a dashboard list by title.
+	dashboard string
+}
+
+// WithDashboard sets the public Hermes dashboard URL used to link a card to
+// its specification conversation. Without one, the console reports that a
+// conversation is open but cannot say where.
+func (h *Handler) WithDashboard(url string) *Handler {
+	h.dashboard = strings.TrimRight(url, "/")
+	return h
 }
 
 // New builds the UI handler.

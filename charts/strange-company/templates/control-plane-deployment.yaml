@@ -95,6 +95,14 @@ spec:
                   # Optional: no token simply disables ingestion, and the
                   # control plane says so at boot rather than failing.
                   optional: true
+            - name: GITHUB_DAY_ZERO_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "strange-company.secretName" . }}
+                  key: github-day-zero-token
+                  # Optional: no token simply means repository import is not
+                  # offered, which is the default and the safe state.
+                  optional: true
             - name: HERMES_API_KEY
               valueFrom:
                 secretKeyRef:
