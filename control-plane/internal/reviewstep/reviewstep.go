@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/tuckermclean/strange-company/control-plane/internal/card"
@@ -44,6 +45,22 @@ const maxReviewTokens = 32768
 // retryReviewTokens is the second and final budget. A model that cannot answer
 // within this is not going to, and spending more is throwing money at it.
 const retryReviewTokens = 4 * maxReviewTokens
+
+// reviewTimeout is how long a reviewer may take.
+//
+// The client's three-minute default is right for a screening question and
+// wrong here: a reasoning model reading a 400-line diff spends minutes
+// thinking before it writes anything, and on every large card the read was cut
+// off mid-answer. Because an aborted read is an infrastructure failure and
+// infrastructure failures burn no attempt, the card was released and re-claimed
+// on a loop -- spending a full reasoning call every four minutes, forever,
+// while opening no pull request and escalating to nobody.
+//
+// Ten minutes is chosen against the lease rather than against a guess at how
+// long a model thinks: the worker heartbeats the card for the whole step, so a
+// call inside the lease cannot orphan it, and a provider that is genuinely hung
+// still fails inside one lease period.
+const reviewTimeout = 10 * time.Minute
 
 // Completer performs one model completion.
 type Completer interface {
@@ -339,14 +356,18 @@ func (s *Step) diffFor(ctx context.Context, c *card.Card) (string, error) {
 // budget is not the model failing -- it is the model not having been given
 // room to answer. Retrying with the same number would just fail again.
 func (s *Step) review(ctx context.Context, client Completer, msgs []modelclient.Message) (*modelclient.Completion, error) {
-	completion, err := client.Complete(ctx, modelclient.CompleteRequest{Messages: msgs, MaxTokens: maxReviewTokens})
+	completion, err := client.Complete(ctx, modelclient.CompleteRequest{
+		Messages: msgs, MaxTokens: maxReviewTokens, Timeout: reviewTimeout,
+	})
 	if !errors.Is(err, modelclient.ErrBudgetExhausted) {
 		return completion, err
 	}
 
 	s.log.Warn("the reviewer spent its whole budget thinking; retrying with a larger one",
 		"first", maxReviewTokens, "retry", retryReviewTokens, "error", err)
-	return client.Complete(ctx, modelclient.CompleteRequest{Messages: msgs, MaxTokens: retryReviewTokens})
+	return client.Complete(ctx, modelclient.CompleteRequest{
+		Messages: msgs, MaxTokens: retryReviewTokens, Timeout: reviewTimeout,
+	})
 }
 
 // record puts the review on the run ledger (§12, §22).
