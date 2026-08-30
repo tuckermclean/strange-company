@@ -194,7 +194,7 @@ func Load(getenv func(string) string) (*Config, error) {
 		DatabaseUser:     required("DATABASE_USER"),
 		DatabasePassword: required("DATABASE_PASSWORD"),
 
-		VikunjaURL:       required("VIKUNJA_URL"),
+		VikunjaURL:       strings.TrimSpace(getenv("VIKUNJA_URL")),
 		HermesGatewayURL: required("HERMES_GATEWAY_URL"),
 
 		// Optional: a fresh install has no Vikunja token until the control
@@ -248,10 +248,14 @@ func Load(getenv func(string) string) (*Config, error) {
 		}
 	}
 
+	// VIKUNJA_URL is optional: an install that has retired the board runs
+	// without one, and the control plane must not merely tolerate that but
+	// stop depending on it -- see the readiness checks in main, where a
+	// Vikunja that is not configured must not be probed.
 	for _, name := range []string{"VIKUNJA_URL", "HERMES_GATEWAY_URL"} {
 		raw := strings.TrimSpace(getenv(name))
 		if raw == "" {
-			continue // already reported as missing
+			continue // absent, or already reported as missing
 		}
 		u, err := url.Parse(raw)
 		if err != nil || u.Scheme == "" || u.Host == "" {

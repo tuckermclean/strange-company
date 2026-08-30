@@ -155,11 +155,23 @@ Chart-created Secret holding credentials this chart owns.
 {{- end -}}
 {{- end -}}
 
+{{- /*
+Three states, not two.
+
+  vikunja.enabled: true                      -> the chart's own Vikunja
+  vikunja.enabled: false, external.url set   -> someone else's Vikunja
+  vikunja.enabled: false, external.url empty -> NO board at all
+
+The third used to be an error, because a board was assumed mandatory. It is not:
+the control plane serves its own console at /ui, and an install that has retired
+Vikunja renders no VIKUNJA_URL, runs no board projection, and does not probe a
+Vikunja for readiness. Retiring the board must not take the engine down with it.
+*/ -}}
 {{- define "strange-company.vikunjaUrl" -}}
 {{- if .Values.vikunja.enabled -}}
 {{- printf "http://%s:3456" (include "strange-company.vikunja.fullname" .) -}}
 {{- else -}}
-{{- required "vikunja.external.url is required when vikunja.enabled is false" .Values.vikunja.external.url -}}
+{{- .Values.vikunja.external.url -}}
 {{- end -}}
 {{- end -}}
 

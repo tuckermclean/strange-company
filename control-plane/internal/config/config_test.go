@@ -37,17 +37,44 @@ func TestLoadRequiresDatabaseHost(t *testing.T) {
 func TestLoadReportsEveryMissingVariableAtOnce(t *testing.T) {
 	m := completeEnv()
 	delete(m, "DATABASE_HOST")
-	delete(m, "VIKUNJA_URL")
+	delete(m, "HERMES_GATEWAY_URL")
 
 	_, err := Load(env(m))
 
 	if err == nil {
 		t.Fatal("want an error, got nil")
 	}
-	for _, want := range []string{"DATABASE_HOST", "VIKUNJA_URL"} {
+	for _, want := range []string{"DATABASE_HOST", "HERMES_GATEWAY_URL"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error should name %s, got %q", want, err.Error())
 		}
+	}
+}
+
+// An install that has retired the board runs without a Vikunja at all.
+// Requiring the URL meant the control plane refused to start for want of a
+// projection nobody had asked for.
+func TestVikunjaIsOptional(t *testing.T) {
+	m := completeEnv()
+	delete(m, "VIKUNJA_URL")
+
+	cfg, err := Load(env(m))
+	if err != nil {
+		t.Fatalf("Load without VIKUNJA_URL: %v", err)
+	}
+	if cfg.VikunjaURL != "" {
+		t.Errorf("VikunjaURL = %q, want empty", cfg.VikunjaURL)
+	}
+}
+
+// Still validated when supplied: a typo in a URL that IS configured is worth
+// refusing to start over.
+func TestAConfiguredVikunjaURLIsStillValidated(t *testing.T) {
+	m := completeEnv()
+	m["VIKUNJA_URL"] = "not-a-url"
+
+	if _, err := Load(env(m)); err == nil {
+		t.Fatal("Load accepted a malformed VIKUNJA_URL")
 	}
 }
 

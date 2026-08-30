@@ -100,8 +100,14 @@ func main() {
 
 	pol := loadPolicy(logger, cfg)
 
-	// Runs for the lifetime of the process, retrying until Vikunja is reachable.
-	go runVikunjaSupervisor(ctx, logger, cfg, st, pol)
+	// Runs for the lifetime of the process, retrying until Vikunja is
+	// reachable -- when there is one. An install that has retired the board
+	// simply never starts it, rather than retrying forever against nothing.
+	if cfg.VikunjaURL != "" {
+		go runVikunjaSupervisor(ctx, logger, cfg, st, pol)
+	} else {
+		logger.Info("no Vikunja configured; the board projection is off and the console at /ui is the surface")
+	}
 
 	// Screens specifications and opens the human conversation for the ones
 	// that need it (spec 10.1, 10.2).
@@ -117,10 +123,19 @@ func main() {
 	// Spawns the short-lived workers that actually do the work (spec 7).
 	go runWorkerSupervisor(ctx, logger, cfg, st, pol)
 
+	// Readiness names only what this process actually needs.
+	//
+	// Vikunja is probed only when one is configured. Leaving it in the list
+	// unconditionally meant that retiring the board would fail the readiness
+	// probe, Kubernetes would take the pod out of service, and the whole
+	// engine would stop -- because a projection nobody had asked for was
+	// unreachable.
 	checks := []health.Checker{
 		&postgresChecker{store: st},
-		health.HTTPReachable("vikunja", cfg.VikunjaURL+"/api/v1/info", nil),
 		health.HTTPReachable("hermes-gateway", cfg.HermesGatewayURL, nil),
+	}
+	if cfg.VikunjaURL != "" {
+		checks = append(checks, health.HTTPReachable("vikunja", cfg.VikunjaURL+"/api/v1/info", nil))
 	}
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
