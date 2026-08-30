@@ -32,6 +32,16 @@ const (
 	// something breaks, this is the only record of it. The Job is deleted
 	// as soon as its logs are read, so nothing else survives.
 	ArtifactRunLog = "run-log"
+
+	// ArtifactModelExchange is one model call in full: what was asked and
+	// what came back.
+	//
+	// The coding phases keep their harness transcript; the model phases kept
+	// only the answer, so planning and review recorded a verdict with no
+	// record of the question that produced it. Reviewing that is guesswork:
+	// §18's whole claim is that the reviewer saw the diff, and nothing
+	// stored what it actually saw.
+	ArtifactModelExchange = "model-exchange"
 	ArtifactDiff               = "diff"
 	ArtifactCompilerOutput     = "compiler-output"
 	ArtifactLinterOutput       = "linter-output"

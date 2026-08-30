@@ -38,7 +38,8 @@ type cardView struct {
 
 	Criteria  []criterionView
 	Runs      []runView
-	Artifacts []artifactView
+	Artifacts []artifactGroup
+	Workers   []workerStint
 	Evidence  []evidenceView
 
 	// SpecSession is the §10.2 conversation, when one is open.
@@ -76,19 +77,53 @@ type runView struct {
 	Infra    bool
 }
 
+// artifactGroup collapses repeats of one type.
+//
+// A retry loop can leave hundreds of artifacts of the same kind on one card --
+// 262 on a real one -- and rendering a row each buries everything else on the
+// page. The newest is the one worth reading; the rest are counted.
+type artifactGroup struct {
+	Type    string
+	Count   int
+	Newest  artifactView
+	Others  []artifactView
+	Repeats bool
+}
+
 type artifactView struct {
 	ID        string
 	Type      string
 	Size      int64
 	Truncated bool
+	When      string
+}
+
+// workerStint is one Meeseeks' whole life: which phase it took, and how long it
+// existed.
+//
+// §7.1 gives each phase its own worker -- claim, one step, release, exit -- and
+// the card page rendered every one of them as "agent", which flattens the most
+// distinctive thing this architecture does into a word. Derived from history
+// rather than stored: the actor id is already on every transition.
+//
+// The phase is deliberately not carried here. It is not reliably derivable
+// from a transition row -- "phase advanced to X" names where the card is
+// GOING, not what this worker just did -- and a field that is sometimes wrong
+// is worse than one that does not exist. The history below says what each one
+// did, in its own words.
+type workerStint struct {
+	Worker string
+	From   string
+	To     string
 }
 
 type historyView struct {
-	When   string
-	From   string
-	To     string
-	Actor  string
-	Reason string
+	When    string
+	From    string
+	To      string
+	Actor   string
+	ActorID string
+	Reason  string
 }
 
 func (h *Handler) cardPage(w http.ResponseWriter, r *http.Request) {
@@ -149,11 +184,7 @@ func (h *Handler) cardPage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if artifacts, err := h.store.ListArtifacts(r.Context(), id); err == nil {
-		for _, a := range artifacts {
-			v.Artifacts = append(v.Artifacts, artifactView{
-				ID: a.ID.String(), Type: a.Type, Size: a.SizeBytes, Truncated: a.Truncated,
-			})
-		}
+		v.Artifacts = groupArtifacts(artifacts)
 	}
 	if session, err := h.store.GetSpecSession(r.Context(), id); err == nil && session != "" {
 		v.SpecSession = session
@@ -168,13 +199,14 @@ func (h *Handler) cardPage(w http.ResponseWriter, r *http.Request) {
 		v.Evidence = evidenceFrom(evidence)
 	}
 
-	if history, err := h.store.ListHistory(r.Context(), id, 40); err == nil {
+	if history, err := h.store.ListHistory(r.Context(), id, 200); err == nil {
 		for _, e := range history {
 			v.History = append(v.History, historyView{
 				When: e.At.UTC().Format("15:04:05Z"), From: e.From, To: e.To,
-				Actor: e.ActorType, Reason: e.Reason,
+				Actor: e.ActorType, ActorID: shortWorker(e.ActorID), Reason: e.Reason,
 			})
 		}
+		v.Workers = relay(history)
 	}
 
 	v.Error = r.URL.Query().Get("error")
@@ -211,4 +243,59 @@ func runFrom(a store.StoredAttempt) runView {
 		r.Tokens = formatTokens(a.InputTokens, a.OutputTokens)
 	}
 	return r
+}
+
+// groupArtifacts collapses repeats of one type, newest first within each group.
+//
+// ListArtifacts returns oldest-first, so the last of a run is the newest.
+func groupArtifacts(in []*store.Artifact) []artifactGroup {
+	order := []string{}
+	byType := map[string][]artifactView{}
+
+	for _, a := range in {
+		if _, seen := byType[a.Type]; !seen {
+			order = append(order, a.Type)
+		}
+		byType[a.Type] = append(byType[a.Type], artifactView{
+			ID: a.ID.String(), Type: a.Type, Size: a.SizeBytes, Truncated: a.Truncated,
+		})
+	}
+
+	out := make([]artifactGroup, 0, len(order))
+	for _, t := range order {
+		views := byType[t]
+		g := artifactGroup{Type: t, Count: len(views), Newest: views[len(views)-1]}
+		if len(views) > 1 {
+			g.Repeats = true
+			// Newest first, and the newest itself is already shown above.
+			for i := len(views) - 2; i >= 0; i-- {
+				g.Others = append(g.Others, views[i])
+			}
+		}
+		out = append(out, g)
+	}
+	return out
+}
+
+// relay reconstructs the chain of Meeseeks that carried this card.
+//
+// Each worker claims, does one step and exits, so its life is bounded by the
+// first and last history rows naming it. Consecutive rows from one actor
+// collapse into a single stint; a worker that appears again later gets another.
+func relay(history []store.HistoryEntry) []workerStint {
+	var out []workerStint
+	for _, e := range history {
+		if !strings.HasPrefix(e.ActorID, "meeseeks-") {
+			continue
+		}
+		short := shortWorker(e.ActorID)
+		when := e.At.UTC().Format("15:04:05Z")
+
+		if n := len(out); n > 0 && out[n-1].Worker == short {
+			out[n-1].To = when
+			continue
+		}
+		out = append(out, workerStint{Worker: short, From: when, To: when})
+	}
+	return out
 }

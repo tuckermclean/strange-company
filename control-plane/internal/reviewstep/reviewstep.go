@@ -165,10 +165,26 @@ func (s *Step) Do(ctx context.Context, c *card.Card, res *policy.Resolution) (wo
 		s.log.Error("could not record the diff", "card_id", c.ID, "error", aerr)
 	}
 
-	completion, err := s.review(ctx, client, []modelclient.Message{
+	messages := []modelclient.Message{
 		{Role: "system", Content: systemPrompt},
 		{Role: "user", Content: reviewInput(c, cardSpec.Content, artifacts, diff)},
-	})
+	}
+	completion, err := s.review(ctx, client, messages)
+
+	// The exchange in full, whether or not it produced a verdict. §18's claim
+	// is that the reviewer saw the diff; storing only the verdict leaves that
+	// unverifiable, and a call that failed is exactly the one someone comes
+	// looking for.
+	if _, aerr := s.artifacts.PutArtifact(ctx, store.Artifact{
+		CardID: c.ID, Type: store.ArtifactModelExchange, Actor: res.ProviderName,
+		Model: res.Model, ContentType: "text/markdown",
+		Content: modelclient.Transcript(
+			modelclient.CompleteRequest{Messages: messages, MaxTokens: maxReviewTokens, Timeout: reviewTimeout},
+			completion, err),
+	}); aerr != nil {
+		s.log.Error("could not record the review exchange", "card_id", c.ID, "error", aerr)
+	}
+
 	s.record(ctx, c, res, completion, err)
 	if err != nil {
 		return worker.Evidence{}, fmt.Errorf("reviewstep: %w", err)

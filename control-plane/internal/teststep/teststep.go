@@ -171,17 +171,26 @@ func (s *Step) Do(ctx context.Context, c *card.Card, res *policy.Resolution) (wo
 		s.log.Error("could not record the attempt", "card_id", c.ID, "run_id", runID, "error", rerr)
 	}
 
-	if _, aerr := s.artifacts.PutArtifact(ctx, store.Artifact{
-		CardID:      c.ID,
-		Type:        store.ArtifactTestMapping,
-		Actor:       res.ProviderName,
-		Model:       result.Model,
-		ContentType: "text/markdown",
-		Content:     result.Summary,
-	}); aerr != nil {
-		s.log.Error("could not record the test-writing run", "card_id", c.ID, "error", aerr)
+	// Only when the run actually produced something. This artifact claims to
+	// BE the test mapping, and its content is the run's summary -- which for
+	// a run that never completed is an error message.
+	//
+	// Writing it unconditionally put 262 artifacts on one card, each labelled
+	// "test-mapping" and each containing a Kubernetes 404, during a
+	// five-hour retry loop. That is not clutter, it is false evidence: an
+	// audit surface asserting a mapping exists where nothing was mapped.
+	if result.Status == runner.StatusCompleted {
+		if _, aerr := s.artifacts.PutArtifact(ctx, store.Artifact{
+			CardID:      c.ID,
+			Type:        store.ArtifactTestMapping,
+			Actor:       res.ProviderName,
+			Model:       result.Model,
+			ContentType: "text/markdown",
+			Content:     result.Summary,
+		}); aerr != nil {
+			s.log.Error("could not record the test-writing run", "card_id", c.ID, "error", aerr)
+		}
 	}
-
 	switch result.Status {
 	case runner.StatusCompleted:
 		return s.redGate(ctx, c, result, baseRef, branch)
