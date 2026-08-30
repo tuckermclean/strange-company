@@ -100,7 +100,7 @@ func main() {
 	pol := loadPolicy(logger, cfg)
 
 	// Runs for the lifetime of the process, retrying until Vikunja is reachable.
-	go runVikunjaSupervisor(ctx, logger, cfg, st)
+	go runVikunjaSupervisor(ctx, logger, cfg, st, pol)
 
 	// Screens specifications and opens the human conversation for the ones
 	// that need it (spec 10.1, 10.2).
@@ -258,7 +258,7 @@ func loadPolicy(logger *slog.Logger, cfg *config.Config) *policy.Policy {
 //
 // Nothing here is fatal. If Vikunja never comes back, the control plane is still
 // the source of truth and keeps serving.
-func runVikunjaSupervisor(ctx context.Context, logger *slog.Logger, cfg *config.Config, st *store.Store) {
+func runVikunjaSupervisor(ctx context.Context, logger *slog.Logger, cfg *config.Config, st *store.Store, pol *policy.Policy) {
 	const retryInterval = 10 * time.Second
 
 	token := cfg.VikunjaToken
@@ -304,7 +304,7 @@ func runVikunjaSupervisor(ctx context.Context, logger *slog.Logger, cfg *config.
 				logger.Warn("waiting to prepare the Vikunja board", "error", err)
 			} else {
 				board = b
-				reconciler = vikunja.NewReconciler(client, board, st, logger)
+				reconciler = vikunja.NewReconciler(client, board, st, logger).WithLadder(pol)
 
 				// Without this the project belongs to the bootstrap
 				// user alone and no human can see the cards. Not
@@ -637,6 +637,21 @@ func (c cardStore) ListAttempts(ctx context.Context, cardID uuid.UUID) ([]server
 			InputTokens: a.InputTokens, OutputTokens: a.OutputTokens, CachedTokens: a.CachedTokens,
 			CostUSD: a.CostUSD, DurationMS: a.DurationMS,
 			StartedAt: a.StartedAt, CreatedAt: a.CreatedAt,
+		})
+	}
+	return out, nil
+}
+
+func (c cardStore) ListHistory(ctx context.Context, cardID uuid.UUID, limit int) ([]server.HistoryEntry, error) {
+	stored, err := c.Store.ListHistory(ctx, cardID, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]server.HistoryEntry, 0, len(stored))
+	for _, e := range stored {
+		out = append(out, server.HistoryEntry{
+			At: e.At, From: e.From, To: e.To,
+			ActorType: e.ActorType, ActorID: e.ActorID, Reason: e.Reason,
 		})
 	}
 	return out, nil

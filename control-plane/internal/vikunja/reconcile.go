@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/tuckermclean/strange-company/control-plane/internal/card"
+	"github.com/tuckermclean/strange-company/control-plane/internal/spec"
 	"github.com/tuckermclean/strange-company/control-plane/internal/store"
 )
 
@@ -44,6 +45,19 @@ type CardRepo interface {
 	// board, so the next pass can tell a board a human moved from a board
 	// that has not caught up yet.
 	SetVikunjaSyncedState(ctx context.Context, id uuid.UUID, state card.State, phase card.Phase) error
+
+	// GetSpec returns the card's specification, or nil when it has none.
+	// §33 puts acceptance criteria on the card, and they are parsed from
+	// here rather than re-derived.
+	GetSpec(ctx context.Context, cardID uuid.UUID) (*store.CardSpec, error)
+
+	// ListHistory returns the card's transitions, oldest first. §33's last
+	// card item is "history with timestamps".
+	ListHistory(ctx context.Context, cardID uuid.UUID, limit int) ([]store.HistoryEntry, error)
+
+	// ListArtifacts returns what the card has produced, for §33's artifact
+	// list and for the attachments that carry them.
+	ListArtifacts(ctx context.Context, cardID uuid.UUID) ([]*store.Artifact, error)
 }
 
 // Result summarizes the outcome of a single reconciliation pass.
@@ -76,7 +90,21 @@ type Reconciler struct {
 	client *Client
 	board  *Board
 	repo   CardRepo
+	ladder Ladder
 	log    *slog.Logger
+}
+
+// Ladder answers how many attempts a phase allows, for §33's "attempt 2/3".
+// *policy.Policy satisfies it; nil is fine and simply omits the denominator.
+type Ladder interface {
+	AttemptsFor(phase string) int
+}
+
+// WithLadder supplies the escalation ladder used to render the denominator of
+// a card's attempt count.
+func (r *Reconciler) WithLadder(l Ladder) *Reconciler {
+	r.ladder = l
+	return r
 }
 
 // NewReconciler returns a Reconciler that syncs cards from repo against the
@@ -177,6 +205,11 @@ func (r *Reconciler) RunOnce(ctx context.Context) (Result, error) {
 
 		taskID := *cd.VikunjaTaskID
 		linkedTaskIDs[taskID] = true
+
+		// The artifacts themselves, as attachments. This is the operator
+		// surface: the run logs among them are the raw discourse §21 keeps
+		// out of the description above.
+		r.attach(ctx, cd, taskID)
 
 		// Keep the summary current. A description written once at create
 		// and never touched again is worse than none: it describes a card
@@ -447,12 +480,33 @@ func (r *Reconciler) revert(ctx context.Context, cd *card.Card) error {
 // column it is in.
 //
 // Vikunja stores descriptions as HTML.
+// maxHistoryOnCard bounds §33's "history with timestamps".
+//
+// A card churns Ready/InProgress once per phase, so its history is long and
+// mostly lifecycle. The newest entries explain where it is now.
+const maxHistoryOnCard = 12
+
+// describe renders §33's card, in §33's order.
+//
+// §33 fixes both the contents and the sequence: title; state / current phase;
+// why it exists; acceptance criteria; current worker; latest result; cost;
+// artifacts; history with timestamps. Then: "No chain-of-thought dump. No need
+// to watch a terminal scroll by. The product is visibility into work."
+//
+// So this is the STAKEHOLDER surface and §21 governs it absolutely -- nothing
+// here is a model's reasoning. The raw discourse lives in the attachments,
+// where a reader has to ask for it and is told what they are getting.
+//
+// Every section is omitted when it has nothing to say. A card advertising an
+// empty heading teaches a reader to skim past headings.
 func (r *Reconciler) describe(ctx context.Context, cd *card.Card) string {
 	var b strings.Builder
 
+	// 2. State and phase.
 	fmt.Fprintf(&b, "<p><strong>%s</strong> \u00b7 phase <strong>%s</strong></p>",
 		html.EscapeString(string(cd.State)), html.EscapeString(string(cd.Phase)))
 
+	// 3. Why it exists.
 	b.WriteString("<ul>")
 	if cd.SourceURL != nil && *cd.SourceURL != "" {
 		fmt.Fprintf(&b, "<li>Source: %s</li>", html.EscapeString(*cd.SourceURL))
@@ -464,20 +518,17 @@ func (r *Reconciler) describe(ctx context.Context, cd *card.Card) string {
 		}
 		b.WriteString("</li>")
 	}
-	// Only when they have moved. A counter reading zero on every card is
-	// noise that trains a reader to skip the list.
-	if cd.ImplementationAttempt > 0 {
-		fmt.Fprintf(&b, "<li>Implementation attempts: %d</li>", cd.ImplementationAttempt)
-	}
-	if cd.InfrastructureFailures > 0 {
-		fmt.Fprintf(&b, "<li>Infrastructure failures: %d</li>", cd.InfrastructureFailures)
-	}
 	fmt.Fprintf(&b, "<li>Card <code>%s</code></li>", html.EscapeString(cd.ID.String()))
 	b.WriteString("</ul>")
 
-	// The most recent account of what happened. §21 wants "what happened to
-	// card X?" answerable; this is the one line of it that matters most --
-	// the reason this card is sitting where it is.
+	// 5. Current worker, and 7. cost.
+	if line := r.workerLine(cd); line != "" {
+		b.WriteString(line)
+	}
+	b.WriteString(r.progressLine(cd))
+	b.WriteString(r.costLine(cd))
+
+	// 6. Latest result.
 	if evidence, err := r.repo.ListEvidence(ctx, cd.ID); err != nil {
 		r.log.Warn("could not read evidence for a task description", "card_id", cd.ID, "error", err)
 	} else if len(evidence) > 0 {
@@ -486,6 +537,181 @@ func (r *Reconciler) describe(ctx context.Context, cd *card.Card) string {
 			html.EscapeString(last.Summary), html.EscapeString(last.ActorID))
 	}
 
+	// 4. Acceptance criteria.
+	b.WriteString(r.criteriaSection(ctx, cd))
+
+	// 8. Artifacts.
+	b.WriteString(r.artifactSection(ctx, cd))
+
+	// 9. History with timestamps.
+	b.WriteString(r.historySection(ctx, cd))
+
+	return b.String()
+}
+
+// workerLine renders §33's "Meeseeks #8f2c — Implementation — Haiku attempt 2/3".
+//
+// The denominator is the point. "attempt 2" tells a reader nothing; "2/3" tells
+// them how much rope is left, which is the question actually being asked of a
+// card that is taking a while.
+func (r *Reconciler) workerLine(cd *card.Card) string {
+	if cd.ClaimedBy == nil || *cd.ClaimedBy == "" {
+		return ""
+	}
+
+	worker := *cd.ClaimedBy
+	if i := strings.LastIndex(worker, "-"); i >= 0 && i < len(worker)-1 {
+		worker = worker[i+1:]
+	}
+
+	attempt := cd.ImplementationAttempt + 1
+	of := ""
+	if r.ladder != nil {
+		if total := r.ladder.AttemptsFor(string(cd.Phase)); total > 0 {
+			of = fmt.Sprintf("/%d", total)
+		}
+	}
+
+	return fmt.Sprintf("<p>Meeseeks <code>%s</code> \u00b7 %s \u00b7 attempt %d%s</p>",
+		html.EscapeString(worker), html.EscapeString(string(cd.Phase)), attempt, of)
+}
+
+// progressLine reports what a card has spent, whether or not anyone is
+// currently holding it.
+//
+// §33 folds the attempt count into the current-worker line, which is right
+// while a card is being worked and useless the rest of the time: a card
+// sitting in Ready having burned two of three attempts is exactly the card a
+// reader needs to notice, and it has no current worker at all.
+//
+// Shown only once a counter has moved. Zeroes on every card train a reader to
+// skip the line.
+func (r *Reconciler) progressLine(cd *card.Card) string {
+	var parts []string
+	if cd.ImplementationAttempt > 0 {
+		of := ""
+		if r.ladder != nil {
+			if total := r.ladder.AttemptsFor(string(cd.Phase)); total > 0 {
+				of = fmt.Sprintf(" of %d", total)
+			}
+		}
+		parts = append(parts, fmt.Sprintf("Implementation attempts: %d%s", cd.ImplementationAttempt, of))
+	}
+	if cd.InfrastructureFailures > 0 {
+		parts = append(parts, fmt.Sprintf("Infrastructure failures: %d in a row", cd.InfrastructureFailures))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "<p>" + html.EscapeString(strings.Join(parts, " \u00b7 ")) + "</p>"
+}
+
+// costLine renders §33's "$0.41 so far".
+//
+// An unpriced card says so rather than showing $0.00. Every opencode run is
+// unpriced until an operator configures rates, and a card reading "$0.00" would
+// have a reader conclude the work was free rather than unmeasured -- which is
+// the same lie GET /cards/{id}/cost was built to stop telling.
+func (r *Reconciler) costLine(cd *card.Card) string {
+	if cd.CostUSD <= 0 {
+		return "<p>Cost: unpriced \u2014 no rate card configured for this card's models</p>"
+	}
+	if cd.MaxCostUSD != nil && *cd.MaxCostUSD > 0 {
+		return fmt.Sprintf("<p>Cost: $%.2f so far, of $%.2f</p>", cd.CostUSD, *cd.MaxCostUSD)
+	}
+	return fmt.Sprintf("<p>Cost: $%.2f so far</p>", cd.CostUSD)
+}
+
+// criteriaSection renders §33's acceptance criteria.
+//
+// Parsed by internal/spec, not scraped: the specification gate already depends
+// on those criteria being structured, so this renders what was validated. A
+// card with no spec, or a spec with no criteria, shows nothing -- a card
+// claiming criteria it does not have is worse than one admitting it has none.
+func (r *Reconciler) criteriaSection(ctx context.Context, cd *card.Card) string {
+	cardSpec, err := r.repo.GetSpec(ctx, cd.ID)
+	if err != nil {
+		r.log.Warn("could not read the spec for a task description", "card_id", cd.ID, "error", err)
+		return ""
+	}
+	if cardSpec == nil || strings.TrimSpace(cardSpec.Content) == "" {
+		return ""
+	}
+
+	doc, _ := spec.Parse(cd.ID.String(), []byte(cardSpec.Content))
+	if doc == nil || len(doc.Criteria) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString("<p><strong>Acceptance criteria</strong></p><ul>")
+	for _, c := range doc.Criteria {
+		b.WriteString("<li>")
+		if c.ID != "" {
+			fmt.Fprintf(&b, "<code>%s</code> ", html.EscapeString(c.ID))
+		}
+		b.WriteString(html.EscapeString(c.Text))
+		if c.Verification != "" {
+			fmt.Fprintf(&b, " \u2014 verified by: %s", html.EscapeString(c.Verification))
+		}
+		b.WriteString("</li>")
+	}
+	b.WriteString("</ul>")
+	return b.String()
+}
+
+// artifactSection lists what the card has produced.
+//
+// Names match the attachments, so a reader looking at the list knows what to
+// download. §21 holds here: this names the artifacts, it does not inline them.
+func (r *Reconciler) artifactSection(ctx context.Context, cd *card.Card) string {
+	artifacts, err := r.repo.ListArtifacts(ctx, cd.ID)
+	if err != nil {
+		r.log.Warn("could not read artifacts for a task description", "card_id", cd.ID, "error", err)
+		return ""
+	}
+	if len(artifacts) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString("<p><strong>Artifacts</strong> (attached to this task)</p><ul>")
+	for _, a := range artifacts {
+		fmt.Fprintf(&b, "<li><code>%s</code>", html.EscapeString(attachmentName(a)))
+		if a.Truncated {
+			fmt.Fprintf(&b, " \u2014 truncated; %d bytes in full", a.SizeBytes)
+		}
+		b.WriteString("</li>")
+	}
+	b.WriteString("</ul>")
+	return b.String()
+}
+
+// historySection renders §33's "history with timestamps".
+func (r *Reconciler) historySection(ctx context.Context, cd *card.Card) string {
+	entries, err := r.repo.ListHistory(ctx, cd.ID, maxHistoryOnCard)
+	if err != nil {
+		r.log.Warn("could not read history for a task description", "card_id", cd.ID, "error", err)
+		return ""
+	}
+	if len(entries) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString("<p><strong>History</strong></p><ul>")
+	for _, e := range entries {
+		fmt.Fprintf(&b, "<li>%s \u00b7 ", html.EscapeString(e.At.UTC().Format("2006-01-02 15:04:05Z")))
+		if e.From != "" {
+			fmt.Fprintf(&b, "%s \u2192 ", html.EscapeString(e.From))
+		}
+		fmt.Fprintf(&b, "<strong>%s</strong> (%s)", html.EscapeString(e.To), html.EscapeString(e.ActorType))
+		if e.Reason != "" {
+			fmt.Fprintf(&b, "<br>%s", html.EscapeString(e.Reason))
+		}
+		b.WriteString("</li>")
+	}
+	b.WriteString("</ul>")
 	return b.String()
 }
 
@@ -515,4 +741,58 @@ func descriptionText(s string) string {
 		}
 	}
 	return strings.Join(strings.Fields(html.UnescapeString(out.String())), " ")
+}
+
+// attach uploads any artifact the task does not already carry.
+//
+// Idempotence is by name: artifacts are immutable, so a name already attached
+// is already done. Without that check this re-uploads every artifact on every
+// tick and grows the operator's Vikunja without bound -- the same shape as the
+// description-rewrite loop, with a worse consequence than a noisy timestamp.
+//
+// Never fatal. A card missing an attachment is worse than one with it and far
+// better than a board that has stopped tracking reality.
+func (r *Reconciler) attach(ctx context.Context, cd *card.Card, taskID int64) {
+	artifacts, err := r.repo.ListArtifacts(ctx, cd.ID)
+	if err != nil {
+		r.log.Warn("vikunja reconcile: could not read artifacts to attach", "card_id", cd.ID, "error", err)
+		return
+	}
+	if len(artifacts) == 0 {
+		return
+	}
+
+	existing, err := r.client.ListAttachments(ctx, taskID)
+	switch {
+	case errors.Is(err, ErrAttachmentsDisabled):
+		r.log.Debug("vikunja reconcile: not attaching; this instance has task attachments disabled",
+			"card_id", cd.ID)
+		return
+	case err != nil:
+		// Uploading without knowing what is there would duplicate
+		// everything, every tick. Skipping the pass is the safe failure.
+		r.log.Warn("vikunja reconcile: could not list attachments", "card_id", cd.ID, "error", err)
+		return
+	}
+
+	have := make(map[string]bool, len(existing))
+	for _, a := range existing {
+		have[a.File.Name] = true
+	}
+
+	for _, a := range artifacts {
+		name := attachmentName(a)
+		if have[name] {
+			continue
+		}
+		if err := r.client.UploadAttachment(ctx, taskID, name, []byte(a.Content)); err != nil {
+			if errors.Is(err, ErrAttachmentsDisabled) {
+				return
+			}
+			r.log.Warn("vikunja reconcile: could not attach an artifact",
+				"card_id", cd.ID, "artifact", name, "error", err)
+			continue
+		}
+		have[name] = true
+	}
 }

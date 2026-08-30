@@ -518,3 +518,60 @@ func (s *Store) SetVikunjaSyncedState(ctx context.Context, cardID uuid.UUID, sta
 	}
 	return nil
 }
+
+// HistoryEntry is one immutable record of a card changing state (§21).
+type HistoryEntry struct {
+	At        time.Time
+	From      string
+	To        string
+	ActorType string
+	ActorID   string
+	Reason    string
+}
+
+// ListHistory returns a card's transitions, oldest first.
+//
+// card_history has been written since M0 and read by nothing since. §21
+// requires the audit log to answer "what happened to card X?", and §33 puts
+// "history with timestamps" on the card -- neither was reachable outside a
+// psql session.
+//
+// Bounded: a card that has churned for hours has a long history, and neither a
+// task description nor a human needs all of it. The newest entries are the ones
+// that explain where a card is now, so the cap takes from the end.
+func (s *Store) ListHistory(ctx context.Context, cardID uuid.UUID, limit int) ([]HistoryEntry, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT at, coalesce(from_state, ''), to_state, actor_type, actor_id, coalesce(reason, '')
+		FROM card_history
+		WHERE card_id = $1::uuid
+		ORDER BY at DESC, id DESC
+		LIMIT $2
+	`, cardID.String(), limit)
+	if err != nil {
+		return nil, fmt.Errorf("store: list history for card %s: %w", cardID, err)
+	}
+	defer rows.Close()
+
+	var out []HistoryEntry
+	for rows.Next() {
+		var e HistoryEntry
+		if err := rows.Scan(&e.At, &e.From, &e.To, &e.ActorType, &e.ActorID, &e.Reason); err != nil {
+			return nil, fmt.Errorf("store: scan history row for card %s: %w", cardID, err)
+		}
+		out = append(out, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: read history for card %s: %w", cardID, err)
+	}
+
+	// Selected newest-first to make the cap take the newest; returned
+	// oldest-first because that is how a history reads.
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out, nil
+}

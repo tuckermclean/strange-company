@@ -326,6 +326,22 @@ func copyPlainEnv(in map[string]string) map[string]string {
 // problem it finds rather than stopping at the first, matching this
 // codebase's convention (see internal/config.Load) of letting an operator
 // fix a broken deployment in one pass instead of one restart per mistake.
+// AttemptsFor returns how many attempts a phase's whole ladder allows.
+//
+// It is the denominator in §33's "Haiku attempt 2/3". A bare attempt number
+// tells a reader nothing; the total tells them how much rope is left, which is
+// the question actually asked of a card that is taking a while.
+//
+// Zero for a phase with no ladder, so a caller can omit the denominator rather
+// than print a misleading one.
+func (p *Policy) AttemptsFor(phase string) int {
+	total := 0
+	for _, rung := range p.Phases[phase] {
+		total += rung.MaxAttempts
+	}
+	return total
+}
+
 func (p *Policy) Validate() error {
 	var problems []error
 
