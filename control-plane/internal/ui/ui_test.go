@@ -21,6 +21,7 @@ type fakeStore struct {
 	attempts  []store.StoredAttempt
 	artifacts []*store.Artifact
 	history   []store.HistoryEntry
+	evidence  []store.CardEvidence
 
 	moves     []card.State
 	moveErr   error
@@ -47,7 +48,7 @@ func (f *fakeStore) ListHistory(context.Context, uuid.UUID, int) ([]store.Histor
 	return f.history, nil
 }
 func (f *fakeStore) ListEvidence(context.Context, uuid.UUID) ([]store.CardEvidence, error) {
-	return nil, nil
+	return f.evidence, nil
 }
 func (f *fakeStore) Transition(_ context.Context, _ uuid.UUID, to card.State, _ card.ActorType, _, _ string) error {
 	if f.moveErr != nil {
@@ -244,5 +245,84 @@ func TestARefusedMoveIsShownOnTheCardRatherThanAsAServerError(t *testing.T) {
 	}
 	if !strings.Contains(rec.Header().Get("Location"), "error=") {
 		t.Errorf("location = %q, want the refusal carried back", rec.Header().Get("Location"))
+	}
+}
+
+// The click. Everything else on a card summarises; this is the thing itself.
+func TestAnArtifactCanBeRead(t *testing.T) {
+	c := aCard("the work", card.Review)
+	id := uuid.New()
+	f := &fakeStore{cards: []*card.Card{c}, artifacts: []*store.Artifact{{
+		ID: id, Type: store.ArtifactImplementationPlan, ContentType: "text/markdown",
+		Content: "1. add a cube helper\n2. test it", SizeBytes: 31,
+	}}}
+	h := serve(t, f)
+
+	// The card links to it rather than merely naming it.
+	if body := get(t, h, "/ui/cards/"+c.ID.String()).Body.String(); !strings.Contains(body, "/artifacts/"+id.String()) {
+		t.Error("the card lists an artifact with no way to open it")
+	}
+
+	body := get(t, h, "/ui/cards/"+c.ID.String()+"/artifacts/"+id.String()).Body.String()
+	if !strings.Contains(body, "add a cube helper") {
+		t.Errorf("the artifact page does not show its contents:\n%s", body)
+	}
+}
+
+// Useful for piping a transcript elsewhere, and for anyone who would rather
+// read it in their own tools.
+func TestAnArtifactCanBeFetchedRaw(t *testing.T) {
+	c := aCard("x", card.Review)
+	id := uuid.New()
+	h := serve(t, &fakeStore{cards: []*card.Card{c}, artifacts: []*store.Artifact{{
+		ID: id, Type: store.ArtifactRunLog, Content: "assistant: wrote it",
+	}}})
+
+	rec := get(t, h, "/ui/cards/"+c.ID.String()+"/artifacts/"+id.String()+"?raw=1")
+	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/plain") {
+		t.Errorf("content type = %q, want text/plain", got)
+	}
+	if rec.Body.String() != "assistant: wrote it" {
+		t.Errorf("body = %q, want the artifact verbatim", rec.Body.String())
+	}
+}
+
+// A harness transcript is the agent's own account, verified by nothing. Showing
+// it next to gate results without saying so invites a reader to trust the two
+// equally.
+func TestAHarnessTranscriptIsLabelledAsUnverified(t *testing.T) {
+	c := aCard("x", card.Review)
+	id := uuid.New()
+	h := serve(t, &fakeStore{cards: []*card.Card{c}, artifacts: []*store.Artifact{{
+		ID: id, Type: store.ArtifactRunLog, Content: "assistant: I think this is right",
+	}}})
+
+	body := get(t, h, "/ui/cards/"+c.ID.String()+"/artifacts/"+id.String()).Body.String()
+	if !strings.Contains(body, "verified by nothing") {
+		t.Error("a transcript is shown with nothing marking it as the model's own account")
+	}
+}
+
+// An artifact belonging to a different card must not be readable through this
+// card's URL: the card id in the path is authorisation, not decoration.
+func TestAnArtifactFromAnotherCardIsNotServed(t *testing.T) {
+	mine := aCard("mine", card.Review)
+	h := serve(t, &fakeStore{cards: []*card.Card{mine}})
+
+	rec := get(t, h, "/ui/cards/"+mine.ID.String()+"/artifacts/"+uuid.New().String())
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", rec.Code)
+	}
+}
+
+// §12.2's evidence is the narrative the history's one-line reasons compress.
+func TestEachStepsAccountIsShown(t *testing.T) {
+	c := aCard("x", card.Review)
+	h := serve(t, &fakeStore{cards: []*card.Card{c}, evidence: []store.CardEvidence{
+		{ActorID: "meeseeks-1", Summary: "acceptance tests written and red"},
+	}})
+
+	if body := get(t, h, "/ui/cards/"+c.ID.String()).Body.String(); !strings.Contains(body, "acceptance tests written and red") {
+		t.Error("the card shows no account of what each step did")
 	}
 }

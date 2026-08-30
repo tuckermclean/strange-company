@@ -1,0 +1,33 @@
+{{template "head" .Type}}
+<header>
+  <h1><a href="/ui">strange company</a> <span class="dim">/</span>
+      <a href="/ui/cards/{{.CardID}}">card</a> <span class="dim">/</span> {{.Type}}</h1>
+  {{if .Actor}}<span class="dim">{{.Actor}}</span>{{end}}
+  {{if .Model}}<span class="dim">{{.Model}}</span>{{end}}
+  <span class="dim">{{.SizeBytes}} bytes</span>
+  {{if .Truncated}}<span class="tag warn">truncated</span>{{end}}
+  <a style="margin-left:auto" href="/ui/cards/{{.CardID}}/artifacts/{{.ID}}?raw=1">raw</a>
+</header>
+<main>
+
+{{if .Unverified}}
+<div class="err" style="border-color:var(--warn); color:var(--warn)">
+  This is a harness transcript: the agent's own account of what it did, recorded
+  verbatim and verified by nothing. The gates decide whether the work is good;
+  this only shows what was said.
+</div>
+{{end}}
+
+{{if .Truncated}}
+<div class="err" style="border-color:var(--warn); color:var(--warn)">
+  Stored truncated. {{.SizeBytes}} bytes were produced; what follows is the
+  beginning of them.
+</div>
+{{end}}
+
+<pre class="panel" style="padding:1rem; overflow-x:auto; white-space:pre-wrap; word-break:break-word">{{.Content}}</pre>
+
+{{if .SHA256}}<p class="dim">sha256 {{.SHA256}}</p>{{end}}
+
+</main>
+{{template "foot"}}

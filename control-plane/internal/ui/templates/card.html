@@ -81,9 +81,25 @@
   <div class="panel">
     {{range .Artifacts}}
     <div class="row">
-      <span class="grow">{{.Type}}</span>
+      <a class="grow" href="/ui/cards/{{$.ID}}/artifacts/{{.ID}}">{{.Type}}</a>
       <span class="dim">{{.Size}} bytes</span>
       {{if .Truncated}}<span class="tag warn">truncated</span>{{end}}
+      <a class="dim" href="/ui/cards/{{$.ID}}/artifacts/{{.ID}}?raw=1">raw</a>
+    </div>
+    {{end}}
+  </div>
+</section>
+{{end}}
+
+{{if .Evidence}}
+<section>
+  <h2>What each step said</h2>
+  <div class="panel">
+    {{range .Evidence}}
+    <div class="row">
+      <span class="grow">{{.Summary}}</span>
+      <span class="dim">{{.Actor}}</span>
+      {{if .Detail}}<span class="dim">{{.Detail}}</span>{{end}}
     </div>
     {{end}}
   </div>

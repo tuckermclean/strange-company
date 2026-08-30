@@ -39,6 +39,7 @@ type cardView struct {
 	Criteria  []criterionView
 	Runs      []runView
 	Artifacts []artifactView
+	Evidence  []evidenceView
 	History   []historyView
 
 	// CanApprove and friends decide which buttons render. A button that
@@ -72,6 +73,7 @@ type runView struct {
 }
 
 type artifactView struct {
+	ID        string
 	Type      string
 	Size      int64
 	Truncated bool
@@ -144,9 +146,17 @@ func (h *Handler) cardPage(w http.ResponseWriter, r *http.Request) {
 	}
 	if artifacts, err := h.store.ListArtifacts(r.Context(), id); err == nil {
 		for _, a := range artifacts {
-			v.Artifacts = append(v.Artifacts, artifactView{Type: a.Type, Size: a.SizeBytes, Truncated: a.Truncated})
+			v.Artifacts = append(v.Artifacts, artifactView{
+				ID: a.ID.String(), Type: a.Type, Size: a.SizeBytes, Truncated: a.Truncated,
+			})
 		}
 	}
+	// §12.2's evidence: what each worker said it did, which is the narrative
+	// the history's one-line reasons compress.
+	if evidence, err := h.store.ListEvidence(r.Context(), id); err == nil {
+		v.Evidence = evidenceFrom(evidence)
+	}
+
 	if history, err := h.store.ListHistory(r.Context(), id, 40); err == nil {
 		for _, e := range history {
 			v.History = append(v.History, historyView{
