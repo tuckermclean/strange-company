@@ -33,21 +33,25 @@ func res(phase string) *policy.Resolution {
 }
 
 // A card promoted through the §10 gate still carries phase "specification" --
-// the gate is what finished it. Starting planning is bookkeeping, not work,
-// and must not cost a model call.
-func TestACardStillInSpecificationAdvancesToPlanningWithoutAModel(t *testing.T) {
-	planner := &recordingStep{}
-	d := dispatch.New(map[card.Phase]worker.Step{card.PhasePlanning: planner}, nil)
+// the gate is what finished it. Moving on is bookkeeping, not work, and must
+// not cost a model call.
+//
+// It moves to decomposition rather than planning: whether this is one piece of
+// work or several has to be asked before acceptance tests exist, because
+// splitting afterwards means discarding tests written against the whole.
+func TestACardStillInSpecificationAdvancesWithoutAModel(t *testing.T) {
+	decomposer := &recordingStep{}
+	d := dispatch.New(map[card.Phase]worker.Step{card.PhaseDecomposition: decomposer}, nil)
 
 	ev, err := d.Do(context.Background(), cardIn(card.PhaseSpecification), res("specification"))
 	if err != nil {
 		t.Fatalf("Do: %v", err)
 	}
-	if ev.NextPhase != card.PhasePlanning {
-		t.Fatalf("next phase = %q, want planning", ev.NextPhase)
+	if ev.NextPhase != card.PhaseDecomposition {
+		t.Fatalf("next phase = %q, want decomposition", ev.NextPhase)
 	}
-	if planner.called {
-		t.Error("ran the planner while the card was still in specification")
+	if decomposer.called {
+		t.Error("ran a step while the card was still in specification")
 	}
 }
 

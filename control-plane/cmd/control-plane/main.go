@@ -23,6 +23,7 @@ import (
 	"github.com/tuckermclean/strange-company/control-plane/internal/codingrun"
 	"github.com/tuckermclean/strange-company/control-plane/internal/config"
 	"github.com/tuckermclean/strange-company/control-plane/internal/credentials"
+	"github.com/tuckermclean/strange-company/control-plane/internal/decompose"
 	"github.com/tuckermclean/strange-company/control-plane/internal/dispatch"
 	"github.com/tuckermclean/strange-company/control-plane/internal/ghverify"
 	"github.com/tuckermclean/strange-company/control-plane/internal/github"
@@ -742,6 +743,9 @@ func runWorkerSupervisor(ctx context.Context, logger *slog.Logger, cfg *config.C
 	// sends its card to a human rather than being retried forever; see
 	// internal/dispatch.
 	steps := map[card.Phase]worker.Step{
+		card.PhaseDecomposition: decompose.New(st, st, st, func(res *policy.Resolution) (decompose.Completer, error) {
+			return providerclient.New(res, credentials.Dir(cfg.CredentialsDir))
+		}, log),
 		card.PhasePlanning: plan.New(st, st, func(res *policy.Resolution) (plan.Completer, error) {
 			return providerclient.New(res, credentials.Dir(cfg.CredentialsDir))
 		}, log),
