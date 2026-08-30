@@ -86,6 +86,21 @@ type Config struct {
 	// "test-command" runs .strange-company/test-command in a Job.
 	VerificationMode string
 
+	// Autonomy is how much of the loop runs without a human (§10.2).
+	//
+	//   "manual" (default) -- every specification waits for a person, by
+	//     Vikunja label or through the Hermes conversation.
+	//   "auto-approve-specs" -- the control plane signs any specification
+	//     that would pass the gate if a human signed it. Nothing else is
+	//     bypassed: an incomplete spec, an unverifiable criterion or a
+	//     missing allowlist still stops the card.
+	//
+	// There is deliberately no setting that removes the human entirely.
+	// §19 makes the human the final merge authority without exception, and
+	// changing that is a decision for whoever owns the spec, not a value in
+	// a config file.
+	Autonomy string
+
 	// SpecApprovalLabel is the Vikunja label a human adds to approve a
 	// specification (spec §10.2). The board is a surface no model can
 	// reach, which is what makes a label there a human decision.
@@ -129,6 +144,12 @@ const (
 	defaultIngestLabel       = "agent-ready"
 	defaultServiceAcctDir    = "/var/run/secrets/kubernetes.io/serviceaccount"
 	defaultSpecApprovalLabel = "spec-approved"
+
+	// AutonomyManual is the default: every specification waits for a person.
+	AutonomyManual = "manual"
+	// AutonomyAutoApproveSpecs lets the control plane sign a specification
+	// that would pass the gate if a human signed it.
+	AutonomyAutoApproveSpecs = "auto-approve-specs"
 	defaultGitUsername       = "strange-company"
 	defaultGitAuthorName     = "strange-company agent"
 	defaultGitAuthorEmail    = "agent@strange-company.invalid"
@@ -192,6 +213,7 @@ func Load(getenv func(string) string) (*Config, error) {
 		GitAuthorName:            valueOr(getenv("GIT_AUTHOR_NAME"), defaultGitAuthorName),
 		GitAuthorEmail:           valueOr(getenv("GIT_AUTHOR_EMAIL"), defaultGitAuthorEmail),
 		VerificationMode:         valueOr(getenv("VERIFICATION_MODE"), VerificationGitHubActions),
+		Autonomy:                 valueOr(getenv("AUTONOMY"), AutonomyManual),
 		SpecApprovalLabel:        valueOr(getenv("SPEC_APPROVAL_LABEL"), defaultSpecApprovalLabel),
 		AgentRunsNamespace:       strings.TrimSpace(getenv("AGENT_RUNS_NAMESPACE")),
 		RunnerImage:              strings.TrimSpace(getenv("RUNNER_IMAGE")),
@@ -235,6 +257,16 @@ func Load(getenv func(string) string) (*Config, error) {
 		if err != nil || u.Scheme == "" || u.Host == "" {
 			problems = append(problems, name+" is not an absolute URL: "+raw)
 		}
+	}
+
+	// A typo here would silently leave the loop in manual and the operator
+	// wondering why nothing self-approves. Refusing to start says so once,
+	// at the moment it can still be fixed.
+	switch cfg.Autonomy {
+	case AutonomyManual, AutonomyAutoApproveSpecs:
+	default:
+		problems = append(problems, fmt.Sprintf("AUTONOMY is %q; want %q or %q",
+			cfg.Autonomy, AutonomyManual, AutonomyAutoApproveSpecs))
 	}
 
 	if len(problems) > 0 {
@@ -297,6 +329,7 @@ func (c *Config) Redacted() map[string]string {
 		"GIT_TOKEN_KEY":              c.GitTokenKey,
 		"GIT_AUTHOR_NAME":            c.GitAuthorName,
 		"VERIFICATION_MODE":          c.VerificationMode,
+		"AUTONOMY":                   c.Autonomy,
 		"SPEC_APPROVAL_LABEL":        c.SpecApprovalLabel,
 		"AGENT_RUNS_NAMESPACE":       c.AgentRunsNamespace,
 		"RUNNER_IMAGE":               c.RunnerImage,

@@ -64,6 +64,27 @@ type board struct {
 	actions  map[uuid.UUID]bool
 	promoted []uuid.UUID
 	promErr  error
+
+	unapproved []uuid.UUID
+	approved   map[uuid.UUID]bool
+	approvedBy map[uuid.UUID]string
+}
+
+func (b *board) ListUnapprovedWithSpec(context.Context, int) ([]uuid.UUID, error) {
+	return b.unapproved, nil
+}
+
+func (b *board) ApproveSpec(_ context.Context, id uuid.UUID, approvedBy string) error {
+	if b.approved == nil {
+		b.approved = map[uuid.UUID]bool{}
+		b.approvedBy = map[uuid.UUID]string{}
+	}
+	b.approved[id] = true
+	b.approvedBy[id] = approvedBy
+	if sp, ok := b.specs[id]; ok {
+		sp.Approved = true
+	}
+	return nil
 }
 
 func (b *board) ListApprovedAwaitingPromotion(context.Context, int) ([]uuid.UUID, error) {

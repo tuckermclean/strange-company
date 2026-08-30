@@ -437,6 +437,22 @@ policy:
 controlPlane:
   enabled: true
 
+  # -- How much of the loop runs without a human (spec section 10.2).
+  #
+  # "manual" (the default) leaves every specification waiting for a person,
+  # by Vikunja label or through the Hermes conversation.
+  #
+  # "auto-approve-specs" lets the control plane sign any specification that
+  # would pass the gate if a human signed it. Nothing else is bypassed: an
+  # incomplete specification, an unverifiable acceptance criterion or a
+  # missing permitted-actions allowlist still stops the card, and the audit
+  # records the approver as the setting rather than as a person.
+  #
+  # There is deliberately no value that removes the human entirely. Spec
+  # section 19 makes the human the final merge authority without exception,
+  # so nothing here can approve a merge.
+  autonomy: manual
+
   image:
     repository: ghcr.io/tuckermclean/strange-company-control-plane
     # -- Empty falls back to .Chart.appVersion, so no release ever ships

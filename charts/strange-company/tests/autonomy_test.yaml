@@ -1,0 +1,18 @@
+suite: the autonomy setting
+templates:
+  - configmap.yaml
+tests:
+  # An upgrade must never change who is approving what.
+  - it: leaves every specification waiting for a person by default
+    asserts:
+      - equal:
+          path: data.AUTONOMY
+          value: manual
+
+  - it: renders the operator's choice
+    set:
+      controlPlane.autonomy: auto-approve-specs
+    asserts:
+      - equal:
+          path: data.AUTONOMY
+          value: auto-approve-specs

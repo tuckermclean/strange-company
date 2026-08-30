@@ -62,9 +62,30 @@ const retryReviewTokens = 4 * maxReviewTokens
 // still fails inside one lease period.
 const reviewTimeout = 10 * time.Minute
 
+// reviewIdleTimeout is how long the reviewer may go SILENT before the run is
+// treated as dead.
+//
+// Not how long it may take. A model reasoning over a large diff is working the
+// whole time and emits as it goes; one that has stopped emits nothing. Bounding
+// the silence rather than the duration is what lets review scale to a diff of
+// any size without a number in this file having to anticipate it.
+const reviewIdleTimeout = 2 * time.Minute
+
 // Completer performs one model completion.
+//
+// CompleteStreaming is preferred and Complete is the fallback: a reviewer
+// reading a large diff thinks for minutes before writing anything, and a
+// whole-call deadline has to be guessed against the biggest diff anyone will
+// ever submit. Streaming replaces that guess with "has it gone quiet".
 type Completer interface {
 	Complete(ctx context.Context, req modelclient.CompleteRequest) (*modelclient.Completion, error)
+}
+
+// StreamingCompleter is implemented by clients that can stream. *modelclient.Client
+// does; a fake in a test need not, and reviewstep falls back for anything that
+// does not.
+type StreamingCompleter interface {
+	CompleteStreaming(ctx context.Context, req modelclient.CompleteRequest) (*modelclient.Completion, error)
 }
 
 // ClientFor builds a Completer for a resolved rung.
@@ -356,7 +377,7 @@ func (s *Step) diffFor(ctx context.Context, c *card.Card) (string, error) {
 // budget is not the model failing -- it is the model not having been given
 // room to answer. Retrying with the same number would just fail again.
 func (s *Step) review(ctx context.Context, client Completer, msgs []modelclient.Message) (*modelclient.Completion, error) {
-	completion, err := client.Complete(ctx, modelclient.CompleteRequest{
+	completion, err := complete(ctx, client, modelclient.CompleteRequest{
 		Messages: msgs, MaxTokens: maxReviewTokens, Timeout: reviewTimeout,
 	})
 	if !errors.Is(err, modelclient.ErrBudgetExhausted) {
@@ -365,7 +386,7 @@ func (s *Step) review(ctx context.Context, client Completer, msgs []modelclient.
 
 	s.log.Warn("the reviewer spent its whole budget thinking; retrying with a larger one",
 		"first", maxReviewTokens, "retry", retryReviewTokens, "error", err)
-	return client.Complete(ctx, modelclient.CompleteRequest{
+	return complete(ctx, client, modelclient.CompleteRequest{
 		Messages: msgs, MaxTokens: retryReviewTokens, Timeout: reviewTimeout,
 	})
 }
@@ -415,3 +436,16 @@ func (s *Step) record(ctx context.Context, c *card.Card, res *policy.Resolution,
 }
 
 func shortID(id uuid.UUID) string { return strings.SplitN(id.String(), "-", 2)[0] }
+
+// complete streams when the client can, and falls back when it cannot.
+//
+// The idle timeout is what makes review scale to any diff: a whole-call
+// deadline fails the large cards and only the large cards, which is how a
+// green 400-line branch spent an evening being retried instead of shipped.
+func complete(ctx context.Context, client Completer, req modelclient.CompleteRequest) (*modelclient.Completion, error) {
+	if s, ok := client.(StreamingCompleter); ok {
+		req.IdleTimeout = reviewIdleTimeout
+		return s.CompleteStreaming(ctx, req)
+	}
+	return client.Complete(ctx, req)
+}
