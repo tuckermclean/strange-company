@@ -89,17 +89,48 @@
   </div>
 </section>
 
+{{if .Workers}}
+<section>
+  <h2>Meeseeks</h2>
+  <div class="panel">
+    {{range .Workers}}
+    <div class="row">
+      <span class="grow"><code>{{.Worker}}</code></span>
+      <span class="dim">{{.From}} &rarr; {{.To}}</span>
+    </div>
+    {{end}}
+  </div>
+  <p class="dim">One worker per step. Each claims the card, does exactly one
+     thing, hands it back and exits &mdash; so none of them accumulates context
+     from the last.</p>
+</section>
+{{end}}
+
 {{if .Artifacts}}
 <section>
   <h2>What it produced</h2>
   <div class="panel">
     {{range .Artifacts}}
     <div class="row">
-      <a class="grow" href="/ui/cards/{{$.ID}}/artifacts/{{.ID}}">{{.Type}}</a>
-      <span class="dim">{{.Size}} bytes</span>
-      {{if .Truncated}}<span class="tag warn">truncated</span>{{end}}
-      <a class="dim" href="/ui/cards/{{$.ID}}/artifacts/{{.ID}}?raw=1">raw</a>
+      <a class="grow" href="/ui/cards/{{$.ID}}/artifacts/{{.Newest.ID}}">{{.Type}}</a>
+      {{if .Repeats}}<span class="tag warn">{{.Count}}&times;</span>{{end}}
+      <span class="dim">{{.Newest.Size}} bytes</span>
+      {{if .Newest.Truncated}}<span class="tag warn">truncated</span>{{end}}
+      <a class="dim" href="/ui/cards/{{$.ID}}/artifacts/{{.Newest.ID}}?raw=1">raw</a>
     </div>
+    {{if .Repeats}}
+    <div class="row">
+      <details class="grow">
+        <summary class="dim">{{len .Others}} earlier</summary>
+        {{range .Others}}
+        <div style="padding:.3rem 0">
+          <a href="/ui/cards/{{$.ID}}/artifacts/{{.ID}}">{{.ID}}</a>
+          <span class="dim">{{.Size}} bytes</span>
+        </div>
+        {{end}}
+      </details>
+    </div>
+    {{end}}
     {{end}}
   </div>
 </section>
@@ -127,7 +158,7 @@
     <tr>
       <td class="dim" style="white-space:nowrap">{{.When}}</td>
       <td style="white-space:nowrap">{{if .From}}{{.From}} &rarr; {{end}}<strong>{{.To}}</strong></td>
-      <td class="dim">{{.Actor}}</td>
+      <td class="dim" style="white-space:nowrap">{{if .ActorID}}{{.ActorID}}{{else}}{{.Actor}}{{end}}</td>
       <td>{{.Reason}}</td>
     </tr>
     {{else}}

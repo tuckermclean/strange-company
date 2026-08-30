@@ -360,3 +360,72 @@ func TestAConversationIsReportedEvenWithoutADashboardURL(t *testing.T) {
 		t.Error("a card with an open conversation says nothing about it")
 	}
 }
+
+// A retry loop left 262 artifacts of one type on a real card. Rendering a row
+// each buries everything else on the page.
+func TestRepeatedArtifactsAreCollapsed(t *testing.T) {
+	c := aCard("looped", card.Review)
+	var artifacts []*store.Artifact
+	for i := 0; i < 40; i++ {
+		artifacts = append(artifacts, &store.Artifact{
+			ID: uuid.New(), Type: store.ArtifactTestMapping, Content: "same", SizeBytes: 4,
+		})
+	}
+	newest := uuid.New()
+	artifacts = append(artifacts, &store.Artifact{ID: newest, Type: store.ArtifactTestMapping, Content: "newest", SizeBytes: 6})
+
+	h := serve(t, &fakeStore{cards: []*card.Card{c}, artifacts: artifacts})
+	body := get(t, h, "/ui/cards/"+c.ID.String()).Body.String()
+
+	if !strings.Contains(body, "41&times;") && !strings.Contains(body, "41×") {
+		t.Error("the page does not say how many there are")
+	}
+	// The newest is the one worth reading, and it is the one linked at the top.
+	if !strings.Contains(body, "artifacts/"+newest.String()) {
+		t.Error("the newest artifact is not the one offered")
+	}
+	if strings.Count(body, "40 earlier") != 1 {
+		t.Error("the earlier ones are not collapsed behind a single control")
+	}
+}
+
+// §7.1 gives each phase its own worker. The page rendered every one of them as
+// "agent", flattening the most distinctive thing this architecture does.
+func TestTheCardShowsTheRelayOfWorkers(t *testing.T) {
+	c := aCard("relayed", card.Review)
+	at := func(m int) time.Time { return time.Date(2026, 8, 30, 18, m, 0, 0, time.UTC) }
+
+	h := serve(t, &fakeStore{cards: []*card.Card{c}, history: []store.HistoryEntry{
+		{At: at(50), To: "Ready", ActorType: "system", ActorID: "control-plane", Reason: "gate passed"},
+		{At: at(51), To: "InProgress", ActorType: "agent", ActorID: "meeseeks-cp-abc-3", Reason: "claimed"},
+		{At: at(51), To: "Ready", ActorType: "agent", ActorID: "meeseeks-cp-abc-3", Reason: "phase advanced"},
+		{At: at(52), To: "InProgress", ActorType: "agent", ActorID: "meeseeks-cp-abc-4", Reason: "claimed"},
+		{At: at(54), To: "Review", ActorType: "agent", ActorID: "meeseeks-cp-abc-4", Reason: "review passed"},
+	}})
+
+	body := get(t, h, "/ui/cards/"+c.ID.String()).Body.String()
+	if !strings.Contains(body, "abc-3") || !strings.Contains(body, "abc-4") {
+		t.Errorf("the page does not name the workers:\n%s", body)
+	}
+	// The control plane is not a Meeseeks and must not appear in the relay.
+	if strings.Contains(body, "<code>control-plane</code>") {
+		t.Error("the control plane was listed as a worker")
+	}
+}
+
+// Two consecutive rows from one worker are one life, not two.
+func TestOneWorkersConsecutiveStepsAreOneStint(t *testing.T) {
+	c := aCard("x", card.Review)
+	at := func(m int) time.Time { return time.Date(2026, 8, 30, 18, m, 0, 0, time.UTC) }
+
+	h := serve(t, &fakeStore{cards: []*card.Card{c}, history: []store.HistoryEntry{
+		{At: at(51), To: "InProgress", ActorID: "meeseeks-cp-abc-3"},
+		{At: at(51), To: "InProgress", ActorID: "meeseeks-cp-abc-3"},
+		{At: at(52), To: "Ready", ActorID: "meeseeks-cp-abc-3"},
+	}})
+
+	body := get(t, h, "/ui/cards/"+c.ID.String()).Body.String()
+	if n := strings.Count(body, "<code>abc-3</code>"); n != 1 {
+		t.Errorf("one worker rendered %d times, want 1", n)
+	}
+}

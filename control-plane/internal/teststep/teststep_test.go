@@ -401,3 +401,47 @@ func TestTheTestRunLogIsKeptEvenWhenTheRunSucceeds(t *testing.T) {
 	}
 	t.Error("a clean run kept no log; the cards that shipped carry the least evidence")
 }
+
+// This artifact claims to BE the test mapping, and its content is the run's
+// summary -- which for a run that never completed is an error message. Writing
+// it unconditionally put 262 of them on one card during a retry loop, each
+// containing a Kubernetes 404.
+func TestNoTestMappingIsRecordedForARunThatMappedNothing(t *testing.T) {
+	for _, status := range []runner.Status{runner.StatusInfraError, runner.StatusTimeout, runner.StatusFailed} {
+		t.Run(string(status), func(t *testing.T) {
+			b := board()
+			r := &fakeRunner{result: &runner.CodingRunResult{
+				Status: status, Harness: "opencode", Model: "deepseek-v4",
+				Summary: `could not read the job's status: 404 not found`,
+			}}
+
+			_, _ = teststep.New(b, b, b, r, redGate(), codingrun.GitIdentity{Username: "x"}, nil).
+				Do(context.Background(), testCard(), res())
+
+			for _, a := range b.put {
+				if a.Type == store.ArtifactTestMapping {
+					t.Fatalf("a %s run recorded a test mapping containing %q", status, a.Content)
+				}
+			}
+		})
+	}
+}
+
+// The run log is still kept for those runs: it is diagnostics, and it does not
+// claim to be anything other than what the harness printed.
+func TestAFailedRunStillKeepsItsLog(t *testing.T) {
+	b := board()
+	r := &fakeRunner{result: &runner.CodingRunResult{
+		Status: runner.StatusInfraError, Raw: []byte("kube: 404"), Summary: "could not read the job's status",
+	}}
+
+	_, _ = teststep.New(b, b, b, r, redGate(), codingrun.GitIdentity{Username: "x"}, nil).
+		Do(context.Background(), testCard(), res())
+
+	for _, a := range b.put {
+		if a.Type == store.ArtifactRunLog {
+			return
+		}
+	}
+	t.Error("a failed run kept no log")
+}
