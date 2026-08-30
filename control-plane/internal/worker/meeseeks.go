@@ -170,18 +170,22 @@ func New(id string, cards CardStore, pol *policy.Policy, step Step, log *slog.Lo
 	}
 }
 
-// DefaultMaxInfraFailures is how many non-model failures a card may collect
-// over its life before a human is asked to look at it.
+// DefaultMaxInfraFailures is how many non-model failures in a row a card may
+// collect before a human is asked to look at it.
 //
-// Per card, not per phase: the store's counter is never reset, and that is the
-// right reading. A card that has hit five outages getting this far is a card
-// something is wrong with, whichever steps they landed in.
+// Consecutive, not lifetime. The store clears the count on any run that
+// reached the model, and clears it again when a card leaves NeedsHuman, so
+// this measures "cannot run right now" rather than "has had a bad day". The
+// difference is not academic: as a lifetime total it escalated a card whose
+// cause had already been FIXED, on the card's very next claim, without ever
+// retrying it under the fix -- and the count only went up, so the card could
+// never come back.
 //
 // Five rather than one, because a single provider hiccup or an evicted pod is
 // ordinary and recovering from it without troubling anyone is the entire point
-// of not counting infrastructure against the ladder. Five is not weather. It is
-// something that will not fix itself, and every further retry spends a real
-// model call to learn the same thing again.
+// of not counting infrastructure against the ladder. Five in a row is not
+// weather. It is something that will not fix itself on its own, and every
+// further retry spends a real model call to learn the same thing again.
 const DefaultMaxInfraFailures = 5
 
 // WithMaxInfraFailures overrides the bound. Zero disables it entirely, which
@@ -223,12 +227,20 @@ func (m *Meeseeks) RunOnce(ctx context.Context) (Outcome, error) {
 	// request and telling nobody. The work was finished and green; only the
 	// step reporting on it could not complete.
 	//
-	// So the counter is now read. A card that has failed this many times for
-	// reasons that are not the model's goes to a human, which is what
+	// So the counter is now read. A card that has failed this many times in a
+	// row for reasons that are not the model's goes to a human, which is what
 	// NeedsHuman is for.
+	//
+	// What this is NOT is a judgement on the work. The step could not be run;
+	// the branch may be perfectly good, and on the card that prompted this it
+	// was. The reason string says so, because "escalated to NeedsHuman" with
+	// a bare count reads as "the machine gave up on your code" -- and a human
+	// who believes that will not simply send it back in, which is all it
+	// needs.
 	if m.maxInfraFailures > 0 && c.InfrastructureFailures >= m.maxInfraFailures {
 		reason := fmt.Sprintf(
-			"%d infrastructure failures on this card (currently in phase %q): the work cannot be run, and retrying is spending money to learn the same thing again",
+			"%d consecutive infrastructure failures in phase %q: the step could not be RUN, which says nothing about whether the work is good. "+
+				"See the card's latest evidence for what failed. Moving this card out of NeedsHuman clears the count and it will be retried.",
 			c.InfrastructureFailures, c.Phase,
 		)
 		if terr := m.cards.Transition(ctx, c.ID, card.NeedsHuman, card.ActorSystem, m.id, reason); terr != nil {

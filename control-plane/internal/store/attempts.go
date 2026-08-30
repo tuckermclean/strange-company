@@ -132,20 +132,37 @@ func (s *Store) RecordAttempt(ctx context.Context, rec AttemptRecord) (*AttemptO
 		n := implementationAttempt
 		attemptNumber = &n
 	}
+	if !countsAsInfra {
+		// Consecutive, not lifetime.
+		//
+		// The bound on this counter exists to stop a card retrying something
+		// that cannot work. A lifetime total answers a different question --
+		// "has this card ever had a bad day?" -- and answering it badly is
+		// how a card whose cause was FIXED still escalated on its next
+		// claim, having never once been retried under the fix. It could not
+		// come back, either: the count only ever went up.
+		//
+		// Any outcome that is not an infrastructure failure proves the
+		// infrastructure worked. That includes a run that failed on the
+		// merits: the model was reached, it did the work, the work was
+		// wrong. Nothing about that says the card cannot run.
+		infrastructureFailures = 0
+	}
 	if countsAsInfra {
 		infrastructureFailures++
 	}
 
-	if countedAsAttempt || countsAsInfra {
-		if _, err := tx.Exec(ctx, `
-			UPDATE cards
-			SET implementation_attempt  = $1,
-			    infrastructure_failures = $2,
-			    updated_at              = now()
-			WHERE id = $3::uuid
-		`, implementationAttempt, infrastructureFailures, idText); err != nil {
-			return nil, fmt.Errorf("store: update attempt counters for card %s: %w", rec.CardID, err)
-		}
+	// Written unconditionally: a run that burns neither counter can still
+	// CLEAR the infrastructure one, and skipping the write when nothing was
+	// incremented is what would leave that reset unsaved.
+	if _, err := tx.Exec(ctx, `
+		UPDATE cards
+		SET implementation_attempt  = $1,
+		    infrastructure_failures = $2,
+		    updated_at              = now()
+		WHERE id = $3::uuid
+	`, implementationAttempt, infrastructureFailures, idText); err != nil {
+		return nil, fmt.Errorf("store: update attempt counters for card %s: %w", rec.CardID, err)
 	}
 
 	// cached_tokens is the one column standing in for both of Usage's
