@@ -1,0 +1,60 @@
+{{template "head" "strange company"}}
+<header>
+  <h1>strange company</h1>
+  <span class="dim">{{.Cards}} cards</span>
+  <span class="dim">{{money .CostUSD}}{{if .Unpriced}} + {{.Unpriced}} unpriced{{end}}</span>
+  <span class="dim" style="margin-left:auto">{{.Now}}</span>
+</header>
+<meta http-equiv="refresh" content="15">
+<main>
+
+<section>
+  <h2>Running now</h2>
+  <div class="panel">
+    {{range .Running}}
+    <div class="row">
+      <a class="grow" href="/ui/cards/{{.ID}}">{{.Title}}</a>
+      <span class="tag">{{.Phase}}</span>
+      <span class="tag">{{.State}}</span>
+      {{if .Worker}}<span class="dim">{{.Worker}}</span>{{end}}
+      <span class="dim">{{.Elapsed}}</span>
+      <span class="dim">{{if .Unpriced}}unpriced{{else}}{{money .CostUSD}}{{end}}</span>
+    </div>
+    {{else}}
+    <div class="empty">Nothing in flight. The engine is idle, which is a state and not a fault.</div>
+    {{end}}
+  </div>
+</section>
+
+<section>
+  <h2>Needs you</h2>
+  <div class="panel">
+    {{range .NeedsYou}}
+    <div class="row">
+      <a class="grow" href="/ui/cards/{{.ID}}">{{.Title}}</a>
+      <span class="tag {{if eq .State "Review"}}ok{{else}}warn{{end}}">{{.State}}</span>
+      <span class="dim">{{.Phase}}</span>
+      <span class="dim">{{.Elapsed}}</span>
+    </div>
+    {{else}}
+    <div class="empty">Nothing waiting on a person.</div>
+    {{end}}
+  </div>
+</section>
+
+<section>
+  <h2>Done</h2>
+  <div class="panel">
+    {{range .Recent}}
+    <div class="row">
+      <a class="grow" href="/ui/cards/{{.ID}}">{{.Title}}</a>
+      <span class="dim">{{if .Unpriced}}unpriced{{else}}{{money .CostUSD}}{{end}}</span>
+    </div>
+    {{else}}
+    <div class="empty">Nothing merged yet.</div>
+    {{end}}
+  </div>
+</section>
+
+</main>
+{{template "foot"}}

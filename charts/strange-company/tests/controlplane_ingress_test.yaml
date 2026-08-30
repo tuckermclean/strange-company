@@ -1,0 +1,36 @@
+suite: publishing the control-plane console
+templates:
+  - ingress.yaml
+tests:
+  # The console exposes every card, artifact and agent transcript, and this
+  # service authenticates nothing itself.
+  - it: publishes nothing by default
+    asserts:
+      - hasDocuments:
+          count: 0
+
+  - it: routes the operator's host at the control-plane service
+    set:
+      controlPlane.ingress.enabled: true
+      controlPlane.ingress.host: company.example.com
+      controlPlane.ingress.className: nginx
+    asserts:
+      - equal:
+          path: spec.rules[0].host
+          value: company.example.com
+      - equal:
+          path: spec.rules[0].http.paths[0].backend.service.port.number
+          value: 8080
+
+  # Authentication lives on the ingress, so the annotations that carry it must
+  # survive to the rendered object.
+  - it: carries authentication annotations through
+    set:
+      controlPlane.ingress.enabled: true
+      controlPlane.ingress.host: company.example.com
+      controlPlane.ingress.annotations:
+        nginx.ingress.kubernetes.io/auth-url: https://auth.example.com/outpost.goauthentik.io/auth/nginx
+    asserts:
+      - equal:
+          path: metadata.annotations["nginx.ingress.kubernetes.io/auth-url"]
+          value: https://auth.example.com/outpost.goauthentik.io/auth/nginx

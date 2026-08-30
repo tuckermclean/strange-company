@@ -1,0 +1,51 @@
+{{define "head"}}<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.}}</title>
+<style>
+  :root {
+    --bg:#0f1115; --panel:#171a21; --line:#252a34; --text:#e6e8eb;
+    --dim:#8b94a3; --ok:#3fb950; --bad:#f85149; --warn:#d29922; --link:#58a6ff;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg:#fbfbfd; --panel:#fff; --line:#e3e6ea; --text:#1c1f24;
+            --dim:#5c6672; --ok:#1a7f37; --bad:#cf222e; --warn:#9a6700; --link:#0969da; }
+  }
+  * { box-sizing:border-box }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font:14px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace }
+  a { color:var(--link); text-decoration:none } a:hover { text-decoration:underline }
+  header { padding:1rem 1.25rem; border-bottom:1px solid var(--line);
+           display:flex; gap:1.25rem; align-items:baseline; flex-wrap:wrap }
+  header h1 { margin:0; font-size:1rem; letter-spacing:.02em }
+  .dim { color:var(--dim) }
+  main { padding:1.25rem; max-width:70rem; margin:0 auto }
+  section { margin-bottom:2rem }
+  h2 { font-size:.8rem; text-transform:uppercase; letter-spacing:.08em;
+       color:var(--dim); margin:0 0 .6rem; font-weight:600 }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px }
+  .row { display:flex; gap:1rem; align-items:baseline; padding:.6rem .85rem;
+         border-bottom:1px solid var(--line); flex-wrap:wrap }
+  .row:last-child { border-bottom:0 }
+  .row .grow { flex:1; min-width:12rem }
+  .tag { font-size:.72rem; padding:.1rem .45rem; border-radius:4px;
+         border:1px solid var(--line); color:var(--dim); white-space:nowrap }
+  .ok { color:var(--ok); border-color:var(--ok) }
+  .bad { color:var(--bad); border-color:var(--bad) }
+  .warn { color:var(--warn); border-color:var(--warn) }
+  .empty { padding:.85rem; color:var(--dim) }
+  table { width:100%; border-collapse:collapse }
+  td { padding:.45rem .85rem; border-bottom:1px solid var(--line); vertical-align:top }
+  tr:last-child td { border-bottom:0 }
+  form { display:inline }
+  button { font:inherit; background:var(--panel); color:var(--text); cursor:pointer;
+           border:1px solid var(--line); border-radius:6px; padding:.35rem .8rem }
+  button:hover { border-color:var(--link); color:var(--link) }
+  .err { border:1px solid var(--bad); color:var(--bad); border-radius:6px;
+         padding:.6rem .85rem; margin-bottom:1rem }
+  .overflow { overflow-x:auto }
+</style>
+</head><body>{{end}}
+
+{{define "foot"}}</body></html>{{end}}
