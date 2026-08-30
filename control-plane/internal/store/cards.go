@@ -391,14 +391,26 @@ func (s *Store) transition(ctx context.Context, cardID uuid.UUID, to card.State,
 	// report a worker that is not there. §7.1 ends every lifecycle with
 	// "release claim -> EXIT"; a transition out of InProgress is that exit,
 	// and until now it abandoned the claim rather than releasing it.
+	// Leaving NeedsHuman clears the infrastructure-failure count.
+	//
+	// A card only leaves NeedsHuman because someone decided it should, and
+	// what they are saying by moving it is "try this again". Carrying the
+	// old count across that decision means the very next claim re-escalates
+	// on failures that predate the intervention -- so a card that reached
+	// NeedsHuman for an infrastructure reason could never be sent back in,
+	// even after the cause was fixed. That is not an escalation to a human.
+	// It is a card the human cannot return.
+	leavingNeedsHuman := from == card.NeedsHuman
+
 	if _, err := tx.Exec(ctx, `
 		UPDATE cards
 		SET state            = $1,
 		    claimed_by       = CASE WHEN $1 = 'InProgress' THEN claimed_by       ELSE NULL END,
 		    lease_expires_at = CASE WHEN $1 = 'InProgress' THEN lease_expires_at ELSE NULL END,
+		    infrastructure_failures = CASE WHEN $3 THEN 0 ELSE infrastructure_failures END,
 		    updated_at       = now()
 		WHERE id = $2::uuid
-	`, string(to), idText); err != nil {
+	`, string(to), idText, leavingNeedsHuman); err != nil {
 		return fmt.Errorf("store: update state for card %s: %w", idText, err)
 	}
 

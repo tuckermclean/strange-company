@@ -58,6 +58,15 @@ func TestACardThatKeepsFailingForNonModelReasonsReachesAHuman(t *testing.T) {
 	if !strings.Contains(got.reason, "infrastructure") {
 		t.Errorf("reason = %q, want it to say why", got.reason)
 	}
+	// "Escalated to NeedsHuman" with a bare count reads as "the machine gave
+	// up on your code", and a human who believes that will not send the card
+	// back in -- which is all it needs.
+	if !strings.Contains(got.reason, "could not be RUN") {
+		t.Errorf("reason = %q, want it to separate 'could not run' from 'the work is bad'", got.reason)
+	}
+	if !strings.Contains(got.reason, "clears the count") {
+		t.Errorf("reason = %q, want it to say how to send the card back", got.reason)
+	}
 }
 
 // One outage is weather. Recovering from it without troubling anyone is the
