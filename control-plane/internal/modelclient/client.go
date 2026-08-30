@@ -177,6 +177,17 @@ type CompleteRequest struct {
 	MaxTokens   int
 	Temperature *float64 // nil means do not send the field
 	JSONObject  bool     // request response_format {"type":"json_object"} when supported
+
+	// Timeout overrides defaultTimeout for this call, when ctx carries no
+	// deadline of its own.
+	//
+	// Per-call rather than one number for everything, because the calls are
+	// not alike. A screening question is short and a provider sitting on it
+	// for minutes is a fault worth failing fast on. A reasoning model
+	// reviewing a 400-line diff legitimately takes longer than the
+	// three-minute default -- and did, on every review of a large card,
+	// which is how this field came to exist.
+	Timeout time.Duration
 }
 
 // Usage reports token accounting from a completion response. A response
@@ -250,13 +261,17 @@ type wireResponse struct {
 // Complete sends one chat-completion request and returns the first
 // choice's text plus usage and raw evidence.
 //
-// It honours ctx's own deadline/cancellation; when ctx carries no deadline
-// at all, Complete applies defaultTimeout so a hung provider cannot wedge
-// the caller forever.
+// It honours ctx's own deadline/cancellation; when ctx carries no deadline at
+// all, Complete applies req.Timeout, or defaultTimeout when that is unset, so
+// a hung provider cannot wedge the caller forever.
 func (c *Client) Complete(ctx context.Context, req CompleteRequest) (*Completion, error) {
 	if _, ok := ctx.Deadline(); !ok {
+		limit := req.Timeout
+		if limit <= 0 {
+			limit = defaultTimeout
+		}
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, defaultTimeout)
+		ctx, cancel = context.WithTimeout(ctx, limit)
 		defer cancel()
 	}
 

@@ -145,6 +145,10 @@ type Meeseeks struct {
 	step  Step
 	log   *slog.Logger
 	lease time.Duration
+
+	// maxInfraFailures bounds §12.1's infrastructure_failures. Zero disables
+	// the bound, which is how every caller behaved before it existed.
+	maxInfraFailures int
 }
 
 // New constructs a Meeseeks. id identifies this worker as a claimant (spec
@@ -156,13 +160,36 @@ func New(id string, cards CardStore, pol *policy.Policy, step Step, log *slog.Lo
 		log = slog.Default()
 	}
 	return &Meeseeks{
-		id:    id,
-		cards: cards,
-		pol:   pol,
-		step:  step,
-		log:   log,
-		lease: lease,
+		id:               id,
+		cards:            cards,
+		pol:              pol,
+		step:             step,
+		log:              log,
+		lease:            lease,
+		maxInfraFailures: DefaultMaxInfraFailures,
 	}
+}
+
+// DefaultMaxInfraFailures is how many non-model failures a card may collect
+// over its life before a human is asked to look at it.
+//
+// Per card, not per phase: the store's counter is never reset, and that is the
+// right reading. A card that has hit five outages getting this far is a card
+// something is wrong with, whichever steps they landed in.
+//
+// Five rather than one, because a single provider hiccup or an evicted pod is
+// ordinary and recovering from it without troubling anyone is the entire point
+// of not counting infrastructure against the ladder. Five is not weather. It is
+// something that will not fix itself, and every further retry spends a real
+// model call to learn the same thing again.
+const DefaultMaxInfraFailures = 5
+
+// WithMaxInfraFailures overrides the bound. Zero disables it entirely, which
+// restores the unbounded behaviour and is never what an operator wants running
+// unattended.
+func (m *Meeseeks) WithMaxInfraFailures(n int) *Meeseeks {
+	m.maxInfraFailures = n
+	return m
 }
 
 // RunOnce implements spec 7.1's lifecycle: claim one card, resolve policy
@@ -182,6 +209,35 @@ func (m *Meeseeks) RunOnce(ctx context.Context) (Outcome, error) {
 	}
 
 	log := m.log.With("worker", m.id, "card", c.ID.String(), "phase", string(c.Phase))
+
+	// §12.1 says an infrastructure failure must not burn an attempt, and it
+	// is right: a provider outage is not the model failing the work. But
+	// nothing ever read the counter it increments, and "does not burn an
+	// attempt" with no bound on top of it means a card that CANNOT run
+	// retries forever.
+	//
+	// That is not hypothetical. A reviewer whose read deadline was too short
+	// for a large diff timed out, was released without burning an attempt,
+	// was re-promoted a minute later, and timed out again -- spending a full
+	// reasoning call every four minutes, indefinitely, while opening no pull
+	// request and telling nobody. The work was finished and green; only the
+	// step reporting on it could not complete.
+	//
+	// So the counter is now read. A card that has failed this many times for
+	// reasons that are not the model's goes to a human, which is what
+	// NeedsHuman is for.
+	if m.maxInfraFailures > 0 && c.InfrastructureFailures >= m.maxInfraFailures {
+		reason := fmt.Sprintf(
+			"%d infrastructure failures on this card (currently in phase %q): the work cannot be run, and retrying is spending money to learn the same thing again",
+			c.InfrastructureFailures, c.Phase,
+		)
+		if terr := m.cards.Transition(ctx, c.ID, card.NeedsHuman, card.ActorSystem, m.id, reason); terr != nil {
+			return OutcomeEscalated, fmt.Errorf("worker %s: escalate card %s to NeedsHuman: %w", m.id, c.ID, terr)
+		}
+		log.Warn("escalated to NeedsHuman: too many infrastructure failures",
+			"infrastructure_failures", c.InfrastructureFailures)
+		return OutcomeEscalated, nil
+	}
 
 	// Spec 12: an implementation_attempt of N means N attempts have already
 	// been spent; the next one to resolve is N+1.
