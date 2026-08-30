@@ -22,6 +22,16 @@ const (
 	ArtifactImplementationPlan = "implementation-plan"
 	ArtifactTestMapping        = "test-mapping"
 	ArtifactTestOutput         = "test-output"
+
+	// ArtifactRunLog is a harness run's complete output, stored for EVERY
+	// run rather than only failing ones.
+	//
+	// It is the raw discourse: what the agent actually said and did. §21
+	// keeps model reasoning out of the stakeholder view, and this is why
+	// that rule needs a second surface rather than a deletion -- when
+	// something breaks, this is the only record of it. The Job is deleted
+	// as soon as its logs are read, so nothing else survives.
+	ArtifactRunLog = "run-log"
 	ArtifactDiff               = "diff"
 	ArtifactCompilerOutput     = "compiler-output"
 	ArtifactLinterOutput       = "linter-output"

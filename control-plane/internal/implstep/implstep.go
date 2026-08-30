@@ -118,6 +118,22 @@ func (s *Step) Do(ctx context.Context, c *card.Card, res *policy.Resolution) (wo
 		return worker.Evidence{}, fmt.Errorf("implstep: %w", err)
 	}
 
+	// The complete output, on every run, before anything can return early.
+	//
+	// This step never stored it at all -- not on failure, not on success. The
+	// implementation phase is the one that writes the code, so the raw
+	// discourse a human would most want to read was the one thing nothing
+	// kept. It survived only in the Job's pod log, and the Job is deleted as
+	// soon as the control plane has read it.
+	if len(result.Raw) > 0 {
+		if _, aerr := s.artifacts.PutArtifact(ctx, store.Artifact{
+			CardID: c.ID, Type: store.ArtifactRunLog, Actor: res.ProviderName,
+			Model: result.Model, ContentType: "text/plain", Content: string(result.Raw),
+		}); aerr != nil {
+			s.log.Error("could not record the harness output", "card_id", c.ID, "error", aerr)
+		}
+	}
+
 	// Recorded before the green gate runs. §12.1 classifies by status, and a
 	// run that never happened must be on the ledger as infrastructure even
 	// though no attempt was spent.

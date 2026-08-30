@@ -377,3 +377,27 @@ func TestAFailedTestWritingRunIsStillOnTheLedger(t *testing.T) {
 		t.Fatalf("recorded %d attempts for a failed run, want 1", len(b.attempts))
 	}
 }
+
+// Kept on every run, not only failing ones. Storing it only when something went
+// wrong meant the cards that shipped cleanly carried the least evidence, which
+// is exactly backwards for an audit surface.
+func TestTheTestRunLogIsKeptEvenWhenTheRunSucceeds(t *testing.T) {
+	b := board()
+	r := &fakeRunner{result: &runner.CodingRunResult{
+		Status: runner.StatusCompleted, Summary: "tests written",
+		Harness: "opencode", Model: "deepseek-v4",
+		Raw: []byte("assistant: wrote test/x.test.js"),
+	}}
+
+	if _, err := teststep.New(b, b, b, r, redGate(), codingrun.GitIdentity{Username: "x"}, nil).
+		Do(context.Background(), testCard(), res()); err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+
+	for _, a := range b.put {
+		if a.Type == store.ArtifactRunLog {
+			return
+		}
+	}
+	t.Error("a clean run kept no log; the cards that shipped carry the least evidence")
+}

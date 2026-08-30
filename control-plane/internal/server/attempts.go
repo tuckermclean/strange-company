@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -48,9 +49,21 @@ type Attempt struct {
 	CreatedAt    time.Time
 }
 
-// AttemptStore is the read side of the attempt ledger (spec §12, §22).
+// AttemptStore is the read side of the attempt ledger (spec §12, §22) and of
+// the audit log (§21).
 type AttemptStore interface {
 	ListAttempts(ctx context.Context, cardID uuid.UUID) ([]Attempt, error)
+	ListHistory(ctx context.Context, cardID uuid.UUID, limit int) ([]HistoryEntry, error)
+}
+
+// HistoryEntry is one state change, as this package needs it.
+type HistoryEntry struct {
+	At        time.Time
+	From      string
+	To        string
+	ActorType string
+	ActorID   string
+	Reason    string
 }
 
 type attemptView struct {
@@ -226,4 +239,51 @@ func sortedBreakdowns(m map[string]*costBreakdown) []costBreakdown {
 		return out[i].Key < out[j].Key
 	})
 	return out
+}
+
+type historyView struct {
+	At        string `json:"at"`
+	From      string `json:"from,omitempty"`
+	To        string `json:"to"`
+	ActorType string `json:"actor_type"`
+	ActorID   string `json:"actor_id"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+// handleCardHistory serves GET /cards/{id}/history.
+//
+// §21 requires the audit log to answer "what happened to card X?". The rows
+// have been written since M0 and were reachable only from a psql session --
+// which is how every diagnosis of this system has been done so far.
+func (s *Server) handleCardHistory(w http.ResponseWriter, r *http.Request) {
+	cd, ok := s.cardsOrError(w)
+	if !ok {
+		return
+	}
+	id, ok := parseCardID(w, r)
+	if !ok {
+		return
+	}
+
+	limit := 0 // the store's default
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil {
+			limit = n
+		}
+	}
+
+	entries, err := cd.store.ListHistory(r.Context(), id, limit)
+	if err != nil {
+		s.writeStoreError(w, cd, err)
+		return
+	}
+
+	views := make([]historyView, 0, len(entries))
+	for _, e := range entries {
+		views = append(views, historyView{
+			At: e.At.UTC().Format(time.RFC3339), From: e.From, To: e.To,
+			ActorType: e.ActorType, ActorID: e.ActorID, Reason: e.Reason,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"history": views})
 }

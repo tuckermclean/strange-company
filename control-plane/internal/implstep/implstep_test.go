@@ -229,3 +229,45 @@ func TestAHarnessThatCannotCodeStopsTheCardInsteadOfSpinning(t *testing.T) {
 		t.Errorf("the evidence does not name the alias to fix: %+v", ev.Detail)
 	}
 }
+
+// The implementation phase writes the code, and its raw output was the one
+// thing nothing kept -- not on failure, not on success. It survived only in the
+// Job's pod log, and the Job is deleted as soon as the control plane reads it.
+func TestTheImplementationRunLogIsAlwaysKept(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status runner.Status
+	}{
+		{"a run that shipped", runner.StatusCompleted},
+		{"a run that failed", runner.StatusFailed},
+		{"a run that never got going", runner.StatusInfraError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := board()
+			r := &fakeRunner{
+				result: &runner.CodingRunResult{
+					Status: tc.status, Summary: "did a thing",
+					Harness: "opencode", Model: "deepseek-v4",
+					Raw: []byte("tool: write src/x.js\nassistant: done"),
+				},
+				verify: redgate.RunOutcome{Completed: true, ExitCode: 0},
+			}
+
+			_, _ = implstep.New(b, b, b, r, r, codingrun.GitIdentity{Username: "x"}, nil).
+				Do(context.Background(), testCard(), res(1))
+
+			var found *store.Artifact
+			for i := range b.put {
+				if b.put[i].Type == store.ArtifactRunLog {
+					found = &b.put[i]
+				}
+			}
+			if found == nil {
+				t.Fatalf("no run log stored for %s; the only copy is in a deleted pod", tc.status)
+			}
+			if !strings.Contains(found.Content, "tool: write src/x.js") {
+				t.Errorf("run log = %q, want the harness's actual output", found.Content)
+			}
+		})
+	}
+}

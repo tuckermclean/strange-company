@@ -140,13 +140,17 @@ func (s *Step) Do(ctx context.Context, c *card.Card, res *policy.Resolution) (wo
 		return worker.Evidence{}, fmt.Errorf("teststep: %w", err)
 	}
 
-	// The complete output, not just the summary's excerpt, and only when the
-	// run went wrong -- a healthy run's stream is large and says nothing a
-	// human needs. The Job is already deleted by now, so this is the only
-	// copy that survives.
-	if result.Status != runner.StatusCompleted && len(result.Raw) > 0 {
+	// The complete output, on EVERY run.
+	//
+	// This used to be kept only when a run went wrong, on the reasoning that
+	// a healthy run's stream says nothing a human needs. That was backwards:
+	// the cards that shipped cleanly ended up carrying the least evidence,
+	// which is exactly the wrong way round for an audit surface. The Job is
+	// deleted as soon as its logs are read, so this is the only copy that
+	// survives either way.
+	if len(result.Raw) > 0 {
 		if _, aerr := s.artifacts.PutArtifact(ctx, store.Artifact{
-			CardID: c.ID, Type: store.ArtifactTestOutput, Actor: res.ProviderName,
+			CardID: c.ID, Type: store.ArtifactRunLog, Actor: res.ProviderName,
 			Model: result.Model, ContentType: "text/plain", Content: string(result.Raw),
 		}); aerr != nil {
 			s.log.Error("could not record the harness output", "card_id", c.ID, "error", aerr)

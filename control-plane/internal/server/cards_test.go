@@ -87,6 +87,11 @@ func (f *fakeStore) ListAttempts(context.Context, uuid.UUID) ([]Attempt, error) 
 	return nil, nil
 }
 
+// ListHistory satisfies CardStore for tests that predate the audit endpoint.
+func (f *fakeStore) ListHistory(context.Context, uuid.UUID, int) ([]HistoryEntry, error) {
+	return nil, nil
+}
+
 // ApproveSpec satisfies CardStore for the tests written before approval
 // existed. approvingStore in approve_test.go overrides it.
 func (f *fakeStore) ApproveSpec(ctx context.Context, cardID uuid.UUID, approvedBy string) error {

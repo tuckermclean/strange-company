@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -83,6 +85,11 @@ type fakeBoard struct {
 	descriptions map[int64]string
 	// comments maps task id -> the notes posted against it, in order.
 	comments map[int64][]string
+	// attachments maps task id -> file names uploaded to it.
+	attachments map[int64][]string
+	// attachmentsDisabled makes the attachment routes 404, as they do on an
+	// install with the feature off.
+	attachmentsDisabled bool
 	// commentsDisabled makes the comment route 404, as it does on an
 	// install with service.enabletaskcomments off.
 	commentsDisabled bool
@@ -110,6 +117,7 @@ func newFakeBoard(t *testing.T) *fakeBoard {
 		tasks:        make(map[int64]string),
 		descriptions: make(map[int64]string),
 		comments:     make(map[int64][]string),
+		attachments:  make(map[int64][]string),
 		nextTaskID:   1000,
 	}
 
@@ -230,6 +238,40 @@ func (f *fakeBoard) handleTask(w http.ResponseWriter, r *http.Request) {
 	f.record(r)
 
 	rest := strings.TrimPrefix(r.URL.Path, "/api/v1/tasks/")
+
+	if idPart, ok := strings.CutSuffix(rest, "/attachments"); ok {
+		if f.attachmentsDisabled {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		id, err := strconv.ParseInt(idPart, 10, 64)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if r.Method == http.MethodGet {
+			out := make([]map[string]any, 0, len(f.attachments[id]))
+			for i, name := range f.attachments[id] {
+				out = append(out, map[string]any{
+					"id":   i + 1,
+					"file": map[string]any{"name": name, "mime": "text/plain", "size": 1},
+				})
+			}
+			_ = json.NewEncoder(w).Encode(out)
+			return
+		}
+
+		_, params, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		mr := multipart.NewReader(r.Body, params["boundary"])
+		name := ""
+		if part, perr := mr.NextPart(); perr == nil {
+			name = part.FileName()
+		}
+		f.attachments[id] = append(f.attachments[id], name)
+		_, _ = io.WriteString(w, `{"errors":[],"success":[{"id":1,"file":{"name":"`+name+`","mime":"text/plain","size":1}}]}`)
+		return
+	}
+
 	if idPart, ok := strings.CutSuffix(rest, "/comments"); ok {
 		if f.commentsDisabled {
 			w.WriteHeader(http.StatusNotFound)
@@ -280,6 +322,12 @@ func (f *fakeBoard) descriptionOf(taskID int64) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.descriptions[taskID]
+}
+
+func (f *fakeBoard) attachmentsOn(taskID int64) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.attachments[taskID]...)
 }
 
 func (f *fakeBoard) commentsOn(taskID int64) []string {
@@ -368,6 +416,31 @@ type memRepo struct {
 	evidence map[uuid.UUID][]store.CardEvidence
 
 	syncedStates []syncedStateCall
+
+	spec      *store.CardSpec
+	history   []store.HistoryEntry
+	artifacts []*store.Artifact
+}
+
+func (m *memRepo) GetSpec(context.Context, uuid.UUID) (*store.CardSpec, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.spec, nil
+}
+
+func (m *memRepo) ListHistory(_ context.Context, _ uuid.UUID, limit int) ([]store.HistoryEntry, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if limit > 0 && len(m.history) > limit {
+		return m.history[len(m.history)-limit:], nil
+	}
+	return m.history, nil
+}
+
+func (m *memRepo) ListArtifacts(context.Context, uuid.UUID) ([]*store.Artifact, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.artifacts, nil
 }
 
 type syncedStateCall struct {
