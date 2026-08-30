@@ -232,3 +232,46 @@ func (s *Store) ListDependencies(ctx context.Context, cardID uuid.UUID) ([]*card
 	}
 	return deps, nil
 }
+
+// ListUnapprovedWithSpec returns Backlog cards that have a specification but
+// no valid approval of it.
+//
+// The mirror of ListApprovedAwaitingPromotion: same queue, opposite side of
+// the human gate. A card whose spec was approved and then edited appears here
+// again, because the approval no longer describes the document.
+func (s *Store) ListUnapprovedWithSpec(ctx context.Context, limit int) ([]uuid.UUID, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+
+	const q = `
+		SELECT c.id::text
+		  FROM cards c
+		  JOIN card_specs s ON s.card_id = c.id
+		 WHERE c.state = 'Backlog'
+		   AND coalesce(s.content, '') <> ''
+		   AND (s.approved_sha256 IS NULL
+		        OR s.approved_sha256 <> encode(sha256(s.content::bytea), 'hex'))
+		 ORDER BY c.created_at
+		 LIMIT $1`
+
+	rows, err := s.pool.Query(ctx, q, limit)
+	if err != nil {
+		return nil, fmt.Errorf("store: list unapproved cards: %w", err)
+	}
+	defer rows.Close()
+
+	var out []uuid.UUID
+	for rows.Next() {
+		var idText string
+		if err := rows.Scan(&idText); err != nil {
+			return nil, fmt.Errorf("store: scan unapproved card: %w", err)
+		}
+		id, err := uuid.Parse(idText)
+		if err != nil {
+			return nil, fmt.Errorf("store: parse card id %q: %w", idText, err)
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}

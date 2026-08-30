@@ -580,14 +580,15 @@ func runIngestSupervisor(ctx context.Context, logger *slog.Logger, cfg *config.C
 // deterministic gate.
 func runPromotionSupervisor(ctx context.Context, logger *slog.Logger, cfg *config.Config, st *store.Store) {
 	log := logger.With("supervisor", "promotion")
-	rec := promote.New(st, specScreeningLimit, log)
+	rec := promote.New(st, specScreeningLimit, log).
+		WithAutoApproval(cfg.Autonomy == config.AutonomyAutoApproveSpecs)
 
 	for {
 		if res, err := rec.RunOnce(ctx); err != nil {
 			log.Warn("promotion pass failed", "error", err)
-		} else if res.Promoted+res.Blocked+res.Failed > 0 {
+		} else if res.Promoted+res.Blocked+res.Failed+res.Approved > 0 {
 			log.Info("promotion pass",
-				"considered", res.Considered, "promoted", res.Promoted,
+				"considered", res.Considered, "approved", res.Approved, "promoted", res.Promoted,
 				"blocked", res.Blocked, "failed", res.Failed)
 		}
 

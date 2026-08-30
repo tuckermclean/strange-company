@@ -178,6 +178,14 @@ type CompleteRequest struct {
 	Temperature *float64 // nil means do not send the field
 	JSONObject  bool     // request response_format {"type":"json_object"} when supported
 
+	// IdleTimeout bounds the gap between chunks of a STREAMED response,
+	// rather than the response as a whole.
+	//
+	// It is why streaming exists here: a whole-call deadline has to be
+	// guessed against the largest diff anyone will ever submit, and a gap
+	// between chunks needs no such guess.
+	IdleTimeout time.Duration
+
 	// Timeout overrides defaultTimeout for this call, when ctx carries no
 	// deadline of its own.
 	//
@@ -188,6 +196,12 @@ type CompleteRequest struct {
 	// three-minute default -- and did, on every review of a large card,
 	// which is how this field came to exist.
 	Timeout time.Duration
+}
+
+// streamOptions asks an OpenAI-compatible server to report usage on a streamed
+// response, which it otherwise omits entirely.
+type streamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 // Usage reports token accounting from a completion response. A response
@@ -213,6 +227,8 @@ type wireRequest struct {
 	MaxTokens      int             `json:"max_tokens"`
 	Temperature    *float64        `json:"temperature,omitempty"`
 	ResponseFormat *responseFormat `json:"response_format,omitempty"`
+	Stream         bool            `json:"stream,omitempty"`
+	StreamOptions  *streamOptions  `json:"stream_options,omitempty"`
 }
 
 // responseFormat requests structured JSON output on providers that
@@ -316,6 +332,16 @@ func (c *Client) Complete(ctx context.Context, req CompleteRequest) (*Completion
 		return nil, fmt.Errorf("modelclient: reading response: %w", err)
 	}
 
+	return c.parseBuffered(respBody, req)
+}
+
+// parseBuffered turns a complete (non-streamed) response body into a
+// Completion, applying every verdict rule in one place.
+//
+// Shared with the streaming path's fallback, so a gateway that ignores
+// "stream" produces exactly the same answers and exactly the same errors as
+// one that was never asked to stream.
+func (c *Client) parseBuffered(respBody []byte, req CompleteRequest) (*Completion, error) {
 	var wireResp wireResponse
 	if err := json.Unmarshal(respBody, &wireResp); err != nil {
 		return nil, fmt.Errorf("modelclient: decoding response: %w", err)
