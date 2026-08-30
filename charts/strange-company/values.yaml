@@ -250,6 +250,15 @@ hermes:
     # HERMES_DASHBOARD.
     enabled: true
     port: 9119
+
+    # -- Where a BROWSER reaches the dashboard, as opposed to where the
+    # control plane does.
+    #
+    # The console links a card to its §10.2 specification conversation with
+    # this. Without it the card still reports that a conversation is open,
+    # but cannot say where -- and finding it means hunting the dashboard's
+    # session list by title, which is how it worked before there was a link.
+    publicUrl: ""
     # -- The dashboard's auth gate engages on any non-loopback bind and fails
     # closed without an auth provider, so a credential is required for it to
     # listen at all. Basic auth is generated here because it needs no external
@@ -407,6 +416,19 @@ github:
   # -- Token with read access to those repositories' issues. Rendered into the
   # chart's Secret; leave empty and set `existingSecret` to bring your own.
   token: ""
+
+  # -- Optional credential for day-0 repository setup (POST /repos/import).
+  #
+  # Needs GitHub's `workflow` scope, because day-0 writes .github/workflows --
+  # and it is deliberately a DIFFERENT credential from the one coding agents
+  # push with, which must never carry that scope: an agent able to rewrite CI
+  # can weaken the checks that gate it, and the runner refuses such a commit
+  # for the same reason.
+  #
+  # Leave empty and importing is simply not offered; prepare repositories by
+  # hand. This is more power than anything else the control plane holds, so
+  # granting it should be a decision rather than a default.
+  dayZeroToken: ""
 
 # ---------------------------------------------------------------------------
 # Model and provider policy

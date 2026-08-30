@@ -1,0 +1,47 @@
+suite: day-0 and the conversation link
+templates:
+  - configmap.yaml
+  - secret.yaml
+tests:
+  # Writing .github/workflows is more power than anything else here holds.
+  - it: offers no day-0 credential by default
+    templates:
+      - secret.yaml
+    asserts:
+      - equal:
+          path: stringData["github-day-zero-token"]
+          value: ""
+
+  - it: renders the day-0 credential under its own key
+    templates:
+      - secret.yaml
+    set:
+      github.token: agent-reads-issues
+      github.dayZeroToken: day-zero-writes-workflows
+    asserts:
+      # Two names, because the agents' credential must never carry the
+      # workflow scope and that separation should be visible in the Secret.
+      - equal:
+          path: stringData["github-token"]
+          value: agent-reads-issues
+      - equal:
+          path: stringData["github-day-zero-token"]
+          value: day-zero-writes-workflows
+
+  - it: has no dashboard link by default
+    templates:
+      - configmap.yaml
+    asserts:
+      - equal:
+          path: data.HERMES_DASHBOARD_PUBLIC_URL
+          value: ""
+
+  - it: passes the browser-facing dashboard URL through
+    templates:
+      - configmap.yaml
+    set:
+      hermes.dashboard.publicUrl: https://hermes.example.com
+    asserts:
+      - equal:
+          path: data.HERMES_DASHBOARD_PUBLIC_URL
+          value: https://hermes.example.com

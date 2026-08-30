@@ -47,6 +47,7 @@ data:
   # makes the label a human decision rather than an assertion.
   SPEC_APPROVAL_LABEL: {{ .Values.vikunja.board.approvalLabel | quote }}
   AUTONOMY: {{ .Values.controlPlane.autonomy | quote }}
+  HERMES_DASHBOARD_PUBLIC_URL: {{ .Values.hermes.dashboard.publicUrl | default "" | quote }}
   # Without at least one username here the board belongs to the bootstrap
   # user alone and no human can see the cards.
   VIKUNJA_BOARD_SHARE_WITH: {{ join "," .Values.vikunja.board.shareWith | quote }}

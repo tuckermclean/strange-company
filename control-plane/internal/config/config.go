@@ -49,6 +49,19 @@ type Config struct {
 	HermesAPIKey       string
 	HermesDashboardURL string
 
+	// HermesDashboardPublicURL is where a BROWSER reaches the dashboard, as
+	// opposed to where this process does. The console links a card to its
+	// §10.2 conversation with it; without one the card still reports that a
+	// conversation exists but cannot say where.
+	HermesDashboardPublicURL string
+
+	// GitHubDayZeroToken prepares repositories (§25). It needs GitHub's
+	// `workflow` scope, because day-0 writes .github/workflows -- and it is
+	// deliberately a DIFFERENT credential from the one coding agents push
+	// with, which must never carry that scope: an agent able to rewrite CI
+	// can weaken the checks that gate it. Empty disables importing.
+	GitHubDayZeroToken string
+
 	// GitHubAPIURL is the API root, so GitHub Enterprise is configuration
 	// rather than a code change.
 	GitHubAPIURL string
@@ -170,6 +183,7 @@ var secretVars = map[string]bool{
 	"VIKUNJA_TOKEN":              true,
 	"VIKUNJA_BOOTSTRAP_PASSWORD": true,
 	"GITHUB_TOKEN":               true,
+	"GITHUB_DAY_ZERO_TOKEN":      true,
 	"HERMES_API_KEY":             true,
 }
 
@@ -202,7 +216,9 @@ func Load(getenv func(string) string) (*Config, error) {
 		// reachable.
 		VikunjaToken:       strings.TrimSpace(getenv("VIKUNJA_TOKEN")),
 		HermesAPIKey:       strings.TrimSpace(getenv("HERMES_API_KEY")),
-		HermesDashboardURL: strings.TrimSpace(getenv("HERMES_DASHBOARD_URL")),
+		HermesDashboardURL:       strings.TrimSpace(getenv("HERMES_DASHBOARD_URL")),
+		HermesDashboardPublicURL: strings.TrimSpace(getenv("HERMES_DASHBOARD_PUBLIC_URL")),
+		GitHubDayZeroToken:       strings.TrimSpace(getenv("GITHUB_DAY_ZERO_TOKEN")),
 
 		// Optional: only needed to bootstrap a Vikunja token on first boot.
 		// When VikunjaToken is already set, or when both of these are absent,
@@ -343,6 +359,8 @@ func (c *Config) Redacted() map[string]string {
 		"VIKUNJA_BOARD_SHARE_WITH":   strings.Join(c.VikunjaBoardShareWith, ","),
 		"HERMES_GATEWAY_URL":         c.HermesGatewayURL,
 		"HERMES_DASHBOARD_URL":       c.HermesDashboardURL,
+		"HERMES_DASHBOARD_PUBLIC_URL": c.HermesDashboardPublicURL,
+		"GITHUB_DAY_ZERO_TOKEN":      c.GitHubDayZeroToken,
 		"PORT":                       strconv.Itoa(c.Port),
 		"RECONCILE_INTERVAL":         c.ReconcileInterval.String(),
 	}

@@ -40,6 +40,10 @@ type cardView struct {
 	Runs      []runView
 	Artifacts []artifactView
 	Evidence  []evidenceView
+
+	// SpecSession is the §10.2 conversation, when one is open.
+	SpecSession    string
+	SpecSessionURL string
 	History   []historyView
 
 	// CanApprove and friends decide which buttons render. A button that
@@ -151,6 +155,13 @@ func (h *Handler) cardPage(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 	}
+	if session, err := h.store.GetSpecSession(r.Context(), id); err == nil && session != "" {
+		v.SpecSession = session
+		if h.dashboard != "" {
+			v.SpecSessionURL = h.dashboard + "/sessions/" + session
+		}
+	}
+
 	// §12.2's evidence: what each worker said it did, which is the narrative
 	// the history's one-line reasons compress.
 	if evidence, err := h.store.ListEvidence(r.Context(), id); err == nil {
