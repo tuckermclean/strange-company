@@ -41,6 +41,7 @@ import (
 	"github.com/tuckermclean/strange-company/control-plane/internal/specapproval"
 	"github.com/tuckermclean/strange-company/control-plane/internal/specsession"
 	"github.com/tuckermclean/strange-company/control-plane/internal/store"
+	"github.com/tuckermclean/strange-company/control-plane/internal/ui"
 	"github.com/tuckermclean/strange-company/control-plane/internal/teststep"
 	"github.com/tuckermclean/strange-company/control-plane/internal/vikunja"
 	"github.com/tuckermclean/strange-company/control-plane/internal/worker"
@@ -123,12 +124,23 @@ func main() {
 	}
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
+
+	api := server.New(cfg, checks, version).
+		SetCards(cardStore{st}, storeErrorClassifier{}).
+		SetMCP(mcp.NewServer(mcpCards{st}).SetEvidence(st).Handler())
+
+	// The console is not load-bearing: the API and every supervisor work
+	// without it, so a template that failed to parse must not stop the
+	// engine from running.
+	if console, err := ui.New(st, logger); err != nil {
+		logger.Error("the operator console will not be served", "error", err)
+	} else {
+		api = api.SetUI(console.Routes)
+	}
+
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           server.New(cfg, checks, version).
-			SetCards(cardStore{st}, storeErrorClassifier{}).
-			SetMCP(mcp.NewServer(mcpCards{st}).SetEvidence(st).Handler()).
-			Handler(),
+		Handler:           api.Handler(),
 		ReadHeaderTimeout: readHeaderTimeout,
 		ReadTimeout:       readTimeout,
 		WriteTimeout:      writeTimeout,

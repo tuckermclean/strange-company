@@ -25,6 +25,9 @@ type Server struct {
 
 	// mcp is the Company MCP server (spec §9), mounted under /mcp when set.
 	mcp http.Handler
+
+	// ui registers the operator console's routes, when one is wired.
+	ui func(*http.ServeMux)
 }
 
 // SetMCP mounts the Company MCP server under /mcp.
@@ -71,6 +74,16 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /cards/{id}/history", s.handleCardHistory)
 	mux.HandleFunc("GET /portfolio", s.handlePortfolio)
 
+	// The operator's console, when one has been wired. Registered here so
+	// the UI shares the API's lifecycle and its ingress, and so nothing has
+	// to be running for the API to work.
+	if s.ui != nil {
+		s.ui(mux)
+		mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "/ui", http.StatusFound)
+		})
+	}
+
 	// The Company MCP server (spec §9). Mounted here rather than on its own
 	// listener so it shares this server's lifecycle -- it had a package and
 	// tests and nothing serving it, which meant Hermes could not reach any
@@ -93,3 +106,10 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 // requestTimeout bounds readiness work so a hung dependency cannot hold the
 // probe open past the kubelet's own timeout.
 const requestTimeout = 10 * time.Second
+
+// SetUI wires the operator console. Routes registers itself on the server's
+// mux, so this package never learns what the console looks like.
+func (s *Server) SetUI(register func(*http.ServeMux)) *Server {
+	s.ui = register
+	return s
+}

@@ -1,0 +1,110 @@
+{{template "head" .Title}}
+<header>
+  <h1><a href="/ui">strange company</a> <span class="dim">/</span> {{.Title}}</h1>
+  <span class="tag">{{.State}}</span>
+  <span class="tag">{{.Phase}}</span>
+  <span class="dim" style="margin-left:auto">
+    {{if .Unpriced}}unpriced{{else}}{{money .CostUSD}}{{if .MaxCost}} of {{.MaxCost}}{{end}}{{end}}
+  </span>
+</header>
+<main>
+
+{{if .Error}}<div class="err">{{.Error}}</div>{{end}}
+
+<section>
+  <div class="panel">
+    {{if .SourceURL}}<div class="row"><span class="dim grow">Source</span><a href="{{.SourceURL}}">{{.SourceURL}}</a></div>{{end}}
+    {{if .RepoURL}}<div class="row"><span class="dim grow">Repository</span><a href="{{.RepoURL}}">{{.RepoURL}}</a></div>{{end}}
+    {{if .Branch}}<div class="row"><span class="dim grow">Branch</span><span>{{.Branch}}</span></div>{{end}}
+    {{if .Worker}}<div class="row"><span class="dim grow">Worker</span><span>{{.Worker}}</span></div>{{end}}
+    {{if .Attempts}}<div class="row"><span class="dim grow">Implementation attempts</span><span>{{.Attempts}}</span></div>{{end}}
+    {{if .InfraFail}}<div class="row"><span class="dim grow">Infrastructure failures in a row</span><span class="warn">{{.InfraFail}}</span></div>{{end}}
+    <div class="row"><span class="dim grow">Card</span><span class="dim">{{.ID}}</span></div>
+  </div>
+</section>
+
+{{if or .CanApprove .CanBlock .CanSendBack}}
+<section>
+  <h2>Act</h2>
+  <div class="panel"><div class="row">
+    {{if .CanApprove}}
+    <form method="post" action="/ui/cards/{{.ID}}/approve"><button>Approve the specification</button></form>
+    {{end}}
+    {{if .CanSendBack}}
+    <form method="post" action="/ui/cards/{{.ID}}/send-back"><button>Send back to the queue</button></form>
+    {{end}}
+    {{if .CanBlock}}
+    <form method="post" action="/ui/cards/{{.ID}}/block"><button>Stop this card</button></form>
+    {{end}}
+  </div></div>
+</section>
+{{end}}
+
+{{if .Criteria}}
+<section>
+  <h2>What it promised</h2>
+  <div class="panel">
+    {{range .Criteria}}
+    <div class="row">
+      {{if .ID}}<span class="tag">{{.ID}}</span>{{end}}
+      <span class="grow">{{.Text}}</span>
+      {{if .Verification}}<span class="dim">{{.Verification}}</span>{{end}}
+    </div>
+    {{end}}
+  </div>
+</section>
+{{end}}
+
+<section>
+  <h2>Runs</h2>
+  <div class="panel">
+    {{range .Runs}}
+    <div class="row">
+      <span class="tag">{{.Phase}}</span>
+      <span class="tag {{if .Failed}}bad{{else if .Infra}}warn{{else}}ok{{end}}">{{.Status}}</span>
+      <span class="grow">{{.Summary}}</span>
+      {{if .Harness}}<span class="dim">{{.Harness}}</span>{{end}}
+      {{if .Tokens}}<span class="dim">{{.Tokens}}</span>{{end}}
+      <span class="dim">{{.CostUSD}}</span>
+      <span class="dim">{{.Duration}}</span>
+      {{if .Infra}}<span class="dim">did not count against the ladder</span>{{end}}
+    </div>
+    {{else}}
+    <div class="empty">No runs recorded yet.</div>
+    {{end}}
+  </div>
+</section>
+
+{{if .Artifacts}}
+<section>
+  <h2>What it produced</h2>
+  <div class="panel">
+    {{range .Artifacts}}
+    <div class="row">
+      <span class="grow">{{.Type}}</span>
+      <span class="dim">{{.Size}} bytes</span>
+      {{if .Truncated}}<span class="tag warn">truncated</span>{{end}}
+    </div>
+    {{end}}
+  </div>
+</section>
+{{end}}
+
+<section>
+  <h2>History</h2>
+  <div class="panel overflow"><table>
+    {{range .History}}
+    <tr>
+      <td class="dim" style="white-space:nowrap">{{.When}}</td>
+      <td style="white-space:nowrap">{{if .From}}{{.From}} &rarr; {{end}}<strong>{{.To}}</strong></td>
+      <td class="dim">{{.Actor}}</td>
+      <td>{{.Reason}}</td>
+    </tr>
+    {{else}}
+    <tr><td class="dim">No history.</td></tr>
+    {{end}}
+  </table></div>
+</section>
+
+</main>
+{{template "foot"}}

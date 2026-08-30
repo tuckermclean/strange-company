@@ -528,6 +528,24 @@ controlPlane:
       timeoutSeconds: 2
       failureThreshold: 3
 
+  # -- Publishes the control plane, and with it the operator console at /ui.
+  #
+  # Off by default, and deliberately. This service authenticates nothing
+  # itself, so turning this on without an authentication annotation exposes
+  # every card, artifact and agent transcript to anyone who can resolve the
+  # host.
+  #
+  # Authentication belongs here rather than in the control plane. The Hermes
+  # dashboard in this same deployment is already protected by authentik, so
+  # the pattern and the identity provider both already exist; an OIDC flow
+  # inside the Go service would duplicate them and add a secret it does not
+  # otherwise need.
+  #
+  # With ingress-nginx and an authentik proxy provider:
+  #
+  #   annotations:
+  #     nginx.ingress.kubernetes.io/auth-url: "https://auth.example.com/outpost.goauthentik.io/auth/nginx"
+  #     nginx.ingress.kubernetes.io/auth-signin: "https://auth.example.com/outpost.goauthentik.io/start?rd=$escaped_request_uri"
   ingress:
     enabled: false
     className: ""
