@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -274,4 +276,89 @@ func (s *Store) ListUnapprovedWithSpec(ctx context.Context, limit int) ([]uuid.U
 		out = append(out, id)
 	}
 	return out, rows.Err()
+}
+
+// AddDependency records that cardID must wait for dependsOn.
+//
+// §10's gate already refuses to promote a card whose dependencies are not Done,
+// so writing an edge is the whole of sequencing -- there is no scheduler and no
+// second rule. The table has existed since the first migration and nothing ever
+// wrote to it until decomposition did.
+func (s *Store) AddDependency(ctx context.Context, cardID, dependsOn uuid.UUID) error {
+	if cardID == dependsOn {
+		// A card waiting for itself never promotes, and the gate would
+		// report it as an unmet dependency forever with no way to tell it
+		// from a real one.
+		return fmt.Errorf("store: card %s cannot depend on itself", cardID)
+	}
+
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO card_dependencies (card_id, depends_on)
+		VALUES ($1, $2)
+		ON CONFLICT DO NOTHING
+	`, cardID, dependsOn)
+	if err != nil {
+		return fmt.Errorf("store: recording that %s depends on %s: %w", cardID, dependsOn, err)
+	}
+	return nil
+}
+
+// CreateChild makes a card carrying its own specification, already approved,
+// and records it as a piece of parent.
+//
+// Approved on creation because the parent's specification passed the human gate
+// and a split of approved work does not silently become unapproved work: §10.2's
+// approval is of the intent, and splitting does not change the intent. Asking a
+// human to approve each fragment of something they already approved would make
+// decomposition cost more attention than it saves.
+func (s *Store) CreateChild(ctx context.Context, parent uuid.UUID, title, specText string) (uuid.UUID, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("store: begin child creation: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// The child inherits where the work happens and what it is allowed to
+	// do. A child with no repository or no allowlist would be refused by the
+	// gate for a reason that has nothing to do with the split.
+	var (
+		id                       = uuid.New()
+		repoURL, repoRef, source *string
+		actions                  *string
+	)
+	err = tx.QueryRow(ctx, `
+		SELECT repo_url, repo_base_ref, source_url, permitted_actions::text
+		  FROM cards WHERE id = $1
+	`, parent).Scan(&repoURL, &repoRef, &source, &actions)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("store: reading parent %s: %w", parent, err)
+	}
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO cards (id, title, source_type, source_url, repo_url, repo_base_ref,
+		                   state, phase, risk_class, effective_priority, permitted_actions)
+		VALUES ($1, $2, 'decomposed', $3, $4, $5, 'Backlog', 'specification', 'R1', 100, $6::jsonb)
+	`, id, title, source, repoURL, repoRef, actions); err != nil {
+		return uuid.Nil, fmt.Errorf("store: inserting child of %s: %w", parent, err)
+	}
+
+	sum := sha256.Sum256([]byte(specText))
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO card_specs (card_id, content, approved_sha256, approved_by, approved_at)
+		VALUES ($1, $2, $3, 'decomposition', now())
+	`, id, specText, hex.EncodeToString(sum[:])); err != nil {
+		return uuid.Nil, fmt.Errorf("store: writing the child's specification: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO card_dependencies (card_id, depends_on) VALUES ($1, $2)
+		ON CONFLICT DO NOTHING
+	`, parent, id); err != nil {
+		return uuid.Nil, fmt.Errorf("store: recording %s as a piece of %s: %w", id, parent, err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return uuid.Nil, fmt.Errorf("store: commit child creation: %w", err)
+	}
+	return id, nil
 }

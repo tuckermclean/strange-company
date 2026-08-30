@@ -39,8 +39,8 @@ func (s *Step) Do(ctx context.Context, c *card.Card, res *policy.Resolution) (wo
 	// the §2.4 failure: intelligence on a question software can answer.
 	if c.Phase == card.PhaseSpecification {
 		return worker.Evidence{
-			Summary:   "specification complete; starting planning",
-			NextPhase: card.PhasePlanning,
+			Summary:   "specification complete; checking whether this is one piece of work",
+			NextPhase: card.PhaseDecomposition,
 		}, nil
 	}
 

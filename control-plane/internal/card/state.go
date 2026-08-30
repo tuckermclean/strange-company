@@ -45,6 +45,13 @@ const (
 // Coding pipeline phases (spec section 11).
 const (
 	PhaseSpecification  Phase = "specification"
+
+	// PhaseDecomposition asks whether this is one piece of work or several,
+	// BEFORE acceptance tests exist. Splitting afterwards means throwing
+	// away tests written against the whole, so the question has to be asked
+	// while the answer is still cheap.
+	PhaseDecomposition Phase = "decomposition"
+
 	PhasePlanning       Phase = "planning"
 	PhaseTests          Phase = "tests"
 	PhaseImplementation Phase = "implementation"
@@ -80,6 +87,7 @@ var validStates = map[State]bool{
 
 var validPhases = map[Phase]bool{
 	PhaseSpecification:  true,
+	PhaseDecomposition:  true,
 	PhasePlanning:       true,
 	PhaseTests:          true,
 	PhaseImplementation: true,

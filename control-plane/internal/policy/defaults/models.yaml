@@ -162,6 +162,13 @@ phases:
 
   # Spec §12.3, the core escalation ladder this whole milestone exists to
   # exercise: Haiku x3 -> Sonnet x3 -> Opus x1 -> NeedsHuman.
+  # The decomposition question is cheap to ask and expensive to get wrong in
+  # either direction, so it uses the same tier as planning rather than the
+  # cheapest available.
+  decomposition:
+    - model: plan
+      max_attempts: 1
+
   implementation:
     - model: implement-cheap
       max_attempts: 3
