@@ -1,0 +1,30 @@
+suite: retiring the board
+templates:
+  - configmap.yaml
+tests:
+  - it: points at the chart's own Vikunja by default
+    asserts:
+      - matchRegex:
+          path: data.VIKUNJA_URL
+          pattern: "^http://.*-vikunja:3456$"
+
+  - it: points at someone else's Vikunja when one is named
+    set:
+      vikunja.enabled: false
+      vikunja.external.url: https://kanban.example.com
+    asserts:
+      - equal:
+          path: data.VIKUNJA_URL
+          value: https://kanban.example.com
+
+  # Retiring the board must not take the engine down with it. An empty
+  # VIKUNJA_URL is how the control plane is told there is no board: it runs no
+  # projection and, critically, does not probe a Vikunja for readiness.
+  - it: renders no Vikunja at all when the board has been retired
+    set:
+      vikunja.enabled: false
+      vikunja.external.url: ""
+    asserts:
+      - equal:
+          path: data.VIKUNJA_URL
+          value: ""

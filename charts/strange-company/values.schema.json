@@ -277,7 +277,8 @@
           "type": "object",
           "properties": {
             "url": {
-              "type": "string"
+              "type": "string",
+              "description": "Where the control plane reaches Vikunja when the chart is not running one. Leave empty to retire the board entirely: the control plane then serves its own console at /ui, runs no board projection, and does not probe a Vikunja for readiness."
             },
             "existingSecret": {
               "type": "string"
@@ -317,18 +318,22 @@
         {
           "if": {
             "properties": {
-              "enabled": {
-                "const": false
+              "external": {
+                "required": [
+                  "existingSecret"
+                ],
+                "properties": {
+                  "existingSecret": {
+                    "minLength": 1
+                  }
+                }
               }
             },
             "required": [
-              "enabled"
+              "external"
             ]
           },
           "then": {
-            "required": [
-              "external"
-            ],
             "properties": {
               "external": {
                 "required": [
@@ -337,7 +342,7 @@
                 "properties": {
                   "url": {
                     "minLength": 1,
-                    "description": "vikunja.external.url is required when vikunja.enabled is false"
+                    "description": "vikunja.external.url is required when vikunja.external.existingSecret names a board's credential"
                   }
                 }
               }
