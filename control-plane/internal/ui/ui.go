@@ -73,6 +73,7 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /ui", h.engine)
 	mux.HandleFunc("GET /ui/", h.engine)
 	mux.HandleFunc("GET /ui/cards/{id}", h.cardPage)
+	mux.HandleFunc("GET /ui/cards/{id}/artifacts/{artifact}", h.artifactPage)
 	mux.HandleFunc("POST /ui/cards/{id}/approve", h.approve)
 	mux.HandleFunc("POST /ui/cards/{id}/block", h.block)
 	mux.HandleFunc("POST /ui/cards/{id}/send-back", h.sendBack)
@@ -215,3 +216,5 @@ func compact(n int) string {
 	}
 	return fmt.Sprintf("%d", n)
 }
+
+func sprint(v any) string { return fmt.Sprint(v) }
