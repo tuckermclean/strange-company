@@ -2,6 +2,7 @@ package vikunja
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"mime"
@@ -150,5 +151,56 @@ func TestListReportsWhatIsAlreadyAttached(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].File.Name != "spec.md" {
 		t.Fatalf("attachments = %+v, want spec.md", got)
+	}
+}
+
+// Vikunja pages at 50 and this read one page. With 269 artifacts on a card, 219
+// looked missing on every reconcile pass and were uploaded again -- 32,283
+// attachments on one task, and a board grown to eleven megabytes.
+func TestListingWalksEveryPage(t *testing.T) {
+	var pages []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pages = append(pages, r.URL.Query().Get("page"))
+		w.Header().Set("Content-Type", "application/json")
+		// Two full pages, then a short one.
+		n := 50
+		if r.URL.Query().Get("page") == "3" {
+			n = 7
+		}
+		out := make([]map[string]any, 0, n)
+		for i := 0; i < n; i++ {
+			out = append(out, map[string]any{"id": i, "file": map[string]any{"name": "f", "mime": "text/plain", "size": 1}})
+		}
+		_ = json.NewEncoder(w).Encode(out)
+	}))
+	t.Cleanup(srv.Close)
+
+	got, err := New(srv.URL, "token", nil).ListAttachments(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("ListAttachments: %v", err)
+	}
+	if len(got) != 107 {
+		t.Errorf("read %d attachments across %v, want 107", len(got), pages)
+	}
+	if len(pages) != 3 {
+		t.Errorf("requested pages %v, want three", pages)
+	}
+}
+
+// A partial list makes present things look absent, which is the whole defect.
+// Better to refuse than to answer wrongly.
+func TestATaskWithMoreAttachmentsThanWeWillReadIsAnError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		out := make([]map[string]any, 0, 50)
+		for i := 0; i < 50; i++ {
+			out = append(out, map[string]any{"id": i, "file": map[string]any{"name": "f"}})
+		}
+		_ = json.NewEncoder(w).Encode(out)
+	}))
+	t.Cleanup(srv.Close)
+
+	if _, err := New(srv.URL, "token", nil).ListAttachments(context.Background(), 10); !errors.Is(err, ErrTooManyAttachments) {
+		t.Fatalf("error = %v, want ErrTooManyAttachments rather than a partial list", err)
 	}
 }
