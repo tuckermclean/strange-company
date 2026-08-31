@@ -60,11 +60,29 @@ an operator pasting a key should not have to know which one they have.
 Prefer `github.existingSecret` for a real install so the key never sits in a
 values file.
 
+## Checking it before you deploy
+
+```
+scripts/verify-github-app.sh <app-id> <path-to.pem> tuckermclean/sandbox-derp
+```
+
+It signs the same assertion the control plane signs and asks GitHub who the
+App is, so a mistyped id or a key from a different App is a line of output
+rather than a card that fails an hour later. The key is read locally and never
+sent anywhere; only the signature is. It also warns if the App carries
+`workflows: write`, which only day-0 import should.
+
 ## What happens then
 
-The control plane logs `authenticating to GitHub as an App` at startup and
-every GitHub call mints an installation token scoped to the repository it is
-about, cached until ten minutes before expiry.
+At startup the control plane calls `GET /app` with its assertion before it
+claims anything, and logs `authenticating to GitHub as an App` with the App's
+slug once GitHub has confirmed the pair. Credentials GitHub rejects are logged
+as rejected and the install falls back to tokens -- it does not report success
+and then fail one card at a time, which is what it used to do, because parsing
+a private key proves only that it is a key and nothing about whose it is.
+
+Every GitHub call then mints an installation token scoped to the repository it
+is about, cached until ten minutes before expiry.
 
 **The tokens stay as a fallback.** An install without an App keeps working on
 `github.token`, and the App failing to load is logged rather than fatal — an

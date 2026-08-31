@@ -161,6 +161,33 @@ func (a *App) TokenFor(ctx context.Context, repository string) (string, error) {
 	return tok.Token, nil
 }
 
+// Verify confirms the App id and the private key are actually a pair, and
+// returns the App's slug.
+//
+// NewApp only parses the key. A syntactically perfect key belonging to a
+// different App, or the right key against a mistyped id, gets all the way to
+// a running control plane that logs success and then fails one card at a time
+// at the first TokenFor -- which is the shape of every expensive bug this
+// system has had: a value written, and read by nothing until it costs money.
+// One call at boot turns that into a sentence at startup.
+func (a *App) Verify(ctx context.Context) (string, error) {
+	body, err := a.appRequest(ctx, http.MethodGet, "/app", nil)
+	if err != nil {
+		return "", fmt.Errorf("github: the App id and private key were not accepted together: %w", err)
+	}
+
+	var out struct {
+		Slug string `json:"slug"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return "", fmt.Errorf("github: decoding the App: %w", err)
+	}
+	if out.Slug == "" {
+		return "", errors.New("github: the App response carried no slug")
+	}
+	return out.Slug, nil
+}
+
 // installationFor finds which installation covers a repository.
 func (a *App) installationFor(ctx context.Context, repository string) (int64, error) {
 	a.mu.Lock()
