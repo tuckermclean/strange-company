@@ -52,13 +52,43 @@ const (
 	ArtifactHumanDecision      = "human-decision"
 )
 
-var artifactTypes = map[string]bool{
-	ArtifactSpec: true, ArtifactAmbiguityReport: true, ArtifactImplementationPlan: true,
-	ArtifactTestMapping: true, ArtifactTestOutput: true, ArtifactDiff: true,
-	ArtifactCompilerOutput: true, ArtifactLinterOutput: true, ArtifactSecurityOutput: true,
-	ArtifactReview: true, ArtifactCostReport: true, ArtifactFailureSummary: true,
-	ArtifactHumanDecision: true,
+// AllArtifactTypes is every type this system stores.
+//
+// One list, and the lookup below is derived from it. It used to be a
+// hand-written map beside the constants, and two places that had to agree
+// silently stopped agreeing: ArtifactRunLog was added in 0.12.0 and
+// ArtifactModelExchange in 0.15.1, neither reached this map, and every write of
+// either was rejected. Because the steps treat a failed artifact write as
+// non-fatal -- correctly, a card is worth more than one row of evidence -- the
+// rejection was logged and nothing else happened. Two features shipped, were
+// described in release notes, and had never once stored a byte.
+//
+// Exported so the test that keeps this honest can walk it.
+var AllArtifactTypes = []string{
+	ArtifactSpec,
+	ArtifactAmbiguityReport,
+	ArtifactImplementationPlan,
+	ArtifactTestMapping,
+	ArtifactTestOutput,
+	ArtifactRunLog,
+	ArtifactModelExchange,
+	ArtifactDiff,
+	ArtifactCompilerOutput,
+	ArtifactLinterOutput,
+	ArtifactSecurityOutput,
+	ArtifactReview,
+	ArtifactCostReport,
+	ArtifactFailureSummary,
+	ArtifactHumanDecision,
 }
+
+var artifactTypes = func() map[string]bool {
+	m := make(map[string]bool, len(AllArtifactTypes))
+	for _, t := range AllArtifactTypes {
+		m[t] = true
+	}
+	return m
+}()
 
 // MaxArtifactBytes caps what is stored inline.
 //
