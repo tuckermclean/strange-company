@@ -674,12 +674,37 @@ func (r *Reconciler) artifactSection(ctx context.Context, cd *card.Card) string 
 		return ""
 	}
 
-	var b strings.Builder
-	b.WriteString("<p><strong>Artifacts</strong> (attached to this task)</p><ul>")
+	// Grouped by type, as the console does.
+	//
+	// Listing every artifact individually is what broke the board. A card
+	// that spent five hours in a retry loop collected 269 artifacts, its
+	// description grew to hold a line for each, and the board listing went
+	// past the client's read cap -- so the reconciler failed on every pass
+	// for days, reporting a truncated body as a decode error. The richer
+	// these descriptions became, the more certainly they broke the thing
+	// that writes them.
+	byType := map[string]int{}
+	order := []string{}
+	truncated := map[string]bool{}
 	for _, a := range artifacts {
-		fmt.Fprintf(&b, "<li><code>%s</code>", html.EscapeString(attachmentName(a)))
+		if _, seen := byType[a.Type]; !seen {
+			order = append(order, a.Type)
+		}
+		byType[a.Type]++
 		if a.Truncated {
-			fmt.Fprintf(&b, " \u2014 truncated; %d bytes in full", a.SizeBytes)
+			truncated[a.Type] = true
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString("<p><strong>Artifacts</strong></p><ul>")
+	for _, t := range order {
+		fmt.Fprintf(&b, "<li><code>%s</code>", html.EscapeString(t))
+		if n := byType[t]; n > 1 {
+			fmt.Fprintf(&b, " \u00d7%d", n)
+		}
+		if truncated[t] {
+			b.WriteString(" (some truncated)")
 		}
 		b.WriteString("</li>")
 	}

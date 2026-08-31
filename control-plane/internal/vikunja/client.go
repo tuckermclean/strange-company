@@ -101,6 +101,18 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 		return fmt.Errorf("vikunja: %s %s: read response body: %w", method, path, readErr)
 	}
 
+	// A body that filled the cap was almost certainly cut off mid-structure,
+	// and the decode failure that follows says "unexpected end of JSON input"
+	// -- which reads as a broken server rather than as our own limit.
+	//
+	// That cost days. The board listing grew past this cap as card
+	// descriptions got richer, and the reconciler reported a truncated read
+	// as a Vikunja fault on every pass.
+	if len(respBody) >= maxResponseBodyBytes {
+		return fmt.Errorf("vikunja: %s %s: response reached the %d-byte read limit and was truncated; "+
+			"this is our cap, not the server's answer", method, path, maxResponseBodyBytes)
+	}
+
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		truncated := respBody
 		if len(truncated) > maxErrorBodyBytes {
