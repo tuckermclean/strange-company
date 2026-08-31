@@ -126,6 +126,11 @@ type CardStore interface {
 	// must not corrupt the card.
 	Transition(ctx context.Context, cardID uuid.UUID, to card.State, actor card.ActorType, actorID, reason string) error
 
+	// NoteStepOutcome records whether a step ran to completion. It is what
+	// bounds a card retrying something impossible: every step outcome goes
+	// through here, including the failures that never reach a model.
+	NoteStepOutcome(ctx context.Context, cardID uuid.UUID, ran bool) error
+
 	// AttachEvidence records ev against cardID -- e.g. as a card comment --
 	// so the audit log (spec 21) can answer "what happened to card X?"
 	// without exposing model chain-of-thought.
@@ -338,6 +343,13 @@ func (m *Meeseeks) RunOnce(ctx context.Context) (Outcome, error) {
 
 	cancelHB()
 	hbWG.Wait()
+
+	// Counted before anything else is decided. Every step failure lands
+	// here, including the ones that fail before reaching a model, which is
+	// exactly the class that used to loop forever unseen.
+	if err := m.cards.NoteStepOutcome(ctx, c.ID, stepErr == nil); err != nil {
+		log.Error("could not record the step outcome", "error", err)
+	}
 
 	if stepErr != nil {
 		failure := Evidence{

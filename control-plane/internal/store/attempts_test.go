@@ -98,8 +98,12 @@ func TestAProviderOutageDoesNotBurnAModelRung(t *testing.T) {
 	if outcome.ImplementationAttempts != 0 {
 		t.Errorf("got ImplementationAttempts %d, want 0: infra noise must not burn a Haiku/Sonnet/Opus rung", outcome.ImplementationAttempts)
 	}
-	if outcome.InfrastructureFailures != 1 {
-		t.Errorf("got InfrastructureFailures %d, want 1: the outage itself must still be counted", outcome.InfrastructureFailures)
+	// The outage itself is counted by the WORKER, through NoteStepOutcome,
+	// not here. RecordAttempt only ever sees steps that reached a model, and
+	// counting infrastructure there left every earlier failure invisible to
+	// the bound. See TestNoteStepOutcomeIsTheSingleCounterOfInfrastructure.
+	if outcome.InfrastructureFailures != 0 {
+		t.Errorf("got InfrastructureFailures %d; RecordAttempt no longer owns this counter", outcome.InfrastructureFailures)
 	}
 }
 
@@ -121,8 +125,8 @@ func TestATimeoutDoesNotBurnAModelRung(t *testing.T) {
 	if outcome.ImplementationAttempts != 0 {
 		t.Errorf("got ImplementationAttempts %d, want 0: a timeout must not burn a model-tier rung", outcome.ImplementationAttempts)
 	}
-	if outcome.InfrastructureFailures != 1 {
-		t.Errorf("got InfrastructureFailures %d, want 1: the kill itself must still be counted as infra noise", outcome.InfrastructureFailures)
+	if outcome.InfrastructureFailures != 0 {
+		t.Errorf("got InfrastructureFailures %d; the worker counts this, not RecordAttempt", outcome.InfrastructureFailures)
 	}
 }
 

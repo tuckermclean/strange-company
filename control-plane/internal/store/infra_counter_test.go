@@ -25,6 +25,15 @@ func recordStatus(t *testing.T, s *Store, id uuid.UUID, status runner.Status) {
 	}
 }
 
+func noteOutcome(t *testing.T, s *Store, id uuid.UUID, ran bool) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := s.NoteStepOutcome(ctx, id, ran); err != nil {
+		t.Fatalf("NoteStepOutcome(%v): %v", ran, err)
+	}
+}
+
 func infraCount(t *testing.T, s *Store, id uuid.UUID) int {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -44,17 +53,39 @@ func TestAnInfrastructureRunOfBadLuckIsBrokenByOneGoodRun(t *testing.T) {
 	s := openTestStore(t)
 	id := seedReadyCard(t, s)
 
-	recordStatus(t, s, id, runner.StatusInfraError)
-	recordStatus(t, s, id, runner.StatusInfraError)
+	noteOutcome(t, s, id, false)
+	noteOutcome(t, s, id, false)
 	if got := infraCount(t, s, id); got != 2 {
 		t.Fatalf("infrastructure_failures = %d, want 2", got)
 	}
 
-	// The model was reached, it did the work, the work was wrong. Nothing
-	// about that says the card cannot run.
-	recordStatus(t, s, id, runner.StatusFailed)
+	// A step that ran clears it. What the bound asks is whether the card can
+	// make progress now, not whether it has ever had a bad day.
+	noteOutcome(t, s, id, true)
 	if got := infraCount(t, s, id); got != 0 {
-		t.Errorf("infrastructure_failures = %d after a run that reached the model, want 0", got)
+		t.Errorf("infrastructure_failures = %d after a step that ran, want 0", got)
+	}
+}
+
+// NoteStepOutcome is the single writer, and that is the point: RecordAttempt
+// only ever saw steps that reached a model, so a step failing earlier -- an
+// unresolvable policy, a Hermes session whose title already existed, a
+// decomposition whose children could not be written -- was invisible to the
+// bound built to stop it. Six unbounded loops hid there.
+func TestNoteStepOutcomeIsTheSingleCounterOfInfrastructure(t *testing.T) {
+	s := openTestStore(t)
+	id := seedReadyCard(t, s)
+
+	// A run that reached a model and failed on the merits moves the ladder,
+	// never this counter.
+	recordStatus(t, s, id, runner.StatusInfraError)
+	if got := infraCount(t, s, id); got != 0 {
+		t.Errorf("RecordAttempt moved infrastructure_failures to %d; it no longer owns that counter", got)
+	}
+
+	noteOutcome(t, s, id, false)
+	if got := infraCount(t, s, id); got != 1 {
+		t.Errorf("infrastructure_failures = %d after a failed step, want 1", got)
 	}
 }
 
@@ -82,7 +113,7 @@ func TestSendingACardBackFromNeedsHumanLetsItActuallyRun(t *testing.T) {
 	defer cancel()
 
 	for i := 0; i < 7; i++ {
-		recordStatus(t, s, id, runner.StatusInfraError)
+		noteOutcome(t, s, id, false)
 	}
 	if err := s.Transition(ctx, id, card.NeedsHuman, card.ActorSystem, "worker", "too many infrastructure failures"); err != nil {
 		t.Fatalf("escalate: %v", err)
