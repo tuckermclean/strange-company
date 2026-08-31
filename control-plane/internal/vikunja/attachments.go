@@ -49,15 +49,54 @@ type Attachment struct {
 // re-uploads every artifact on every tick and grows the operator's storage
 // without bound.
 func (c *Client) ListAttachments(ctx context.Context, taskID int64) ([]*Attachment, error) {
-	var out []*Attachment
-	err := c.do(ctx, http.MethodGet, fmt.Sprintf("/api/v1/tasks/%d/attachments", taskID), nil, &out)
+	var all []*Attachment
 
-	var reqErr *RequestError
-	if errors.As(err, &reqErr) && reqErr.Status == http.StatusNotFound {
-		return nil, ErrAttachmentsDisabled
+	for page := 1; page <= maxAttachmentPages; page++ {
+		var out []*Attachment
+		path := fmt.Sprintf("/api/v1/tasks/%d/attachments?page=%d&per_page=%d",
+			taskID, page, attachmentsPerPage)
+
+		if err := c.do(ctx, http.MethodGet, path, nil, &out); err != nil {
+			var reqErr *RequestError
+			if errors.As(err, &reqErr) && reqErr.Status == http.StatusNotFound {
+				return nil, ErrAttachmentsDisabled
+			}
+			return nil, err
+		}
+
+		all = append(all, out...)
+		if len(out) < attachmentsPerPage {
+			return all, nil
+		}
 	}
-	return out, err
+
+	// More pages than we will read. Returning what we have would tell the
+	// caller a name is missing when it is merely unseen, which is exactly
+	// how this went wrong: an unread page looked like an absent file and was
+	// uploaded again on every pass.
+	return nil, ErrTooManyAttachments
 }
+
+// ErrTooManyAttachments reports that a task carries more attachments than this
+// client will page through.
+//
+// Deliberately an error rather than a partial answer. The caller uses this list
+// to decide what is missing, and a partial list makes present things look
+// absent -- which produced 32,283 attachments on one task from 269 artifacts,
+// re-uploading every unread page on every reconcile pass until the board grew
+// to eleven megabytes.
+var ErrTooManyAttachments = errors.New("vikunja: this task has more attachments than we will page through")
+
+const (
+	// attachmentsPerPage is Vikunja's own maximum; asking for more is
+	// silently clamped, which is how one page came to look like all of them.
+	attachmentsPerPage = 50
+
+	// maxAttachmentPages bounds the walk. A card with more artifacts than
+	// this has something wrong with it, and reading 40 pages every minute to
+	// find that out would be its own problem.
+	maxAttachmentPages = 40
+)
 
 // UploadAttachment puts one file on a task.
 //

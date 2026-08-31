@@ -793,6 +793,13 @@ func (r *Reconciler) attach(ctx context.Context, cd *card.Card, taskID int64) {
 		r.log.Debug("vikunja reconcile: not attaching; this instance has task attachments disabled",
 			"card_id", cd.ID)
 		return
+	case errors.Is(err, ErrTooManyAttachments):
+		// Not knowing is not permission to add more. This card already has
+		// more attachments than we can account for, and uploading into that
+		// is what made it so.
+		r.log.Warn("vikunja reconcile: too many attachments to reconcile; not adding more",
+			"card_id", cd.ID, "task", taskID)
+		return
 	case err != nil:
 		// Uploading without knowing what is there would duplicate
 		// everything, every tick. Skipping the pass is the safe failure.
