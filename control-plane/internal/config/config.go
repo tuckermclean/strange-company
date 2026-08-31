@@ -55,6 +55,17 @@ type Config struct {
 	// conversation exists but cannot say where.
 	HermesDashboardPublicURL string
 
+	// GitHubAppID and GitHubAppPrivateKey authenticate as a GitHub App
+	// (§29, which has always said "GitHub App credentials").
+	//
+	// Preferred over every token below. An App mints installation access
+	// tokens that expire in an hour and are scoped to a single repository,
+	// so the credential a coding agent holds stops being "everything its
+	// owner can reach, forever". Empty falls back to the tokens, because an
+	// install without an App still has to work.
+	GitHubAppID         string
+	GitHubAppPrivateKey string
+
 	// GitHubDayZeroToken prepares repositories (§25). It needs GitHub's
 	// `workflow` scope, because day-0 writes .github/workflows -- and it is
 	// deliberately a DIFFERENT credential from the one coding agents push
@@ -183,6 +194,7 @@ var secretVars = map[string]bool{
 	"VIKUNJA_TOKEN":              true,
 	"VIKUNJA_BOOTSTRAP_PASSWORD": true,
 	"GITHUB_TOKEN":               true,
+	"GITHUB_APP_PRIVATE_KEY":     true,
 	"GITHUB_DAY_ZERO_TOKEN":      true,
 	"HERMES_API_KEY":             true,
 }
@@ -218,6 +230,8 @@ func Load(getenv func(string) string) (*Config, error) {
 		HermesAPIKey:       strings.TrimSpace(getenv("HERMES_API_KEY")),
 		HermesDashboardURL:       strings.TrimSpace(getenv("HERMES_DASHBOARD_URL")),
 		HermesDashboardPublicURL: strings.TrimSpace(getenv("HERMES_DASHBOARD_PUBLIC_URL")),
+		GitHubAppID:              strings.TrimSpace(getenv("GITHUB_APP_ID")),
+		GitHubAppPrivateKey:      getenv("GITHUB_APP_PRIVATE_KEY"),
 		GitHubDayZeroToken:       strings.TrimSpace(getenv("GITHUB_DAY_ZERO_TOKEN")),
 
 		// Optional: only needed to bootstrap a Vikunja token on first boot.
@@ -360,6 +374,8 @@ func (c *Config) Redacted() map[string]string {
 		"HERMES_GATEWAY_URL":         c.HermesGatewayURL,
 		"HERMES_DASHBOARD_URL":       c.HermesDashboardURL,
 		"HERMES_DASHBOARD_PUBLIC_URL": c.HermesDashboardPublicURL,
+		"GITHUB_APP_ID":              c.GitHubAppID,
+		"GITHUB_APP_PRIVATE_KEY":     c.GitHubAppPrivateKey,
 		"GITHUB_DAY_ZERO_TOKEN":      c.GitHubDayZeroToken,
 		"PORT":                       strconv.Itoa(c.Port),
 		"RECONCILE_INTERVAL":         c.ReconcileInterval.String(),

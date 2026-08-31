@@ -32,11 +32,44 @@ const (
 // ErrBadRepository is returned for anything that is not exactly "owner/name".
 var ErrBadRepository = errors.New("github: repository must be owner/name")
 
+// TokenSource supplies a credential for one repository.
+//
+// *App satisfies it, which is how a call ends up authenticated by a token that
+// expires in an hour and reaches one repository, rather than by a personal
+// access token that expires never and reaches every repository its owner can.
+type TokenSource interface {
+	TokenFor(ctx context.Context, repository string) (string, error)
+}
+
 // Client reads issues from a GitHub API.
 type Client struct {
 	baseURL    string
 	token      string
+	tokens     TokenSource
 	httpClient *http.Client
+}
+
+// WithTokens makes this client mint a credential per repository instead of
+// carrying one.
+//
+// The static token remains as the fallback, because an install that has not
+// set up an App still has to work -- and because the failure mode of losing
+// the fallback is every GitHub call failing at once.
+func (c *Client) WithTokens(ts TokenSource) *Client {
+	c.tokens = ts
+	return c
+}
+
+// tokenFor resolves the credential for one repository.
+func (c *Client) tokenFor(ctx context.Context, repository string) (string, error) {
+	if c.tokens == nil || repository == "" {
+		return c.token, nil
+	}
+	tok, err := c.tokens.TokenFor(ctx, repository)
+	if err != nil {
+		return "", err
+	}
+	return tok, nil
 }
 
 // New builds a Client. baseURL is the API root, so GitHub Enterprise works by
@@ -101,7 +134,7 @@ func (c *Client) ListLabeledIssues(ctx context.Context, repository, label string
 		}
 		path := fmt.Sprintf("/repos/%s/%s/issues?%s", url.PathEscape(owner), url.PathEscape(name), q.Encode())
 
-		batch, next, err := c.getIssues(ctx, path)
+		batch, next, err := c.getIssues(ctx, repository, path)
 		if err != nil {
 			return nil, err
 		}
@@ -150,15 +183,19 @@ func nextPageLink(header string) string {
 	return ""
 }
 
-func (c *Client) getIssues(ctx context.Context, path string) ([]Issue, string, error) {
+func (c *Client) getIssues(ctx context.Context, repository, path string) ([]Issue, string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
 	if err != nil {
 		return nil, "", fmt.Errorf("github: building request: %w", err)
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
+	token, err := c.tokenFor(ctx, repository)
+	if err != nil {
+		return nil, "", err
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 
 	resp, err := c.httpClient.Do(req)
@@ -197,7 +234,7 @@ func splitRepository(repository string) (owner, name string, err error) {
 // token into an error.
 // requestAccept performs one API call asking for a specific media type, for
 // endpoints whose useful representation is not JSON.
-func (c *Client) requestAccept(ctx context.Context, method, path, accept string) ([]byte, error) {
+func (c *Client) requestAccept(ctx context.Context, repository, method, path, accept string) ([]byte, error) {
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, defaultTimeout)
@@ -210,8 +247,12 @@ func (c *Client) requestAccept(ctx context.Context, method, path, accept string)
 	}
 	req.Header.Set("Accept", accept)
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
+	token, err := c.tokenFor(ctx, repository)
+	if err != nil {
+		return nil, err
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 
 	resp, err := c.httpClient.Do(req)
@@ -228,7 +269,7 @@ func (c *Client) requestAccept(ctx context.Context, method, path, accept string)
 	return io.ReadAll(resp.Body)
 }
 
-func (c *Client) request(ctx context.Context, method, path string, body any) ([]byte, error) {
+func (c *Client) request(ctx context.Context, repository, method, path string, body any) ([]byte, error) {
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, defaultTimeout)
@@ -253,8 +294,12 @@ func (c *Client) request(ctx context.Context, method, path string, body any) ([]
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
+	token, err := c.tokenFor(ctx, repository)
+	if err != nil {
+		return nil, err
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 
 	resp, err := c.httpClient.Do(req)

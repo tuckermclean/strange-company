@@ -28,7 +28,7 @@ func (c *Client) EnsureLabel(ctx context.Context, repository, name, colour, desc
 	body := map[string]string{"name": name, "color": colour, "description": description}
 	path := fmt.Sprintf("/repos/%s/%s/labels", url.PathEscape(owner), url.PathEscape(repo))
 
-	_, err = c.request(ctx, http.MethodPost, path, body)
+	_, err = c.request(ctx, repository, http.MethodPost, path, body)
 	if err == nil {
 		return nil
 	}
@@ -46,7 +46,7 @@ func (c *Client) DefaultBranch(ctx context.Context, repository string) (string, 
 		return "", err
 	}
 
-	raw, err := c.request(ctx, http.MethodGet,
+	raw, err := c.request(ctx, repository, http.MethodGet,
 		fmt.Sprintf("/repos/%s/%s", url.PathEscape(owner), url.PathEscape(repo)), nil)
 	if err != nil {
 		return "", err
@@ -77,7 +77,7 @@ func (c *Client) FileExists(ctx context.Context, repository, path, ref string) (
 	p := fmt.Sprintf("/repos/%s/%s/contents/%s?ref=%s",
 		url.PathEscape(owner), url.PathEscape(repo), path, url.QueryEscape(ref))
 
-	_, err = c.request(ctx, http.MethodGet, p, nil)
+	_, err = c.request(ctx, repository, http.MethodGet, p, nil)
 	if err == nil {
 		return true, nil
 	}
@@ -94,7 +94,7 @@ func (c *Client) CreateBranch(ctx context.Context, repository, branch, fromRef s
 		return err
 	}
 
-	raw, err := c.request(ctx, http.MethodGet,
+	raw, err := c.request(ctx, repository, http.MethodGet,
 		fmt.Sprintf("/repos/%s/%s/git/ref/heads/%s",
 			url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(fromRef)), nil)
 	if err != nil {
@@ -109,7 +109,7 @@ func (c *Client) CreateBranch(ctx context.Context, repository, branch, fromRef s
 		return fmt.Errorf("github: decoding ref: %w", err)
 	}
 
-	_, err = c.request(ctx, http.MethodPost,
+	_, err = c.request(ctx, repository, http.MethodPost,
 		fmt.Sprintf("/repos/%s/%s/git/refs", url.PathEscape(owner), url.PathEscape(repo)),
 		map[string]string{"ref": "refs/heads/" + branch, "sha": head.Object.SHA})
 	if err != nil && strings.Contains(err.Error(), "422") {
@@ -136,7 +136,7 @@ func (c *Client) PutFile(ctx context.Context, repository, path, branch, message 
 		"content": base64.StdEncoding.EncodeToString(content),
 		"branch":  branch,
 	}
-	_, err = c.request(ctx, http.MethodPut,
+	_, err = c.request(ctx, repository, http.MethodPut,
 		fmt.Sprintf("/repos/%s/%s/contents/%s", url.PathEscape(owner), url.PathEscape(repo), path),
 		body)
 	return err

@@ -102,6 +102,16 @@ func main() {
 
 	pol := loadPolicy(logger, cfg)
 
+	// A GitHub App, when one is configured, is what every GitHub call
+	// authenticates with. §29 has always said "GitHub App credentials"; the
+	// tokens below are the fallback for installs that have not set one up.
+	//
+	// The difference is what a credential can reach. A personal access token
+	// carries its owner's scope to every repository they can see and expires
+	// never; an installation token expires in an hour and is minted for one
+	// repository at a time.
+	appTokens := githubApp(logger, cfg)
+
 	// Runs for the lifetime of the process, retrying until Vikunja is
 	// reachable -- when there is one. An install that has retired the board
 	// simply never starts it, rather than retrying forever against nothing.
@@ -116,14 +126,14 @@ func main() {
 	go runSpecificationSupervisor(ctx, logger, cfg, st, pol)
 
 	// Turns labelled GitHub issues into cards (spec 25).
-	go runIngestSupervisor(ctx, logger, cfg, st, pol)
+	go runIngestSupervisor(ctx, logger, cfg, st, pol, appTokens)
 
 	// Moves approved cards into Ready when the deterministic gate agrees
 	// (spec 10.2).
 	go runPromotionSupervisor(ctx, logger, cfg, st)
 
 	// Spawns the short-lived workers that actually do the work (spec 7).
-	go runWorkerSupervisor(ctx, logger, cfg, st, pol)
+	go runWorkerSupervisor(ctx, logger, cfg, st, pol, appTokens)
 
 	// Readiness names only what this process actually needs.
 	//
@@ -172,6 +182,9 @@ func main() {
 			// engine running for the repositories already prepared.
 			logger.Error("repository import is off; the day-0 credential could not be used", "error", err)
 		} else {
+			if appTokens != nil {
+				dayZero = dayZero.WithTokens(appTokens)
+			}
 			api = api.SetImporter(onboard.New(dayZero, cfg.GitHubIngestLabel, nil, logger))
 		}
 	} else {
@@ -581,7 +594,7 @@ func endpointHost(raw string) string {
 // §4.3's rule about Vikunja applies here too: do not assume a delivery worked,
 // reconcile until it has. A webhook can make this faster later; it cannot make
 // it correct, and it would need public ingress this chart does not require.
-func runIngestSupervisor(ctx context.Context, logger *slog.Logger, cfg *config.Config, st *store.Store, pol *policy.Policy) {
+func runIngestSupervisor(ctx context.Context, logger *slog.Logger, cfg *config.Config, st *store.Store, pol *policy.Policy, appTokens github.TokenSource) {
 	log := logger.With("supervisor", "ingest")
 
 	if len(cfg.GitHubRepositories) == 0 {
@@ -595,6 +608,9 @@ func runIngestSupervisor(ctx context.Context, logger *slog.Logger, cfg *config.C
 	}
 
 	client, err := github.New(cfg.GitHubAPIURL, cfg.GitHubToken, nil)
+	if err == nil && appTokens != nil {
+		client = client.WithTokens(appTokens)
+	}
 	if err != nil {
 		log.Error("could not build a GitHub client; issue ingestion disabled", "error", err)
 		return
@@ -750,7 +766,7 @@ func (w workerCards) AttachEvidence(ctx context.Context, cardID uuid.UUID, ev wo
 // exist." Each RunOnce claims at most one card, performs exactly one workflow
 // step, and exits -- so a card moving through planning, tests and
 // implementation is carried by a succession of workers, never one.
-func runWorkerSupervisor(ctx context.Context, logger *slog.Logger, cfg *config.Config, st *store.Store, pol *policy.Policy) {
+func runWorkerSupervisor(ctx context.Context, logger *slog.Logger, cfg *config.Config, st *store.Store, pol *policy.Policy, appTokens github.TokenSource) {
 	log := logger.With("supervisor", "worker")
 
 	// Every step this control plane knows how to run. A phase absent here
@@ -791,7 +807,9 @@ func runWorkerSupervisor(ctx context.Context, logger *slog.Logger, cfg *config.C
 		// human instead.
 		var gh *github.Client
 		if cfg.GitHubToken != "" {
-			if gh, err = github.New(cfg.GitHubAPIURL, cfg.GitHubToken, nil); err != nil {
+			if gh, err = github.New(cfg.GitHubAPIURL, cfg.GitHubToken, nil); err == nil && appTokens != nil {
+				gh = gh.WithTokens(appTokens)
+			} else if err != nil {
 				log.Error("could not build a GitHub client", "error", err)
 				gh = nil
 			}
@@ -917,4 +935,22 @@ func (m mcpCards) ClaimReady(ctx context.Context, workerID string, lease time.Du
 		return nil, mcp.ErrNoWork
 	}
 	return c, err
+}
+
+// githubApp builds the App token source, or nil when none is configured.
+//
+// Never fatal. An install running on personal access tokens still works, and
+// refusing to start because an optional, better credential is absent would
+// make adopting it harder than leaving it alone.
+func githubApp(logger *slog.Logger, cfg *config.Config) github.TokenSource {
+	if cfg.GitHubAppID == "" || cfg.GitHubAppPrivateKey == "" {
+		return nil
+	}
+	app, err := github.NewApp(cfg.GitHubAPIURL, cfg.GitHubAppID, []byte(cfg.GitHubAppPrivateKey), nil)
+	if err != nil {
+		logger.Error("the GitHub App credentials could not be used; falling back to tokens", "error", err)
+		return nil
+	}
+	logger.Info("authenticating to GitHub as an App", "app_id", cfg.GitHubAppID)
+	return app
 }

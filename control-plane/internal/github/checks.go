@@ -45,7 +45,7 @@ func (c *Client) ChecksFor(ctx context.Context, repository, ref string) (redgate
 
 	path := fmt.Sprintf("/repos/%s/%s/commits/%s/check-runs",
 		url.PathEscape(owner), url.PathEscape(name), url.PathEscape(ref))
-	body, err := c.request(ctx, http.MethodGet, path, nil)
+	body, err := c.request(ctx, repository, http.MethodGet, path, nil)
 	if err != nil {
 		return redgate.RunOutcome{}, err
 	}

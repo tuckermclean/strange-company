@@ -42,7 +42,7 @@ func (c *Client) CompareDiff(ctx context.Context, repository, base, head string)
 
 	// The media type is what makes this a diff rather than a JSON summary of
 	// one. Without it the reviewer gets file metadata and no code.
-	body, err := c.requestAccept(ctx, http.MethodGet, path, "application/vnd.github.diff")
+	body, err := c.requestAccept(ctx, repository, http.MethodGet, path, "application/vnd.github.diff")
 	if err != nil {
 		return "", err
 	}

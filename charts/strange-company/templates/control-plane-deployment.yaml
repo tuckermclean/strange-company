@@ -95,6 +95,14 @@ spec:
                   # Optional: no token simply disables ingestion, and the
                   # control plane says so at boot rather than failing.
                   optional: true
+            - name: GITHUB_APP_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "strange-company.secretName" . }}
+                  key: github-app-private-key
+                  # Optional: without an App the control plane falls back to
+                  # tokens and says so at boot.
+                  optional: true
             - name: GITHUB_DAY_ZERO_TOKEN
               valueFrom:
                 secretKeyRef:

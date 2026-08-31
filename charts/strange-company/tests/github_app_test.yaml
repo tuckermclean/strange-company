@@ -1,0 +1,33 @@
+suite: GitHub App credentials
+templates:
+  - configmap.yaml
+  - secret.yaml
+tests:
+  - it: configures no App by default
+    templates: [configmap.yaml]
+    asserts:
+      - equal:
+          path: data.GITHUB_APP_ID
+          value: ""
+
+  - it: keeps the private key out of the ConfigMap
+    templates: [configmap.yaml]
+    set:
+      github.app.appId: "123456"
+      github.app.privateKey: "-----BEGIN RSA PRIVATE KEY-----\nsecret\n-----END RSA PRIVATE KEY-----"
+    asserts:
+      - equal:
+          path: data.GITHUB_APP_ID
+          value: "123456"
+      - notExists:
+          path: data.GITHUB_APP_PRIVATE_KEY
+
+  # The only credential this chart carries that can mint other credentials.
+  - it: puts the private key in the Secret
+    templates: [secret.yaml]
+    set:
+      github.app.privateKey: "-----BEGIN RSA PRIVATE KEY-----\nsecret\n-----END RSA PRIVATE KEY-----"
+    asserts:
+      - matchRegex:
+          path: stringData["github-app-private-key"]
+          pattern: "BEGIN RSA PRIVATE KEY"

@@ -58,7 +58,7 @@ func (c *Client) EnsurePullRequest(ctx context.Context, pr PullRequest) (*OpenPu
 		"state": {"open"},
 	}
 	listPath := fmt.Sprintf("/repos/%s/%s/pulls?%s", url.PathEscape(owner), url.PathEscape(name), q.Encode())
-	body, err := c.request(ctx, http.MethodGet, listPath, nil)
+	body, err := c.request(ctx, pr.Repository, http.MethodGet, listPath, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -71,7 +71,7 @@ func (c *Client) EnsurePullRequest(ctx context.Context, pr PullRequest) (*OpenPu
 	if len(existing) > 0 {
 		patchPath := fmt.Sprintf("/repos/%s/%s/pulls/%d",
 			url.PathEscape(owner), url.PathEscape(name), existing[0].Number)
-		updated, err := c.request(ctx, http.MethodPatch, patchPath, map[string]string{
+		updated, err := c.request(ctx, pr.Repository, http.MethodPatch, patchPath, map[string]string{
 			"title": pr.Title,
 			"body":  pr.Body,
 		})
@@ -86,7 +86,7 @@ func (c *Client) EnsurePullRequest(ctx context.Context, pr PullRequest) (*OpenPu
 	}
 
 	createPath := fmt.Sprintf("/repos/%s/%s/pulls", url.PathEscape(owner), url.PathEscape(name))
-	created, err := c.request(ctx, http.MethodPost, createPath, map[string]string{
+	created, err := c.request(ctx, pr.Repository, http.MethodPost, createPath, map[string]string{
 		"title": pr.Title,
 		"body":  pr.Body,
 		"head":  pr.Head,
