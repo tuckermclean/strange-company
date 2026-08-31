@@ -37,14 +37,31 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "watch"]
+
+  # The per-run push credential.
+  #
+  # A GitHub App mints a token that expires in an hour and reaches one
+  # repository; it has to live somewhere the Job can reference, and the Job's
+  # own spec would print it in every `kubectl get job -o yaml` for the life of
+  # the run. So it goes in a Secret created before the Job and deleted after.
+  #
+  # No `get` and no `list`: the control plane writes these and removes them,
+  # and never needs to read one back. A role that cannot read secrets cannot
+  # be used to read the ones it did not create.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "delete"]
   # pods/log is how a coding run's output is collected -- the control plane
   # reads the harness transcript back out of the Job's Pod logs. There is no
-  # rule for `secrets`, `configmaps`, `pods/exec`, or any wildcard resource or
-  # verb: this Role deliberately cannot read Secrets in `agent-runs`, cannot
-  # exec into a running Job, and cannot touch anything outside this namespace.
-  # Coding Jobs receive only the credentials injected into them at creation
-  # time (spec §29); the control plane has no need, and is given no ability,
-  # to read arbitrary Secrets here.
+  # rule for `configmaps`, `pods/exec`, or any wildcard resource or verb: this
+  # Role cannot exec into a running Job and cannot touch anything outside this
+  # namespace.
+  #
+  # On secrets it holds `create` and `delete` and deliberately NOT `get` or
+  # `list`, so it can write the per-run push credential and remove it again
+  # while remaining unable to read any Secret in this namespace -- including
+  # the ones it wrote. Coding Jobs receive only the credentials injected into
+  # them at creation time (spec §29).
   - apiGroups: [""]
     resources: ["pods/log"]
     verbs: ["get"]

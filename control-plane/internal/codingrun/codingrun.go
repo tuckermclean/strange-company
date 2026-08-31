@@ -31,6 +31,12 @@ import (
 type JobAPI interface {
 	CreateJob(ctx context.Context, namespace string, job any) error
 	DeleteJob(ctx context.Context, namespace, name string) error
+
+	// CreateSecret and DeleteSecret hold the per-run push credential. A
+	// minted token has to live somewhere the Job can reference, and the
+	// Job's own spec would print it in every `kubectl get job -o yaml`.
+	CreateSecret(ctx context.Context, namespace, name string, data map[string]string) error
+	DeleteSecret(ctx context.Context, namespace, name string) error
 	JobStatus(ctx context.Context, namespace, name string) (kube.JobPhase, error)
 	PodLogs(ctx context.Context, namespace, jobName string) ([]byte, error)
 }
@@ -53,6 +59,15 @@ type GitIdentity struct {
 	Username    string
 	AuthorName  string
 	AuthorEmail string
+}
+
+// TokenSource mints a push credential for one repository.
+//
+// *github.App satisfies it. Where it is set, a Job receives a credential that
+// expires in an hour and reaches one repository, instead of the long-lived
+// token in a Secret that reaches everything its owner can.
+type TokenSource interface {
+	TokenFor(ctx context.Context, repository string) (string, error)
 }
 
 // Request is one coding run.
@@ -94,6 +109,19 @@ type Service struct {
 	log       *slog.Logger
 
 	adapters map[string]runner.Adapter
+
+	// tokens mints the per-run push credential when an App is configured.
+	tokens TokenSource
+}
+
+// WithTokens makes each run receive a freshly minted, repository-scoped push
+// credential instead of the long-lived one in a Secret.
+//
+// Optional: without it a run uses whatever GitToken it was given, which is how
+// every install worked before an App could be configured.
+func (s *Service) WithTokens(t TokenSource) *Service {
+	s.tokens = t
+	return s
 }
 
 // New builds a Service. poll is how often a running Job's status is checked.
@@ -198,12 +226,36 @@ func (s *Service) Run(ctx context.Context, req Request) (*runner.CodingRunResult
 		AllowedTools: req.AllowedTools,
 	})
 
+	// A credential minted for this run, this repository, this hour.
+	//
+	// Created before the Job because the pod starts as soon as the Job
+	// exists and backoffLimit is 0: a missing Secret would not be retried,
+	// it would simply be a failed run.
+	gitToken := req.GitToken
+	if ephemeral, err := s.mintCredential(ctx, req); err != nil {
+		// Not fatal. Falling back to the configured credential keeps the
+		// run working, and a run that cannot push is worse than one pushing
+		// with a broader token than it needed.
+		s.log.Error("could not mint a per-run push credential; using the configured one",
+			"run_id", req.RunID, "error", err)
+	} else if ephemeral != nil {
+		gitToken = ephemeral
+		defer func() {
+			if err := s.api.DeleteSecret(context.WithoutCancel(ctx), s.namespace, ephemeral.Secret); err != nil {
+				// Worth saying loudly: the whole point of minting one is
+				// that it stops existing.
+				s.log.Error("could not remove the per-run credential",
+					"secret", ephemeral.Secret, "error", err)
+			}
+		}()
+	}
+
 	job, err := jobs.Build(jobs.Spec{
 		CardID: req.CardID, RunID: req.RunID, Namespace: s.namespace,
 		Image: s.image, Harness: harness, Model: model,
 		RepoURL: req.RepoURL, Branch: req.Branch, BaseRef: req.BaseRef,
 		Command: argv, Phase: req.Phase, Attempt: req.Attempt,
-		GitToken: req.GitToken, GitUsername: req.GitUsername,
+		GitToken: gitToken, GitUsername: req.GitUsername,
 		GitAuthorName: req.GitAuthorName, GitAuthorEmail: req.GitAuthorEmail,
 		Env: req.Resolution.Env, PlainEnv: plainEnv,
 		CPULimit: req.CPULimit, MemoryLimit: req.MemoryLimit,
@@ -336,4 +388,62 @@ func timedOut(req Request, harness string, started time.Time) *runner.CodingRunR
 		Summary:  "the run did not finish within its wall-clock budget",
 		DurationMS: time.Since(started).Milliseconds(),
 	}
+}
+
+// mintCredential creates a Secret holding a freshly minted push token for this
+// run, and returns the reference the Job should use.
+//
+// Returns (nil, nil) when there is no token source, which is the ordinary case
+// for an install that has not configured a GitHub App.
+func (s *Service) mintCredential(ctx context.Context, req Request) (*policy.CredentialRef, error) {
+	if s.tokens == nil {
+		return nil, nil
+	}
+	repository := repositoryFromURL(req.RepoURL)
+	if repository == "" {
+		return nil, nil
+	}
+
+	token, err := s.tokens.TokenFor(ctx, repository)
+	if err != nil {
+		return nil, fmt.Errorf("minting a push credential for %s: %w", repository, err)
+	}
+	if token == "" {
+		return nil, nil
+	}
+
+	// Named for the run, so a leftover from a crashed control plane says
+	// which run abandoned it.
+	name := fmt.Sprintf("run-credential-%s", strings.ToLower(req.RunID))
+	if err := s.api.CreateSecret(ctx, s.namespace, name, map[string]string{"token": token}); err != nil {
+		return nil, fmt.Errorf("storing the push credential: %w", err)
+	}
+	return &policy.CredentialRef{Secret: name, Key: "token"}, nil
+}
+
+// repositoryFromURL reduces a clone URL to "owner/name".
+//
+// Tolerant of the shapes a repository URL actually arrives in -- with or
+// without a .git suffix, https or ssh -- because a credential that silently is
+// not minted because a URL had a suffix would be a security regression nobody
+// would notice.
+func repositoryFromURL(raw string) string {
+	trimmed := strings.TrimSuffix(strings.TrimSpace(raw), ".git")
+	trimmed = strings.TrimSuffix(trimmed, "/")
+	if trimmed == "" {
+		return ""
+	}
+	if i := strings.Index(trimmed, "://"); i >= 0 {
+		trimmed = trimmed[i+3:]
+	}
+	if i := strings.Index(trimmed, "@"); i >= 0 {
+		trimmed = trimmed[i+1:]
+	}
+	trimmed = strings.ReplaceAll(trimmed, ":", "/")
+
+	parts := strings.Split(trimmed, "/")
+	if len(parts) < 2 {
+		return ""
+	}
+	return parts[len(parts)-2] + "/" + parts[len(parts)-1]
 }
