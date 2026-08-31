@@ -264,3 +264,59 @@ func TestAggregateRunsChecksConcurrently(t *testing.T) {
 		t.Errorf("wanted concurrent execution to finish well under the serial time of %s, took %s", serial, elapsed)
 	}
 }
+
+// A dependency being down is worth reporting and not worth leaving the load
+// balancer over.
+//
+// A Hermes wedged behind a storage detach took the control plane to 1/2 ready
+// on every rollout. The console, the API, ingestion and the coding phases all
+// kept working -- but Kubernetes pulled the pod out of service, so the operator
+// debugging the outage could not reach the console that would have told them
+// about it.
+func TestAnAdvisoryFailureDoesNotMakeTheServiceUnready(t *testing.T) {
+	ready, statuses := Aggregate(context.Background(), []Checker{
+		stubCheck{name: "postgres", ok: true},
+		Advisory(stubCheck{name: "hermes-gateway", ok: false}),
+	})
+
+	if !ready {
+		t.Error("a provider outage made the whole service unready")
+	}
+
+	var found bool
+	for _, s := range statuses {
+		if s.Name == "hermes-gateway" {
+			found = true
+			if s.OK {
+				t.Error("the failure was hidden rather than reported")
+			}
+			if !s.Advisory {
+				t.Error("the status does not say it is advisory, so a reader cannot tell why it did not count")
+			}
+		}
+	}
+	if !found {
+		t.Error("the advisory check is missing from the report entirely")
+	}
+}
+
+// The one thing this process cannot work without still gates.
+func TestLosingTheDatabaseStillMakesTheServiceUnready(t *testing.T) {
+	ready, _ := Aggregate(context.Background(), []Checker{
+		stubCheck{name: "postgres", ok: false},
+		Advisory(stubCheck{name: "hermes-gateway", ok: true}),
+	})
+	if ready {
+		t.Error("the service reported ready with no database")
+	}
+}
+
+type stubCheck struct {
+	name string
+	ok   bool
+}
+
+func (s stubCheck) Name() string { return s.name }
+func (s stubCheck) Check(context.Context) Status {
+	return Status{Name: s.name, OK: s.ok}
+}
