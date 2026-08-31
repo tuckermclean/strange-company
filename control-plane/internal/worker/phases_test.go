@@ -29,6 +29,8 @@ func (p *phaseStore) ClaimReady(context.Context, string, time.Duration) (*card.C
 	}
 	return p.claimed, nil
 }
+func (p *phaseStore) NoteStepOutcome(context.Context, uuid.UUID, bool) error { return nil }
+
 func (p *phaseStore) Heartbeat(context.Context, uuid.UUID, string, time.Duration) error { return nil }
 func (p *phaseStore) Release(_ context.Context, _ uuid.UUID, _, reason string) error {
 	p.released = reason

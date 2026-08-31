@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"errors"
 	"context"
 	"strings"
 	"testing"
@@ -173,5 +174,45 @@ func TestAPolicyThatCannotResolveAPhaseEscalatesRatherThanLooping(t *testing.T) 
 		if !strings.Contains(reason, want) {
 			t.Errorf("reason = %q, want it to mention %q", reason, want)
 		}
+	}
+}
+
+// The worker counts every step outcome, including failures that never reach a
+// model. RecordAttempt only ever saw the steps that got as far as a run, which
+// is how six unbounded loops hid from the guard built to stop them.
+func TestAStepFailureIsCountedEvenWhenNoRunHappened(t *testing.T) {
+	c := testCard()
+	cards := &fakeCardStore{claimReadyFunc: func() (*card.Card, error) { return c, nil }}
+	step := &fakeStep{doFunc: func(context.Context, *card.Card, *policy.Resolution) (Evidence, error) {
+		// Fails before touching a provider, like an unresolvable policy or
+		// a child card that could not be written.
+		return Evidence{}, errors.New("could not do the thing")
+	}}
+
+	_, _ = New("w1", cards, testPolicy(3), step, testLogger(), time.Minute).RunOnce(context.Background())
+
+	if len(cards.stepOutcomes) != 1 {
+		t.Fatalf("step outcomes = %v, want one recorded", cards.stepOutcomes)
+	}
+	if cards.stepOutcomes[0] {
+		t.Error("a failed step was recorded as having run")
+	}
+}
+
+// And a step that ran clears the count: what the bound asks is whether the card
+// can make progress now, not whether it has ever had a bad day.
+func TestAStepThatRanClearsTheCount(t *testing.T) {
+	c := testCard()
+	cards := &fakeCardStore{claimReadyFunc: func() (*card.Card, error) { return c, nil }}
+	step := &fakeStep{doFunc: func(context.Context, *card.Card, *policy.Resolution) (Evidence, error) {
+		return Evidence{Summary: "did the work", NextState: card.Review}, nil
+	}}
+
+	if _, err := New("w1", cards, testPolicy(3), step, testLogger(), time.Minute).
+		RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if len(cards.stepOutcomes) != 1 || !cards.stepOutcomes[0] {
+		t.Errorf("step outcomes = %v, want one success recorded", cards.stepOutcomes)
 	}
 }

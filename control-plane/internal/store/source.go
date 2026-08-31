@@ -344,8 +344,8 @@ func (s *Store) CreateChild(ctx context.Context, parent uuid.UUID, title, specTe
 
 	sum := sha256.Sum256([]byte(specText))
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO card_specs (card_id, content, approved_sha256, approved_by, approved_at)
-		VALUES ($1, $2, $3, 'decomposition', now())
+		INSERT INTO card_specs (card_id, content, updated_by, approved_sha256, approved_by, approved_at)
+		VALUES ($1, $2, 'decomposition', $3, 'decomposition', now())
 	`, id, specText, hex.EncodeToString(sum[:])); err != nil {
 		return uuid.Nil, fmt.Errorf("store: writing the child's specification: %w", err)
 	}

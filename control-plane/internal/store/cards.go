@@ -575,3 +575,35 @@ func (s *Store) ListHistory(ctx context.Context, cardID uuid.UUID, limit int) ([
 	}
 	return out, nil
 }
+
+// NoteStepOutcome records whether a worker step ran to completion.
+//
+// This is the single writer of infrastructure_failures, and the bound built on
+// it is the only thing standing between this system and a card that retries
+// something impossible forever.
+//
+// It lives here rather than in RecordAttempt because RecordAttempt only sees
+// the steps that reach a model. Six separate unbounded loops were found in
+// steps that fail earlier than that -- an unresolvable policy, a Hermes session
+// whose title already existed, a decomposition whose children could not be
+// written -- and every one of them was invisible to a counter that only
+// attempts could move. The worker sees every step, so the worker counts.
+//
+// Consecutive, not lifetime: a step that ran clears the count, because what the
+// bound is asking is "can this card make progress right now", not "has it ever
+// had a bad day".
+func (s *Store) NoteStepOutcome(ctx context.Context, cardID uuid.UUID, ran bool) error {
+	const q = `
+		UPDATE cards
+		SET infrastructure_failures = CASE WHEN $1 THEN 0 ELSE infrastructure_failures + 1 END
+		WHERE id = $2::uuid`
+
+	tag, err := s.pool.Exec(ctx, q, ran, cardID.String())
+	if err != nil {
+		return fmt.Errorf("store: noting step outcome for card %s: %w", cardID, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrCardNotFound
+	}
+	return nil
+}

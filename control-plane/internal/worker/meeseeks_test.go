@@ -50,6 +50,7 @@ type fakeCardStore struct {
 	heartbeatCalls  int
 	releaseCalls    []releaseCall
 	transitionCalls []transitionCall
+	stepOutcomes    []bool
 	evidenceCalls   []Evidence
 	advancedTo      card.Phase
 	callOrder       []string
@@ -110,6 +111,13 @@ func (f *fakeCardStore) AdvancePhase(_ context.Context, _ uuid.UUID, to card.Pha
 	defer f.mu.Unlock()
 	f.callOrder = append(f.callOrder, "advance")
 	f.advancedTo = to
+	return nil
+}
+
+func (f *fakeCardStore) NoteStepOutcome(_ context.Context, _ uuid.UUID, ran bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stepOutcomes = append(f.stepOutcomes, ran)
 	return nil
 }
 

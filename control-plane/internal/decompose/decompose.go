@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -44,6 +45,22 @@ const (
 // maxDecomposeTokens is sized for thinking plus the answer, as everywhere else
 // a reasoning model is asked a question.
 const maxDecomposeTokens = 32768
+
+// decomposeTimeout and decomposeIdleTimeout bound the call.
+//
+// A SPLIT answer is long: it contains a complete specification per child, and
+// the first real one ran to 12,740 output tokens and blew straight through the
+// client's three-minute default. The failure looked like an infrastructure
+// problem and was arithmetic -- a reasoning model writing four specifications
+// simply takes longer than a screening question.
+//
+// The idle bound is what actually protects this, as it does for review: a model
+// writing steadily is working however long it takes, and one that has stopped
+// emits nothing.
+const (
+	decomposeTimeout     = 10 * time.Minute
+	decomposeIdleTimeout = 2 * time.Minute
+)
 
 // maxChildren bounds a split.
 //
@@ -129,9 +146,11 @@ func (s *Step) Do(ctx context.Context, c *card.Card, res *policy.Resolution) (wo
 		{Role: "system", Content: systemPrompt},
 		{Role: "user", Content: decomposeInput(c, cardSpec.Content)},
 	}
-	completion, err := client.Complete(ctx, modelclient.CompleteRequest{
+	req := modelclient.CompleteRequest{
 		Messages: messages, MaxTokens: maxDecomposeTokens,
-	})
+		Timeout: decomposeTimeout, IdleTimeout: decomposeIdleTimeout,
+	}
+	completion, err := complete(ctx, client, req)
 
 	s.recordExchange(ctx, c, res, messages, completion, err)
 	if err != nil {
@@ -227,7 +246,10 @@ func (s *Step) recordExchange(ctx context.Context, c *card.Card, res *policy.Res
 		CardID: c.ID, Type: store.ArtifactModelExchange, Actor: res.ProviderName,
 		Model: res.Model, ContentType: "text/markdown",
 		Content: modelclient.Transcript(
-			modelclient.CompleteRequest{Messages: msgs, MaxTokens: maxDecomposeTokens}, completion, callErr),
+			modelclient.CompleteRequest{
+				Messages: msgs, MaxTokens: maxDecomposeTokens,
+				Timeout: decomposeTimeout, IdleTimeout: decomposeIdleTimeout,
+			}, completion, callErr),
 	}); err != nil {
 		s.log.Error("could not record the decomposition exchange", "card_id", c.ID, "error", err)
 	}
@@ -299,4 +321,22 @@ func decomposeInput(c *card.Card, specText string) string {
 	fmt.Fprintf(&b, "# Card\n\n%s\n\n# Specification\n\n%s\n",
 		strings.TrimSpace(c.Title), strings.TrimSpace(specText))
 	return b.String()
+}
+
+// StreamingCompleter is implemented by clients that can stream.
+type StreamingCompleter interface {
+	CompleteStreaming(ctx context.Context, req modelclient.CompleteRequest) (*modelclient.Completion, error)
+}
+
+// complete streams when the client can.
+//
+// A whole-call deadline has to be guessed against the longest answer anyone
+// will ever get, and this step's answers are the longest in the system: one
+// full specification per child. Bounding the silence between chunks needs no
+// such guess.
+func complete(ctx context.Context, client Completer, req modelclient.CompleteRequest) (*modelclient.Completion, error) {
+	if s, ok := client.(StreamingCompleter); ok {
+		return s.CompleteStreaming(ctx, req)
+	}
+	return client.Complete(ctx, req)
 }
