@@ -12,10 +12,17 @@ import (
 )
 
 type fakeGateway struct {
+	sessions []*hermes.Session
+	listErr  error
+
 	created  []hermes.SpecSession
 	deleted  []string
 	nextID   string
 	createErr error
+}
+
+func (f *fakeGateway) ListSessions(context.Context) ([]*hermes.Session, error) {
+	return f.sessions, f.listErr
 }
 
 func (f *fakeGateway) CreateSession(_ context.Context, req hermes.SpecSession) (*hermes.Session, error) {
@@ -154,3 +161,48 @@ func TestOpenRecordsNothingWhenTheGatewayFails(t *testing.T) {
 	}
 }
 
+
+// A rollout between creating a session and recording its id leaves the
+// conversation in the gateway and no record on the card. The gateway then
+// refuses the duplicate title on every later pass, so the card retried once a
+// minute all night with the only evidence being an error saying the thing it
+// wanted already existed.
+func TestAConversationThatAlreadyExistsIsAdoptedRatherThanRetriedForever(t *testing.T) {
+	c := testCard()
+	g := &fakeGateway{
+		createErr: errors.New(`hermes: status 400: {"error":{"code":"invalid_title"}}`),
+		sessions: []*hermes.Session{
+			{ID: "api_other", Title: "something else"},
+			{ID: "api_1788135613_bee9906a", Title: specsession.Title(c)},
+		},
+	}
+	st := &fakeStore{}
+
+	id, err := opener(g, st).Open(context.Background(), c, nil, testReport())
+	if err != nil {
+		t.Fatalf("Open: %v; the conversation exists and was not found", err)
+	}
+	if id != "api_1788135613_bee9906a" {
+		t.Errorf("session = %q, want the one already carrying this card's title", id)
+	}
+	if st.recorded != "api_1788135613_bee9906a" {
+		t.Errorf("recorded %q; the card still does not know where its conversation is", st.recorded)
+	}
+}
+
+// Adoption must not paper over a genuine failure: if nothing carries the
+// title, the original error is what the operator needs to see.
+func TestACreateFailureWithNoMatchingSessionStillFails(t *testing.T) {
+	g := &fakeGateway{
+		createErr: errors.New("hermes: status 503"),
+		sessions:  []*hermes.Session{{ID: "api_other", Title: "something else"}},
+	}
+	st := &fakeStore{}
+
+	if _, err := opener(g, st).Open(context.Background(), testCard(), nil, testReport()); err == nil {
+		t.Fatal("Open succeeded with no session created and none to adopt")
+	}
+	if st.recorded != "" {
+		t.Errorf("recorded %q for a card with no conversation", st.recorded)
+	}
+}

@@ -222,3 +222,36 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte) ([]by
 
 	return io.ReadAll(resp.Body)
 }
+
+// ListSessions returns the gateway's sessions.
+//
+// VERIFIED against the live gateway: GET /api/sessions returns a list whose
+// entries carry id, source, model and title.
+//
+// It exists so a session that was created but never recorded can be found
+// again. The gateway refuses a duplicate title, so without this the only
+// evidence that a conversation exists is an error saying one does.
+func (c *Client) ListSessions(ctx context.Context) ([]*Session, error) {
+	raw, err := c.do(ctx, http.MethodGet, "/api/sessions", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	// The gateway has been observed returning both a bare array and an
+	// object wrapping one. Accept either rather than depending on which.
+	var direct []*Session
+	if err := json.Unmarshal(raw, &direct); err == nil {
+		return direct, nil
+	}
+	var wrapped struct {
+		Sessions []*Session `json:"sessions"`
+		Data     []*Session `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &wrapped); err != nil {
+		return nil, fmt.Errorf("hermes: decoding the session list: %w", err)
+	}
+	if wrapped.Sessions != nil {
+		return wrapped.Sessions, nil
+	}
+	return wrapped.Data, nil
+}

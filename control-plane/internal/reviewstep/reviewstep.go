@@ -216,6 +216,24 @@ func (s *Step) Do(ctx context.Context, c *card.Card, res *policy.Resolution) (wo
 		}, nil
 
 	case "CORRECTABLE":
+		// A correctable verdict spends an implementation attempt.
+		//
+		// Without this the card loops forever, and it did: implementation
+		// completes, review says CORRECTABLE, implementation completes
+		// again. §12.1 burns an attempt only on a run that FAILED, and both
+		// of these runs succeed -- the coding run reached its terminal event
+		// and the review call returned a verdict. So nothing counted, the
+		// ladder never advanced, and a live card went round three times in
+		// forty minutes spending a coding Job and a reasoning call each
+		// time, with implementation_attempt still reading zero.
+		//
+		// The honest reading is that the work was not good enough. §19's
+		// green gate passed and §18's review gate did not, and a gate
+		// refusing the work is exactly what an implementation attempt
+		// measures. Recording it here means the existing ladder bounds this:
+		// after the last rung, §12.3 sends the card to a human.
+		s.spendAttempt(ctx, c, res, completion)
+
 		return worker.Evidence{
 			Summary:   "review found correctable problems; returning to implementation",
 			Detail:    map[string]any{"model": completion.Model},
@@ -464,4 +482,38 @@ func complete(ctx context.Context, client Completer, req modelclient.CompleteReq
 		return s.CompleteStreaming(ctx, req)
 	}
 	return client.Complete(ctx, req)
+}
+
+// spendAttempt records that the review gate refused this implementation.
+//
+// Deliberately attributed to the IMPLEMENTATION phase rather than to review:
+// what was found wanting is the implementation, the ladder it advances is the
+// implementation ladder, and a reader looking at why a card escalated needs to
+// see attempts against the work rather than against the judging of it.
+func (s *Step) spendAttempt(ctx context.Context, c *card.Card, res *policy.Resolution, completion *modelclient.Completion) {
+	if s.attempts == nil {
+		return
+	}
+
+	model := res.Model
+	if completion != nil && completion.Model != "" {
+		model = completion.Model
+	}
+
+	if _, err := s.attempts.RecordAttempt(ctx, store.AttemptRecord{
+		CardID: c.ID,
+		RunID:  fmt.Sprintf("review-correctable-%s-%d", shortID(c.ID), res.Attempt),
+		Phase:  string(card.PhaseImplementation),
+		ModelAlias: res.Alias, Provider: res.ProviderName,
+		Harness: string(res.Harness), Model: model,
+		Result: &runner.CodingRunResult{
+			Status:  runner.StatusFailed,
+			Harness: string(res.Harness),
+			Model:   model,
+			Summary: "the review gate returned CORRECTABLE: the implementation passed its tests but did not pass review",
+		},
+	}); err != nil {
+		s.log.Error("could not record the correctable verdict as an attempt",
+			"card_id", c.ID, "error", err)
+	}
 }
