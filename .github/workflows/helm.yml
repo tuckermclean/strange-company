@@ -212,6 +212,24 @@ jobs:
           exit 1
           k3d version
 
+      - name: Pre-pull the K3s image
+        run: |
+          set -euo pipefail
+          # k3d has no retry around its image pull, and a Docker Hub timeout
+          # rolls the entire cluster creation back -- so the flake costs a
+          # whole job rather than a few seconds. Three separate runs failed
+          # this way in one night. Pulling first, with retries, turns a
+          # registry hiccup into a pause.
+          for attempt in 1 2 3 4 5; do
+            if docker pull "$K3S_IMAGE"; then
+              exit 0
+            fi
+            echo "pull of $K3S_IMAGE failed (attempt $attempt); retrying"
+            sleep $(( attempt * 10 ))
+          done
+          echo "::error::could not pull $K3S_IMAGE after 5 attempts"
+          exit 1
+
       - name: Create K3s cluster
         run: |
           set -euo pipefail
@@ -385,6 +403,24 @@ jobs:
           echo "::error::could not install k3d after 5 attempts"
           exit 1
 
+      - name: Pre-pull the K3s image
+        run: |
+          set -euo pipefail
+          # k3d has no retry around its image pull, and a Docker Hub timeout
+          # rolls the entire cluster creation back -- so the flake costs a
+          # whole job rather than a few seconds. Three separate runs failed
+          # this way in one night. Pulling first, with retries, turns a
+          # registry hiccup into a pause.
+          for attempt in 1 2 3 4 5; do
+            if docker pull "$K3S_IMAGE"; then
+              exit 0
+            fi
+            echo "pull of $K3S_IMAGE failed (attempt $attempt); retrying"
+            sleep $(( attempt * 10 ))
+          done
+          echo "::error::could not pull $K3S_IMAGE after 5 attempts"
+          exit 1
+
       - name: Create K3s cluster
         run: |
           set -euo pipefail
@@ -507,6 +543,24 @@ jobs:
             sleep $(( attempt * 5 ))
           done
           echo "::error::could not install k3d after 5 attempts"
+          exit 1
+
+      - name: Pre-pull the K3s image
+        run: |
+          set -euo pipefail
+          # k3d has no retry around its image pull, and a Docker Hub timeout
+          # rolls the entire cluster creation back -- so the flake costs a
+          # whole job rather than a few seconds. Three separate runs failed
+          # this way in one night. Pulling first, with retries, turns a
+          # registry hiccup into a pause.
+          for attempt in 1 2 3 4 5; do
+            if docker pull "$K3S_IMAGE"; then
+              exit 0
+            fi
+            echo "pull of $K3S_IMAGE failed (attempt $attempt); retrying"
+            sleep $(( attempt * 10 ))
+          done
+          echo "::error::could not pull $K3S_IMAGE after 5 attempts"
           exit 1
 
       - name: Create K3s cluster
@@ -762,6 +816,24 @@ jobs:
       - name: Build the control-plane image
         run: docker build -t strange-company-control-plane:ci --build-arg VERSION=ci control-plane
 
+      - name: Pre-pull the K3s image
+        run: |
+          set -euo pipefail
+          # k3d has no retry around its image pull, and a Docker Hub timeout
+          # rolls the entire cluster creation back -- so the flake costs a
+          # whole job rather than a few seconds. Three separate runs failed
+          # this way in one night. Pulling first, with retries, turns a
+          # registry hiccup into a pause.
+          for attempt in 1 2 3 4 5; do
+            if docker pull "$K3S_IMAGE"; then
+              exit 0
+            fi
+            echo "pull of $K3S_IMAGE failed (attempt $attempt); retrying"
+            sleep $(( attempt * 10 ))
+          done
+          echo "::error::could not pull $K3S_IMAGE after 5 attempts"
+          exit 1
+
       - name: Create K3s cluster
         run: |
           set -euo pipefail
@@ -940,6 +1012,24 @@ jobs:
           helm template "$RELEASE" "$TGZ" -n "$NS" -f "$CHART/ci/values-external.yaml" > /tmp/tgz-external.yaml
           test -s /tmp/tgz-external.yaml
           grep -q "kind: Deployment" /tmp/tgz-external.yaml
+
+      - name: Pre-pull the K3s image
+        run: |
+          set -euo pipefail
+          # k3d has no retry around its image pull, and a Docker Hub timeout
+          # rolls the entire cluster creation back -- so the flake costs a
+          # whole job rather than a few seconds. Three separate runs failed
+          # this way in one night. Pulling first, with retries, turns a
+          # registry hiccup into a pause.
+          for attempt in 1 2 3 4 5; do
+            if docker pull "$K3S_IMAGE"; then
+              exit 0
+            fi
+            echo "pull of $K3S_IMAGE failed (attempt $attempt); retrying"
+            sleep $(( attempt * 10 ))
+          done
+          echo "::error::could not pull $K3S_IMAGE after 5 attempts"
+          exit 1
 
       - name: Install the packaged tarball into a fresh K3s cluster
         run: |
