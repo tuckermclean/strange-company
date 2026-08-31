@@ -129,3 +129,41 @@ func TestAnUnchangedCardIsNotRewritten(t *testing.T) {
 			"the board would churn every tick", before, after)
 	}
 }
+
+// Listing every artifact individually is what broke the board. A card that
+// spent five hours in a retry loop collected 269 of them, its description grew
+// a line for each, and the board listing went past the client's read cap -- so
+// the reconciler failed on every pass for days, reporting a truncated body as a
+// decode error.
+func TestArtifactsAreSummarisedRatherThanEnumerated(t *testing.T) {
+	board := newFakeBoard(t)
+	c := newCard("looped", card.Review, int64Ptr(950))
+
+	var arts []*store.Artifact
+	for i := 0; i < 269; i++ {
+		arts = append(arts, &store.Artifact{
+			ID: uuid.New(), Type: store.ArtifactTestMapping, ContentType: "text/plain", SizeBytes: 336,
+		})
+	}
+	arts = append(arts, &store.Artifact{ID: uuid.New(), Type: store.ArtifactDiff, ContentType: "text/x-diff"})
+	repo := &memRepo{cards: []*card.Card{c}, artifacts: arts}
+
+	got := newTestReconciler(t, board, repo).describe(context.Background(), c)
+
+	// One line per TYPE, not per artifact.
+	if n := strings.Count(got, "<li><code>"); n > 8 {
+		t.Errorf("the description has %d artifact lines; a card cannot be allowed to grow its own description without bound", n)
+	}
+	text := descriptionText(got)
+	if !strings.Contains(text, "269") {
+		t.Errorf("the count is not shown, so a reader cannot tell one from many:\n%s", text)
+	}
+	if !strings.Contains(text, "diff") {
+		t.Error("a type with a single artifact was lost in the summary")
+	}
+
+	// The whole point: this must stay small however much a card accumulates.
+	if len(got) > 4000 {
+		t.Errorf("description is %d bytes for 270 artifacts; it is still unbounded", len(got))
+	}
+}
