@@ -132,12 +132,26 @@ func main() {
 	// probe, Kubernetes would take the pod out of service, and the whole
 	// engine would stop -- because a projection nobody had asked for was
 	// unreachable.
+	// Postgres is the only thing this process cannot work without: it holds
+	// every card, and without it there is nothing to answer with.
+	//
+	// The providers are advisory. They are reported on /readyz and they do
+	// not make this pod unready, because taking the control plane out of
+	// service over somebody else's outage helps nobody: the console, the
+	// API, ingestion and the coding phases all keep working while a model
+	// gateway is down, and an operator debugging that outage needs the
+	// console that would tell them about it.
+	//
+	// This was learned the hard way twice. A Vikunja that was not configured
+	// used to fail readiness until 0.14.0. Then a Hermes wedged behind a
+	// storage detach took the control plane to 1/2 ready on every rollout --
+	// same trap, other dependency, and only half of it had been fixed.
 	checks := []health.Checker{
 		&postgresChecker{store: st},
-		health.HTTPReachable("hermes-gateway", cfg.HermesGatewayURL, nil),
+		health.Advisory(health.HTTPReachable("hermes-gateway", cfg.HermesGatewayURL, nil)),
 	}
 	if cfg.VikunjaURL != "" {
-		checks = append(checks, health.HTTPReachable("vikunja", cfg.VikunjaURL+"/api/v1/info", nil))
+		checks = append(checks, health.Advisory(health.HTTPReachable("vikunja", cfg.VikunjaURL+"/api/v1/info", nil)))
 	}
 
 	addr := fmt.Sprintf(":%d", cfg.Port)

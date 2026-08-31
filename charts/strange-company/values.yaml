@@ -276,6 +276,35 @@ hermes:
 
   persistence:
     # -- Hermes state lives at /opt/data (HERMES_HOME in the upstream image).
+    #
+    # Keep this enabled. /opt/data is NOT a cache. Inspected on a running
+    # instance it holds, among other things:
+    #
+    #   sessions/     the §10.2 specification conversations -- the human's own
+    #                 work, and what the control plane's spec_session_id points
+    #                 at. Losing these orphans every card mid-conversation.
+    #   .env          credentials entered through the dashboard. Loaded with
+    #                 override=True at startup, so these BEAT the container
+    #                 environment; see docs/reference/hermes-integration-notes.md.
+    #   config.yaml   gateway configuration, including provider settings
+    #   state.db      Hermes' own state, plus auth.json and kanban.db
+    #
+    # Setting this to false gives /opt/data an emptyDir, which discards all of
+    # that on every restart -- silently, and only noticed later when a
+    # conversation cannot be found.
+    #
+    # ON RWO STORAGE THIS COSTS SOMETHING. A single-replica workload with a
+    # mandatory ReadWriteOnce volume has to hand that volume over on each
+    # rollout, and a CSI whose detach lags the pod lifecycle (Longhorn is the
+    # reported case) leaves the incoming pod stuck on Multi-Attach until it is
+    # deleted by hand. The Deployment already uses `Recreate`, so this is not
+    # the RollingUpdate double-attach race; it is detach lag underneath.
+    #
+    # That trade is worth making knowingly rather than avoiding by default: an
+    # occasional manual pod delete is recoverable, and a lost specification
+    # conversation is not. The control plane no longer goes unready when Hermes
+    # is wedged, so a stuck rollout stalls the phases that need a model and
+    # leaves the console, the API and ingestion working.
     enabled: true
     size: 2Gi
     storageClass: ""

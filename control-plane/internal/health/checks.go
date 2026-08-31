@@ -16,6 +16,17 @@ type Status struct {
 	OK        bool      `json:"ok"`
 	Detail    string    `json:"detail"`
 	CheckedAt time.Time `json:"checked_at"`
+
+	// Advisory marks a check whose failure is reported but does not make
+	// this service unready.
+	//
+	// The distinction is between what this process NEEDS and what it
+	// USES. Losing its database means it cannot answer anything and
+	// should leave the load balancer. Losing a provider means some phases
+	// stall while the console, the API and every other phase keep working
+	// -- and reporting that as unready takes the whole service out over
+	// somebody else's outage.
+	Advisory bool `json:"advisory,omitempty"`
 }
 
 // Checker is anything that can report its own readiness.
@@ -109,11 +120,28 @@ func Aggregate(ctx context.Context, checks []Checker) (ready bool, statuses []St
 
 	ready = true
 	for _, s := range statuses {
-		if !s.OK {
+		if !s.OK && !s.Advisory {
 			ready = false
 			break
 		}
 	}
 
 	return ready, statuses
+}
+
+// Advisory wraps a Checker so its failure is reported without making the
+// service unready.
+//
+// A dependency being down is worth showing on /readyz. It is not worth having
+// Kubernetes pull this pod out of service over: an operator debugging a
+// provider outage should still be able to reach the console that would tell
+// them about it.
+func Advisory(c Checker) Checker { return advisory{c} }
+
+type advisory struct{ Checker }
+
+func (a advisory) Check(ctx context.Context) Status {
+	s := a.Checker.Check(ctx)
+	s.Advisory = true
+	return s
 }
