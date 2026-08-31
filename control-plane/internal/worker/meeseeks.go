@@ -268,15 +268,34 @@ func (m *Meeseeks) RunOnce(ctx context.Context) (Outcome, error) {
 			return OutcomeEscalated, nil
 		}
 
-		// An unexpected policy error (unknown phase/alias/provider, or a
-		// malformed attempt count) is not the ladder being exhausted -- it
-		// is something the operator needs to fix in YAML. Give the card
-		// back rather than escalate a human into a config bug.
-		reason := fmt.Sprintf("policy resolution failed: %v", err)
-		if rerr := m.cards.Release(ctx, c.ID, m.id, reason); rerr != nil {
-			log.Error("release after policy resolve failure also failed", "error", rerr)
+		// An unexpected policy error -- an unknown phase, alias or provider,
+		// or a malformed attempt count -- is something the operator must fix
+		// in YAML, and it is the one class of failure that CANNOT get better
+		// by trying again: the file does not change because a worker read it
+		// twice.
+		//
+		// This used to release the card, on the reasoning that a human
+		// should not be escalated into a config bug. That was wrong. The
+		// card came straight back, failed identically, and did so once a
+		// reconcile interval forever -- and because a policy failure records
+		// no attempt, infrastructure_failures never moved and the bound that
+		// exists to stop exactly this never saw it. Quietly looping is not
+		// kinder to a human than telling them; it is the same stall with
+		// nobody informed.
+		//
+		// Adding a phase to the pipeline is how this happens in practice: an
+		// operator-supplied policy that predates the phase has no rung for
+		// it, and every card reaching it stops.
+		reason := fmt.Sprintf(
+			"policy has nothing to run for phase %q: %v. This is configuration, not the work: "+
+				"add a rung for this phase to models.yaml, then move this card out of NeedsHuman to retry it.",
+			c.Phase, err)
+		if terr := m.cards.Transition(ctx, c.ID, card.NeedsHuman, card.ActorSystem, m.id, reason); terr != nil {
+			return OutcomeEscalated, fmt.Errorf("worker %s: escalate card %s after a policy failure: %w", m.id, c.ID, terr)
 		}
-		return OutcomeReleased, fmt.Errorf("worker %s: resolve policy for card %s phase %q: %w", m.id, c.ID, c.Phase, err)
+		log.Error("escalated to NeedsHuman: the policy cannot resolve this phase",
+			"phase", string(c.Phase), "error", err)
+		return OutcomeEscalated, nil
 	}
 
 	// From here on, the claim MUST be released on every path except a
