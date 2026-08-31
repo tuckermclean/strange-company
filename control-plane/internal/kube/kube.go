@@ -239,3 +239,49 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte) ([]by
 
 	return io.ReadAll(io.LimitReader(resp.Body, maxLogBytes))
 }
+
+// CreateSecret writes an Opaque Secret holding string data.
+//
+// Used for the per-run credential a coding Job pushes with. A minted token has
+// to live somewhere the Job can reference, and putting it in the Job's own
+// spec would print it in every `kubectl get job -o yaml` for the life of the
+// run.
+func (c *Client) CreateSecret(ctx context.Context, namespace, name string, data map[string]string) error {
+	body, err := json.Marshal(map[string]any{
+		"apiVersion": "v1",
+		"kind":       "Secret",
+		"metadata": map[string]any{
+			"name":      name,
+			"namespace": namespace,
+			"labels": map[string]string{
+				// So a leftover from a crashed run is identifiable as ours
+				// rather than as something an operator has to reason about.
+				"app.kubernetes.io/managed-by": "strange-company",
+				"strange-company.io/ephemeral": "true",
+			},
+		},
+		"type":       "Opaque",
+		"stringData": data,
+	})
+	if err != nil {
+		return fmt.Errorf("kube: encoding secret: %w", err)
+	}
+
+	path := fmt.Sprintf("/api/v1/namespaces/%s/secrets", url.PathEscape(namespace))
+	_, err = c.do(ctx, http.MethodPost, path, body)
+	return err
+}
+
+// DeleteSecret removes a Secret, treating "already gone" as success.
+//
+// The credential outliving the run it was minted for is the thing worth
+// avoiding, so a delete that finds nothing has achieved what it wanted.
+func (c *Client) DeleteSecret(ctx context.Context, namespace, name string) error {
+	path := fmt.Sprintf("/api/v1/namespaces/%s/secrets/%s",
+		url.PathEscape(namespace), url.PathEscape(name))
+	_, err := c.do(ctx, http.MethodDelete, path, nil)
+	if err != nil && strings.Contains(err.Error(), "404") {
+		return nil
+	}
+	return err
+}

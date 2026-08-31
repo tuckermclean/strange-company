@@ -75,9 +75,13 @@ tests:
           value: RoleBinding
 
   # Load-bearing. This pins the Role to an exact allowlist, so any future change
-  # that widens it -- secrets, configmaps, pods/exec, or a "*" wildcard -- makes
-  # the rendered rules diverge and fails CI rather than passing review.
-  - it: the coding-Job role cannot read secrets or use wildcards
+  # that widens it -- configmaps, pods/exec, or a "*" wildcard -- makes the
+  # rendered rules diverge and fails CI rather than passing review.
+  #
+  # It did exactly that when secrets create/delete was added for the per-run
+  # push credential, which is the point: widening this Role is a decision, and
+  # a decision should have to be written down twice.
+  - it: the coding-Job role holds exactly these rules and no others
     values: [../ci/values-batteries.yaml]
     set:
       controlPlane.agentRuns.enabled: true
@@ -93,8 +97,40 @@ tests:
               resources: ["pods"]
               verbs: ["get", "list", "watch"]
             - apiGroups: [""]
+              resources: ["secrets"]
+              verbs: ["create", "delete"]
+            - apiGroups: [""]
               resources: ["pods/log"]
               verbs: ["get"]
+        documentSelector:
+          path: kind
+          value: Role
+
+  # The property that matters, asserted on its own so it survives a future
+  # edit to the list above: the control plane writes per-run credentials and
+  # removes them, and can read no Secret in this namespace -- including the
+  # ones it wrote.
+  - it: the coding-Job role cannot read secrets
+    values: [../ci/values-batteries.yaml]
+    set:
+      controlPlane.agentRuns.enabled: true
+    template: templates/agent-runs-rbac.yaml
+    asserts:
+      - notContains:
+          path: rules
+          content:
+            apiGroups: [""]
+            resources: ["secrets"]
+            verbs: ["create", "delete", "get"]
+        documentSelector:
+          path: kind
+          value: Role
+      - notContains:
+          path: rules
+          content:
+            apiGroups: [""]
+            resources: ["secrets"]
+            verbs: ["create", "delete", "list"]
         documentSelector:
           path: kind
           value: Role

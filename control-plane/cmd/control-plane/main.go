@@ -799,6 +799,13 @@ func runWorkerSupervisor(ctx context.Context, logger *slog.Logger, cfg *config.C
 			break
 		}
 		runs := codingrun.New(kc, cfg.AgentRunsNamespace, cfg.RunnerImage, codingRunPoll, log)
+		if appTokens != nil {
+			// Each coding run now gets a credential minted for its own
+			// repository that expires in an hour, rather than the
+			// long-lived one every run shared.
+			runs = runs.WithTokens(appTokens)
+			log.Info("coding runs will use per-run, repository-scoped push credentials")
+		}
 
 		// §18's review and the GitHub Actions gate both need a client.
 		// Without a token a reviewed card would pass review and have

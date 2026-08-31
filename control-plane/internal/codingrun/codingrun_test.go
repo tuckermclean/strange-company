@@ -20,6 +20,11 @@ const claudeResult = `{"type":"result","subtype":"success","is_error":false,` +
 	`"usage":{"input_tokens":10,"output_tokens":20},"result":"wrote the tests"}`
 
 type fakeAPI struct {
+	secretsCreated []string
+	secretsDeleted []string
+	secretData     map[string]string
+	secretErr      error
+
 	created   int
 	deleted   int
 	phases    []kube.JobPhase
@@ -34,6 +39,17 @@ type fakeAPI struct {
 }
 
 // createdName is the object name the manifest actually carried.
+func (f *fakeAPI) CreateSecret(_ context.Context, _, name string, data map[string]string) error {
+	f.secretsCreated = append(f.secretsCreated, name)
+	f.secretData = data
+	return f.secretErr
+}
+
+func (f *fakeAPI) DeleteSecret(_ context.Context, _, name string) error {
+	f.secretsDeleted = append(f.secretsDeleted, name)
+	return nil
+}
+
 func (f *fakeAPI) createdName() string {
 	b, _ := json.Marshal(f.lastJob)
 	var parsed struct {
@@ -324,5 +340,92 @@ func TestSilenceIsReportedAsSilence(t *testing.T) {
 	}
 	if !strings.Contains(res.Summary, "printed nothing at all") {
 		t.Errorf("summary = %q", res.Summary)
+	}
+}
+
+type stubTokens struct {
+	repo  string
+	token string
+	err   error
+}
+
+func (s *stubTokens) TokenFor(_ context.Context, repository string) (string, error) {
+	s.repo = repository
+	return s.token, s.err
+}
+
+// The credential a coding agent holds is the one that matters most: it can push.
+// A minted token expires in an hour and reaches one repository; the configured
+// one expires never and reaches everything its owner can.
+func TestARunGetsACredentialMintedForItsOwnRepository(t *testing.T) {
+	api := &fakeAPI{phases: []kube.JobPhase{kube.JobSucceeded}, logs: claudeResult}
+	tokens := &stubTokens{token: "ghs_minted"}
+
+	svc := codingrun.New(api, "agent-runs", "img:1", time.Millisecond, nil).WithTokens(tokens)
+	_, _ = svc.Run(context.Background(), request())
+
+	if tokens.repo != "example/repo" {
+		t.Errorf("minted for %q, want the card's repository", tokens.repo)
+	}
+	if len(api.secretsCreated) != 1 {
+		t.Fatalf("secrets created = %v, want one per-run credential", api.secretsCreated)
+	}
+	if api.secretData["token"] != "ghs_minted" {
+		t.Errorf("the Secret does not carry the minted token: %v", api.secretData)
+	}
+	// The whole point is that it stops existing.
+	if len(api.secretsDeleted) != 1 || api.secretsDeleted[0] != api.secretsCreated[0] {
+		t.Errorf("created %v but deleted %v", api.secretsCreated, api.secretsDeleted)
+	}
+}
+
+// A run that cannot push is worse than one pushing with a broader token than it
+// needed, so a minting failure falls back rather than failing the run.
+func TestAMintingFailureFallsBackToTheConfiguredCredential(t *testing.T) {
+	api := &fakeAPI{phases: []kube.JobPhase{kube.JobSucceeded}, logs: claudeResult}
+	tokens := &stubTokens{err: errors.New("github is down")}
+
+	svc := codingrun.New(api, "agent-runs", "img:1", time.Millisecond, nil).WithTokens(tokens)
+	if _, err := svc.Run(context.Background(), request()); err != nil {
+		t.Fatalf("Run: %v; a minting failure must not fail the run", err)
+	}
+	if len(api.secretsCreated) != 0 {
+		t.Errorf("a Secret was created despite minting failing: %v", api.secretsCreated)
+	}
+}
+
+// Without a token source nothing changes, which is how every install worked
+// before an App could be configured.
+func TestWithoutATokenSourceNoSecretIsCreated(t *testing.T) {
+	api := &fakeAPI{phases: []kube.JobPhase{kube.JobSucceeded}, logs: claudeResult}
+
+	svc := codingrun.New(api, "agent-runs", "img:1", time.Millisecond, nil)
+	_, _ = svc.Run(context.Background(), request())
+
+	if len(api.secretsCreated) != 0 {
+		t.Errorf("secrets created = %v, want none", api.secretsCreated)
+	}
+}
+
+// A credential silently not minted because a URL had a .git suffix would be a
+// security regression nobody would notice.
+func TestRepositoryIsRecognisedInTheShapesUrlsActuallyArriveIn(t *testing.T) {
+	for _, raw := range []string{
+		"https://github.com/owner/name",
+		"https://github.com/owner/name.git",
+		"https://github.com/owner/name/",
+		"git@github.com:owner/name.git",
+	} {
+		api := &fakeAPI{phases: []kube.JobPhase{kube.JobSucceeded}, logs: claudeResult}
+		tokens := &stubTokens{token: "ghs_x"}
+		req := request()
+		req.RepoURL = raw
+
+		svc := codingrun.New(api, "agent-runs", "img:1", time.Millisecond, nil).WithTokens(tokens)
+		_, _ = svc.Run(context.Background(), req)
+
+		if tokens.repo != "owner/name" {
+			t.Errorf("%s resolved to %q", raw, tokens.repo)
+		}
 	}
 }
