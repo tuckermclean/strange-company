@@ -26,7 +26,21 @@ const maxErrorBodyBytes = 512
 // failure) this client will read into memory, as a defensive limit against
 // a misbehaving or malicious server. It is far larger than any JSON payload
 // this client expects to decode.
-const maxResponseBodyBytes = 10 << 20 // 10 MiB
+// maxResponseBodyBytes caps a single response.
+//
+// Sized for the board listing, which is the largest thing this client reads by
+// a wide margin: it returns every task on the board with its full description,
+// and those descriptions carry §33's card contents. Ten MiB was chosen when a
+// description was a line of text, and a real board went past it -- leaving the
+// reconciler unable to LIST the board, therefore unable to rewrite the
+// oversized description that was blocking the list. A deadlock a bigger number
+// breaks and a smaller one cannot.
+//
+// The number is not what keeps this healthy; bounded descriptions are, and
+// artifacts are now summarised rather than enumerated for that reason. This is
+// headroom, so that reaching it again means something has genuinely gone wrong
+// rather than that a board got busy.
+const maxResponseBodyBytes = 64 << 20 // 64 MiB
 
 // Client is a minimal HTTP client for the Vikunja REST API. It is safe to
 // construct multiple instances (for example one per token) since it holds
