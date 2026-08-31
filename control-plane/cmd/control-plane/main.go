@@ -825,6 +825,21 @@ func runWorkerSupervisor(ctx context.Context, logger *slog.Logger, cfg *config.C
 		}, log)
 		log.Info("review phase enabled")
 	}
+	// Every phase this process can run must have somewhere to run it.
+	//
+	// A phase added to the pipeline is invisible to an operator-supplied
+	// policy that predates it, and the failure lands one card at a time --
+	// each reaching the phase, finding no rung, and stopping. Saying it once
+	// at boot names the missing line before any card discovers it.
+	for phase := range steps {
+		if _, err := pol.Resolve(string(phase), 1); err != nil {
+			log.Error("the policy has no rung for a phase this control plane runs; "+
+				"every card reaching it will stop and ask for a human",
+				"phase", string(phase), "error", err,
+				"fix", fmt.Sprintf("add a %q entry to the phases in models.yaml", string(phase)))
+		}
+	}
+
 	step := dispatch.New(steps, log)
 
 	host, err := os.Hostname()

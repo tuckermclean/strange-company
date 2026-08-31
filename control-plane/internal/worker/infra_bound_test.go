@@ -136,3 +136,42 @@ func TestAnEscalatedCardIsNotLeftClaimed(t *testing.T) {
 		t.Errorf("released the card after escalating it: %q", r.reason)
 	}
 }
+
+// A policy error is the one class of failure that cannot get better by trying
+// again: the YAML does not change because a worker read it twice.
+//
+// This used to release the card, which brought it straight back to fail
+// identically once a reconcile interval, forever -- and because a policy
+// failure records no attempt, infrastructure_failures never moved and the
+// bound that exists to stop exactly this never saw it.
+func TestAPolicyThatCannotResolveAPhaseEscalatesRatherThanLooping(t *testing.T) {
+	c := testCard()
+	c.Phase = card.Phase("decomposition") // a phase this policy has never heard of
+	cards := &fakeCardStore{claimReadyFunc: func() (*card.Card, error) { return c, nil }}
+
+	out, err := New("w1", cards, testPolicy(3), neverRuns(t), testLogger(), time.Minute).
+		RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v, want nil", err)
+	}
+	if out != OutcomeEscalated {
+		t.Fatalf("outcome = %q, want %q", out, OutcomeEscalated)
+	}
+
+	if len(cards.releaseCalls) != 0 {
+		t.Errorf("the card was released back into the queue: %+v", cards.releaseCalls)
+	}
+	if len(cards.transitionCalls) != 1 || cards.transitionCalls[0].to != card.NeedsHuman {
+		t.Fatalf("transitions = %+v, want one to NeedsHuman", cards.transitionCalls)
+	}
+
+	// The reason has to be actionable. "policy resolution failed" sends an
+	// operator to the logs; naming the phase and the file sends them to the
+	// line they have to change.
+	reason := cards.transitionCalls[0].reason
+	for _, want := range []string{"decomposition", "models.yaml", "configuration, not the work"} {
+		if !strings.Contains(reason, want) {
+			t.Errorf("reason = %q, want it to mention %q", reason, want)
+		}
+	}
+}
