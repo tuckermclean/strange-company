@@ -192,3 +192,75 @@ func TestAFreshTokenIsReused(t *testing.T) {
 		t.Errorf("minted %d times, want 1", mints)
 	}
 }
+
+// NewApp only parses the key, so a well-formed key belonging to a different
+// App reaches a running control plane and fails one card at a time later.
+// Verify is the call that turns that into a sentence at startup.
+func TestVerifyRejectsAKeyThatIsNotThisAppsKey(t *testing.T) {
+	pemBytes, _ := testKeyPEM(t)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/app" {
+			t.Errorf("asked for %s, want /app", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, `{"message":"A JSON web token could not be decoded"}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	app, err := NewApp(srv.URL, "158006977", pemBytes, srv.Client())
+	if err != nil {
+		t.Fatalf("NewApp: %v", err)
+	}
+
+	if _, err := app.Verify(context.Background()); err == nil {
+		t.Fatal("Verify accepted credentials GitHub rejected")
+	}
+}
+
+func TestVerifyReturnsTheAppSlug(t *testing.T) {
+	pemBytes, _ := testKeyPEM(t)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":158006977,"slug":"str4nge-c0mpany","name":"Strange Company"}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	app, err := NewApp(srv.URL, "158006977", pemBytes, srv.Client())
+	if err != nil {
+		t.Fatalf("NewApp: %v", err)
+	}
+
+	slug, err := app.Verify(context.Background())
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if slug != "str4nge-c0mpany" {
+		t.Errorf("slug = %q", slug)
+	}
+}
+
+// A 200 carrying no slug is not a working App. This system has been bitten by
+// a success status hiding a failed body before -- Vikunja's attachment upload
+// returns 200 with a per-file error array -- so it is asserted rather than
+// assumed.
+func TestVerifyRejectsASluglessResponse(t *testing.T) {
+	pemBytes, _ := testKeyPEM(t)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	app, err := NewApp(srv.URL, "1", pemBytes, srv.Client())
+	if err != nil {
+		t.Fatalf("NewApp: %v", err)
+	}
+
+	if _, err := app.Verify(context.Background()); err == nil {
+		t.Fatal("Verify accepted a response with no App in it")
+	}
+}

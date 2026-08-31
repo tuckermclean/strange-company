@@ -958,6 +958,19 @@ func githubApp(logger *slog.Logger, cfg *config.Config) github.TokenSource {
 		logger.Error("the GitHub App credentials could not be used; falling back to tokens", "error", err)
 		return nil
 	}
-	logger.Info("authenticating to GitHub as an App", "app_id", cfg.GitHubAppID)
+
+	// Prove the pair before claiming it works. Parsing the key says only that
+	// it is a key; it says nothing about whether it belongs to this App id.
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	slug, err := app.Verify(ctx)
+	if err != nil {
+		logger.Error("the GitHub App credentials were rejected; falling back to tokens",
+			"app_id", cfg.GitHubAppID, "error", err)
+		return nil
+	}
+
+	logger.Info("authenticating to GitHub as an App", "app_id", cfg.GitHubAppID, "app", slug)
 	return app
 }
