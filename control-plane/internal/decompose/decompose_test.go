@@ -214,3 +214,51 @@ func TestTheExchangeIsRecorded(t *testing.T) {
 	}
 	t.Error("the decomposition exchange was not recorded")
 }
+
+// The prompt is what makes this decision, so it has to name the reasons that
+// are true of THIS system rather than generic advice about scope.
+//
+// Two live cards came back SINGLE on the reasoning that the work "can be built
+// and tested as a single diff". That is a capability question, and a capable
+// model can nearly always answer yes -- so the split condition was effectively
+// unreachable. Capability is not why this pipeline splits work.
+func TestThePromptExplainsWhatSplittingIsActuallyFor(t *testing.T) {
+	p := decompose.SystemPrompt()
+
+	// The three costs a caller cannot infer from the specification alone.
+	for _, want := range []string{
+		"retried AS A WHOLE", // a failure rebuilds the parts that worked
+		"ONE review",         // four concerns in one diff get a quarter of the attention each
+		"fail independently", // the actual criterion
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("the prompt does not mention %q", want)
+		}
+	}
+
+	// And it must still resist gratuitous splitting: a fragmented card costs
+	// more than an oversized one.
+	for _, want := range []string{
+		"the specification is long",
+		"it would be tidier in stages",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("the prompt no longer rejects splitting because %q", want)
+		}
+	}
+
+	// Asking "could one engineer do this in one sitting" is the question that
+	// produced two wrong SINGLEs; it must not come back.
+	if strings.Contains(p, "single sitting") {
+		t.Error("the prompt still asks a capability question")
+	}
+}
+
+// A child receives its card and nothing else, so constraints stated once on the
+// parent have to be repeated onto every piece or they are simply lost.
+func TestChildrenAreToldToCarryTheParentsConstraints(t *testing.T) {
+	p := decompose.SystemPrompt()
+	if !strings.Contains(p, "constraints, invariants and forbidden actions from the") {
+		t.Error("nothing tells the decomposer to propagate the parent's constraints")
+	}
+}
