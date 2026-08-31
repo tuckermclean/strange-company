@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/google/uuid"
 	"github.com/tuckermclean/strange-company/control-plane/internal/ambiguity"
@@ -23,6 +24,11 @@ var ErrNoHumanNeeded = errors.New("specsession: this card does not require a hum
 type Gateway interface {
 	CreateSession(context.Context, hermes.SpecSession) (*hermes.Session, error)
 	DeleteSession(context.Context, string) error
+
+	// ListSessions is how a conversation that exists but was never recorded
+	// is found again. The gateway refuses a duplicate title, so without it
+	// the only evidence such a session exists is an error saying one does.
+	ListSessions(context.Context) ([]*hermes.Session, error)
 }
 
 // Store is the part of the card store this package uses.
@@ -36,6 +42,7 @@ type Store interface {
 type Opener struct {
 	gateway Gateway
 	store   Store
+	log     *slog.Logger
 
 	// model is the literal model string for the specification alias,
 	// resolved from policy by the caller. This package never picks a model.
@@ -45,7 +52,16 @@ type Opener struct {
 // NewOpener builds an Opener. model is the specification alias's model
 // string, resolved from policy.
 func NewOpener(g Gateway, s Store, model string) *Opener {
-	return &Opener{gateway: g, store: s, model: model}
+	return &Opener{gateway: g, store: s, model: model, log: slog.Default()}
+}
+
+// WithLogger replaces the logger. Adoption of an existing conversation is
+// worth saying out loud: it means an earlier pass left one behind.
+func (o *Opener) WithLogger(l *slog.Logger) *Opener {
+	if l != nil {
+		o.log = l
+	}
+	return o
 }
 
 // Open returns the id of the card's specification conversation, starting one
@@ -77,15 +93,30 @@ func (o *Opener) Open(ctx context.Context, c *card.Card, doc *spec.Document, rep
 		return "", err
 	}
 
+	title := Title(c)
 	session, err := o.gateway.CreateSession(ctx, hermes.SpecSession{
-		Title:        Title(c),
+		Title:        title,
 		Model:        o.model,
 		SystemPrompt: prompt,
 	})
 	if err != nil {
-		// Deliberately records nothing: a card pointing at a session that
-		// was never created cannot be recovered by a later pass, while a
-		// card pointing at nothing simply gets retried.
+		// The conversation may already exist. The gateway refuses a
+		// duplicate title, and the title is derived from the card -- so a
+		// session created on an earlier pass whose id was never recorded
+		// makes every later pass fail identically, forever. That is not
+		// hypothetical: a rollout between creating a session and recording
+		// it leaves exactly this state, and it retried once a minute all
+		// night.
+		//
+		// So look for it before giving up. Adopting what exists is the same
+		// move the coding runner makes with a Job it finds already running.
+		if adopted, aerr := o.adopt(ctx, c, title); aerr == nil && adopted != "" {
+			return adopted, nil
+		}
+
+		// Otherwise records nothing: a card pointing at a session that was
+		// never created cannot be recovered by a later pass, while a card
+		// pointing at nothing simply gets retried.
 		return "", fmt.Errorf("specsession: opening the conversation: %w", err)
 	}
 
@@ -110,4 +141,29 @@ func (o *Opener) Open(ctx context.Context, c *card.Card, doc *spec.Document, rep
 // it, and the worst case is one stale conversation rather than a lost card.
 func (o *Opener) discard(ctx context.Context, id string) {
 	_ = o.gateway.DeleteSession(ctx, id)
+}
+
+// adopt finds a conversation that already carries this card's title and records
+// it against the card.
+//
+// Matching on the title rather than parsing the gateway's error: the title is
+// something this package chose and can recompute, while an error message is
+// prose that changes between versions.
+func (o *Opener) adopt(ctx context.Context, c *card.Card, title string) (string, error) {
+	sessions, err := o.gateway.ListSessions(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, s := range sessions {
+		if s == nil || s.Title != title {
+			continue
+		}
+		if err := o.store.RecordSpecSession(ctx, c.ID, s.ID); err != nil {
+			return "", err
+		}
+		o.log.Info("adopted a specification conversation that already existed",
+			"card_id", c.ID, "session_id", s.ID)
+		return s.ID, nil
+	}
+	return "", nil
 }

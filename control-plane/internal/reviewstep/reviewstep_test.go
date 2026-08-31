@@ -394,3 +394,55 @@ func TestAReviewThatCouldNotRunIsRecordedAsInfrastructure(t *testing.T) {
 		t.Errorf("status = %q, want %q so it does not burn a rung", got, runner.StatusInfraError)
 	}
 }
+
+// A live card went round this loop three times in forty minutes -- each cycle
+// a coding Job and a reasoning call -- with implementation_attempt still
+// reading zero. §12.1 burns an attempt only on a run that FAILED, and both runs
+// here succeed: the coding run reaches its terminal event and the review call
+// returns a verdict. So nothing counted and nothing bounded it.
+func TestACorrectableVerdictSpendsAnImplementationAttempt(t *testing.T) {
+	b, p := board(), &fakePulls{}
+	m := &fakeModel{reply: "VERDICT: CORRECTABLE\n\nThe error path is untested."}
+
+	ev, err := step(b, m, p).Do(context.Background(), testCard(), res())
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	if ev.NextPhase != card.PhaseImplementation {
+		t.Fatalf("next phase = %q, want implementation", ev.NextPhase)
+	}
+
+	var spent *store.AttemptRecord
+	for i := range b.attempts {
+		if b.attempts[i].Result.Status == runner.StatusFailed {
+			spent = &b.attempts[i]
+		}
+	}
+	if spent == nil {
+		t.Fatal("a correctable verdict burned nothing; the loop is unbounded")
+	}
+
+	// Against the implementation ladder, because what was found wanting is
+	// the implementation and that is the ladder §12.3 escalates from.
+	if spent.Phase != string(card.PhaseImplementation) {
+		t.Errorf("attempt recorded against %q, want implementation", spent.Phase)
+	}
+	if !strings.Contains(spent.Result.Summary, "did not pass review") {
+		t.Errorf("summary = %q; a reader cannot tell why the attempt was spent", spent.Result.Summary)
+	}
+}
+
+// A passing review must not spend one: the work was accepted.
+func TestAPassingReviewSpendsNoAttempt(t *testing.T) {
+	b, p := board(), &fakePulls{}
+	m := &fakeModel{reply: "VERDICT: PASS\n\nFine."}
+
+	if _, err := step(b, m, p).Do(context.Background(), testCard(), res()); err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	for _, a := range b.attempts {
+		if a.Result.Status == runner.StatusFailed {
+			t.Error("a passing review spent an implementation attempt")
+		}
+	}
+}
