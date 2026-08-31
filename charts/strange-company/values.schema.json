@@ -767,6 +767,17 @@
         "dayZeroToken": {
           "type": "string",
           "description": "Optional GitHub credential for day-0 repository setup. Needs the `workflow` scope, and is deliberately separate from the agents' credential, which must never carry it."
+        },
+        "app": {
+          "type": "object",
+          "properties": {
+            "appId": {
+              "type": "string"
+            },
+            "privateKey": {
+              "type": "string"
+            }
+          }
         }
       }
     }

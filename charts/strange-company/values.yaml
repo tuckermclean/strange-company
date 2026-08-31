@@ -446,6 +446,27 @@ github:
   # chart's Secret; leave empty and set `existingSecret` to bring your own.
   token: ""
 
+  # -- GitHub App credentials. Preferred over every token below.
+  #
+  # Spec §29 has always said "GitHub App credentials"; this system drifted to
+  # personal access tokens, and the difference matters most at the point where
+  # a credential is handed to a coding agent.
+  #
+  # A personal access token carries its owner's scope to every repository they
+  # can see, and expires never. An App mints INSTALLATION tokens: one hour,
+  # scoped to a single repository, carrying only the permissions the App was
+  # granted. So the blast radius of a leaked agent credential stops being
+  # "every repository you own" and becomes "this repository, for the next
+  # hour".
+  #
+  # Creating the App is a one-time browser step; see docs/reference/github-app.md.
+  # Leave empty to keep using tokens -- an install without an App still works.
+  app:
+    appId: ""
+    # -- The App's PEM private key, verbatim. Rendered into the chart's
+    # Secret; use `existingSecret` to supply it yourself instead.
+    privateKey: ""
+
   # -- Optional credential for day-0 repository setup (POST /repos/import).
   #
   # Needs GitHub's `workflow` scope, because day-0 writes .github/workflows --
