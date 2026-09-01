@@ -37,20 +37,26 @@
 </section>
 {{end}}
 
-{{if or .CanApprove .CanBlock .CanSendBack}}
+{{if or .Waiting .CanApprove .CanAccept .CanBlock .CanSendBack}}
 <section>
   <h2>Act</h2>
-  <div class="panel"><div class="row">
+  <div class="panel">
+    {{if .Waiting}}<div class="row"><span class="grow">{{.Waiting}}</span></div>{{end}}
+    <div class="row">
     {{if .CanApprove}}
     <form method="post" action="/ui/cards/{{.ID}}/approve"><button>Approve the specification</button></form>
     {{end}}
+    {{if .CanAccept}}
+    <form method="post" action="/ui/cards/{{.ID}}/accept"><button>Accept &mdash; mark this done</button></form>
+    {{end}}
     {{if .CanSendBack}}
-    <form method="post" action="/ui/cards/{{.ID}}/send-back"><button>Send back to the queue</button></form>
+    <form method="post" action="/ui/cards/{{.ID}}/send-back"><button>{{if .CanAccept}}Send back for changes{{else}}Send back to the queue{{end}}</button></form>
     {{end}}
     {{if .CanBlock}}
     <form method="post" action="/ui/cards/{{.ID}}/block"><button>Stop this card</button></form>
     {{end}}
-  </div></div>
+    </div>
+  </div>
 </section>
 {{end}}
 

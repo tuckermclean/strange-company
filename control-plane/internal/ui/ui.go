@@ -100,6 +100,7 @@ func (h *Handler) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /ui/cards/{id}/approve", h.approve)
 	mux.HandleFunc("POST /ui/cards/{id}/block", h.block)
 	mux.HandleFunc("POST /ui/cards/{id}/send-back", h.sendBack)
+	mux.HandleFunc("POST /ui/cards/{id}/accept", h.accept)
 }
 
 // engineView is the home screen: what is running, what needs a person, and

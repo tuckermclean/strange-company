@@ -59,6 +59,25 @@ func (h *Handler) sendBack(w http.ResponseWriter, r *http.Request) {
 	h.move(w, r, id, card.Ready, reason)
 }
 
+// accept is §19's final merge authority: the human says the finished work is
+// good and the card reaches Done.
+//
+// §18 reserves this for a person -- automated review can send a card to Review
+// but never past it -- so the console has to offer it. Until it did, a card
+// parked in Review could only be rejected or stopped, and the one act the
+// state machine keeps for a human was the one act the UI could not perform.
+func (h *Handler) accept(w http.ResponseWriter, r *http.Request) {
+	id, ok := h.mutating(w, r)
+	if !ok {
+		return
+	}
+	reason := strings.TrimSpace(r.FormValue("reason"))
+	if reason == "" {
+		reason = "accepted from the console"
+	}
+	h.move(w, r, id, card.Done, reason)
+}
+
 func (h *Handler) move(w http.ResponseWriter, r *http.Request, id uuid.UUID, to card.State, reason string) {
 	// Validated by the state machine, never by the button that called it. A
 	// UI that decided for itself what moves are legal would be a second
