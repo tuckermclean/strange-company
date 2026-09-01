@@ -429,3 +429,81 @@ func TestOneWorkersConsecutiveStepsAreOneStint(t *testing.T) {
 		t.Errorf("one worker rendered %d times, want 1", n)
 	}
 }
+
+// §18 stops automated review at Review and §19 gives the human the final call,
+// so a card parked there is waiting on a person -- and until this test existed
+// the console offered them only "send back" and "stop". The one act the state
+// machine reserves for a human was the one act the UI could not perform.
+func TestACardInReviewCanBeAccepted(t *testing.T) {
+	c := aCard("ready for a person", card.Review)
+	f := &fakeStore{cards: []*card.Card{c}}
+	h := serve(t, f)
+
+	body := get(t, h, "/ui/cards/"+c.ID.String()).Body.String()
+	if !strings.Contains(body, "/accept") {
+		t.Error("a card in Review offers no way to accept it")
+	}
+
+	if rec := post(t, h, "/ui/cards/"+c.ID.String()+"/accept", ""); rec.Code != http.StatusSeeOther {
+		t.Fatalf("accept: status %d", rec.Code)
+	}
+	if len(f.moves) != 1 || f.moves[0] != card.Done {
+		t.Errorf("moves = %v, want Done", f.moves)
+	}
+}
+
+// The buttons are derived from CanTransition rather than from a list someone
+// maintains, so this asserts the derivation over every state at once: any
+// human-legal move must be reachable from the page. A fourth human transition
+// added to the state machine should fail here rather than go unnoticed for a
+// release, which is exactly how accept went missing.
+func TestEveryHumanMoveTheStateMachineAllowsHasAControl(t *testing.T) {
+	paths := map[card.State]string{
+		card.Ready:   "/send-back",
+		card.Blocked: "/block",
+		card.Done:    "/accept",
+	}
+
+	for _, from := range []card.State{
+		card.Backlog, card.Ready, card.InProgress,
+		card.Review, card.Blocked, card.NeedsHuman, card.Done,
+	} {
+		c := aCard("t", from)
+		h := serve(t, &fakeStore{cards: []*card.Card{c}})
+		body := get(t, h, "/ui/cards/"+c.ID.String()).Body.String()
+
+		for to, path := range paths {
+			legal := card.CanTransition(from, to, card.ActorHuman) == nil
+			if offered := strings.Contains(body, path); legal != offered {
+				t.Errorf("%s -> %s: legal=%v but the page offers it=%v", from, to, legal, offered)
+			}
+		}
+	}
+}
+
+// The complaint that produced this: a stopped card that does not say what it
+// is stopped for makes the reader infer the state machine from whichever
+// buttons happen to be lit.
+func TestACardStoppedForAPersonSaysWhatItWants(t *testing.T) {
+	for _, s := range []card.State{card.Review, card.NeedsHuman, card.Blocked} {
+		c := aCard("t", s)
+		h := serve(t, &fakeStore{cards: []*card.Card{c}})
+		body := get(t, h, "/ui/cards/"+c.ID.String()).Body.String()
+		if !strings.Contains(body, "waiting on you") &&
+			!strings.Contains(body, "escalated this card to you") &&
+			!strings.Contains(body, "stopped and no worker") {
+			t.Errorf("%s: the card does not say what it needs from a person", s)
+		}
+	}
+}
+
+// A card the engine is actively working is not asking for anything, and
+// saying otherwise would train the reader to ignore the line.
+func TestACardTheEngineIsWorkingAsksForNothing(t *testing.T) {
+	c := aCard("running", card.InProgress)
+	h := serve(t, &fakeStore{cards: []*card.Card{c}})
+	body := get(t, h, "/ui/cards/"+c.ID.String()).Body.String()
+	if strings.Contains(body, "waiting on you") {
+		t.Error("an InProgress card claims to be waiting on a person")
+	}
+}

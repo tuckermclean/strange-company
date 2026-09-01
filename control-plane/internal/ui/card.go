@@ -51,8 +51,14 @@ type cardView struct {
 	// cannot work is worse than a missing one: it invites a click that
 	// produces an error the person cannot act on.
 	CanApprove  bool
+	CanAccept   bool
 	CanBlock    bool
 	CanSendBack bool
+
+	// Waiting says, in a sentence, what this card wants from the person
+	// reading it. A board that shows a stopped card and not why it stopped
+	// makes the reader reconstruct the state machine from the buttons.
+	Waiting string
 
 	// Error carries the state machine's own words when a move was refused.
 	Error string
@@ -165,6 +171,7 @@ func (h *Handler) cardPage(w http.ResponseWriter, r *http.Request) {
 	// CanTransition is what keeps the buttons honest as the rules change.
 	v.CanBlock = card.CanTransition(c.State, card.Blocked, card.ActorHuman) == nil
 	v.CanSendBack = card.CanTransition(c.State, card.Ready, card.ActorHuman) == nil
+	v.CanAccept = card.CanTransition(c.State, card.Done, card.ActorHuman) == nil
 
 	if cardSpec, err := h.store.GetSpec(r.Context(), id); err == nil && cardSpec != nil {
 		if strings.TrimSpace(cardSpec.Content) != "" {
@@ -176,6 +183,13 @@ func (h *Handler) cardPage(w http.ResponseWriter, r *http.Request) {
 			}
 			v.CanApprove = !cardSpec.Approved && c.State == card.Backlog
 		}
+	}
+
+	// After the spec block: Backlog only wants a person when there is in fact
+	// a specification sitting unapproved.
+	v.Waiting = waitingOn(c.State)
+	if c.State == card.Backlog && !v.CanApprove {
+		v.Waiting = ""
 	}
 
 	if attempts, err := h.store.ListAttempts(r.Context(), id); err == nil {
@@ -298,4 +312,31 @@ func relay(history []store.HistoryEntry) []workerStint {
 		out = append(out, workerStint{Worker: short, From: when, To: when})
 	}
 	return out
+}
+
+// waitingOn names what the card wants from a person, or nothing when it is
+// the engine's turn.
+//
+// §18 and §19 put a human at exactly two points -- approving a specification
+// and accepting finished work -- and a console that shows a card parked at one
+// of them without saying so is asking the reader to infer the state machine
+// from which buttons happen to be lit.
+func waitingOn(s card.State) string {
+	switch s {
+	case card.Review:
+		return "This card is waiting on you. Automated review cannot mark work done (§18) " +
+			"and the final call on merging is yours (§19): accept it, or send it back with " +
+			"what needs changing."
+	case card.NeedsHuman:
+		return "The engine escalated this card to you and will not pick it up again on its own. " +
+			"Read the latest result below, fix whatever caused it, then send it back to the queue."
+	case card.Blocked:
+		return "This card is stopped and no worker will claim it. Send it back to the queue to resume."
+	case card.Backlog:
+		return "This card needs an approved specification before any worker can claim it."
+	case card.Done:
+		return ""
+	default:
+		return ""
+	}
 }
