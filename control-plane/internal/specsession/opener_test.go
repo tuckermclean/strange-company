@@ -3,6 +3,7 @@ package specsession_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -19,6 +20,35 @@ type fakeGateway struct {
 	deleted  []string
 	nextID   string
 	createErr error
+
+	// messages is how many turns each session already holds, and opened
+	// records the first turn posted into one.
+	messages map[string]int
+	opened   map[string]string
+	countErr error
+	turnErr  error
+}
+
+func (f *fakeGateway) MessageCount(_ context.Context, id string) (int, error) {
+	if f.countErr != nil {
+		return 0, f.countErr
+	}
+	return f.messages[id], nil
+}
+
+func (f *fakeGateway) OpenTurn(_ context.Context, id, message string) error {
+	if f.turnErr != nil {
+		return f.turnErr
+	}
+	if f.opened == nil {
+		f.opened = map[string]string{}
+	}
+	f.opened[id] = message
+	if f.messages == nil {
+		f.messages = map[string]int{}
+	}
+	f.messages[id] += 2
+	return nil
 }
 
 func (f *fakeGateway) ListSessions(context.Context) ([]*hermes.Session, error) {
@@ -204,5 +234,65 @@ func TestACreateFailureWithNoMatchingSessionStillFails(t *testing.T) {
 	}
 	if st.recorded != "" {
 		t.Errorf("recorded %q for a card with no conversation", st.recorded)
+	}
+}
+
+// A session created through POST /api/sessions holds no messages: the system
+// prompt lives on the row, not in the history. A person who opened one found
+// a blank chat window with no sign of which card it belonged to.
+func TestANewConversationIsActuallyOpened(t *testing.T) {
+	g := &fakeGateway{nextID: "api_1_abc"}
+	o := opener(g, &fakeStore{})
+
+	id, err := o.Open(context.Background(), testCard(), nil, testReport())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if g.opened[id] == "" {
+		t.Fatal("the conversation was created but never opened; a person sees an empty chat")
+	}
+	if !strings.Contains(g.opened[id], "Add a health endpoint") {
+		t.Errorf("the opening turn does not name the card: %q", g.opened[id])
+	}
+}
+
+// The turn costs a model call and can fail. When it does the count stays at
+// zero, which is the condition that makes the next pass try again -- and that
+// is also what repairs every session created before there was a turn to post.
+func TestAConversationLeftEmptyIsOpenedOnALaterPass(t *testing.T) {
+	g := &fakeGateway{nextID: "api_1_abc", turnErr: errors.New("gateway down")}
+	st := &fakeStore{}
+	o := opener(g, st)
+
+	id, err := o.Open(context.Background(), testCard(), nil, testReport())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if id == "" {
+		t.Fatal("a failed opening turn lost the session")
+	}
+
+	// Next pass: the session is on the card, and still empty.
+	st.existing = id
+	g.turnErr = nil
+	if _, err := o.Open(context.Background(), testCard(), nil, testReport()); err != nil {
+		t.Fatalf("second Open: %v", err)
+	}
+	if g.opened[id] == "" {
+		t.Error("an empty conversation was never opened on a later pass")
+	}
+}
+
+// Re-posting an opening turn on every reconcile would cost a model call a
+// minute and bury the human's own conversation.
+func TestAConversationAlreadyUnderwayIsNotReopened(t *testing.T) {
+	g := &fakeGateway{messages: map[string]int{"api_1_abc": 7}}
+	o := opener(g, &fakeStore{existing: "api_1_abc"})
+
+	if _, err := o.Open(context.Background(), testCard(), nil, testReport()); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if len(g.opened) != 0 {
+		t.Errorf("posted into a conversation that already had messages: %v", g.opened)
 	}
 }
