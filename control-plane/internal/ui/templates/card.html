@@ -37,6 +37,30 @@
 </section>
 {{end}}
 
+{{if or .Parent .Children}}
+<section>
+  <h2>Where this sits</h2>
+  <div class="panel">
+    {{if .Parent}}
+    <div class="row">
+      <span class="dim grow">Part of</span>
+      <a href="/ui/cards/{{.Parent.ID}}">{{.Parent.Title}}</a>
+      <span class="tag">{{.Parent.State}}</span>
+    </div>
+    {{end}}
+    {{if .Children}}
+    <div class="row"><span class="dim grow">Split into {{len .Children}} pieces</span></div>
+    {{range .Children}}
+    <div class="row">
+      <span class="grow">&#8627; <a href="/ui/cards/{{.ID}}">{{.Title}}</a></span>
+      <span class="tag">{{.State}}</span>
+    </div>
+    {{end}}
+    {{end}}
+  </div>
+</section>
+{{end}}
+
 {{if or .Waiting .CanApprove .CanAccept .CanBlock .CanSendBack}}
 <section>
   <h2>Act</h2>

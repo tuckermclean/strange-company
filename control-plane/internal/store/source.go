@@ -194,6 +194,43 @@ func (s *Store) ListApprovedAwaitingPromotion(ctx context.Context, limit int) ([
 	return ids, rows.Err()
 }
 
+// Parentage maps a child card to the card it was split out of.
+//
+// Decomposition records a parent as depending on each of its pieces, and
+// nothing has ever read that edge back except §10's gate. So a board showed a
+// parent and its six children as seven unrelated cards, and a person had no
+// way to tell which of them belonged to which -- the relationship existed in
+// the database and nowhere a human could see it.
+//
+// One query for the whole board rather than one per card: this is rendered on
+// every pass of a page that refreshes itself.
+func (s *Store) Parentage(ctx context.Context) (map[uuid.UUID]uuid.UUID, error) {
+	const q = `
+		SELECT d.depends_on, d.card_id
+		  FROM card_dependencies d
+		  JOIN cards c ON c.id = d.depends_on
+		 WHERE c.source_type = 'decomposed'`
+
+	rows, err := s.pool.Query(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("store: listing parentage: %w", err)
+	}
+	defer rows.Close()
+
+	out := map[uuid.UUID]uuid.UUID{}
+	for rows.Next() {
+		var child, parent uuid.UUID
+		if err := rows.Scan(&child, &parent); err != nil {
+			return nil, fmt.Errorf("store: reading a parentage row: %w", err)
+		}
+		out[child] = parent
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: listing parentage: %w", err)
+	}
+	return out, nil
+}
+
 // ListDependencies returns the cards cardID depends on.
 //
 // §10's gate refuses a card whose dependencies are not Done. Passing an empty

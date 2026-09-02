@@ -45,6 +45,10 @@ type Store interface {
 	ListHistory(ctx context.Context, cardID uuid.UUID, limit int) ([]store.HistoryEntry, error)
 	ListEvidence(ctx context.Context, cardID uuid.UUID) ([]store.CardEvidence, error)
 
+	// Parentage maps each child card to the card it was split out of, so
+	// a decomposed parent and its pieces do not read as unrelated work.
+	Parentage(ctx context.Context) (map[uuid.UUID]uuid.UUID, error)
+
 	// SpecSessionID returns the Hermes conversation opened for this card's
 	// specification (§10.2), or "" when none has been.
 	GetSpecSession(ctx context.Context, cardID uuid.UUID) (string, error)
@@ -132,6 +136,17 @@ type cardRow struct {
 	CostUSD  float64
 	Unpriced bool
 	Reason   string
+
+	// Action is the reader's next move, in the imperative. The state name
+	// says what the card is; it does not say what the person is for.
+	Action string
+
+	// ParentID and ParentTitle place a card in the work it was split out
+	// of. Pieces and PiecesDone do the reverse for a parent.
+	ParentID    string
+	ParentTitle string
+	Pieces      int
+	PiecesDone  int
 }
 
 func (h *Handler) engine(w http.ResponseWriter, r *http.Request) {
@@ -139,6 +154,26 @@ func (h *Handler) engine(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.fail(w, "could not read the board", err)
 		return
+	}
+
+	// Never fatal: a board that cannot show lineage is worse than one that
+	// does not render at all only if you value the lineage over the board.
+	parentOf, err := h.store.Parentage(r.Context())
+	if err != nil {
+		h.log.Warn("ui: could not read card parentage", "error", err)
+		parentOf = map[uuid.UUID]uuid.UUID{}
+	}
+
+	byID := make(map[uuid.UUID]*card.Card, len(cards))
+	for _, c := range cards {
+		byID[c.ID] = c
+	}
+	pieces, done := map[uuid.UUID]int{}, map[uuid.UUID]int{}
+	for child, parent := range parentOf {
+		pieces[parent]++
+		if c, ok := byID[child]; ok && c.State == card.Done {
+			done[parent]++
+		}
 	}
 
 	v := engineView{Now: time.Now().UTC().Format("15:04:05Z"), Cards: len(cards)}
@@ -154,6 +189,15 @@ func (h *Handler) engine(w http.ResponseWriter, r *http.Request) {
 		if c.ClaimedBy != nil {
 			row.Worker = shortWorker(*c.ClaimedBy)
 		}
+		if p, ok := parentOf[c.ID]; ok {
+			row.ParentID = p.String()
+			row.ParentTitle = "a card that no longer exists"
+			if parent, ok := byID[p]; ok {
+				row.ParentTitle = parent.Title
+			}
+		}
+		row.Pieces, row.PiecesDone = pieces[c.ID], done[c.ID]
+		row.Action = nextAction(c.State)
 		v.CostUSD += c.CostUSD
 		if c.CostUSD <= 0 {
 			v.Unpriced++
