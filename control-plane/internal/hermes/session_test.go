@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/tuckermclean/strange-company/control-plane/internal/hermes"
@@ -161,5 +162,82 @@ func TestDeleteSessionIssuesADelete(t *testing.T) {
 	got := (*seen)[0]
 	if got.method != http.MethodDelete || got.path != "/api/sessions/api_1787781129_5343ebc5" {
 		t.Fatalf("sent %s %s", got.method, got.path)
+	}
+}
+
+// The system prompt lives on the session row, not in the history, so a
+// created session holds nothing and reads as a fresh chat window.
+func TestMessageCountReportsAnEmptyConversation(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/messages") {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"messages":[],"total":0}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	c, err := hermes.New(srv.URL, "k", hermes.WithHTTPClient(srv.Client()))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	n, err := c.MessageCount(context.Background(), "api_1")
+	if err != nil {
+		t.Fatalf("MessageCount: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("count = %d, want 0", n)
+	}
+}
+
+// The gateway's own total wins over the page length, so a limit=1 probe does
+// not report a busy conversation as having exactly one message.
+func TestMessageCountPrefersTheGatewaysTotal(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"messages":[{"role":"user"}],"total":42}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	c, _ := hermes.New(srv.URL, "k", hermes.WithHTTPClient(srv.Client()))
+	n, err := c.MessageCount(context.Background(), "api_1")
+	if err != nil {
+		t.Fatalf("MessageCount: %v", err)
+	}
+	if n != 42 {
+		t.Errorf("count = %d, want the gateway's total", n)
+	}
+}
+
+// POST /api/sessions/{id}/messages is 405 -- history is not writable -- so the
+// opening turn goes through the chat endpoint, in the field it reads.
+func TestOpenTurnPostsTheMessageToTheChatEndpoint(t *testing.T) {
+	var gotPath string
+	var gotBody map[string]string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	c, _ := hermes.New(srv.URL, "k", hermes.WithHTTPClient(srv.Client()))
+	if err := c.OpenTurn(context.Background(), "api_1", "let's specify this"); err != nil {
+		t.Fatalf("OpenTurn: %v", err)
+	}
+	if !strings.HasSuffix(gotPath, "/api/sessions/api_1/chat") {
+		t.Errorf("path = %s", gotPath)
+	}
+	if gotBody["message"] != "let's specify this" {
+		t.Errorf("body = %v, want the message field the gateway reads", gotBody)
+	}
+}
+
+func TestOpenTurnRefusesAnEmptyMessage(t *testing.T) {
+	c, _ := hermes.New("http://example.invalid", "k")
+	if err := c.OpenTurn(context.Background(), "api_1", "  "); err == nil {
+		t.Error("posted an empty opening turn")
 	}
 }

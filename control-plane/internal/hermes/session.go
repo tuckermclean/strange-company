@@ -24,6 +24,10 @@ import (
 
 const defaultTimeout = 30 * time.Second
 
+// turnTimeout bounds an agent turn, which unlike the resource calls waits on
+// a model.
+const turnTimeout = 5 * time.Minute
+
 // maxErrorBodyBytes bounds how much of a failing response is quoted back.
 const maxErrorBodyBytes = 512
 
@@ -174,6 +178,71 @@ func (c *Client) CreateSession(ctx context.Context, req SpecSession) (*Session, 
 		return nil, ErrIncompleteSession
 	}
 	return &parsed.Session, nil
+}
+
+// MessageCount reports how many messages a session holds.
+//
+// A session created through POST /api/sessions has none: the system prompt is
+// stored on the row, not posted as a turn. That is what a person sees when
+// they open one and find what looks like a fresh chat window -- because it is
+// one. Counting them is how a conversation that was never opened gets noticed
+// and finished on a later pass.
+func (c *Client) MessageCount(ctx context.Context, id string) (int, error) {
+	if strings.TrimSpace(id) == "" {
+		return 0, errors.New("hermes: session id is required")
+	}
+	body, err := c.do(ctx, http.MethodGet,
+		"/api/sessions/"+url.PathEscape(id)+"/messages?limit=1", nil)
+	if err != nil {
+		return 0, err
+	}
+
+	var parsed struct {
+		Messages []json.RawMessage `json:"messages"`
+		Total    *int              `json:"total"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return 0, fmt.Errorf("hermes: decoding messages: %w", err)
+	}
+	// Prefer the gateway's own count; fall back to what came back, which
+	// with limit=1 answers the only question asked here: any, or none.
+	if parsed.Total != nil {
+		return *parsed.Total, nil
+	}
+	return len(parsed.Messages), nil
+}
+
+// OpenTurn posts the first message of a conversation and runs one agent turn.
+//
+// This is the only way to put a message into a session: POST
+// /api/sessions/{id}/messages returns 405, because history is not writable.
+// So an opening turn costs one model call -- creating the session still costs
+// nothing, but a session a person can actually read does not come free, and
+// §22 records it like any other spend.
+//
+// The call is synchronous and the agent's reply can take a while, so it gets
+// its own timeout rather than the 30s the resource calls use.
+func (c *Client) OpenTurn(ctx context.Context, id, message string) error {
+	if strings.TrimSpace(id) == "" {
+		return errors.New("hermes: session id is required")
+	}
+	if strings.TrimSpace(message) == "" {
+		return errors.New("hermes: an opening message is required")
+	}
+
+	body, err := json.Marshal(map[string]string{"message": message})
+	if err != nil {
+		return fmt.Errorf("hermes: encoding the opening turn: %w", err)
+	}
+
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, turnTimeout)
+		defer cancel()
+	}
+
+	_, err = c.do(ctx, http.MethodPost, "/api/sessions/"+url.PathEscape(id)+"/chat", body)
+	return err
 }
 
 // DeleteSession removes a session, so a conversation opened for a card that

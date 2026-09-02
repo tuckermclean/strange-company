@@ -112,3 +112,45 @@ func writeOptional(b *strings.Builder, label string, value *string) {
 	}
 	fmt.Fprintf(b, "- %s: %s\n", label, strings.TrimSpace(*value))
 }
+
+// OpeningMessage is the first turn of the conversation.
+//
+// The system prompt is stored on the session row, not posted as a turn, so a
+// session created and left alone holds no messages -- and a person who opens
+// it sees a blank chat window with no sign of which card it belongs to or what
+// it wants. Posting an opening turn is what makes it a conversation rather
+// than an empty room with a title.
+//
+// It is addressed to the agent, not to the human: the agent's reply is what
+// the human finds waiting, and a specification conversation that starts with
+// the questions already asked is the difference between a tool and a prompt to
+// go and think of something.
+func OpeningMessage(c *card.Card, report *ambiguity.Report) (string, error) {
+	if c == nil || strings.TrimSpace(c.Title) == "" {
+		return "", ErrNoTitle
+	}
+	if report == nil {
+		return "", ErrNoReport
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "Let's specify %q.\n\n", strings.TrimSpace(c.Title))
+
+	if n := len(report.Findings); n > 0 {
+		fmt.Fprintf(&b, "Screening raised %d concern", n)
+		if n != 1 {
+			b.WriteString("s")
+		}
+		b.WriteString(" about this card. Open by summarising, in two or three\n")
+		b.WriteString("sentences, what the card asks for as you understand it, then ask me the\n")
+		b.WriteString("questions that resolve those concerns -- the most consequential first,\n")
+		b.WriteString("and only the ones whose answers would change what gets built.\n\n")
+		b.WriteString("Ask them a few at a time rather than all at once.")
+	} else {
+		b.WriteString("Open by summarising, in two or three sentences, what this card asks for\n")
+		b.WriteString("as you understand it, then ask me what you need to know in order to\n")
+		b.WriteString("write acceptance criteria a deterministic gate can check.")
+	}
+
+	return b.String(), nil
+}

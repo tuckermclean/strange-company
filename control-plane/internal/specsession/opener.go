@@ -29,6 +29,12 @@ type Gateway interface {
 	// is found again. The gateway refuses a duplicate title, so without it
 	// the only evidence such a session exists is an error saying one does.
 	ListSessions(context.Context) ([]*hermes.Session, error)
+
+	// MessageCount and OpenTurn make the session a conversation. Creating
+	// one stores the system prompt on the row without posting a turn, so
+	// until this runs a person who opens it finds a blank chat window.
+	MessageCount(context.Context, string) (int, error)
+	OpenTurn(context.Context, string, string) error
 }
 
 // Store is the part of the card store this package uses.
@@ -85,6 +91,7 @@ func (o *Opener) Open(ctx context.Context, c *card.Card, doc *spec.Document, rep
 	if existing, err := o.store.GetSpecSession(ctx, c.ID); err != nil {
 		return "", err
 	} else if existing != "" {
+		o.ensureOpened(ctx, existing, c, report)
 		return existing, nil
 	}
 
@@ -111,6 +118,7 @@ func (o *Opener) Open(ctx context.Context, c *card.Card, doc *spec.Document, rep
 		// So look for it before giving up. Adopting what exists is the same
 		// move the coding runner makes with a Job it finds already running.
 		if adopted, aerr := o.adopt(ctx, c, title); aerr == nil && adopted != "" {
+			o.ensureOpened(ctx, adopted, c, report)
 			return adopted, nil
 		}
 
@@ -133,7 +141,43 @@ func (o *Opener) Open(ctx context.Context, c *card.Card, doc *spec.Document, rep
 		return winner, nil
 	}
 
+	// Only after the id is recorded. An opening turn costs a model call and
+	// can fail; a session nobody can find cannot.
+	o.ensureOpened(ctx, session.ID, c, report)
+
 	return session.ID, nil
+}
+
+// ensureOpened posts the first turn when a session has none.
+//
+// Never fatal, and deliberately re-checked on every pass. The session is
+// created and recorded by this point, so the card is fine either way -- and a
+// turn that fails leaves the count at zero, which is exactly the condition
+// that makes the next pass try again. That also repairs sessions created
+// before there was an opening turn to post.
+func (o *Opener) ensureOpened(ctx context.Context, id string, c *card.Card, report *ambiguity.Report) {
+	n, err := o.gateway.MessageCount(ctx, id)
+	if err != nil {
+		o.log.Warn("could not tell whether the specification conversation was opened",
+			"card", c.ID, "session", id, "error", err)
+		return
+	}
+	if n > 0 {
+		return
+	}
+
+	opening, err := OpeningMessage(c, report)
+	if err != nil {
+		o.log.Error("building the opening message", "card", c.ID, "session", id, "error", err)
+		return
+	}
+
+	if err := o.gateway.OpenTurn(ctx, id, opening); err != nil {
+		o.log.Warn("the specification conversation is still empty; will retry",
+			"card", c.ID, "session", id, "error", err)
+		return
+	}
+	o.log.Info("opened the specification conversation", "card", c.ID, "session", id)
 }
 
 // discard removes a session this Opener created but could not point a card at.
