@@ -24,6 +24,9 @@ type fakeStore struct {
 	evidence  []store.CardEvidence
 	session   string
 
+	// parentage maps a child card to the card it was split out of.
+	parentage map[uuid.UUID]uuid.UUID
+
 	moves     []card.State
 	moveErr   error
 	approvals []string
@@ -50,6 +53,9 @@ func (f *fakeStore) ListHistory(context.Context, uuid.UUID, int) ([]store.Histor
 }
 func (f *fakeStore) ListEvidence(context.Context, uuid.UUID) ([]store.CardEvidence, error) {
 	return f.evidence, nil
+}
+func (f *fakeStore) Parentage(context.Context) (map[uuid.UUID]uuid.UUID, error) {
+	return f.parentage, nil
 }
 func (f *fakeStore) GetSpecSession(context.Context, uuid.UUID) (string, error) {
 	return f.session, nil
@@ -505,5 +511,82 @@ func TestACardTheEngineIsWorkingAsksForNothing(t *testing.T) {
 	body := get(t, h, "/ui/cards/"+c.ID.String()).Body.String()
 	if strings.Contains(body, "waiting on you") {
 		t.Error("an InProgress card claims to be waiting on a person")
+	}
+}
+
+// Decomposition records a parent as depending on each of its pieces, and until
+// now nothing but §10's gate ever read that edge. A parent and its six
+// children rendered as seven unrelated cards, and the reader had no way to
+// tell which belonged to which.
+func TestAChildCardSaysWhatItIsPartOf(t *testing.T) {
+	parent := aCard("Ship the storage library", card.NeedsHuman)
+	child := aCard("Command line with filtering", card.Review)
+	f := &fakeStore{
+		cards:     []*card.Card{parent, child},
+		parentage: map[uuid.UUID]uuid.UUID{child.ID: parent.ID},
+	}
+	h := serve(t, f)
+
+	board := get(t, h, "/ui").Body.String()
+	if !strings.Contains(board, "part of") || !strings.Contains(board, parent.Title) {
+		t.Error("the board does not place the child in its parent")
+	}
+
+	page := get(t, h, "/ui/cards/"+child.ID.String()).Body.String()
+	if !strings.Contains(page, parent.Title) {
+		t.Error("the child's page does not name its parent")
+	}
+
+	pp := get(t, h, "/ui/cards/"+parent.ID.String()).Body.String()
+	if !strings.Contains(pp, child.Title) {
+		t.Error("the parent's page does not list its pieces")
+	}
+}
+
+// A parent's progress is the state of its pieces. Without it the parent looks
+// stalled while five of its six children are working.
+func TestAParentShowsHowManyOfItsPiecesAreDone(t *testing.T) {
+	parent := aCard("Ship the storage library", card.NeedsHuman)
+	a, b := aCard("one", card.Done), aCard("two", card.InProgress)
+	f := &fakeStore{
+		cards:     []*card.Card{parent, a, b},
+		parentage: map[uuid.UUID]uuid.UUID{a.ID: parent.ID, b.ID: parent.ID},
+	}
+
+	board := get(t, serve(t, f), "/ui").Body.String()
+	if !strings.Contains(board, "2 pieces, 1 done") {
+		t.Error("the board does not say how much of a decomposed card is finished")
+	}
+}
+
+// "Review" names the machine's state, not the reader's move. Learning that
+// Review means someone must decide requires reading the state machine.
+func TestTheBoardNamesTheMoveNotOnlyTheState(t *testing.T) {
+	for state, want := range map[card.State]string{
+		card.Review:     "Accept it, or send it back",
+		card.NeedsHuman: "Read the result, then send it back",
+		card.Blocked:    "Send it back to resume",
+	} {
+		c := aCard("t", state)
+		board := get(t, serve(t, &fakeStore{cards: []*card.Card{c}}), "/ui").Body.String()
+		if !strings.Contains(board, want) {
+			t.Errorf("%s: the board does not tell the reader to %q", state, want)
+		}
+	}
+}
+
+// A parent whose children were deleted must not render a blank link that
+// reads as a card you can click through to.
+func TestAMissingParentIsSaidRatherThanShownBlank(t *testing.T) {
+	child := aCard("orphan", card.Review)
+	gone := uuid.New()
+	f := &fakeStore{
+		cards:     []*card.Card{child},
+		parentage: map[uuid.UUID]uuid.UUID{child.ID: gone},
+	}
+
+	board := get(t, serve(t, f), "/ui").Body.String()
+	if !strings.Contains(board, "no longer exists") {
+		t.Error("a child of a vanished parent renders an empty link")
 	}
 }

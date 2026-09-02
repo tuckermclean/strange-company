@@ -2,6 +2,7 @@ package ui
 
 import (
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -55,6 +56,12 @@ type cardView struct {
 	CanBlock    bool
 	CanSendBack bool
 
+	// Parent is the work this card was split out of; Children are the
+	// pieces it was split into. One of the two is empty for most cards and
+	// both are for a card that was never decomposed.
+	Parent   *lineageView
+	Children []lineageView
+
 	// Waiting says, in a sentence, what this card wants from the person
 	// reading it. A board that shows a stopped card and not why it stopped
 	// makes the reader reconstruct the state machine from the buttons.
@@ -62,6 +69,10 @@ type cardView struct {
 
 	// Error carries the state machine's own words when a move was refused.
 	Error string
+}
+
+type lineageView struct {
+	ID, Title, State string
 }
 
 type criterionView struct {
@@ -183,6 +194,27 @@ func (h *Handler) cardPage(w http.ResponseWriter, r *http.Request) {
 			}
 			v.CanApprove = !cardSpec.Approved && c.State == card.Backlog
 		}
+	}
+
+	// Lineage, from the edges decomposition already writes. Never fatal:
+	// a card that cannot show its family is still a card.
+	if parentOf, err := h.store.Parentage(r.Context()); err == nil {
+		if p, ok := parentOf[id]; ok {
+			if parent, err := h.store.GetCard(r.Context(), p); err == nil && parent != nil {
+				v.Parent = &lineageView{ID: p.String(), Title: parent.Title, State: string(parent.State)}
+			}
+		}
+		for child, parent := range parentOf {
+			if parent != id {
+				continue
+			}
+			if c, err := h.store.GetCard(r.Context(), child); err == nil && c != nil {
+				v.Children = append(v.Children, lineageView{
+					ID: child.String(), Title: c.Title, State: string(c.State),
+				})
+			}
+		}
+		sort.Slice(v.Children, func(i, j int) bool { return v.Children[i].Title < v.Children[j].Title })
 	}
 
 	// After the spec block: Backlog only wants a person when there is in fact
@@ -336,6 +368,26 @@ func waitingOn(s card.State) string {
 		return "This card needs an approved specification before any worker can claim it."
 	case card.Done:
 		return ""
+	default:
+		return ""
+	}
+}
+
+// nextAction is the reader's move, in the imperative and short enough for a
+// board row.
+//
+// The state name answers "what is this card"; it does not answer "what am I
+// for". A row reading "Review" tells a person the machine's vocabulary and
+// leaves them to infer that Review means someone must decide -- which is a
+// thing you learn by reading the state machine, not by looking at a board.
+func nextAction(s card.State) string {
+	switch s {
+	case card.Review:
+		return "Accept it, or send it back"
+	case card.NeedsHuman:
+		return "Read the result, then send it back"
+	case card.Blocked:
+		return "Send it back to resume"
 	default:
 		return ""
 	}

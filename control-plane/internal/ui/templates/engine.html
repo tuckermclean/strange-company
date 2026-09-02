@@ -13,7 +13,11 @@
   <div class="panel">
     {{range .Running}}
     <div class="row">
-      <a class="grow" href="/ui/cards/{{.ID}}">{{.Title}}</a>
+      <span class="grow">
+        <a href="/ui/cards/{{.ID}}">{{.Title}}</a>
+        {{if .ParentTitle}}<br><span class="dim">&#8627; part of <a class="dim" href="/ui/cards/{{.ParentID}}">{{.ParentTitle}}</a></span>{{end}}
+        {{if .Pieces}}<br><span class="dim">&#8627; {{.Pieces}} pieces, {{.PiecesDone}} done</span>{{end}}
+      </span>
       <span class="tag">{{.Phase}}</span>
       <span class="tag">{{.State}}</span>
       {{if .Worker}}<span class="dim">{{.Worker}}</span>{{end}}
@@ -31,9 +35,13 @@
   <div class="panel">
     {{range .NeedsYou}}
     <div class="row">
-      <a class="grow" href="/ui/cards/{{.ID}}">{{.Title}}</a>
+      <span class="grow">
+        <a href="/ui/cards/{{.ID}}">{{.Title}}</a>
+        {{if .ParentTitle}}<br><span class="dim">&#8627; part of <a class="dim" href="/ui/cards/{{.ParentID}}">{{.ParentTitle}}</a></span>{{end}}
+        {{if .Pieces}}<br><span class="dim">&#8627; {{.Pieces}} pieces, {{.PiecesDone}} done</span>{{end}}
+      </span>
+      {{if .Action}}<span>{{.Action}}</span>{{end}}
       <span class="tag {{if eq .State "Review"}}ok{{else}}warn{{end}}">{{.State}}</span>
-      <span class="dim">{{.Phase}}</span>
       <span class="dim">{{.Elapsed}}</span>
     </div>
     {{else}}
