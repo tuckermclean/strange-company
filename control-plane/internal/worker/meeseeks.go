@@ -131,6 +131,12 @@ type CardStore interface {
 	// through here, including the failures that never reach a model.
 	NoteStepOutcome(ctx context.Context, cardID uuid.UUID, ran bool) error
 
+	// PhaseAttempts counts the attempts already spent on this card's
+	// current run at a phase. Every phase but implementation indexes its
+	// ladder with this rather than with implementation_attempt, which is
+	// bumped by all of them and reset by none.
+	PhaseAttempts(ctx context.Context, cardID uuid.UUID, phase string) (int, error)
+
 	// AttachEvidence records ev against cardID -- e.g. as a card comment --
 	// so the audit log (spec 21) can answer "what happened to card X?"
 	// without exposing model chain-of-thought.
@@ -256,14 +262,21 @@ func (m *Meeseeks) RunOnce(ctx context.Context) (Outcome, error) {
 		return OutcomeEscalated, nil
 	}
 
-	// Spec 12: an implementation_attempt of N means N attempts have already
-	// been spent; the next one to resolve is N+1.
-	attempt := c.ImplementationAttempt + 1
+	// A failure to COUNT is a database problem, not a card problem: hand the
+	// card back so it is retried rather than escalating a person into a
+	// transient read error.
+	attempt, err := m.attemptFor(ctx, c)
+	if err != nil {
+		if rerr := m.cards.Release(ctx, c.ID, m.id, "could not read the phase's attempt count"); rerr != nil {
+			log.Error("release after an attempt-count failure failed", "error", rerr)
+		}
+		return OutcomeReleased, err
+	}
 	res, err := m.pol.Resolve(string(c.Phase), attempt)
 	if err != nil {
 		if errors.Is(err, policy.ErrLadderExhausted) {
 			reason := fmt.Sprintf(
-				"spec 12.3: implementation escalation ladder for phase %q exhausted at attempt %d: %v",
+				"spec 12.3: the %s escalation ladder is exhausted at attempt %d: %v",
 				c.Phase, attempt, err,
 			)
 			if terr := m.cards.Transition(ctx, c.ID, card.NeedsHuman, card.ActorSystem, m.id, reason); terr != nil {
@@ -452,4 +465,32 @@ func (m *Meeseeks) heartbeat(ctx context.Context, cardID uuid.UUID, log *slog.Lo
 			}
 		}
 	}
+}
+
+// attemptFor is the rung of the current phase's ladder to resolve.
+//
+// Two rules, because the phases mean different things by "attempt".
+//
+// Implementation is cumulative across the card's whole life (§12.3): Haiku
+// three times, then Sonnet three times, then Opus once, then a person. It
+// deliberately does NOT reset when review sends work back -- resetting it is
+// what would let a card cycle between implementation and review forever.
+//
+// Every other phase counts only the current run. Review's ladder is one rung
+// because §18 allows one independent review pass per VERIFICATION CYCLE, not
+// one per card: a review after an implementation is the next cycle. Indexing
+// it with implementation_attempt made a card that had spent one implementation
+// attempt resolve its next review at attempt 2, off the end of a one-rung
+// ladder -- so the reviewer was refused before it ran and the whole
+// correctable path was unreachable. Two reviews in a row with no
+// implementation between them are still a retry, and still exhaust.
+func (m *Meeseeks) attemptFor(ctx context.Context, c *card.Card) (int, error) {
+	if c.Phase == card.PhaseImplementation {
+		return c.ImplementationAttempt + 1, nil
+	}
+	spent, err := m.cards.PhaseAttempts(ctx, c.ID, string(c.Phase))
+	if err != nil {
+		return 0, fmt.Errorf("worker %s: counting %s attempts for card %s: %w", m.id, c.Phase, c.ID, err)
+	}
+	return spent + 1, nil
 }

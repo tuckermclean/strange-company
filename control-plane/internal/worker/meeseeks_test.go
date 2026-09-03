@@ -54,6 +54,10 @@ type fakeCardStore struct {
 	evidenceCalls   []Evidence
 	advancedTo      card.Phase
 	callOrder       []string
+
+	// phaseAttempts is how many attempts have been spent on the current
+	// run at each phase, keyed by phase name.
+	phaseAttempts map[string]int
 }
 
 func (f *fakeCardStore) ClaimReady(ctx context.Context, workerID string, lease time.Duration) (*card.Card, error) {
@@ -119,6 +123,14 @@ func (f *fakeCardStore) NoteStepOutcome(_ context.Context, _ uuid.UUID, ran bool
 	defer f.mu.Unlock()
 	f.stepOutcomes = append(f.stepOutcomes, ran)
 	return nil
+}
+
+// phaseAttempts is how many attempts the fake reports for a phase, keyed by
+// phase name. Absent means none have been spent on this run.
+func (f *fakeCardStore) PhaseAttempts(_ context.Context, _ uuid.UUID, phase string) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.phaseAttempts[phase], nil
 }
 
 func (f *fakeCardStore) AttachEvidence(ctx context.Context, cardID uuid.UUID, ev Evidence) error {

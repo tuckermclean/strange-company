@@ -21,6 +21,9 @@ type phaseStore struct {
 	transition card.State
 	evidence   []Evidence
 	order      []string
+
+	// phaseAttempts is what PhaseAttempts reports for the current run.
+	phaseAttempts int
 }
 
 func (p *phaseStore) ClaimReady(context.Context, string, time.Duration) (*card.Card, error) {
@@ -30,6 +33,9 @@ func (p *phaseStore) ClaimReady(context.Context, string, time.Duration) (*card.C
 	return p.claimed, nil
 }
 func (p *phaseStore) NoteStepOutcome(context.Context, uuid.UUID, bool) error { return nil }
+func (p *phaseStore) PhaseAttempts(context.Context, uuid.UUID, string) (int, error) {
+	return p.phaseAttempts, nil
+}
 
 func (p *phaseStore) Heartbeat(context.Context, uuid.UUID, string, time.Duration) error { return nil }
 func (p *phaseStore) Release(_ context.Context, _ uuid.UUID, _, reason string) error {
@@ -209,5 +215,67 @@ func TestAStepThatNamesAStateStillTransitions(t *testing.T) {
 	}
 	if st.advancedTo != "" {
 		t.Errorf("also advanced the phase to %q", st.advancedTo)
+	}
+}
+
+// The ladder index used to come from implementation_attempt, which every
+// phase increments and nothing resets. A card that had spent ONE
+// implementation attempt resolved its next review at attempt 2 -- off the end
+// of review's one-rung ladder -- so the reviewer was refused before it ran and
+// the whole correctable path (review asks for a fix, implementation makes it,
+// review looks again) could never complete for any card.
+func TestReviewIsNotIndexedByImplementationAttempts(t *testing.T) {
+	c := &card.Card{
+		ID: uuid.New(), Title: "Command line with filtering",
+		State: card.InProgress, Phase: card.PhaseReview,
+		// Two implementation attempts already spent on this card.
+		ImplementationAttempt: 2,
+	}
+	// ...and no review attempt yet in this verification cycle.
+	st := &phaseStore{claimed: c, phaseAttempts: 0}
+
+	if _, err := runWith(t, st, Evidence{Summary: "review completed", NextState: card.Review}); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+
+	if st.transition == card.NeedsHuman {
+		t.Fatalf("review escalated on a card whose implementation attempts are irrelevant to it: %q", st.released)
+	}
+}
+
+// Two reviews in a row with no implementation between them IS a retry, and
+// review's ladder is one rung. Per-cycle counting must not become no counting.
+func TestASecondReviewInTheSameCycleStillExhausts(t *testing.T) {
+	c := &card.Card{
+		ID: uuid.New(), Title: "t",
+		State: card.InProgress, Phase: card.PhaseReview,
+	}
+	st := &phaseStore{claimed: c, phaseAttempts: 1}
+
+	if _, err := runWith(t, st, Evidence{Summary: "review completed", NextState: card.Review}); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if st.transition != card.NeedsHuman {
+		t.Error("a second review in one cycle did not exhaust the ladder")
+	}
+}
+
+// Implementation stays cumulative across the whole card (§12.3). Resetting it
+// each time review sent work back is what would make the correctable loop
+// unbounded.
+func TestImplementationStaysCumulative(t *testing.T) {
+	c := &card.Card{
+		ID: uuid.New(), Title: "t",
+		State: card.InProgress, Phase: card.PhaseImplementation,
+		// Past the end of the 3+3+1 ladder.
+		ImplementationAttempt: 7,
+	}
+	st := &phaseStore{claimed: c, phaseAttempts: 0}
+
+	if _, err := runWith(t, st, Evidence{Summary: "implemented", NextPhase: card.PhaseReview}); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if st.transition != card.NeedsHuman {
+		t.Error("an eighth implementation attempt was allowed; the ladder is not cumulative")
 	}
 }
