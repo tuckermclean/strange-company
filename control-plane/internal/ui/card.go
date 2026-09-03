@@ -62,6 +62,13 @@ type cardView struct {
 	Parent   *lineageView
 	Children []lineageView
 
+	// Prerequisites are the cards this one waits for, in order, each
+	// carrying whether it is finished.
+	Prerequisites []prerequisiteView
+
+	// WaitingFor is the first unfinished one, when there is one.
+	WaitingFor string
+
 	// Waiting says, in a sentence, what this card wants from the person
 	// reading it. A board that shows a stopped card and not why it stopped
 	// makes the reader reconstruct the state machine from the buttons.
@@ -73,6 +80,11 @@ type cardView struct {
 
 type lineageView struct {
 	ID, Title, State string
+}
+
+type prerequisiteView struct {
+	ID, Title, State string
+	Met              bool
 }
 
 type criterionView struct {
@@ -204,17 +216,34 @@ func (h *Handler) cardPage(w http.ResponseWriter, r *http.Request) {
 				v.Parent = &lineageView{ID: p.String(), Title: parent.Title, State: string(parent.State)}
 			}
 		}
+		var kids []*card.Card
 		for child, parent := range parentOf {
 			if parent != id {
 				continue
 			}
 			if c, err := h.store.GetCard(r.Context(), child); err == nil && c != nil {
-				v.Children = append(v.Children, lineageView{
-					ID: child.String(), Title: c.Title, State: string(c.State),
-				})
+				kids = append(kids, c)
 			}
 		}
-		sort.Slice(v.Children, func(i, j int) bool { return v.Children[i].Title < v.Children[j].Title })
+		// Build order, which is creation order: decomposition chains each
+		// piece to the one before it as it writes them. Sorting by title
+		// would put them in an order nothing builds them in, under a
+		// heading that says otherwise.
+		sort.Slice(kids, func(i, j int) bool { return kids[i].CreatedAt.Before(kids[j].CreatedAt) })
+		for _, c := range kids {
+			v.Children = append(v.Children, lineageView{
+				ID: c.ID.String(), Title: c.Title, State: string(c.State),
+			})
+		}
+	}
+
+	if prereqs, err := h.store.Prerequisites(r.Context()); err == nil {
+		for _, p := range prereqs[id] {
+			v.Prerequisites = append(v.Prerequisites, prerequisiteView{
+				ID: p.ID.String(), Title: p.Title, State: p.State, Met: p.Met(),
+			})
+		}
+		v.WaitingFor = blockedBy(prereqs[id])
 	}
 
 	// After the spec block: Backlog only wants a person when there is in fact
@@ -222,6 +251,15 @@ func (h *Handler) cardPage(w http.ResponseWriter, r *http.Request) {
 	v.Waiting = waitingOn(c.State)
 	if c.State == card.Backlog && !v.CanApprove {
 		v.Waiting = ""
+	}
+	if v.WaitingFor != "" {
+		// §10's gate will refuse to promote this card whatever a person
+		// does here, so saying so beats a button that appears to do
+		// nothing.
+		v.Waiting = "This card cannot start until \"" + v.WaitingFor + "\" is done. " +
+			"Approving or sending it back now will not move it: the gate holds it until then."
+		v.CanApprove = false
+		v.CanSendBack = false
 	}
 
 	if attempts, err := h.store.ListAttempts(r.Context(), id); err == nil {

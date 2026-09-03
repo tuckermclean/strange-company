@@ -49,6 +49,12 @@ type Store interface {
 	// a decomposed parent and its pieces do not read as unrelated work.
 	Parentage(ctx context.Context) (map[uuid.UUID]uuid.UUID, error)
 
+	// Prerequisites maps a card to the cards it must wait for. The gate
+	// already refuses to promote a card whose prerequisites are unfinished;
+	// this is how a person can see that rather than infer it from nothing
+	// happening.
+	Prerequisites(ctx context.Context) (map[uuid.UUID][]store.Prerequisite, error)
+
 	// SpecSessionID returns the Hermes conversation opened for this card's
 	// specification (§10.2), or "" when none has been.
 	GetSpecSession(ctx context.Context, cardID uuid.UUID) (string, error)
@@ -118,7 +124,12 @@ type engineView struct {
 	Now      string
 	Running  []cardRow
 	NeedsYou []cardRow
-	Recent   []cardRow
+
+	// Waiting is work that is correctly not started: a piece of a split
+	// whose predecessor is unfinished. Without a band of its own it sat
+	// among the running cards looking stalled.
+	Waiting []cardRow
+	Recent  []cardRow
 
 	Cards     int
 	CostUSD   float64
@@ -147,6 +158,10 @@ type cardRow struct {
 	ParentTitle string
 	Pieces      int
 	PiecesDone  int
+
+	// WaitingFor is the unfinished prerequisite this card cannot start
+	// before, when it has one.
+	WaitingFor string
 }
 
 func (h *Handler) engine(w http.ResponseWriter, r *http.Request) {
@@ -168,6 +183,12 @@ func (h *Handler) engine(w http.ResponseWriter, r *http.Request) {
 	for _, c := range cards {
 		byID[c.ID] = c
 	}
+	prereqs, err := h.store.Prerequisites(r.Context())
+	if err != nil {
+		h.log.Warn("ui: could not read card prerequisites", "error", err)
+		prereqs = map[uuid.UUID][]store.Prerequisite{}
+	}
+
 	pieces, done := map[uuid.UUID]int{}, map[uuid.UUID]int{}
 	for child, parent := range parentOf {
 		pieces[parent]++
@@ -198,6 +219,7 @@ func (h *Handler) engine(w http.ResponseWriter, r *http.Request) {
 		}
 		row.Pieces, row.PiecesDone = pieces[c.ID], done[c.ID]
 		row.Action = nextAction(c.State)
+		row.WaitingFor = blockedBy(prereqs[c.ID])
 		v.CostUSD += c.CostUSD
 		if c.CostUSD <= 0 {
 			v.Unpriced++
@@ -215,6 +237,9 @@ func (h *Handler) engine(w http.ResponseWriter, r *http.Request) {
 			v.Running = append(v.Running, row)
 		case c.State == card.Done:
 			v.Recent = append(v.Recent, row)
+		case row.WaitingFor != "":
+			// Not stalled: next in a queue it was put in deliberately.
+			v.Waiting = append(v.Waiting, row)
 		default:
 			v.Running = append(v.Running, row)
 		}
@@ -286,3 +311,19 @@ func compact(n int) string {
 }
 
 func sprint(v any) string { return fmt.Sprint(v) }
+
+// blockedBy names the first unfinished prerequisite, or "" when a card is free
+// to start.
+//
+// The first rather than all of them: decomposition chains its pieces, so a
+// card waiting on three has really only to wait for the next one -- and a row
+// listing every ancestor tells a reader less than a row naming the one thing
+// in the way.
+func blockedBy(ps []store.Prerequisite) string {
+	for _, p := range ps {
+		if !p.Met() {
+			return p.Title
+		}
+	}
+	return ""
+}
