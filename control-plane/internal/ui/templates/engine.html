@@ -51,6 +51,25 @@
 </section>
 
 <section>
+  <h2>Waiting its turn</h2>
+  <div class="panel">
+    {{range .Waiting}}
+    <div class="row">
+      <span class="grow">
+        <a href="/ui/cards/{{.ID}}">{{.Title}}</a>
+        {{if .ParentTitle}}<br><span class="dim">&#8627; part of <a class="dim" href="/ui/cards/{{.ParentID}}">{{.ParentTitle}}</a></span>{{end}}
+      </span>
+      <span class="dim">after &ldquo;{{.WaitingFor}}&rdquo;</span>
+      <span class="tag">{{.State}}</span>
+    </div>
+    {{else}}
+    <div class="empty">Nothing is queued behind anything else.</div>
+    {{end}}
+  </div>
+</section>
+
+<section>
+  <h2>Done</h2><section>
   <h2>Done</h2>
   <div class="panel">
     {{range .Recent}}

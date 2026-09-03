@@ -196,20 +196,16 @@ func (s *Store) ListApprovedAwaitingPromotion(ctx context.Context, limit int) ([
 
 // Parentage maps a child card to the card it was split out of.
 //
-// Decomposition records a parent as depending on each of its pieces, and
-// nothing has ever read that edge back except §10's gate. So a board showed a
-// parent and its six children as seven unrelated cards, and a person had no
-// way to tell which of them belonged to which -- the relationship existed in
-// the database and nowhere a human could see it.
+// Read from cards.parent_id rather than inferred from card_dependencies, which
+// carries two kinds of edge -- parent-to-child AND the sibling ordering the
+// gate consumes -- and cannot tell them apart by shape. Inferring it rendered
+// one piece of a split as being part of another piece. See migration 0014.
 //
 // One query for the whole board rather than one per card: this is rendered on
 // every pass of a page that refreshes itself.
 func (s *Store) Parentage(ctx context.Context) (map[uuid.UUID]uuid.UUID, error) {
 	const q = `
-		SELECT d.depends_on, d.card_id
-		  FROM card_dependencies d
-		  JOIN cards c ON c.id = d.depends_on
-		 WHERE c.source_type = 'decomposed'`
+		SELECT id, parent_id FROM cards WHERE parent_id IS NOT NULL`
 
 	rows, err := s.pool.Query(ctx, q)
 	if err != nil {
@@ -230,6 +226,54 @@ func (s *Store) Parentage(ctx context.Context) (map[uuid.UUID]uuid.UUID, error) 
 	}
 	return out, nil
 }
+
+// Prerequisites maps a card to the cards it must wait for, with enough of
+// each to say whether the wait is over.
+//
+// §10's gate has always refused to promote a card whose dependencies are
+// unfinished, so the sequencing worked -- but nothing showed it. A piece of a
+// split sat in Backlog looking idle when it was correctly waiting its turn,
+// and a person could approve it, send it back, and watch nothing happen,
+// because the gate declined quietly somewhere they could not see.
+//
+// One query for the whole board, for the same reason Parentage is.
+func (s *Store) Prerequisites(ctx context.Context) (map[uuid.UUID][]Prerequisite, error) {
+	const q = `
+		SELECT d.card_id, d.depends_on, c.title, c.state
+		  FROM card_dependencies d
+		  JOIN cards c ON c.id = d.depends_on
+		 ORDER BY c.title`
+
+	rows, err := s.pool.Query(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("store: listing prerequisites: %w", err)
+	}
+	defer rows.Close()
+
+	out := map[uuid.UUID][]Prerequisite{}
+	for rows.Next() {
+		var of uuid.UUID
+		var p Prerequisite
+		if err := rows.Scan(&of, &p.ID, &p.Title, &p.State); err != nil {
+			return nil, fmt.Errorf("store: reading a prerequisite: %w", err)
+		}
+		out[of] = append(out[of], p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: listing prerequisites: %w", err)
+	}
+	return out, nil
+}
+
+// Prerequisite is one card another card is waiting for.
+type Prerequisite struct {
+	ID    uuid.UUID
+	Title string
+	State string
+}
+
+// Met reports whether this prerequisite no longer blocks anything.
+func (p Prerequisite) Met() bool { return p.State == string(card.Done) }
 
 // ListDependencies returns the cards cardID depends on.
 //
@@ -373,9 +417,11 @@ func (s *Store) CreateChild(ctx context.Context, parent uuid.UUID, title, specTe
 
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO cards (id, title, source_type, source_url, repo_url, repo_base_ref,
-		                   state, phase, risk_class, effective_priority, permitted_actions)
-		VALUES ($1, $2, 'decomposed', $3, $4, $5, 'Backlog', 'specification', 'R1', 100, $6::jsonb)
-	`, id, title, source, repoURL, repoRef, actions); err != nil {
+		                   state, phase, risk_class, effective_priority, permitted_actions,
+		                   parent_id)
+		VALUES ($1, $2, 'decomposed', $3, $4, $5, 'Backlog', 'specification', 'R1', 100, $6::jsonb,
+		        $7)
+	`, id, title, source, repoURL, repoRef, actions, parent); err != nil {
 		return uuid.Nil, fmt.Errorf("store: inserting child of %s: %w", parent, err)
 	}
 

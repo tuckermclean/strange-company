@@ -24,8 +24,10 @@ type fakeStore struct {
 	evidence  []store.CardEvidence
 	session   string
 
-	// parentage maps a child card to the card it was split out of.
+	// parentage maps a child card to the card it was split out of, and
+	// prereqs the cards each must wait for.
 	parentage map[uuid.UUID]uuid.UUID
+	prereqs   map[uuid.UUID][]store.Prerequisite
 
 	moves     []card.State
 	moveErr   error
@@ -56,6 +58,9 @@ func (f *fakeStore) ListEvidence(context.Context, uuid.UUID) ([]store.CardEviden
 }
 func (f *fakeStore) Parentage(context.Context) (map[uuid.UUID]uuid.UUID, error) {
 	return f.parentage, nil
+}
+func (f *fakeStore) Prerequisites(context.Context) (map[uuid.UUID][]store.Prerequisite, error) {
+	return f.prereqs, nil
 }
 func (f *fakeStore) GetSpecSession(context.Context, uuid.UUID) (string, error) {
 	return f.session, nil
@@ -588,5 +593,68 @@ func TestAMissingParentIsSaidRatherThanShownBlank(t *testing.T) {
 	board := get(t, serve(t, f), "/ui").Body.String()
 	if !strings.Contains(board, "no longer exists") {
 		t.Error("a child of a vanished parent renders an empty link")
+	}
+}
+
+// §10's gate has always refused to promote a card whose prerequisites are
+// unfinished, so the sequencing worked -- and nothing showed it. A piece of a
+// split sat looking idle when it was correctly waiting its turn, and a person
+// could approve it and watch nothing happen.
+func TestACardWaitingItsTurnSaysWhatItIsWaitingFor(t *testing.T) {
+	first := aCard("Storage library", card.InProgress)
+	second := aCard("Command line with filtering", card.Backlog)
+	f := &fakeStore{
+		cards: []*card.Card{first, second},
+		prereqs: map[uuid.UUID][]store.Prerequisite{
+			second.ID: {{ID: first.ID, Title: first.Title, State: string(card.InProgress)}},
+		},
+	}
+	h := serve(t, f)
+
+	board := get(t, h, "/ui").Body.String()
+	if !strings.Contains(board, "Waiting its turn") || !strings.Contains(board, "Storage library") {
+		t.Error("the board does not show what a queued card is queued behind")
+	}
+
+	page := get(t, h, "/ui/cards/"+second.ID.String()).Body.String()
+	if !strings.Contains(page, "cannot start until") {
+		t.Error("the card does not say it is blocked")
+	}
+}
+
+// A button the gate will silently decline is worse than no button: it invites
+// a click, does nothing, and teaches the reader the console is lying.
+func TestABlockedCardDoesNotOfferActionsTheGateWillRefuse(t *testing.T) {
+	first := aCard("Storage library", card.InProgress)
+	second := aCard("Command line with filtering", card.Backlog)
+	f := &fakeStore{
+		cards: []*card.Card{first, second},
+		spec:  &store.CardSpec{Content: "## Acceptance criteria\n\n- AC1: it works (verified by: go test)\n"},
+		prereqs: map[uuid.UUID][]store.Prerequisite{
+			second.ID: {{ID: first.ID, Title: first.Title, State: string(card.InProgress)}},
+		},
+	}
+
+	page := get(t, serve(t, f), "/ui/cards/"+second.ID.String()).Body.String()
+	if strings.Contains(page, "/approve") || strings.Contains(page, "/send-back") {
+		t.Error("a card the gate is holding offers moves that will not take effect")
+	}
+}
+
+// A prerequisite that IS done must stop blocking, or the card never unblocks
+// on the page even though the gate has released it.
+func TestAMetPrerequisiteDoesNotBlock(t *testing.T) {
+	first := aCard("Storage library", card.Done)
+	second := aCard("Command line with filtering", card.Backlog)
+	f := &fakeStore{
+		cards: []*card.Card{first, second},
+		prereqs: map[uuid.UUID][]store.Prerequisite{
+			second.ID: {{ID: first.ID, Title: first.Title, State: string(card.Done)}},
+		},
+	}
+
+	page := get(t, serve(t, f), "/ui/cards/"+second.ID.String()).Body.String()
+	if strings.Contains(page, "cannot start until") {
+		t.Error("a card whose prerequisite is Done still reads as blocked")
 	}
 }
