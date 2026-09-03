@@ -267,3 +267,53 @@ func (s *Store) LadderExhausted(ctx context.Context, cardID uuid.UUID, limit int
 
 	return implementationAttempt >= limit, nil
 }
+
+// PhaseAttempts counts the attempts already spent on a card's CURRENT run at
+// a phase -- the trailing run of same-phase rows in the ledger.
+//
+// The ladder index used to come from implementation_attempt, which is
+// incremented by every phase that records an attempt and is never reset. So
+// one counter indexed every phase's ladder: a card that had spent a single
+// implementation attempt resolved its NEXT review at attempt 2, and review's
+// ladder is one rung long. The reviewer was refused before it ran, and the
+// CORRECTABLE path -- review asks for a fix, implementation makes it, review
+// looks again -- could never complete for any card, ever.
+//
+// Trailing rather than cumulative because models.yaml's rule for review is
+// "one independent review pass per verification cycle": a second review with
+// an implementation between them is the next cycle, not a retry. Two reviews
+// in a row with nothing in between IS a retry, and still exhausts.
+//
+// The implementation phase does not use this. Its ladder is deliberately
+// cumulative across the whole card (§12.3) -- resetting it every time review
+// sent work back is what would make the correctable loop unbounded.
+func (s *Store) PhaseAttempts(ctx context.Context, cardID uuid.UUID, phase string) (int, error) {
+	const q = `
+		SELECT phase
+		  FROM card_attempts
+		 WHERE card_id = $1::uuid
+		   AND attempt_number IS NOT NULL
+		 ORDER BY created_at DESC, id DESC`
+
+	rows, err := s.pool.Query(ctx, q, cardID.String())
+	if err != nil {
+		return 0, fmt.Errorf("store: counting %s attempts for card %s: %w", phase, cardID, err)
+	}
+	defer rows.Close()
+
+	n := 0
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return 0, fmt.Errorf("store: reading an attempt row: %w", err)
+		}
+		if p != phase {
+			break
+		}
+		n++
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("store: counting %s attempts for card %s: %w", phase, cardID, err)
+	}
+	return n, nil
+}
