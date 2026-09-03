@@ -234,7 +234,7 @@ func TestReviewIsNotIndexedByImplementationAttempts(t *testing.T) {
 	// ...and no review attempt yet in this verification cycle.
 	st := &phaseStore{claimed: c, phaseAttempts: 0}
 
-	if _, err := runWith(t, st, Evidence{Summary: "review completed"}); err != nil {
+	if _, err := runWith(t, st, Evidence{Summary: "review completed", NextState: card.Review}); err != nil {
 		t.Fatalf("RunOnce: %v", err)
 	}
 
@@ -252,7 +252,7 @@ func TestASecondReviewInTheSameCycleStillExhausts(t *testing.T) {
 	}
 	st := &phaseStore{claimed: c, phaseAttempts: 1}
 
-	if _, err := runWith(t, st, Evidence{Summary: "review completed"}); err != nil {
+	if _, err := runWith(t, st, Evidence{Summary: "review completed", NextState: card.Review}); err != nil {
 		t.Fatalf("RunOnce: %v", err)
 	}
 	if st.transition != card.NeedsHuman {
@@ -272,7 +272,7 @@ func TestImplementationStaysCumulative(t *testing.T) {
 	}
 	st := &phaseStore{claimed: c, phaseAttempts: 0}
 
-	if _, err := runWith(t, st, Evidence{Summary: "implemented"}); err != nil {
+	if _, err := runWith(t, st, Evidence{Summary: "implemented", NextPhase: card.PhaseReview}); err != nil {
 		t.Fatalf("RunOnce: %v", err)
 	}
 	if st.transition != card.NeedsHuman {
