@@ -262,9 +262,15 @@ func (m *Meeseeks) RunOnce(ctx context.Context) (Outcome, error) {
 		return OutcomeEscalated, nil
 	}
 
+	// A failure to COUNT is a database problem, not a card problem: hand the
+	// card back so it is retried rather than escalating a person into a
+	// transient read error.
 	attempt, err := m.attemptFor(ctx, c)
 	if err != nil {
-		return OutcomeFailed, err
+		if rerr := m.cards.Release(ctx, c.ID, m.id, "could not read the phase's attempt count"); rerr != nil {
+			log.Error("release after an attempt-count failure failed", "error", rerr)
+		}
+		return OutcomeReleased, err
 	}
 	res, err := m.pol.Resolve(string(c.Phase), attempt)
 	if err != nil {
