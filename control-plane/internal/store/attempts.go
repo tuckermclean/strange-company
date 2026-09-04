@@ -317,3 +317,28 @@ func (s *Store) PhaseAttempts(ctx context.Context, cardID uuid.UUID, phase strin
 	}
 	return n, nil
 }
+
+// UnpricedAttempts counts a card's recorded runs whose cost is unknown.
+//
+// A run is unpriced when neither the harness reported a cost nor the alias
+// carried a rate card. Its tokens may be counted perfectly and its price still
+// be nobody's guess -- opencode reports zero for any provider models.dev has
+// no rates for, and the Hermes gateway reports no cost at all.
+//
+// So a card's cost_usd is a FLOOR, not a figure, whenever this is non-zero,
+// and a budget compared against it is not being enforced however carefully the
+// comparison is written. The caller is expected to say so rather than let a
+// budget look enforced because the arithmetic ran.
+func (s *Store) UnpricedAttempts(ctx context.Context, cardID uuid.UUID) (int, error) {
+	const q = `
+		SELECT count(*)
+		  FROM card_attempts
+		 WHERE card_id = $1::uuid
+		   AND cost_usd IS NULL`
+
+	var n int
+	if err := s.pool.QueryRow(ctx, q, cardID.String()).Scan(&n); err != nil {
+		return 0, fmt.Errorf("store: counting unpriced attempts for card %s: %w", cardID, err)
+	}
+	return n, nil
+}

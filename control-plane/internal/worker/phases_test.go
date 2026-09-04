@@ -22,8 +22,14 @@ type phaseStore struct {
 	evidence   []Evidence
 	order      []string
 
-	// phaseAttempts is what PhaseAttempts reports for the current run.
+	// phaseAttempts is what PhaseAttempts reports for the current run, and
+	// unpriced how many of the card's runs have no known cost.
 	phaseAttempts int
+	unpriced      int
+}
+
+func (p *phaseStore) UnpricedAttempts(context.Context, uuid.UUID) (int, error) {
+	return p.unpriced, nil
 }
 
 func (p *phaseStore) ClaimReady(context.Context, string, time.Duration) (*card.Card, error) {
@@ -277,5 +283,84 @@ func TestImplementationStaysCumulative(t *testing.T) {
 	}
 	if st.transition != card.NeedsHuman {
 		t.Error("an eighth implementation attempt was allowed; the ladder is not cumulative")
+	}
+}
+
+// §22's budget existed as a column, was rendered by the UI, the API and the
+// Vikunja description, and was compared to spend by nothing. The state
+// machine's own table lists "InProgress -> NeedsHuman: budget" as a reason and
+// there was no code behind it: a card could spend without limit until a person
+// noticed.
+func TestACardOverItsBudgetStops(t *testing.T) {
+	budget := 5.0
+	c := &card.Card{
+		ID: uuid.New(), Title: "expensive",
+		State: card.InProgress, Phase: card.PhaseImplementation,
+		CostUSD: 5.25, MaxCostUSD: &budget,
+	}
+	st := &phaseStore{claimed: c, unpriced: 0}
+
+	if _, err := runWith(t, st, Evidence{Summary: "implemented", NextPhase: card.PhaseReview}); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if st.transition != card.NeedsHuman {
+		t.Fatal("a card past its budget kept working")
+	}
+}
+
+func TestACardInsideItsBudgetKeepsWorking(t *testing.T) {
+	budget := 5.0
+	c := &card.Card{
+		ID: uuid.New(), Title: "fine",
+		State: card.InProgress, Phase: card.PhaseImplementation,
+		CostUSD: 1.10, MaxCostUSD: &budget,
+	}
+	st := &phaseStore{claimed: c}
+
+	if _, err := runWith(t, st, Evidence{Summary: "implemented", NextPhase: card.PhaseReview}); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if st.transition == card.NeedsHuman {
+		t.Errorf("a card inside its budget was stopped: %q", st.released)
+	}
+}
+
+// The trap this whole guard is built around. cost_usd is a FLOOR whenever any
+// run is unpriced -- opencode reports zero for providers models.dev has no
+// rates for, and the Hermes gateway reports no cost at all. Comparing a budget
+// against that number would enforce arithmetic rather than a limit, and would
+// stop cards for spending an amount nobody measured.
+func TestAnUnpricedCardIsNotStoppedByANumberNobodyMeasured(t *testing.T) {
+	budget := 0.01
+	c := &card.Card{
+		ID: uuid.New(), Title: "unpriced",
+		State: card.InProgress, Phase: card.PhaseImplementation,
+		// Reads as over budget, but only because nothing has been priced.
+		CostUSD: 0.02, MaxCostUSD: &budget,
+	}
+	st := &phaseStore{claimed: c, unpriced: 3}
+
+	if _, err := runWith(t, st, Evidence{Summary: "implemented", NextPhase: card.PhaseReview}); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if st.transition == card.NeedsHuman {
+		t.Error("stopped a card on a cost figure that is missing three of its runs")
+	}
+}
+
+// A card with no budget is not a card with a budget of zero.
+func TestACardWithNoBudgetIsNotStopped(t *testing.T) {
+	c := &card.Card{
+		ID: uuid.New(), Title: "no budget",
+		State: card.InProgress, Phase: card.PhaseImplementation,
+		CostUSD: 900,
+	}
+	st := &phaseStore{claimed: c}
+
+	if _, err := runWith(t, st, Evidence{Summary: "implemented", NextPhase: card.PhaseReview}); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if st.transition == card.NeedsHuman {
+		t.Error("a card with no budget was stopped anyway")
 	}
 }

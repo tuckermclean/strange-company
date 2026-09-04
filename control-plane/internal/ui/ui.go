@@ -55,6 +55,10 @@ type Store interface {
 	// happening.
 	Prerequisites(ctx context.Context) (map[uuid.UUID][]store.Prerequisite, error)
 
+	// UnpricedAttempts counts runs whose cost is unknown, so a budget that
+	// is not being enforced can say so rather than read as a cheap card.
+	UnpricedAttempts(ctx context.Context, cardID uuid.UUID) (int, error)
+
 	// SpecSessionID returns the Hermes conversation opened for this card's
 	// specification (§10.2), or "" when none has been.
 	GetSpecSession(ctx context.Context, cardID uuid.UUID) (string, error)

@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"net/http"
 	"sort"
 	"strings"
@@ -68,6 +69,10 @@ type cardView struct {
 
 	// WaitingFor is the first unfinished one, when there is one.
 	WaitingFor string
+
+	// BudgetBlind explains, when a card carries a budget that cannot be
+	// enforced, why the money on this page is not a figure.
+	BudgetBlind string
 
 	// Waiting says, in a sentence, what this card wants from the person
 	// reading it. A board that shows a stopped card and not why it stopped
@@ -188,6 +193,15 @@ func (h *Handler) cardPage(w http.ResponseWriter, r *http.Request) {
 	}
 	if c.MaxCostUSD != nil {
 		v.MaxCost = money(*c.MaxCostUSD)
+		// A budget that cannot be enforced must say so where the number is
+		// read. Rendering "$0.00 of $5.00" next to a card that has been
+		// running all night reads as a cheap card, not as a blind meter.
+		if n, err := h.store.UnpricedAttempts(r.Context(), id); err == nil && n > 0 {
+			v.BudgetBlind = fmt.Sprintf(
+				"%d of this card's runs report no cost, so the total below is a floor and the $%s budget is not being enforced. "+
+					"Give the phase's alias a pricing block in models.yaml to turn it on.",
+				n, v.MaxCost)
+		}
 	}
 
 	// §19 and the state machine decide these, not the template. Asking

@@ -58,6 +58,15 @@ type fakeCardStore struct {
 	// phaseAttempts is how many attempts have been spent on the current
 	// run at each phase, keyed by phase name.
 	phaseAttempts map[string]int
+
+	// unpriced is how many of this card's runs have no known cost.
+	unpriced int
+}
+
+func (f *fakeCardStore) UnpricedAttempts(context.Context, uuid.UUID) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.unpriced, nil
 }
 
 func (f *fakeCardStore) ClaimReady(ctx context.Context, workerID string, lease time.Duration) (*card.Card, error) {
