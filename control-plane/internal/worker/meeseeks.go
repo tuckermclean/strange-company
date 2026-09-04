@@ -137,6 +137,10 @@ type CardStore interface {
 	// bumped by all of them and reset by none.
 	PhaseAttempts(ctx context.Context, cardID uuid.UUID, phase string) (int, error)
 
+	// UnpricedAttempts counts runs whose cost is unknown. Non-zero means
+	// the card's cost_usd is a floor and its budget is not being enforced.
+	UnpricedAttempts(ctx context.Context, cardID uuid.UUID) (int, error)
+
 	// AttachEvidence records ev against cardID -- e.g. as a card comment --
 	// so the audit log (spec 21) can answer "what happened to card X?"
 	// without exposing model chain-of-thought.
@@ -259,6 +263,23 @@ func (m *Meeseeks) RunOnce(ctx context.Context) (Outcome, error) {
 		}
 		log.Warn("escalated to NeedsHuman: too many infrastructure failures",
 			"infrastructure_failures", c.InfrastructureFailures)
+		return OutcomeEscalated, nil
+	}
+
+	// §22's budget. Checked here, next to the other bound on a card that
+	// will not stop on its own, and before anything is spent on this step.
+	//
+	// max_cost_usd has existed since M0 and was read by the UI, the API and
+	// the Vikunja description -- three renderings of a number nothing acted
+	// on. The state machine's own table lists "InProgress -> NeedsHuman:
+	// budget" as a reason, and there was no code behind it. A card could
+	// spend without limit and the only thing that stopped it was a person
+	// noticing.
+	if stop, reason := m.overBudget(ctx, c, log); stop {
+		if terr := m.cards.Transition(ctx, c.ID, card.NeedsHuman, card.ActorSystem, m.id, reason); terr != nil {
+			return OutcomeEscalated, fmt.Errorf("worker %s: escalate card %s over budget: %w", m.id, c.ID, terr)
+		}
+		log.Warn("escalated to NeedsHuman: over budget", "reason", reason)
 		return OutcomeEscalated, nil
 	}
 
@@ -493,4 +514,42 @@ func (m *Meeseeks) attemptFor(ctx context.Context, c *card.Card) (int, error) {
 		return 0, fmt.Errorf("worker %s: counting %s attempts for card %s: %w", m.id, c.Phase, c.ID, err)
 	}
 	return spent + 1, nil
+}
+
+// overBudget reports whether this card has spent what it was given.
+//
+// Returns false when the spend cannot be known. A budget compared against a
+// figure that is missing most of its runs is not a budget, and stopping a card
+// on one would be enforcing a number rather than a limit -- so an install with
+// no rate card keeps working exactly as it did, and is told, every step, that
+// the limit it configured is not in force. Silence there would be the same
+// defect one level down: a guard that appears to hold and does not.
+func (m *Meeseeks) overBudget(ctx context.Context, c *card.Card, log *slog.Logger) (bool, string) {
+	if c.MaxCostUSD == nil || *c.MaxCostUSD <= 0 {
+		return false, ""
+	}
+
+	unpriced, err := m.cards.UnpricedAttempts(ctx, c.ID)
+	if err != nil {
+		// Cannot tell whether the spend is complete, so cannot tell whether
+		// the budget means anything. Do not stop the card on a read error.
+		log.Warn("could not check whether this card's spend is fully priced",
+			"max_cost_usd", *c.MaxCostUSD, "error", err)
+		return false, ""
+	}
+	if unpriced > 0 {
+		log.Warn("this card has a budget that is NOT being enforced: some runs are unpriced",
+			"max_cost_usd", *c.MaxCostUSD, "cost_usd_so_far", c.CostUSD,
+			"unpriced_attempts", unpriced,
+			"fix", "give the phase's alias a pricing block in models.yaml")
+		return false, ""
+	}
+
+	if c.CostUSD < *c.MaxCostUSD {
+		return false, ""
+	}
+	return true, fmt.Sprintf(
+		"spec 22: this card has spent $%.2f of its $%.2f budget. No further work will be done on it "+
+			"automatically. Raise max_cost_usd, or send it back to accept the spend.",
+		c.CostUSD, *c.MaxCostUSD)
 }

@@ -28,6 +28,7 @@ type fakeStore struct {
 	// prereqs the cards each must wait for.
 	parentage map[uuid.UUID]uuid.UUID
 	prereqs   map[uuid.UUID][]store.Prerequisite
+	unpriced  int
 
 	moves     []card.State
 	moveErr   error
@@ -61,6 +62,9 @@ func (f *fakeStore) Parentage(context.Context) (map[uuid.UUID]uuid.UUID, error) 
 }
 func (f *fakeStore) Prerequisites(context.Context) (map[uuid.UUID][]store.Prerequisite, error) {
 	return f.prereqs, nil
+}
+func (f *fakeStore) UnpricedAttempts(context.Context, uuid.UUID) (int, error) {
+	return f.unpriced, nil
 }
 func (f *fakeStore) GetSpecSession(context.Context, uuid.UUID) (string, error) {
 	return f.session, nil
@@ -656,5 +660,31 @@ func TestAMetPrerequisiteDoesNotBlock(t *testing.T) {
 	page := get(t, serve(t, f), "/ui/cards/"+second.ID.String()).Body.String()
 	if strings.Contains(page, "cannot start until") {
 		t.Error("a card whose prerequisite is Done still reads as blocked")
+	}
+}
+
+// "$0.00 of $5.00" beside a card that has been running all night reads as a
+// cheap card rather than as a blind meter.
+func TestABudgetThatCannotBeEnforcedSaysSo(t *testing.T) {
+	budget := 5.0
+	c := aCard("expensive", card.InProgress)
+	c.MaxCostUSD = &budget
+	f := &fakeStore{cards: []*card.Card{c}, unpriced: 4}
+
+	page := get(t, serve(t, f), "/ui/cards/"+c.ID.String()).Body.String()
+	if !strings.Contains(page, "not being enforced") {
+		t.Error("a card with an unenforceable budget presents it as a real limit")
+	}
+}
+
+func TestAFullyPricedBudgetIsNotFlagged(t *testing.T) {
+	budget := 5.0
+	c := aCard("fine", card.InProgress)
+	c.MaxCostUSD = &budget
+	f := &fakeStore{cards: []*card.Card{c}, unpriced: 0}
+
+	page := get(t, serve(t, f), "/ui/cards/"+c.ID.String()).Body.String()
+	if strings.Contains(page, "not being enforced") {
+		t.Error("a fully priced card claims its budget is not enforced")
 	}
 }
