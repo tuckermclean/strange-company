@@ -1,11 +1,15 @@
 package policy
 
+import (
+	"testing"
+	"time"
+)
+
 // at is any instant: every rate card in this file is flat, so the schedule
 // cannot affect the result -- which TestARateCardWithNoScheduleIsFlat asserts
 // directly.
 var at = time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
 
-import "testing"
 
 // A run that reads 9728 cached tokens against 552 fresh ones is a real ratio
 // from this system. Charging cache reads at the full input rate would bill it

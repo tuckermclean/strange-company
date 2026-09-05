@@ -1,6 +1,9 @@
 package runner
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 type flatRate struct{ perMTok float64 }
 
