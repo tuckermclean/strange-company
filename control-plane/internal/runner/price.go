@@ -1,5 +1,7 @@
 package runner
 
+import "time"
+
 // Pricer turns a run's token usage into a dollar figure.
 //
 // Declared here rather than taken from internal/policy so this package stays
@@ -7,7 +9,7 @@ package runner
 // should not need to know where a rate card comes from. *policy.Pricing
 // satisfies it.
 type Pricer interface {
-	CostUSD(input, output, cachedInput, cacheWrite int) float64
+	CostUSD(input, output, cachedInput, cacheWrite int, start, end time.Time) float64
 }
 
 // Price fills in a run's cost when the harness did not report a usable one.
@@ -32,10 +34,15 @@ type Pricer interface {
 //
 // Nothing here invents a figure: with no tokens, or no rate card, CostUSD ends
 // up nil and the card keeps reporting as unpriced.
-func Price(result *CodingRunResult, p Pricer) {
+// finishedAt is when the run ended; the run is taken to have spanned
+// DurationMS before it. A provider that prices by time of day needs both:
+// pricing a run by "now" alone would put an off-peak run that finished a
+// minute into peak entirely on the wrong rate card.
+func Price(result *CodingRunResult, p Pricer, finishedAt time.Time) {
 	if result == nil {
 		return
 	}
+	startedAt := finishedAt.Add(-time.Duration(result.DurationMS) * time.Millisecond)
 
 	// A real, non-zero price from the harness is the provider's actual rate.
 	if result.CostUSD != nil && *result.CostUSD > 0 {
@@ -54,6 +61,7 @@ func Price(result *CodingRunResult, p Pricer) {
 		result.Usage.OutputTokens,
 		result.Usage.CachedInputTokens,
 		result.Usage.CacheCreationTokens,
+		startedAt, finishedAt,
 	)
 
 	// Zero arrives two ways and both mean "no rate card": none was

@@ -37,6 +37,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -115,6 +116,107 @@ type Pricing struct {
 	// providers charge a premium for it, some charge nothing; zero means
 	// "not charged separately", which is the common case.
 	CacheWritePerMTok float64 `yaml:"cacheWritePerMTok"`
+
+	// OffPeak is the rate card that applies outside PeakUTC, when a
+	// provider prices by time of day.
+	//
+	// DeepSeek halves every rate outside two short weekday windows, and
+	// those windows are about a fifth of the week -- so a flat rate card
+	// taken from the published (peak) table over-charges roughly four runs
+	// in five by a factor of two, and a budget set against it fires at half
+	// the spend the operator authorised. A flat table is not a conservative
+	// approximation here; it is the wrong number.
+	//
+	// Nested Pricing for the rates alone: an OffPeak carrying its own
+	// OffPeak is rejected at load rather than followed.
+	OffPeak *Pricing `yaml:"offPeak,omitempty"`
+
+	// PeakUTC are the windows during which the rates above apply. Outside
+	// them OffPeak applies. Empty means the rates are flat and OffPeak is
+	// meaningless.
+	PeakUTC []PeakWindow `yaml:"peakHoursUTC,omitempty"`
+}
+
+// PeakWindow is one recurring stretch of wall-clock time, in UTC.
+//
+// UTC only, deliberately. A provider publishes these in UTC, and a schedule
+// that silently followed the control plane's local zone would reprice every
+// run when a pod moved.
+type PeakWindow struct {
+	// Days are three-letter names (Mon..Sun). Empty means every day.
+	Days []string `yaml:"days"`
+	// From and To are "HH:MM", inclusive of From and exclusive of To.
+	From string `yaml:"from"`
+	To   string `yaml:"to"`
+}
+
+func parseHHMM(v string) (time.Duration, error) {
+	var h, m int
+	if _, err := fmt.Sscanf(strings.TrimSpace(v), "%d:%d", &h, &m); err != nil {
+		return 0, fmt.Errorf("policy: %q is not a HH:MM time: %w", v, err)
+	}
+	if h < 0 || h > 24 || m < 0 || m > 59 {
+		return 0, fmt.Errorf("policy: %q is not a valid HH:MM time", v)
+	}
+	return time.Duration(h)*time.Hour + time.Duration(m)*time.Minute, nil
+}
+
+var weekdayNames = map[string]time.Weekday{
+	"sun": time.Sunday, "mon": time.Monday, "tue": time.Tuesday,
+	"wed": time.Wednesday, "thu": time.Thursday, "fri": time.Friday,
+	"sat": time.Saturday,
+}
+
+// covers reports whether this window is in force at t (which must be UTC).
+func (w PeakWindow) covers(t time.Time) bool {
+	if len(w.Days) > 0 {
+		ok := false
+		for _, d := range w.Days {
+			if wd, found := weekdayNames[strings.ToLower(strings.TrimSpace(d))]; found && wd == t.Weekday() {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			return false
+		}
+	}
+	from, err := parseHHMM(w.From)
+	if err != nil {
+		return false
+	}
+	to, err := parseHHMM(w.To)
+	if err != nil {
+		return false
+	}
+	since := time.Duration(t.Hour())*time.Hour + time.Duration(t.Minute())*time.Minute
+	return since >= from && since < to
+}
+
+// rateFor picks the card in force for a run that ran between start and end.
+//
+// A run that touches peak at any point is priced entirely at peak. Runs here
+// last minutes and the windows are hours, so a run spanning a boundary is
+// rare; when one does, over-charging the off-peak remainder of a single short
+// run is the safe direction for a budget, and is a bounded, stated error
+// rather than a silent one.
+func (p *Pricing) rateFor(start, end time.Time) *Pricing {
+	if p.OffPeak == nil || len(p.PeakUTC) == 0 {
+		return p
+	}
+	if end.Before(start) {
+		start, end = end, start
+	}
+	// Sampled at a minute, which is the resolution the windows are written
+	// at: a window cannot begin or end between two adjacent samples.
+	for t := start.UTC().Truncate(time.Minute); !t.After(end.UTC()); t = t.Add(time.Minute) {
+		for _, w := range p.PeakUTC {
+			if w.covers(t) {
+				return p
+			}
+		}
+	}
+	return p.OffPeak
 }
 
 // CostUSD prices one run's usage.
@@ -122,10 +224,11 @@ type Pricing struct {
 // Reasoning tokens are deliberately not charged here: providers bill them as
 // output tokens and report them inside the output count, so adding them again
 // would double-charge the thinking.
-func (p *Pricing) CostUSD(input, output, cachedInput, cacheWrite int) float64 {
+func (p *Pricing) CostUSD(input, output, cachedInput, cacheWrite int, start, end time.Time) float64 {
 	if p == nil {
 		return 0
 	}
+	p = p.rateFor(start, end)
 	const perMillion = 1_000_000.0
 	return float64(input)*p.InputPerMTok/perMillion +
 		float64(output)*p.OutputPerMTok/perMillion +
@@ -363,6 +466,7 @@ func (p *Policy) Validate() error {
 		if _, ok := p.Providers[alias.Provider]; !ok {
 			problems = append(problems, fmt.Errorf("%w: alias %q names provider %q", ErrUnknownProvider, name, alias.Provider))
 		}
+		problems = append(problems, alias.Pricing.problems(name)...)
 	}
 
 	for phaseName, rungs := range p.Phases {
@@ -490,4 +594,49 @@ func (p *Policy) loadActions(raw []byte) error {
 	}
 	p.actions = &a
 	return nil
+}
+
+// problems reports what is wrong with a rate card, named by its alias.
+//
+// A misspelled day or an unparseable time would otherwise fail silently at
+// pricing time -- covers() returns false for anything it cannot read, so a
+// typo in a peak window would quietly bill every run at the off-peak rate and
+// halve the ledger. A rate card that cannot be trusted has to be refused at
+// load, where an operator is looking.
+func (p *Pricing) problems(alias string) []error {
+	if p == nil {
+		return nil
+	}
+	var out []error
+
+	if p.OffPeak != nil && len(p.PeakUTC) == 0 {
+		out = append(out, fmt.Errorf("alias %q: offPeak rates are set but peakHoursUTC is empty, so they would never apply", alias))
+	}
+	if len(p.PeakUTC) > 0 && p.OffPeak == nil {
+		out = append(out, fmt.Errorf("alias %q: peakHoursUTC is set but no offPeak rates are, so the schedule would change nothing", alias))
+	}
+	if p.OffPeak != nil && (p.OffPeak.OffPeak != nil || len(p.OffPeak.PeakUTC) > 0) {
+		out = append(out, fmt.Errorf("alias %q: offPeak carries its own schedule; only the outer rate card may have one", alias))
+	}
+
+	for i, w := range p.PeakUTC {
+		from, err := parseHHMM(w.From)
+		if err != nil {
+			out = append(out, fmt.Errorf("alias %q: peak window %d: from: %w", alias, i+1, err))
+		}
+		to, terr := parseHHMM(w.To)
+		if terr != nil {
+			out = append(out, fmt.Errorf("alias %q: peak window %d: to: %w", alias, i+1, terr))
+		}
+		if err == nil && terr == nil && to <= from {
+			out = append(out, fmt.Errorf("alias %q: peak window %d: %s-%s does not end after it starts (a window crossing midnight must be written as two)",
+				alias, i+1, w.From, w.To))
+		}
+		for _, d := range w.Days {
+			if _, ok := weekdayNames[strings.ToLower(strings.TrimSpace(d))]; !ok {
+				out = append(out, fmt.Errorf("alias %q: peak window %d: %q is not a day (use Mon..Sun)", alias, i+1, d))
+			}
+		}
+	}
+	return out
 }

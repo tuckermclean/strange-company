@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/tuckermclean/strange-company/control-plane/internal/card"
@@ -196,7 +197,7 @@ func (s *Step) record(ctx context.Context, c *card.Card, res *policy.Resolution,
 	// The harness prices its own run when it can. When it cannot -- opencode
 	// reports zero for any provider models.dev does not know -- the rate
 	// card from the alias does it, so §22's ledger stops reading zero.
-	runner.Price(result, res.Pricing)
+	runner.Price(result, res.Pricing, time.Now())
 
 	if _, err := s.attempts.RecordAttempt(ctx, store.AttemptRecord{
 		CardID: c.ID, RunID: runID, Phase: string(card.PhaseImplementation),
