@@ -4,7 +4,7 @@ import "testing"
 
 type flatRate struct{ perMTok float64 }
 
-func (f flatRate) CostUSD(in, out, cached, write int) float64 {
+func (f flatRate) CostUSD(in, out, cached, write int, _, _ time.Time) float64 {
 	return float64(in+out+cached+write) * f.perMTok / 1e6
 }
 
@@ -17,7 +17,7 @@ func TestAReportedZeroIsPricedFromTheRateCard(t *testing.T) {
 	r := &CodingRunResult{CostUSD: f64(0)}
 	r.Usage.InputTokens = 1_000_000
 
-	Price(r, flatRate{perMTok: 0.28})
+	Price(r, flatRate{perMTok: 0.28}, time.Now())
 
 	if r.CostUSD == nil || *r.CostUSD != 0.28 {
 		t.Errorf("cost = %v, want 0.28", r.CostUSD)
@@ -30,7 +30,7 @@ func TestAnUnreportedCostIsPricedFromTheRateCard(t *testing.T) {
 	r := &CodingRunResult{}
 	r.Usage.OutputTokens = 8287
 
-	Price(r, flatRate{perMTok: 1.0})
+	Price(r, flatRate{perMTok: 1.0}, time.Now())
 
 	if r.CostUSD == nil || *r.CostUSD == 0 {
 		t.Errorf("cost = %v, want the tokens priced", r.CostUSD)
@@ -44,7 +44,7 @@ func TestAHarnessThatReportsARealPriceIsBelieved(t *testing.T) {
 	r := &CodingRunResult{CostUSD: f64(1.23)}
 	r.Usage.InputTokens = 1_000_000
 
-	Price(r, flatRate{perMTok: 99.0})
+	Price(r, flatRate{perMTok: 99.0}, time.Now())
 
 	if *r.CostUSD != 1.23 {
 		t.Errorf("cost = %v, want the harness's own 1.23", *r.CostUSD)
@@ -56,7 +56,7 @@ func TestAHarnessThatReportsARealPriceIsBelieved(t *testing.T) {
 func TestARunThatReportedNoUsageStaysUnpriced(t *testing.T) {
 	r := &CodingRunResult{}
 
-	Price(r, flatRate{perMTok: 5.0})
+	Price(r, flatRate{perMTok: 5.0}, time.Now())
 
 	if r.CostUSD != nil {
 		t.Errorf("cost = %v, want nil so the card still reads as unpriced", *r.CostUSD)
@@ -68,7 +68,7 @@ func TestNoRateCardLeavesTheRunAlone(t *testing.T) {
 	r := &CodingRunResult{}
 	r.Usage.InputTokens = 100
 
-	Price(r, nil)
+	Price(r, nil, time.Now())
 
 	if r.CostUSD != nil {
 		t.Errorf("cost = %v, want nil", *r.CostUSD)
@@ -80,13 +80,13 @@ func TestNoRateCardLeavesTheRunAlone(t *testing.T) {
 // writes that zero into the ledger as though the run were free.
 type nilRates struct{ rates *struct{} }
 
-func (n nilRates) CostUSD(int, int, int, int) float64 { return 0 }
+func (n nilRates) CostUSD(int, int, int, int, time.Time, time.Time) float64 { return 0 }
 
 func TestATypedNilRateCardDoesNotRecordTheRunAsFree(t *testing.T) {
 	r := &CodingRunResult{CostUSD: f64(0)}
 	r.Usage.InputTokens = 5000
 
-	Price(r, nilRates{})
+	Price(r, nilRates{}, time.Now())
 
 	if r.CostUSD != nil {
 		t.Errorf("cost = %v; an unpriceable run must read as unknown, not as free", *r.CostUSD)
@@ -101,7 +101,7 @@ func TestAHarnessZeroThatCannotBePricedIsClearedNotKept(t *testing.T) {
 	r.Usage.InputTokens = 7699
 	r.Usage.OutputTokens = 164
 
-	Price(r, nil)
+	Price(r, nil, time.Now())
 
 	if r.CostUSD != nil {
 		t.Errorf("cost = %v, want nil so the run counts as unpriced", *r.CostUSD)

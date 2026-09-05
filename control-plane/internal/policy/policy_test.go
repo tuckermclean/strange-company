@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 // loadTestPolicy returns a Policy exercising the shapes the tests in this
@@ -358,4 +359,122 @@ func TestLoadDirLoadsTheShippedDefaultPolicy(t *testing.T) {
 	if _, err := p.Resolve("implementation", 8); !errors.Is(err, ErrLadderExhausted) {
 		t.Errorf("expected the shipped implementation ladder to exhaust at attempt 8, got %v", err)
 	}
+}
+
+// The published DeepSeek schedule, verbatim from
+// https://api-docs.deepseek.com/quick_start/pricing/ :
+// peak is 01:00-04:00 and 06:00-10:00 UTC Mon-Fri, off-peak is half.
+func deepseekV4Flash() *Pricing {
+	return &Pricing{
+		InputPerMTok: 0.44, CachedInputPerMTok: 0.014, OutputPerMTok: 1.32,
+		OffPeak: &Pricing{
+			InputPerMTok: 0.22, CachedInputPerMTok: 0.007, OutputPerMTok: 0.66,
+		},
+		PeakUTC: []PeakWindow{
+			{Days: []string{"Mon", "Tue", "Wed", "Thu", "Fri"}, From: "01:00", To: "04:00"},
+			{Days: []string{"Mon", "Tue", "Wed", "Thu", "Fri"}, From: "06:00", To: "10:00"},
+		},
+	}
+}
+
+// Peak is 35 hours of 168. A flat rate card taken from the published table
+// over-charges roughly four runs in five by a factor of two, which makes a
+// budget fire at half the spend the operator authorised.
+func TestTheSameRunCostsHalfAsMuchOffPeak(t *testing.T) {
+	p := deepseekV4Flash()
+
+	// Wednesday 02:00 UTC -- inside the first peak window.
+	peak := time.Date(2026, 9, 2, 2, 0, 0, 0, time.UTC)
+	// Wednesday 14:00 UTC -- outside both.
+	off := time.Date(2026, 9, 2, 14, 0, 0, 0, time.UTC)
+
+	atPeak := p.CostUSD(1_000_000, 1_000_000, 1_000_000, 0, peak, peak.Add(time.Minute))
+	atOff := p.CostUSD(1_000_000, 1_000_000, 1_000_000, 0, off, off.Add(time.Minute))
+
+	if want := 0.44 + 1.32 + 0.014; !closeEnough(atPeak, want) {
+		t.Errorf("peak = %v, want %v", atPeak, want)
+	}
+	if want := 0.22 + 0.66 + 0.007; !closeEnough(atOff, want) {
+		t.Errorf("off-peak = %v, want %v", atOff, want)
+	}
+}
+
+// Saturday is off-peak all day: the windows are Monday to Friday.
+func TestTheWeekendIsEntirelyOffPeak(t *testing.T) {
+	p := deepseekV4Flash()
+	sat := time.Date(2026, 9, 5, 2, 0, 0, 0, time.UTC)
+	if sat.Weekday() != time.Saturday {
+		t.Fatalf("fixture is a %s", sat.Weekday())
+	}
+	got := p.CostUSD(1_000_000, 0, 0, 0, sat, sat.Add(time.Minute))
+	if !closeEnough(got, 0.22) {
+		t.Errorf("Saturday 02:00 = %v, want the off-peak rate 0.22", got)
+	}
+}
+
+// The gap between the two windows is off-peak, which a naive "between the
+// first From and the last To" reading would get wrong.
+func TestTheGapBetweenTwoPeakWindowsIsOffPeak(t *testing.T) {
+	p := deepseekV4Flash()
+	gap := time.Date(2026, 9, 2, 5, 0, 0, 0, time.UTC) // 05:00, between 04:00 and 06:00
+	got := p.CostUSD(1_000_000, 0, 0, 0, gap, gap.Add(time.Minute))
+	if !closeEnough(got, 0.22) {
+		t.Errorf("05:00 UTC = %v, want off-peak", got)
+	}
+}
+
+// A run touching peak at any point is priced at peak. Over-charging the
+// off-peak remainder of one short run is the safe direction for a budget.
+func TestARunSpanningABoundaryIsPricedAtPeak(t *testing.T) {
+	p := deepseekV4Flash()
+	start := time.Date(2026, 9, 2, 3, 58, 0, 0, time.UTC) // peak until 04:00
+	end := start.Add(5 * time.Minute)                     // ends off-peak
+	got := p.CostUSD(1_000_000, 0, 0, 0, start, end)
+	if !closeEnough(got, 0.44) {
+		t.Errorf("boundary-spanning run = %v, want the peak rate 0.44", got)
+	}
+}
+
+// A rate card with no schedule keeps behaving exactly as it did.
+func TestARateCardWithNoScheduleIsFlat(t *testing.T) {
+	p := &Pricing{InputPerMTok: 1.0}
+	a := p.CostUSD(1_000_000, 0, 0, 0, time.Date(2026, 9, 2, 2, 0, 0, 0, time.UTC), time.Date(2026, 9, 2, 2, 1, 0, 0, time.UTC))
+	b := p.CostUSD(1_000_000, 0, 0, 0, time.Date(2026, 9, 2, 14, 0, 0, 0, time.UTC), time.Date(2026, 9, 2, 14, 1, 0, 0, time.UTC))
+	if !closeEnough(a, 1.0) || !closeEnough(b, 1.0) {
+		t.Errorf("flat card priced by time of day: %v vs %v", a, b)
+	}
+}
+
+// covers() cannot read a malformed window and returns false, which would
+// quietly bill every run off-peak and halve the ledger. Refuse at load.
+func TestAMalformedScheduleIsRefusedAtLoad(t *testing.T) {
+	for name, p := range map[string]*Pricing{
+		"bad day": {InputPerMTok: 1, OffPeak: &Pricing{InputPerMTok: 1},
+			PeakUTC: []PeakWindow{{Days: []string{"Munday"}, From: "01:00", To: "04:00"}}},
+		"bad time": {InputPerMTok: 1, OffPeak: &Pricing{InputPerMTok: 1},
+			PeakUTC: []PeakWindow{{From: "1am", To: "04:00"}}},
+		"backwards window": {InputPerMTok: 1, OffPeak: &Pricing{InputPerMTok: 1},
+			PeakUTC: []PeakWindow{{From: "22:00", To: "02:00"}}},
+		"schedule with no off-peak rates": {InputPerMTok: 1,
+			PeakUTC: []PeakWindow{{From: "01:00", To: "04:00"}}},
+		"off-peak rates with no schedule": {InputPerMTok: 1, OffPeak: &Pricing{InputPerMTok: 1}},
+		"nested schedule": {InputPerMTok: 1,
+			OffPeak: &Pricing{InputPerMTok: 1, PeakUTC: []PeakWindow{{From: "01:00", To: "02:00"}}},
+			PeakUTC: []PeakWindow{{From: "01:00", To: "04:00"}}},
+	} {
+		if got := p.problems("an-alias"); len(got) == 0 {
+			t.Errorf("%s: accepted a rate card that cannot price correctly", name)
+		}
+	}
+}
+
+func TestTheDeepSeekScheduleItselfIsAccepted(t *testing.T) {
+	if got := deepseekV4Flash().problems("implement-cheap"); len(got) != 0 {
+		t.Errorf("the published DeepSeek schedule was refused: %v", got)
+	}
+}
+
+func closeEnough(a, b float64) bool {
+	d := a - b
+	return d < 1e-9 && d > -1e-9
 }

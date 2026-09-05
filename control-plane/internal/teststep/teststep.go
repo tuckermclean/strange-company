@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/tuckermclean/strange-company/control-plane/internal/card"
@@ -160,7 +161,7 @@ func (s *Step) Do(ctx context.Context, c *card.Card, res *policy.Resolution) (wo
 	// Before the switch below: an infrastructure failure returns an error
 	// from here, and a run that cost money must be on the ledger whether or
 	// not it produced anything.
-	runner.Price(result, res.Pricing)
+	runner.Price(result, res.Pricing, time.Now())
 	if _, rerr := s.attempts.RecordAttempt(ctx, store.AttemptRecord{
 		CardID: c.ID, RunID: runID, Phase: string(card.PhaseTests),
 		ModelAlias: res.Alias, Provider: res.ProviderName,
