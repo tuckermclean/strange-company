@@ -24,12 +24,25 @@ So the ledger is turned on with a rate card, not an integration.
 
 ## The rates
 
-Per 1M tokens, USD, **peak**:
+Per 1M tokens, USD, read from the raw pricing page rather than a summary of it:
 
-| Model | Cache hit (input) | Cache miss (input) | Output |
-|---|---|---|---|
-| `deepseek-v4-flash` | 0.014 | 0.44 | 1.32 |
-| `deepseek-v4-pro`   | 0.044 | 1.32 | 3.96 |
+| | `deepseek-v4-flash` | `deepseek-v4-pro` |
+|---|---|---|
+| Input, cache hit — off-peak / peak | 0.007 / 0.014 | 0.022 / 0.044 |
+| Input, cache miss — off-peak / peak | 0.22 / 0.44 | 0.66 / 1.32 |
+| Output — off-peak / peak | 0.66 / 1.32 | 1.98 / 3.96 |
+
+> (1) Off-peak rates are half of the peak rates. Peak hours are 01:00 - 04:00
+> and 06:00 - 10:00 UTC, Monday through Friday (all other hours are off-peak).
+
+### Configure both tiers, never one flat rate
+
+Peak is 35 hours of 168. A flat card carrying the published (peak) rates
+over-charges roughly four runs in five by a factor of two, so a budget set
+against it fires at about half the spend that was authorised. That is not a
+conservative approximation; it is the wrong number, and this repo already
+holds that a budget enforced against a wrong number is worse than one
+enforced against an admittedly missing one.
 
 ```yaml
 aliases:
@@ -37,21 +50,47 @@ aliases:
     provider: deepseek-coding
     model: deepseek-v4-flash
     pricing:
-      inputPerMTok:       0.44   # cache miss
-      cachedInputPerMTok: 0.014  # cache hit
+      inputPerMTok:       0.44   # cache miss, peak
+      cachedInputPerMTok: 0.014  # cache hit, peak
       outputPerMTok:      1.32
       cacheWritePerMTok:  0      # DeepSeek does not charge separately
+      offPeak:
+        inputPerMTok:       0.22
+        cachedInputPerMTok: 0.007
+        outputPerMTok:      0.66
+        cacheWritePerMTok:  0
+      peakHoursUTC:
+        - {days: [Mon, Tue, Wed, Thu, Fri], from: "01:00", to: "04:00"}
+        - {days: [Mon, Tue, Wed, Thu, Fri], from: "06:00", to: "10:00"}
 ```
 
-### Use the peak rates
+A malformed schedule is refused at load: a misspelled day or an unreadable
+time would otherwise bill every run off-peak and halve the ledger silently,
+which is the failure this whole mechanism exists to avoid.
 
-DeepSeek halves every rate outside 01:00-04:00 and 06:00-10:00 UTC, Monday to
-Friday. `policy.Pricing` is a flat rate with no notion of time of day, so any
-figure configured here is wrong by a factor of two in one direction or the
-other. Peak over-estimates, which makes a budget stop early rather than late --
-the correct direction for a guard. The same reasoning covers the cache
-discount: if the harness does not surface DeepSeek's `prompt_cache_hit_tokens`
-as cached input, everything bills at the miss rate and errs the same safe way.
+### Why the cache split is safe to price
+
+`Pricing.CostUSD` charges `cachedInput` IN ADDITION TO `input`, which is only
+correct if the two are disjoint -- and DeepSeek's `prompt_tokens` includes its
+cache hits, so passing both through unchanged would double-charge every cached
+token. opencode does not pass them through unchanged:
+
+```ts
+input: safe(usage?.nonCachedInputTokens),
+cache: { read, write }
+```
+
+`input` is non-cached input. The fields are disjoint and the mapping is exact:
+`input` at the cache-miss rate, `cache.read` at the cache-hit rate.
+
+### The one approximation, stated
+
+A run that touches peak at any point is priced entirely at peak. Runs here last
+minutes and the windows last hours, so spanning a boundary is rare; when one
+does, the error is bounded by the off-peak remainder of a single short run and
+falls in the over-charging direction. Pricing it exactly would mean bucketing
+tokens per event by the tier in force when each arrived, which is not worth it
+for that.
 
 ## Price every alias the phases use, not just the coding ones
 
