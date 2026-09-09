@@ -44,11 +44,11 @@ func (s *Store) ListSpecsNeedingScreening(ctx context.Context, limit int) ([]Pen
 	// bookkeeping at write time. A NULL screened_sha256 (never screened) is
 	// pending by the same expression.
 	const q = `
-		SELECT card_id, content, encode(sha256(content::bytea), 'hex')
+		SELECT card_id, content, encode(sha256(convert_to(content, 'UTF8')), 'hex')
 		  FROM card_specs
 		 WHERE content <> ''
 		   AND (screened_sha256 IS NULL
-		        OR screened_sha256 IS DISTINCT FROM encode(sha256(content::bytea), 'hex'))
+		        OR screened_sha256 IS DISTINCT FROM encode(sha256(convert_to(content, 'UTF8')), 'hex'))
 		 ORDER BY updated_at
 		 LIMIT $1`
 
@@ -83,7 +83,7 @@ func (s *Store) RecordScreening(ctx context.Context, cardID uuid.UUID, contentSH
 		       screened_score  = $3,
 		       screened_at     = now()
 		 WHERE card_id = $1
-		   AND encode(sha256(content::bytea), 'hex') = $2`
+		   AND encode(sha256(convert_to(content, 'UTF8')), 'hex') = $2`
 
 	tag, err := s.pool.Exec(ctx, q, cardID, contentSHA256, score)
 	if err != nil {
@@ -125,7 +125,7 @@ func (s *Store) ListSpecsAwaitingConversation(ctx context.Context, limit int) ([
 		  FROM card_specs s
 		  JOIN cards c ON c.id = s.card_id
 		 WHERE s.screened_score >= $1
-		   AND s.screened_sha256 = encode(sha256(s.content::bytea), 'hex')
+		   AND s.screened_sha256 = encode(sha256(convert_to(s.content, 'UTF8')), 'hex')
 		   AND c.spec_session_id IS NULL
 		 ORDER BY s.screened_at
 		 LIMIT $2`

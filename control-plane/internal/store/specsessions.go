@@ -100,7 +100,7 @@ func (s *Store) ListUnapprovedWithTasks(ctx context.Context, limit int) ([]CardT
 		   AND c.vikunja_task_id IS NOT NULL
 		   AND s.content <> ''
 		   AND (s.approved_sha256 IS NULL
-		        OR s.approved_sha256 IS DISTINCT FROM encode(sha256(s.content::bytea), 'hex'))
+		        OR s.approved_sha256 IS DISTINCT FROM encode(sha256(convert_to(s.content, 'UTF8')), 'hex'))
 		 ORDER BY s.updated_at
 		 LIMIT $1`
 

@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"testing"
 
@@ -153,4 +155,83 @@ func TestRecordScreeningOnAMissingSpecIsNotFound(t *testing.T) {
 	if !errors.Is(err, ErrSpecNotFound) {
 		t.Fatalf("error = %v, want ErrSpecNotFound", err)
 	}
+}
+
+// `text::bytea` parses the text as a bytea LITERAL rather than encoding it.
+// In escape format a backslash begins an escape sequence, so a specification
+// containing one -- a fenced code block with \n, a regex, a Windows path --
+// makes the whole list query fail with 22P02, and promotion and screening are
+// both dead for every card on the board, not just that one.
+//
+// Reported on a fresh 0.22.0 install (#135). It looked schema-dependent
+// because it reproduced only after a clean-slate database; it is really
+// content-dependent, and the clean slate simply ingested a different first
+// issue.
+func TestASpecificationContainingABackslashDoesNotBreakTheBoard(t *testing.T) {
+	s := migrated(t)
+	ctx := context.Background()
+	id := seedBacklogCard(t, s)
+
+	// Every one of these is ordinary in a specification and every one of
+	// them is an invalid bytea literal.
+	for _, content := range []string{
+		"# Problem\n\nMatch `\\d+` in the input.",
+		"Use a path like C:\\Users\\agent\\thing.",
+		"The prefix \\x is not followed by hex here.",
+		"A trailing backslash \\",
+	} {
+		if err := s.PutSpec(ctx, id, content, "someone"); err != nil {
+			t.Fatalf("PutSpec(%q): %v", content, err)
+		}
+
+		if _, err := s.ListSpecsNeedingScreening(ctx, 10); err != nil {
+			t.Fatalf("ListSpecsNeedingScreening with content %q: %v", content, err)
+		}
+		if _, err := s.ListUnapprovedWithSpec(ctx, 10); err != nil {
+			t.Fatalf("ListUnapprovedWithSpec with content %q: %v", content, err)
+		}
+		if _, err := s.ListSpecsAwaitingConversation(ctx, 10); err != nil {
+			t.Fatalf("ListSpecsAwaitingConversation with content %q: %v", content, err)
+		}
+		if _, err := s.ListUnapprovedWithTasks(ctx, 10); err != nil {
+			t.Fatalf("ListUnapprovedWithTasks with content %q: %v", content, err)
+		}
+	}
+}
+
+// The hash must not change for content that already worked, or every
+// previously screened specification would come back around and cost a model
+// call. Escape-format bytea passes non-backslash bytes through unchanged, so
+// convert_to agrees with the old cast everywhere the old cast succeeded --
+// which is the whole argument that this fix is free.
+func TestTheContentHashIsUnchangedForContentThatAlreadyWorked(t *testing.T) {
+	s := migrated(t)
+	ctx := context.Background()
+	id := seedBacklogCard(t, s)
+
+	const content = "# Problem\n\nplain ASCII, and some UTF-8: café — ✓"
+	if err := s.PutSpec(ctx, id, content, "someone"); err != nil {
+		t.Fatalf("PutSpec: %v", err)
+	}
+
+	pending, err := s.ListSpecsNeedingScreening(ctx, 10)
+	if err != nil {
+		t.Fatalf("ListSpecsNeedingScreening: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("got %d pending, want 1", len(pending))
+	}
+
+	// sha256 of the UTF-8 bytes, which is what the old cast also produced
+	// for content with no backslashes.
+	want := sha256Hex(content)
+	if pending[0].ContentSHA256 != want {
+		t.Errorf("hash = %s, want %s -- previously screened specs would all be re-screened",
+			pending[0].ContentSHA256, want)
+	}
+}
+
+func sha256Hex(v string) string {
+	sum := sha256.Sum256([]byte(v))
+	return hex.EncodeToString(sum[:])
 }

@@ -144,9 +144,14 @@ func (s *Store) HasPermittedActions(ctx context.Context, cardID uuid.UUID) (bool
 
 // PermittedActions returns a card's allowlist as stored, or nil.
 func (s *Store) PermittedActions(ctx context.Context, cardID uuid.UUID) ([]byte, error) {
+	// Scanned as text, not cast to bytea. `text::bytea` parses the text as a
+	// bytea LITERAL rather than encoding it, so a backslash anywhere in the
+	// allowlist JSON -- a regex, an escaped quote, a Windows path in a glob --
+	// is read as an escape sequence and an invalid one fails the whole query
+	// with 22P02. pgx scans text into a []byte without any of that.
 	var raw []byte
 	err := s.pool.QueryRow(ctx,
-		`SELECT coalesce(permitted_actions::text, '')::bytea FROM cards WHERE id = $1`, cardID).Scan(&raw)
+		`SELECT coalesce(permitted_actions::text, '') FROM cards WHERE id = $1`, cardID).Scan(&raw)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrCardNotFound
@@ -173,7 +178,7 @@ func (s *Store) ListApprovedAwaitingPromotion(ctx context.Context, limit int) ([
 		  JOIN card_specs s ON s.card_id = c.id
 		 WHERE c.state = 'Backlog'
 		   AND s.approved_sha256 IS NOT NULL
-		   AND s.approved_sha256 = encode(sha256(s.content::bytea), 'hex')
+		   AND s.approved_sha256 = encode(sha256(convert_to(s.content, 'UTF8')), 'hex')
 		 ORDER BY s.approved_at
 		 LIMIT $1`
 
@@ -334,7 +339,7 @@ func (s *Store) ListUnapprovedWithSpec(ctx context.Context, limit int) ([]uuid.U
 		 WHERE c.state = 'Backlog'
 		   AND coalesce(s.content, '') <> ''
 		   AND (s.approved_sha256 IS NULL
-		        OR s.approved_sha256 <> encode(sha256(s.content::bytea), 'hex'))
+		        OR s.approved_sha256 <> encode(sha256(convert_to(s.content, 'UTF8')), 'hex'))
 		 ORDER BY c.created_at
 		 LIMIT $1`
 
