@@ -1,4 +1,0 @@
-hermes:
-  managed:
-    enabled: true
-    envs: {}

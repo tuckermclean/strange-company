@@ -1,3 +1,0 @@
-postgresql:
-  persistence:
-    size: 8

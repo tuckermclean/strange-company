@@ -1,4 +1,0 @@
-controlPlane:
-  enabled: true
-  image:
-    repository: ""
