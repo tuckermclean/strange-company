@@ -499,6 +499,7 @@ examples:
       substrates:
         lab-small: {nodes: 1, vcpu: 2, memory: 4Gi, disk: 20Gi, diskDevice: virtio-blk}
         lab-ha: {nodes: 3, vcpu: 2, memory: 4Gi, disk: 20Gi, diskDevice: scsi-hd-ssd}
+        lab-seed: {nodes: 1, vcpu: 4, memory: 8Gi, disk: 40Gi, diskDevice: virtio-blk}
   - apiVersion: strange.company/v1alpha1
     kind: ToolboxLock
     spec:

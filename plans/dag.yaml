@@ -16,7 +16,7 @@ nodes:
   - {id: F05, phase: 1, name: state-machine-lib, plans: ["21", "29"], deps: [F02]}
   - {id: F06, phase: 1, name: verifier-lib, plans: ["22"], deps: [F02, F04]}
   - {id: F07, phase: 1, name: worker-sdk-and-fake-harness, plans: ["27", "28"], deps: [F02]}
-  - {id: F08, phase: 1, name: bootstrap-orchestrator-core, plans: ["03", "06", "50"], deps: [F02, F03]}
+  - {id: F08, phase: 1, name: bootstrap-orchestrator-core, plans: ["06", "50"], deps: [F02, F03]}
   - {id: F09, phase: 1, name: providers-and-paid-guardrails, plans: ["03", "04", "05"], deps: [F08]}
   - {id: F10, phase: 1, name: node-baseline-and-k3s-roles, plans: ["07", "08", "48"], deps: [F03, F08, F09]}
   - {id: F11, phase: 1, name: gitops-tree-offline, plans: ["18"], deps: [F02]}
@@ -28,11 +28,11 @@ nodes:
   - {id: P03, phase: 2, name: configure-node-and-k3s, plans: ["05", "07", "08", "09", "36"], deps: [P02, F10]}
   - {id: P04, phase: 2, name: seed, plans: ["09", "10", "11", "12", "13", "16", "19", "36", "48", "51"], deps: [P03, F11, F12]}
   - {id: P05, phase: 2, name: forge-init, plans: ["16", "17"], deps: [P04]}
-  - {id: P06, phase: 2, name: control-transfer-and-mirror, plans: ["16", "17", "18", "19", "45"], deps: [P05]}
+  - {id: P06, phase: 2, name: control-transfer-and-mirror, plans: ["05", "16", "17", "18", "19", "45"], deps: [P05]}
   - {id: P07, phase: 2, name: authentik-sso-break-glass, plans: ["15", "16"], deps: [P06]}
   - {id: P08, phase: 2, name: woodpecker-trusted-ci, plans: ["20", "52"], deps: [P06]}
   - {id: P09, phase: 2, name: observability-and-notifications, plans: ["13", "15", "17", "38", "39", "40", "41", "42"], deps: [P06, P07, P08]}
-  - {id: P10, phase: 2, name: backups-and-restore-tests, plans: ["06", "11", "12", "13", "14", "15", "16", "17", "35", "42", "43", "44", "45", "48", "50"], deps: [P06, P09, P08]}
+  - {id: P10, phase: 2, name: backups-and-restore-tests, plans: ["06", "11", "12", "13", "14", "15", "16", "17", "35", "42", "43", "44", "45", "48"], deps: [P06, P09, P08]}
   - {id: P11, phase: 2, name: supply-chain, plans: ["17", "23", "43", "48", "52"], deps: [P08, P12]}
   - {id: P12, phase: 2, name: bootstrap-verify-control-transfer-complete, plans: ["06", "11", "16", "17", "19", "20", "34", "38", "39", "42", "45", "49", "50", "51", "52"], deps: [P07, P08, P09, P10]}
   # ---------------- PHASE 3 ----------------
@@ -54,7 +54,7 @@ nodes:
   - {id: H01, phase: 6, name: nodes-2-3-etcd-quorum, plans: ["05", "07", "47"], deps: [P12, R02]}
   - {id: H02, phase: 6, name: cnpg-3-longhorn-2, plans: ["11", "12", "13", "44", "47"], deps: [H01, C08]}
   - {id: H03, phase: 6, name: loki-tempo, plans: ["39", "40", "41", "42", "43"], deps: [H01, P09, R02]}
-  - {id: H04, phase: 6, name: ha-hardening-drills, plans: ["19", "38", "41", "42", "45", "47", "51"], deps: [H02, H03, R02]}
+  - {id: H04, phase: 6, name: ha-hardening-drills, plans: ["19", "23", "38", "41", "42", "44", "45", "47", "51"], deps: [H02, H03, R02]}
 milestones:
   - {id: BOOTSTRAP-DOD, node: P12, spec: "§130"}
   - {id: ORCHESTRATION-DOD, node: C10, spec: "§103, §106"}

@@ -31,6 +31,7 @@
 2. Send the link to the person over a separate channel. At first login the `sc-recovery` flow sets the password and forces MFA enrolment (plan 15 §9.2).
 3. The person logs in to `https://git.<d>` once; Forgejo auto-registers the account and maps teams from groups. Expected: `$FJ GET /orgs/strange-company/teams/<team>/members` (`$FJ` = `./bootstrap exec -- sc-bootstrap forge api`) lists the user.
 4. If the person needs Git over HTTPS, they create their own Forgejo PAT; PATs keep working while Authentik is down.
+5. **Runner admin credential (operators only, CD-30):** `access join … --runner-admin` generates the per-operator `SC-RUNNER-ADMIN` credential locally, shows it **once** to the person, and opens a PR that adds only its key id and hash to `gitops/clusters/<c>/secrets/strange-company/runner-admin-credentials.sops.yaml`. After the PR merges, verify with the person's credential: `GET /v1/admin/whoami` (through the Runner admin port-forward, plan 26) returns their operator identity and key id. The identity comes from the credential; no actor header is sent.
 
 ### §Leave
 1. `./bootstrap exec -- sc-bootstrap access leave <user>`. It performs, in order, and reports each result:
@@ -39,6 +40,7 @@
    - Grafana: delete the user (`DELETE /api/admin/users/<id>`); this also ends Grafana sessions.
    - Hermes: invalidate the user's dashboard sessions (plan 24 admin endpoint).
    - Woodpecker: delete the user's token and the user (`DELETE /api/users/<login>`, plan 20), after confirming no repository is activated with that user (activations belong to `sc-woodpecker`).
+   - Runner admin credential (CD-30), first and immediately: `POST /v1/admin/credentials/{kid}:revoke` for each of the person's key ids (expected: a later `GET /v1/admin/whoami` with that credential returns 401); then a PR deletes the hash entries from `runner-admin-credentials.sops.yaml`.
 2. Expected within 5 min (15-AC-33): the user's former Forgejo PAT returns 401; a pre-existing Forgejo session cookie is redirected to login (verify Forgejo behavior); an Authentik login attempt is denied.
 3. Reassign anything the person owned: open issues and PRs (Forgejo), Grafana dashboards they created manually (dashboards in Git are unaffected).
 
@@ -48,13 +50,14 @@
 3. The person logs in; the MFA stage forces enrolment of a new device. Expected: `GET /api/v3/authenticators/admin/all/?user=<pk>` lists exactly the new device.
 
 ### §Lost device
-1. `./bootstrap exec -- sc-bootstrap access revoke-sessions <user> --all`: Authentik sessions, tokens and MFA devices; Forgejo PATs, OAuth2 grants and sessions; Grafana and Hermes sessions; Woodpecker token. The account itself stays active.
+1. `./bootstrap exec -- sc-bootstrap access revoke-sessions <user> --all`: Authentik sessions, tokens and MFA devices; Forgejo PATs, OAuth2 grants and sessions; Grafana and Hermes sessions; Woodpecker token; the person's Runner admin credentials (`:revoke`, CD-30; re-issue with `access join --reactivate --runner-admin`). The account itself stays active.
 2. Continue with §Lost MFA device step 3 (re-enrolment) and ask the person to rotate their password through `sc-recovery` (a new recovery link from `access join --resend <user>`).
 3. If the device held operator material (kubeconfig, `bootstrap.env`, bundle copy): follow `credential-compromise.md#operator-laptop` (plan 35) and `break-glass-access.md` §Cluster step 5 to re-issue the operator certificate.
 
 ## Verification
 - §Join: the person logs in to Forgejo, Grafana and (if `sc-engineers`/`sc-admins`) Hermes with MFA; group and team membership match the role.
-- §Leave: the three checks of §Leave step 2 pass; `GET /api/v3/core/users/?username=<u>` shows `is_active: false`.
+- §Join: `GET /v1/admin/whoami` returns the operator identity for each new Runner admin credential.
+- §Leave: the three checks of §Leave step 2 pass, the revoked Runner admin key ids return 401; `GET /api/v3/core/users/?username=<u>` shows `is_active: false`.
 - §Lost MFA device / §Lost device: the old device no longer completes a login (no authenticator listed); old PATs return 401.
 
 ## Rollback / abort

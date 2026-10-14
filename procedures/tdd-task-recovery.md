@@ -4,7 +4,7 @@
 **SPEC references:** §50–§56, §74, §97, §106, §113 ("TDD pipeline recovery")
 **Severity / urgency:** degraded (single task) to outage (verification machinery down for all tasks)
 **Expected duration:** 10–30 min per task; 1–2 h for a CI-wide failure
-**Requires break-glass:** no for the Forgejo `/sc` path; cluster kubeconfig and `SC-RUNNER-ADMIN` (recovery bundle) only for the admin-API and evidence-inspection steps
+**Requires break-glass:** no for the Forgejo `/sc` path; cluster kubeconfig and `SC-RUNNER-ADMIN` (your per-operator `scadm_<kid>` credential; the break-glass credential from the recovery bundle only as fallback) only for the admin-API and evidence-inspection steps
 
 ## When to use
 
@@ -19,10 +19,10 @@ Not for: tasks stuck without an alert reason or invariant violations (`stuck-tas
 - A Forgejo account in team `Owners` or `engineers` (plan 29 §7.3) — for `/sc` commands on the task's tracking issue or PR.
 - For inspection and admin steps: toolbox shell `./bootstrap shell`, then `sc-env`. Then:
   ```sh
-  read -rs SC_RUNNER_ADMIN; export SC_RUNNER_ADMIN; export SC_ACTOR="human:<you>"
+  read -rs SC_RUNNER_ADMIN; export SC_RUNNER_ADMIN   # your per-operator credential scadm_<kid>.<secret> (CD-30); the break-glass credential only if yours is unavailable
   kubectl -n strange-company port-forward deploy/agent-runner 18080:8080 >/tmp/pf-runner.log 2>&1 &
   RUNNER=http://127.0.0.1:18080
-  AUTH=(-H "Authorization: Bearer ${SC_RUNNER_ADMIN}" -H "X-SC-Actor: ${SC_ACTOR}")
+  AUTH=(-H "Authorization: Bearer ${SC_RUNNER_ADMIN}" -H "X-SC-Reason: <incident or task id and why>")   # no X-SC-Actor: identity comes from the credential (CD-30); a request carrying it gets 400
   T=sc-<n>     # the task
   psql_ro() { kubectl -n strange-company exec -i "$(kubectl -n strange-company get pod -l cnpg.io/cluster=sc-pg,role=primary -o name)" -c postgres -- psql -d strange_company -At -c "$1"; }   # read-only queries only
   ```
@@ -121,7 +121,7 @@ Not for: tasks stuck without an alert reason or invariant violations (`stuck-tas
 
 ## Verification
 
-- `curl -fsS "${AUTH[@]}" $RUNNER/v1/tasks/$T | jq -r .state` shows the intended state, and the last transition's actor is `human:<you>` with the command's transition id.
+- `curl -fsS "${AUTH[@]}" $RUNNER/v1/tasks/$T | jq -r .state` shows the intended state, and the last transition's actor is `human:<your operator identity>` with the command's transition id.
 - `sum(sc_needs_human)` decreased by one; `SCTaskNeedsHuman{subject="<task>"}` resolved in Alertmanager within 10 min.
 - For §A: `sum(increase(sc_verification_runs_total{outcome=~"infra_error|timeout|evidence_rejected"}[30m])) == 0` after the repair.
 

@@ -81,6 +81,7 @@ Derived requirements:
 | 26 / 28 | Runner verifies harness signatures before dispatch using ConfigMap `sc-cosign-trusted-keys` and registry pull credential `sc-registry-pull` in `strange-company`; plan 28's `signature.keyRef` names a key id of `trusted-keys.yaml`. |
 | 54 | Chart values take image digests from `versions/internal-images.lock.yaml`; `imagePullSecrets: [sc-registry-pull]`. |
 | 01 / 02 | Lock file kinds and `make locks-check`; toolbox/ci images built from `toolbox/Containerfile`; `cosign`, `syft`, `trivy`, `buildah` versions pinned in `toolbox/tools.lock.yaml` (`sc-release` image embeds cosign/syft/trivy libraries or binaries at the same versions). |
+| 45 / 14 / 43 / 44 (CD-33) | Plan 45 §9.4 defines capsule contents and `--from-capsule`; plan 14 provisions `capsule/` under `<prefix>-recovery` with the `capsule-writer` policy; plan 43 never deletes capsules younger than 35 days or the one `LATEST.json` names; plan 44 runs `rt-bootstrap-capsule`. |
 | 55 | Promotion PRs and Renovate PRs are "non-task PRs": they need the Woodpecker `ci` status, one human approval, and no TDD provenance (plan 55 defines the non-task merge path). |
 
 ## 6. Owned state
@@ -203,6 +204,8 @@ Resolution steps: (1) provenance from `security/attestations/` at `main` (or the
 | Class | Use | Delivery |
 |---|---|---|
 | `SC-RELEASE-SIGNING` | sign/attest | Woodpecker secrets `sc_cosign_key`, `sc_cosign_password` (events `[tag]`; image filter `sc-release`), source of truth `secrets/ci/<cluster>/release-signing.sops.yaml` (plan 35 tier 1b) |
+| `SC-RELEASE-SIGNING` (capsule copy) | sign `capsule.json` (§14.10) | `sc_capsule_cosign_key`, `sc_capsule_cosign_password` (events `[tag, cron]`; `sc-release`; cron `capsule-refresh` on `main` only) |
+| `SC-OBJECT-STORAGE/capsule-writer` | upload capsule objects with retention, no delete (§14.10) | `sc_capsule_writer` (events `[tag, cron]`; `sc-release`), source `secrets/ci/<cluster>/s3-capsule-writer.sops.yaml` |
 | `SC-REGISTRY-PUSH` | push to Forgejo registry | `sc_registry_push_token` (events `[tag]`; `sc-release`) |
 | `SC-FORGEJO-BOT-TOKENS/sc-release` | self-check reads, `promote/*` branch push, PR creation | `sc_release_pr_token` (events `[tag]`; `sc-release`) |
 | `SC-GHCR-PUSH` | publish toolbox/ci to GHCR | `sc_ghcr_push_token` (events `[tag]`; `sc-release`) |
@@ -233,7 +236,7 @@ Resolution steps: (1) provenance from `security/attestations/` at `main` (or the
 
 - **Build lane (`ci-build`):** PSA `baseline` (ADR-0501); admission per plan 37 (`sc-ci-build-pod`: images only clone/buildah/`sc-release`/`provider-contract`; root only for buildah with capabilities ⊆ {CHOWN, DAC_OVERRIDE, FOWNER, FSETID, KILL, SETGID, SETUID, SETFCAP, SYS_CHROOT}; no privileged, no host namespaces/paths; seccomp RuntimeDefault; `hostUsers: false` once 23-AC-6 passes). ServiceAccount `default` without token; RBAC none. Reachable only by protected-mode workflows (ADR-0301).
 - **Credentials:** release credentials exist only as Woodpecker secrets (`woodpecker-pg`) and tier-1b SOPS files; only the `sc-release` plugin step receives them; the build step never does (23-R-3).
-- **No deployment authority:** neither lane has a kubeconfig, a Flux credential or write access to `main`; `make lint-ci` fails if a `.woodpecker/*.yaml` references `kubectl`, `flux`, `helm upgrade`, a kubeconfig or `SC-BOOTSTRAP`/`SC-K3S` material.
+- **No deployment authority:** neither lane has a kubeconfig, a Flux credential or write access to `main`; `make lint-ci` fails if a `.woodpecker/*.yaml` references `kubectl`, `flux`, `helm upgrade`, a kubeconfig, or `SC-K3S-ADMIN-KUBECONFIG` / `SC-K3S-TOKEN` material.
 - **Registry:** private (org `strange-company` is private, plan 16). Push only `sc-release`; pull with `sc-registry-reader` (read-only). The registry is reached for push over `http://forgejo-http.forgejo.svc:3000` (no Cloudflare body limits) and for pull by kubelets at `git.<domain>`, which every node resolves through a managed `/etc/hosts` entry to the pinned Traefik ClusterIP `10.43.0.20` (CD-21, plans 08/09), so image pulls never leave the cluster and survive a Cloudflare outage (23-AC-22).
 - **Verification trust root:** `security/cosign/trusted-keys.yaml` at the PR base revision (promotion) or at the deployed revision (Runner, checks). A PR can never add a key and use it in the same PR.
 - **Bootstrap trust (P08 → P11, CD-19):** P11 runs **after** `CONTROL TRANSFER COMPLETE` (it needs human-merged PRs). Until then `sc-ci-config`, the toolbox/ci images and the first `sc-release` image come from GHCR images built by the interim lane (ADR-0018) and pinned by digest in reviewed Git. The first P11 release rebuilds every internal image in the trusted lane; from then on `sc-release` is used at the digest produced by the previous trusted release (the plugin image never signs itself in the same run).
@@ -329,6 +332,14 @@ Images that a fresh installation runs **before** its own P11 (toolbox, ci, `sc-c
 ```
 
 `<upstream-owner>` is the GitHub owner whose GHCR namespace the pinned digests name (an operator who republishes from a fork changes it by PR). `sc-release verify-running --mode bootstrap` and V-26 accept only this identity or the installation's own key; verification needs network access to the public Sigstore trust root (TUF) and Rekor (verify the cosign flags for the pinned version; offline bundles may replace Rekor lookups, 23-AC-23).
+
+### 14.10 Bootstrap capsule workflow (CD-33; plan 45 §9.4; implemented at H04)
+
+`.woodpecker/capsule.yaml`, protected mode, `labels: {sc-lane: build}`:
+- **Triggers:** `tag` (every release, after the release workflow's `gate` passed for the same commit) and `cron` `capsule-refresh` (daily, branch `main`, created by a Woodpecker admin), which builds only when the sha256 of any capsule-relevant lock file (`toolbox/image.lock`, `versions/k3s.lock.yaml`, `versions/charts.lock.yaml`, `versions/images.lock.yaml`, `.terraform.lock.hcl` files, `infra/ansible/requirements.lock.yml`) differs from `capsule/LATEST.json`'s capsule, or the newest capsule is older than 25 days (so refresh lands within 24 h of an upgrade merge and at least every 30 days).
+- **Steps** (sequential, one artifact at a time to fit the 10Gi workspace, CD-06): `collect` (no credentials: pulls each pinned artifact through the build egress listener, verifies upstream checksums/signatures where published, writes it to the workspace and streams it out in `publish` before fetching the next large one) → `publish` (`sc-release` plugin, action `capsule`: self-check, upload each object with `SC-OBJECT-STORAGE/capsule-writer` and an explicit 35-day Object Lock retention, then `capsule.json` (digest manifest: path, size, sha256 of every file; image digests; chart versions/digests; the release commit; lock-file sha256s), then `cosign sign-blob --bundle capsule.json.sig` with `SC-RELEASE-SIGNING`, then `LATEST.json` last with `If-Match` on the previous ETag).
+- **Credentials:** Woodpecker secrets `sc_capsule_writer`, `sc_capsule_cosign_key`, `sc_capsule_cosign_password` (events `[tag, cron]`, image filter `sc-release`); the self-check for `cron` requires event `cron`, cron name `capsule-refresh`, branch `main` (protected) and the commit equal to the `main` head. This is the only use of the signing key outside tag releases, and it signs only the capsule manifest (no image).
+- **Verification key:** the recovery bundle carries a copy of `security/cosign/trusted-keys.yaml` (`public_files`, plan 35 §14.4), so `./bootstrap recover --from-capsule` verifies `capsule.json.sig` without GitHub.
 
 ## 15. Failure modes
 
@@ -427,6 +438,10 @@ Metrics: KSM CronJob series; release summary attestation per image (`https://str
 - [ ] **23-AC-22** (CD-21) With `cloudflared` scaled to 0, deleting the Runner pod (cold image cache on that node: `crictl rmi` of the Runner image first) brings it back Ready; the node pulls from `git.<domain>` via `10.43.0.20`.
 - [ ] **23-AC-19** Workspace budget (CD-06): during the `toolbox` build of the first trusted release, the peak `du -sx /woodpecker` (sampled every 10 s by the build step and printed as a final `workspace-peak-bytes=<n>` line in the step log, which `publish` copies into the release summary attestation) is ≤ 9 GiB, and the workflow's PVC request is ≤ 10Gi.
 - [ ] **23-AC-18** SBOM content: the SPDX SBOM of `agent-runner` lists the main module with version equal to the release commit and every module of `go list -m all` used by `src/cmd/agent-runner` (set comparison in the test).
+
+### GATE-H04 (contributed; CD-33)
+
+- [ ] **23-AC-24** After a release tag, `s3://<prefix>-recovery/<cluster>/capsule/LATEST.json` names a capsule whose `capsule.json` verifies with `cosign verify-blob --key security/cosign/<active>.pub --bundle capsule.json.sig` using the key copy from the unlocked recovery bundle; every listed object has Object Lock retention ≥ 35 days; a `DeleteObject` with `capsule-writer` is denied; merging a PR that changes `versions/k3s.lock.yaml` produces a new capsule within 24 h (cron `capsule-refresh`), and plan 44's `rt-bootstrap-capsule` passes.
 
 ## 24. Explicit non-goals
 

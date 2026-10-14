@@ -87,7 +87,40 @@ properties:
       sourceKind:
         description: Where the source tree came from (`github-black-start.md`).
         type: string
-        enum: [github, repo-bundle, operator-clone]
+        enum: [github, repo-bundle, operator-clone, capsule]
+      capsule:
+        description: Bootstrap capsule used as the source (`sourceKind` `capsule`, plan 45 §9.4, CD-33).
+        type: object
+        additionalProperties: false
+        required: [id, manifestSha256]
+        properties:
+          id:
+            type: string
+            pattern: "^[0-9]{12}-[a-z0-9][a-z0-9.-]{0,63}$"
+          manifestSha256:
+            description: sha256 of the verified `capsule.json`.
+            type: string
+            pattern: "^[0-9a-f]{64}$"
+      rto:
+        description: |
+          Measured RTOs (CD-32), seconds from `decidedAt`. Absent in the
+          recovery commit; the finalize PR fills it. SR-2 (Runner dispatching)
+          happens after the run's last Git write and is recorded only in the
+          run report and the drill evidence (plan 45 §14.3).
+        type: object
+        additionalProperties: false
+        required: [dataAvailableAt, dataAvailabilitySeconds, serviceRestoredAt, serviceRestorationSeconds]
+        properties:
+          dataAvailableAt:
+            description: All four databases Ready and important volumes restored (plan 45 §14.2 step 9 probe); data-availability RTO end (SPEC §108 column).
+            type: string
+            format: date-time
+          dataAvailabilitySeconds: {type: integer, minimum: 0}
+          serviceRestoredAt:
+            description: SR-1 end, Forgejo serving `main` and Flux reconciling from Forgejo (step 8 probe).
+            type: string
+            format: date-time
+          serviceRestorationSeconds: {type: integer, minimum: 0}
       oldInstallation:
         type: string
         enum: [destroyed, unknown]
@@ -140,6 +173,11 @@ properties:
       - if: {properties: {mode: {const: recovery}}}
         then:
           not: {required: [drillSource]}
+      - if: {required: [rto]}
+        then: {required: [decidedAt]}
+      - if: {properties: {sourceKind: {const: capsule}}, required: [sourceKind]}
+        then: {required: [capsule]}
+        else: {not: {required: [capsule]}}
 $defs:
   FenceOutcome:
     description: "`rotated` (credential replaced and the old one verified rejected), `skipped-destroyed` (operator attested destruction), `kept` (deliberately not rotated, reason in the recovery report), `not-applicable` (drill, or e.g. DNS records in tunnel mode)."
@@ -221,6 +259,30 @@ examples:
         forgejo-data: {restored: true, backupUrl: "s3://sc-prod-longhorn-backups@gra/?backup=backup-9f8e7d6c&volume=forgejo-data", backupCreatedAt: "2026-10-14T03:30:12Z"}
         hermes-data: {restored: true, backupUrl: "s3://sc-prod-longhorn-backups@gra/?backup=backup-5a4b3c2d&volume=hermes-data", backupCreatedAt: "2026-10-14T03:31:40Z"}
       emergencyStop: {level: all, source: git, file: policy/budgets.yaml}
+  - apiVersion: strange.company/v1alpha1
+    kind: RecoveryRecord
+    metadata: {name: prod-recovery-202611020600}
+    spec:
+      runId: run-20261102-0600-e5f6
+      mode: recovery
+      decidedAt: "2026-11-02T05:30:00Z"
+      startedAt: "2026-11-02T05:45:00Z"
+      sourceCommit: 4bf92f3577b34da6a3ce929d0e0e47364bf92f35
+      sourceKind: capsule
+      capsule: {id: 202610300412-v0.23.0, manifestSha256: 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08}
+      githubTrust: {anchorRef: 4bf92f3577b34da6a3ce929d0e0e47364bf92f35, extraCommitsAccepted: 0}
+      oldInstallation: destroyed
+      fencing: {objectStorage: skipped-destroyed, githubMirror: skipped-destroyed, tunnel: skipped-destroyed}
+      cnpg:
+        forgejo-pg: {sourceGeneration: 4, generation: 5, target: latest}
+        authentik-pg: {sourceGeneration: 4, generation: 5, target: latest}
+        woodpecker-pg: {sourceGeneration: 4, generation: 5, target: latest}
+        sc-pg: {sourceGeneration: 4, generation: 5, target: latest}
+      longhorn:
+        forgejo-data: {restored: true, backupUrl: "s3://sc-prod-longhorn-backups@gra/?backup=backup-77aa88bb&volume=forgejo-data", backupCreatedAt: "2026-11-02T03:30:10Z"}
+        hermes-data: {restored: false}
+      emergencyStop: {level: workers, source: git, file: policy/budgets.yaml}
+      rto: {dataAvailableAt: "2026-11-02T08:41:00Z", dataAvailabilitySeconds: 11460, serviceRestoredAt: "2026-11-02T08:12:00Z", serviceRestorationSeconds: 9720}
 x-invalid-examples:
   - reason: drill record without drillSource and with only a workers-level stop
     value:
@@ -334,3 +396,49 @@ x-invalid-examples:
           forgejo-data: {restored: false}
           hermes-data: {restored: false}
         emergencyStop: {level: workers, source: git, file: policy/budgets.yaml}
+  - reason: capsule source without the capsule reference (CD-33)
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: RecoveryRecord
+      metadata: {name: prod-recovery-202611020600}
+      spec:
+        runId: run-20261102-0600-e5f6
+        mode: recovery
+        decidedAt: "2026-11-02T05:30:00Z"
+        startedAt: "2026-11-02T05:45:00Z"
+        sourceCommit: 4bf92f3577b34da6a3ce929d0e0e47364bf92f35
+        sourceKind: capsule
+        oldInstallation: destroyed
+        fencing: {objectStorage: skipped-destroyed, githubMirror: skipped-destroyed, tunnel: skipped-destroyed}
+        cnpg:
+          forgejo-pg: {sourceGeneration: 4, generation: 5, target: latest}
+          authentik-pg: {sourceGeneration: 4, generation: 5, target: latest}
+          woodpecker-pg: {sourceGeneration: 4, generation: 5, target: latest}
+          sc-pg: {sourceGeneration: 4, generation: 5, target: latest}
+        longhorn:
+          forgejo-data: {restored: false}
+          hermes-data: {restored: false}
+        emergencyStop: {level: workers, source: git, file: policy/budgets.yaml}
+  - reason: measured RTOs without decidedAt, the clock start (CD-32)
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: RecoveryRecord
+      metadata: {name: prod-recovery-202611020600}
+      spec:
+        runId: run-20261102-0600-e5f6
+        mode: recovery
+        startedAt: "2026-11-02T05:45:00Z"
+        sourceCommit: 4bf92f3577b34da6a3ce929d0e0e47364bf92f35
+        sourceKind: github
+        oldInstallation: destroyed
+        fencing: {objectStorage: skipped-destroyed, githubMirror: skipped-destroyed, tunnel: skipped-destroyed}
+        cnpg:
+          forgejo-pg: {sourceGeneration: 4, generation: 5, target: latest}
+          authentik-pg: {sourceGeneration: 4, generation: 5, target: latest}
+          woodpecker-pg: {sourceGeneration: 4, generation: 5, target: latest}
+          sc-pg: {sourceGeneration: 4, generation: 5, target: latest}
+        longhorn:
+          forgejo-data: {restored: false}
+          hermes-data: {restored: false}
+        emergencyStop: {level: workers, source: git, file: policy/budgets.yaml}
+        rto: {dataAvailableAt: "2026-11-02T08:41:00Z", dataAvailabilitySeconds: 11460, serviceRestoredAt: "2026-11-02T08:12:00Z", serviceRestorationSeconds: 9720}

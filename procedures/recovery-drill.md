@@ -3,7 +3,7 @@
 **Owning plan:** plans/45-recovery.md (§20.6–§20.8)
 **SPEC references:** §22 (break-glass periodically tested), §109 (a backup never restored is unproven), §111, §112, §113 (procedure added by Stage 0)
 **Severity / urgency:** routine (scheduled). `SCRecoveryDrillOverdue` makes it due; `SCHADrillOverdue` covers plan 47's HA drills.
-**Expected duration:** RD2 ≈ 1 h, no paid infrastructure. RD3 ≈ 5–6 h including teardown; one or three small VPS for a few hours.
+**Expected duration:** RD2 ≈ 1 h, no paid infrastructure. RD3 ≈ 5–6 h including teardown (the drill measures both RTO kinds of CD-32); one or three small VPS for a few hours.
 **Requires break-glass:** RD2 yes — the break-glass drill part logs in with each break-glass credential (plan 15 §14.4.5), which pages `SCBreakGlassUsed` by design. RD3 no.
 
 Drill IDs: `RD1` (automated restore tests, no procedure; failures go to `restore-test-failure.md`), `RD2`, `RD3` (this procedure). Plan 47's HA drills are `HA1–HA8`.
@@ -58,14 +58,14 @@ Drill IDs: `RD1` (automated restore tests, no procedure; failures go to `restore
    - a sample of 3 project repositories cloned from the drill Forgejo (port-forward) at their bundle heads.
 4. Run `--step forge-reconnect` and `--step finalize` in drill mode: the finalize PR is opened in the drill Forgejo; mirror verification is skipped (`expectMirror` stays false in drill mode) but the forced restore tests run against the drill buckets. **Expected:** the drill report ends with `CONTROL TRANSFER COMPLETE (RECOVERY)`.
 5. **Isolation checks:** the source's `pg-backups/<cluster>/` contains no object written after the drill start (`aws s3api list-objects-v2 … --query "Contents[?LastModified>='<drill start>'].Key"` lists only the source's own WAL, written by the source cluster); GitHub refs unchanged by the drill; the source's tunnel still has its connectors; no request from the drill reached the source Forgejo (drill Forgejo access log only).
-6. Evidence: `./bootstrap exec -- sc-bootstrap drill record --type blackstart-drill --from-journal` writes `rt-blackstart-drill/<ts>.json` with `outcome`, `measurements.step_durations`, `measurements.per_subject.<cluster>.rpo_observed_seconds`, `measurements.per_subject.<volume>.restore_duration_seconds`, and the time from `decidedAt` to `RECOVERY VERIFIED — MIRROR PENDING`.
+6. Evidence: `./bootstrap exec -- sc-bootstrap drill record --type blackstart-drill --from-journal` writes `rt-blackstart-drill/<ts>.json` with `outcome`, `measurements.step_durations`, `measurements.per_subject.<cluster>.rpo_observed_seconds`, `measurements.per_subject.<volume>.restore_duration_seconds`, and the RTO measurements from `decidedAt`: `measurements.rto_data_availability_seconds` (end of restore), `measurements.rto_sr1_seconds` (Forgejo serving `main`, Flux reconciling) and `measurements.rto_sr2_seconds` (the drill finalize step's `resume-ready`; the emergency stop stays `all` in a drill).
 7. Teardown: `./bootstrap destroy --env-file bootstrap.drill.env` on the drill installation (plan 49; its report must say `COMPUTE DESTROYED — DURABLE RECOVERY DATA RETAINED`), then remove the drill's own buckets, state, journal, tunnel and `drill.<domain>` DNS records per `safe-destruction.md` §Drill (plan 49). Never run destroy with the source's `bootstrap.env`.
 8. At H04 additionally run the plan 45 §20.8 list (HA drills with plan 47) and record them with `sc-bootstrap drill record --type ha-drill`.
 
 ## Verification
 
 - RD2: evidence object exists with `outcome: passed`; new attestation present; `rt-drill-freshness` Job succeeded after the drill.
-- RD3: evidence object exists; time from `decidedAt` to `RECOVERY VERIFIED — MIRROR PENDING` ≤ 4 h; every observed RPO ≤ 900 s; isolation checks all true; drill installation destroyed (provider console shows no drill instances).
+- RD3: evidence object exists with `outcome: passed`; data-availability RTO ≤ 4 h, SR-1 ≤ 4 h and SR-2 ≤ 6 h (plan 45 §7.1, CD-32; any miss makes the drill `failed`); every observed RPO ≤ 900 s; isolation checks all true; drill installation destroyed (provider console shows no drill instances).
 
 ## Rollback / abort
 
@@ -79,5 +79,6 @@ The evidence objects above (automatic), plus a short Forgejo issue (`drill` labe
 ## Follow-ups
 
 - Any failed check becomes an issue against the owning plan with the drill evidence attached.
-- If RD3 exceeded 4 h, update plan 45 §25 Q-45-1/Q-45-11 with the measured numbers.
+- If RD3 missed any RTO target, update plan 45 §25 Q-45-11 with the measured numbers.
+- From H04, one RD3 per year runs as the `--from-capsule` variant with GitHub sinkholed (plan 45 45-AC-20; `github-black-start.md` §E).
 - Rotate any credential that was exposed on the drill machine beyond the tmpfs prompt.

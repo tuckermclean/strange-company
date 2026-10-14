@@ -185,7 +185,7 @@ Grants:
 
 | Path | Interface | Activation | Reversal | Latency to effect (new requests) |
 |---|---|---|---|---|
-| 1. Runner admin API (primary) | `PUT /v1/admin/emergency-stop` on the loopback admin listener (`runner-api.openapi.yaml`), bearer `SC-RUNNER-ADMIN` + `X-SC-Actor: human:<name>` + `Idempotency-Key` | body `{"level":"workers"\|"all","reason":"…"}` | body `{"level":"none","reason":"…"}` | immediate at the next reservation (the DB is read inside the transaction); in-flight cut ≤ 2 s (DB poll) |
+| 1. Runner admin API (primary) | `PUT /v1/admin/emergency-stop` on the loopback admin listener (`runner-api.openapi.yaml`), bearer `SC-RUNNER-ADMIN` `scadm_<kid>.<secret>` (per-operator, actor `human:<login>` derived from the key id, or break-glass `breakglass:runner-admin`; CD-30) + `X-SC-Reason` + `Idempotency-Key` | body `{"level":"workers"\|"all","reason":"…"}` | body `{"level":"none","reason":"…"}` | immediate at the next reservation (the DB is read inside the transaction); in-flight cut ≤ 2 s (DB poll) |
 | 2. Git policy (planned, durable) | `policy/budgets.yaml` `spec.emergencyStop: {level, reason}` via PR → CI → human merge → Flux | PR setting `workers`/`all` (reason required by schema) | PR setting `none` | Flux interval + kubelet ConfigMap volume sync + 10 s reload; target ≤ 15 min after merge (verify kubelet sync on the pinned k3s) |
 | 3. Kubernetes fallback (works without Runner and DB) | ConfigMap `strange-company/sc-emergency-stop`, `data.level` ∈ {`none`,`workers`,`all`}, `data.reason`; annotations `strange.company/set-by`, `strange.company/set-at` | `kubectl create`/`apply` (cluster-admin) | `kubectl delete configmap sc-emergency-stop` (or `level: none`) | ≤ 5 s (Gateway poll) |
 
@@ -268,7 +268,7 @@ metadata: {name: default}
 spec:
   currency: USD
   calendarTimezone: UTC
-  perRequest: {maxCostUsd: "3.00", maxOutputTokens: 32000, maxRequestBodyBytes: 33554432, inputBytesPerTokenEstimate: 2.0}
+  perRequest: {maxCostUsd: "3.00", maxOutputTokens: 32000, maxRequestBodyBytes: 33554432}
   perExecution: {maxCostUsd: "8.00", maxTotalTokens: 10000000, maxRequests: 1000, maxWallTimeSeconds: 3600, maxConcurrentRequests: 4}
   perTask: {maxCostUsd: "20.00", maxAttempts: 15}
   providers:
@@ -279,26 +279,27 @@ spec:
     fake:      {dailyUsd: "1000.00", monthlyUsd: "10000.00"}
     fake-b:    {dailyUsd: "1000.00", monthlyUsd: "10000.00"}
   global: {hourlyUsd: "20.00", dailyUsd: "60.00", monthlyUsd: "300.00"}
-  orchestration: {dailyUsd: "5.00", monthlyUsd: "60.00"}
+  orchestration: {dailyUsd: "10.00", monthlyUsd: "120.00"}
   thresholds: {warnPercents: [50, 80]}
   dispatch: {minimumHeadroomUsd: {clerical: "0.50", bargain: "0.50", standard: "1.50", frontier: "3.00"}}
   anomaly: {windowMinutes: 15, baselineDays: 7, baselineQuantile: 0.95, multiplier: 4, minimumSpendUsd: "0.50", absoluteWindowCapUsd: "8.00"}
   repositories:
-    sc-e2e/fake-target: {perTask: {maxCostUsd: "2.00"}}
+    sc-e2e/fake-target: {perTask: {maxCostUsd: "5.00"}}
   emergencyStop: {level: none}
 ```
 
 Rationale:
-- **Sized against the worst-case estimator** (plan 53 §14.1 step 6; review COST-2). With illustrative rates (balanced class $3/$15 per M, 5-minute cache write $3.75; largest class $5/$25, write $6.25; small class $1/$5), a request at a full 200 k-token window with the 32 k output cap reserves at most ≈ $0.41 (small), ≈ $1.23 (balanced) and ≈ $2.05 (largest). `perRequest.maxCostUsd: 3.00` and the per-tier `minimumHeadroomUsd` values cover these, and invariant 8 (§9.2) re-checks the real price cards at load. A full-context request therefore never hits `SC_REQUEST_COST_CAP` with the shipped defaults.
-- `maxConcurrentRequests: 4` keeps one execution's peak reservations (4 × ≤ $2.05) below `global.hourlyUsd: 20.00`, so a single healthy execution cannot contend with itself on the hourly scope; two workers plus Hermes may briefly contend, which §14.2 handles as transient.
+- **Sized against the provable worst case** (plan 53 §14.1 step 6; CD-28). The input bound is capped at the model window, so a large request's worst case is the full-window cost. With illustrative rates (balanced class $3/$15 per M with 5-minute cache write $3.75; largest class $5/$25, write $6.25; small class $1/$5), a request at a full 200 k-token window with the 32 k output cap reserves at most ≈ $0.41 (small), ≈ $1.23 (balanced) and ≈ $2.05 (largest). `perRequest.maxCostUsd: 3.00` and the per-tier `minimumHeadroomUsd` values cover these, and invariant 8 (§9.2) re-checks the real price cards at load, so no full-context request is denied `SC_REQUEST_COST_CAP`. A typical Claude Code request (system prompt and tools ≈ 100 KB, i.e. ≤ ≈ 100 k tokens by the bound) reserves ≈ $0.86 on the balanced class, of which the 32 k output cap is $0.48.
+- `maxConcurrentRequests: 4` keeps one execution's peak reservations (4 × ≤ $2.05 = $8.20) within `perExecution.maxCostUsd: 8.00` for all but four concurrent full-window largest-class requests (which then wait, §14.2), and below `global.hourlyUsd: 20.00`; two workers plus Hermes may briefly contend, which §14.2 handles as transient.
 - `maxTotalTokens` excludes cache reads (contract description), so a long Claude Code session that re-reads a cached 80 k-token context per turn is not cut off by tokens that cost a tenth of input.
+- **Orchestration** is raised to $10/day and $120/month, and plan 31 ships `orchestrator.maxConcurrentRequests: 4`: with worst-case reservations of ≈ $0.9 per Hermes turn (≈ 30 k-token conversation plus the 32 k output cap), a $5 daily scope would start refusing Hermes once ≈ $4 had actually been spent. Actual Hermes spend is typically a few cents per turn.
 - `perTask.maxAttempts: 15` ≥ 3 (tests ladder) + 5 (implementation ladder) + 3 (plan 29 review limit) + 2 (consecutive infrastructure requeues) + 2 margin; invariant 9 (§9.2) enforces the sum (review COST-8).
 - The global monthly cap is the binding limit. Provider monthly limits may sum above it.
 - Fake providers cost nothing real, but they are still budgeted so the code paths are identical.
 
 ### 9.1a Per-repository task-budget overrides (`spec.repositories`)
 
-`BudgetPolicy.spec.repositories` maps a managed repository (`owner/name`) to task-level overrides `perTask.maxCostUsd` and/or `perTask.maxAttempts`. They live in platform policy (Git, human-reviewed), so they may raise or lower the default for that repository. Repository-side policy (`.strange-company/`) cannot change budgets (ADR-0017). The shipped entry is `sc-e2e/fake-target` (the C10/plan 46 fixture repository): a $2.00 task limit, the single R01 smoke budget number shared with plan 28 §14.3 (review COST-2). At fake rates it is ample for C10, and it caps the R01 real-model smoke. The C10 over-budget scenario lowers it to $0.01 in a test overlay (plan 28), never in the shipped file. Precedence for a task's limit: human override (§14.11) > repository override > `perTask`. Invariants: each override `maxCostUsd ≤ global.monthlyUsd`, and the key names a repository listed in the Runner's `forgejo.managedRepositories` (warning only, because test repositories may be absent in some installations).
+`BudgetPolicy.spec.repositories` maps a managed repository (`owner/name`) to task-level overrides `perTask.maxCostUsd` and/or `perTask.maxAttempts`. They live in platform policy (Git, human-reviewed), so they may raise or lower the default for that repository. Repository-side policy (`.strange-company/`) cannot change budgets (ADR-0017). The shipped entry is `sc-e2e/fake-target` (the C10/plan 46 fixture repository): a $5.00 task limit, the single R01 smoke budget number (plan 28 §14.3 must be raised from $2.00 to match, CD-28): under the provable worst case each balanced-class Claude Code request reserves ≈ $0.86, so a $2.00 task scope would deny requests once ≈ $1.1 had been spent. At fake rates it is ample for C10, and it caps the R01 real-model smoke. The C10 over-budget scenario lowers it to $0.01 in a test overlay (plan 28), never in the shipped file. Precedence for a task's limit: human override (§14.11) > repository override > `perTask`. Invariants: each override `maxCostUsd ≤ global.monthlyUsd`, and the key names a repository listed in the Runner's `forgejo.managedRepositories` (warning only, because test repositories may be absent in some installations).
 
 ### 9.2 Load-time invariants (F04; schema description lists the first four)
 
@@ -309,7 +310,7 @@ Rationale:
 5. (added) `global.hourlyUsd ≤ global.dailyUsd ≤ global.monthlyUsd` and `orchestration.dailyUsd ≤ orchestration.monthlyUsd`.
 6. (added) `anomaly.absoluteWindowCapUsd ≤ global.hourlyUsd`. A higher cap could never fire before the hourly limit stops spend.
 7. (added) `perExecution.maxWallTimeSeconds ≥` the smallest profile deadline in every profile set (otherwise some profile could never run to its deadline). This is a warning, not a rejection.
-8. (added, review COST-2) For every enabled `stage: production` model that appears in a tier used by any role or by the orchestrator: `worst(model)` = plan 53's estimator at `est_input = contextWindowTokens` with `out_cap = min(perRequest.maxOutputTokens, model.maxOutputTokens)` (plus `maxReasoningTokens` when the cap does not cover reasoning), using the model's current priced entry. Require `worst(model) ≤ perRequest.maxCostUsd` and `worst(model) ≤ dispatch.minimumHeadroomUsd[tier]` for each tier listing it. A violation rejects the policy set and names the model and both amounts. An operator either raises the limits or routes a smaller-window model id.
+8. (added, review COST-2, CD-28) For every enabled `stage: production` model that appears in a tier used by any role or by the orchestrator: `worst(model)` = plan 53's provable worst case with `in_bound = contextWindowTokens` and `out_bound = min(perRequest.maxOutputTokens, model.maxOutputTokens)` (plus `maxReasoningTokens` when the cap does not cover reasoning), using the model's current priced entry. Require `worst(model) ≤ perRequest.maxCostUsd` and `worst(model) ≤ dispatch.minimumHeadroomUsd[tier]` for each tier listing it. A violation rejects the policy set and names the model and both amounts. An operator either raises the limits or routes a smaller-window model id.
 9. (added, review COST-8) `perTask.maxAttempts` and every `repositories.*.perTask.maxAttempts` ≥ Σ `meritFailuresBeforeEscalation` of the `tests` ladder + Σ of the `implementation` ladder + plan 29's `VerificationPolicy.spec.retry` review limit + its consecutive-infrastructure limit.
 10. (added, warning) `global.hourlyUsd ≥ 2 × perExecution.maxConcurrentRequests × max worst(model)`. Below that, a single execution can routinely contend on the hourly scope.
 
@@ -332,7 +333,7 @@ Bootstrap preflight (plan 50) prints `global.monthlyUsd`, `global.dailyUsd` and 
 
 | Class | Use |
 |---|---|
-| `SC-RUNNER-ADMIN` (introduced by plan 26) | bearer for path 1 (`PUT /v1/admin/emergency-stop`, `PUT /v1/admin/budget-scopes/{key}`). Plaintext only in the recovery bundle |
+| `SC-RUNNER-ADMIN` (plan 26, CD-30) | bearer `scadm_<kid>.<secret>` for path 1 and the other admin calls (`PUT /v1/admin/emergency-stop`, `PUT /v1/admin/budget-scopes/{key}`, `POST /v1/admin/ledger/adjustments`, `POST /v1/admin/model-quarantine/…:acknowledge`). Per-operator credentials carry the audit identity; the break-glass instance (actor `breakglass:runner-admin`) is in the recovery bundle |
 | `SC-K3S-ADMIN-KUBECONFIG` / `SC-BREAK-GLASS-CLUSTER` | port-forward for path 1, and create/delete of the path-3 ConfigMap |
 | `SC-PG-APP` (`sc_gateway`, `runner_app`) | DB access per §7.2 grants |
 
@@ -437,7 +438,7 @@ COMMIT;
 - **Denial rows** are written in a separate autocommit statement after the rollback. `last_denied_at` is set on a scope **only for spent-based denials** (`SC_BUDGET_EXHAUSTED`), never for contention (`SC_BUDGET_CONTENDED`, dimension `cost_reserved`), so `sc_budget_exhausted` and `SCBudgetExhausted` do not fire while utilization is low.
 - **Policy skew between replicas** during a rollout: each replica checks shared limits against its own loaded policy. For ≤ one reload interval (10 s) the two replicas may apply the old and the new limit. That is acceptable and recorded.
 
-### 14.3 Settlement and the overrun bound
+### 14.3 Settlement and the hard ceiling
 
 Settlement (plan 53 §14.1 step 10) in one transaction:
 1. `UPDATE reservations SET state='settled' … WHERE id=$id AND state='open'`. Zero rows → no-op.
@@ -449,20 +450,15 @@ The sweeper's expiry path is identical, with `charge = amount`.
 
 `budget_charge` (plan 32 / cost-record) is the priced actual, or the reservation if usage is unknown or the price is unpriced, or a worst-case completion if usage is estimated.
 
-**Overrun** (`charge > amount`). After the review COST-4 fixes in plan 53 the remaining channels are closed or bounded:
-- provider-side state (`previous_response_id`, `conversation`, `prompt`, `store`), file ids and URL sources are denied, so the billed input is contained in the body;
-- inline PDF `document` blocks are denied;
-- window-enlarging betas are not allowlisted, and the estimate is capped at the effective `contextWindowTokens`;
-- a mismatch is reserved and priced at the most expensive model in the token's allowlist;
-- reasoning beyond the output cap is reserved via `maxReasoningTokens` (VS-8).
+**The per-request ceiling is hard (CD-28, SPEC §81).** A request is admitted only if its **provable** worst-case cost (plan 53 §14.1 step 6) is ≤ `perRequest.maxCostUsd`, and the reservation equals that worst case. The bound is provable because:
+- input tokens are bounded by the family's declared `inputBound` (≤ 1 token per UTF-8 byte for byte-level BPE families, plus per-message and per-request overheads and a documented per-image maximum), capped at the context window the provider enforces; content without a documented bound is denied;
+- output is the provider-enforced output cap, which must also bound reasoning or be accompanied by a separately enforced reasoning cap (models without one cannot be routed);
+- every rate is the highest that can apply (cache writes included), over every model in the token's allowlist;
+- provider-side state, file ids, URL sources and window-enlarging betas are denied, so nothing outside the body can be billed.
 
-The only remaining channel is **token-dense content below `2 × window` bytes** (CJK text, base64, repeated rare tokens), where actual tokens can exceed `body_bytes / divisor`. Bound per request:
+Hence `charge ≤ amount` for every request whose provider honours its documented window, caps and price card, and no scope can overshoot: each scope admits only `spent + reserved + amount ≤ limit`, and each request's charge stays within its own reservation.
 
-```
-overrun ≤ (min(actual_input, contextWindowTokens) − est_input) × rate_in_max / 1e6
-```
-
-With the default divisor 2.0 this is zero for typical text and code (≈ 3–4 bytes/token). It can be positive for token-dense content such as CJK text, base64 or images. The per-request overrun is therefore at most `(window − est_input) × rate_in_max`, i.e. less than `window × rate_in_max` (≈ $1.25 for the largest class at 200 k tokens); it is **not** bounded by `perRequest.maxCostUsd`. A scope can overshoot its limit by at most the sum of the overruns of all requests in flight on that scope when it crosses: for an execution scope `max_concurrent_requests × window × rate_in_max`, for shared scopes that amount times the number of concurrently spending executions plus Hermes. 53-AC-31 and a token-dense fixture (33-AC-25) pin the accounting. Every overrun increments `sc_gateway_reservation_overrun_micro_usd_total{provider}` and fires `SCGatewayReservationOverrun`. Once spent exceeds the limit, all further requests in that scope are denied. Operators lower `inputBytesPerTokenEstimate` (e.g. to 1.0) for providers or workloads with repeated overruns.
+**Bound violation.** If reported usage nevertheless exceeds the computed bound (a tokenizer, window or cap assumption is false), the row records `bound_violation: true` with the real cost, the scopes are charged the real cost, `SCGatewayBoundViolation` pages, and the (provider, model) is quarantined until a human acknowledges it (plan 53 §14.4a). The worst possible overshoot is therefore the excess of the violating request plus the excess of that model's requests already in flight at that moment; it is an anomaly to investigate, never normal operation. 53-AC-37 and 33-AC-25 pin it.
 
 ### 14.4 Thresholds and notifications
 
@@ -598,7 +594,7 @@ for: 0s   severity: critical   notifyClass: page   alwaysNotify: budget-stop
 ### 14.9 Attempts, tokens and wall time
 
 - **Attempts:** §14.1 step 2. Executions ended with `EMERGENCY_STOP` are excluded (operator-caused). Executions that never reached `STARTING` are excluded. Plan 29's per-role and per-class limits and plan 31's ladder bound attempts further. The smallest bound wins.
-- **Tokens:** `perExecution.maxTotalTokens` is reserved per request (`worst_tok = est_input + out_cap`) and settled to actual tokens counted as uncached input + cache-write + output + reasoning; cache reads are excluded (contract `maxTotalTokens`, review COST-2).
+- **Tokens:** `perExecution.maxTotalTokens` is reserved per request (`worst_tok = in_bound + out_bound + rsn_bound`, plan 53 §14.1) and settled to actual tokens counted as uncached input + cache-write + output + reasoning; cache reads are excluded (contract `maxTotalTokens`, review COST-2).
 - **Wall time:** the Runner sets the pod `activeDeadlineSeconds = min(profile.deadline, perExecution.maxWallTimeSeconds)` and the Job deadline per plan 26 (+ startup grace). The gateway token's `exp` = pod deadline + 300 s (≤ 6 h), so a Job that somehow outlives its deadline cannot spend. Deadline expiry is classified `TIMED_OUT` by plan 26 (class `infrastructure`) and counts as an attempt.
 
 ### 14.10 Orchestration (Hermes) budget
@@ -612,7 +608,7 @@ The orchestrator token has no `task:` scope. `perRequest` limits apply to Hermes
 
 ### 14.11 Human task-budget override
 
-`PUT /v1/admin/budget-scopes/{scope_key}` (new; request to plan 26). Admin listener and `SC-RUNNER-ADMIN` + actor header. Body `{"limit_usd": "<decimal>", "reason": "<≥10 chars>"}`.
+`PUT /v1/admin/budget-scopes/{scope_key}` (new; request to plan 26). Admin listener, `SC-RUNNER-ADMIN` credential (actor from the key id, CD-30) and `X-SC-Reason`. Body `{"limit_usd": "<decimal>", "reason": "<≥10 chars>"}`.
 - Allowed only for `task:` keys, with `limit_usd ≤ global.monthlyUsd`.
 - Writes `ledger.budget_limit_overrides`, updates the row's `limit_micro_usd` with `limit_source = override:<id>`, and raises `SCRunnerAdminAccess`.
 - At later dispatches the override wins over `perTask.maxCostUsd` (§14.1 step 4).
@@ -624,7 +620,7 @@ The orchestrator token has no `task:` scope. `perRequest` limits apply to Hermes
 |---|---|---|---|---|
 | `sc-pg` down | Gateway `/readyz` reason `db`; `SCGatewayNotReady` | no reservations → no spend | fail closed | `gateway-failure.md`; `cnpg-primary-loss.md` |
 | Hot-row lock contention | `sc_gateway_stage_seconds{stage="reserve"}` p99 > 50 ms → `SCGatewayLatencyOverheadHigh` | slower calls | none | `gateway-failure.md` §latency |
-| Reservation underestimate (overrun) | `SCGatewayReservationOverrun` | scope may exceed its limit by the bound in §14.3 | further requests denied | lower `inputBytesPerTokenEstimate` by PR |
+| Bound violation (reported usage above the computed bound) | `SCGatewayBoundViolation` (critical, new) | one request (plus that model's in-flight requests) cost more than reserved; scopes charged the real cost | model quarantined until acknowledged (plan 53 §14.4a) | `gateway-failure.md` §bound |
 | Gateway pod dies with open reservations | open past `expires_at` | headroom held until expiry | sweeper settles at worst case | — |
 | Budget gauges stale (leader lost, DB slow) | `SCBudgetMetricsStale` | threshold alerts blind; enforcement unaffected | none | `gateway-failure.md` §ledger |
 | Reservation contention (concurrent requests of healthy executions) | `sc_budget_denials_total{code="SC_BUDGET_CONTENDED"}`; wait-time histogram `sc_gateway_stage_seconds{stage="reserve"}` | requests wait ≤ 30 s, then 429 and SDK retry | bounded wait (§14.2) | none unless persistent: `budget-emergency-stop.md` §E (raise the limit or lower concurrency by PR) |
@@ -714,7 +710,7 @@ SCEmergencyStopNotApplied: max(sc_runner_emergency_stop_level{source="effective"
 
 Budget alert expressions are in §14.4 and the anomaly alert in §14.8.
 
-**Catalogue alignment (CD-01).** `contracts/alert-catalog.yaml` carries every alert above under these names and with these expressions (`SCBudgetThresholdReached`, `SCBudgetExhausted`, `SCBudgetHourlyCapReached`, `SCBudgetCostIncomplete`, `SCBudgetMetricsStale`, `SCEmergencyStopActive`, `SCEmergencyStopNotApplied`, `SCEmergencyStopSourceUnavailable`, `SCAnomalousSpend`). `SCBudgetDispatchRefused` (§14.5) is new in this review round and must be added by plan 42. The catalogue summaries of `SCModelUsageUnknown` and `SCBudgetCostIncomplete` must say that unknown usage is charged at its worst case (a ceiling, not a floor; review COST-15). The catalogue is the naming authority; this section is normative for the signal semantics. Runbooks: `procedures/budget-emergency-stop.md`, and `procedures/gateway-failure.md` for the source-unavailable alert.
+**Catalogue alignment (CD-01).** `contracts/alert-catalog.yaml` carries every alert above under these names and with these expressions (`SCBudgetThresholdReached`, `SCBudgetExhausted`, `SCBudgetHourlyCapReached`, `SCBudgetCostIncomplete`, `SCBudgetMetricsStale`, `SCEmergencyStopActive`, `SCEmergencyStopNotApplied`, `SCEmergencyStopSourceUnavailable`, `SCAnomalousSpend`). `SCBudgetDispatchRefused` (§14.5) and `SCGatewayBoundViolation` (critical, page, `budget-stop`; replaces `SCGatewayReservationOverrun`, CD-28) are new in this review round and must be added by plan 42. The catalogue summaries of `SCModelUsageUnknown` and `SCBudgetCostIncomplete` must say that unknown usage is charged at its worst case (a ceiling, not a floor; review COST-15). The catalogue is the naming authority; this section is normative for the signal semantics. Runbooks: `procedures/budget-emergency-stop.md`, and `procedures/gateway-failure.md` for the source-unavailable alert.
 
 **Dashboards** (plan 39, "Economics"):
 - spend today and month vs limits: `sc_budget_spent_micro_usd / sc_budget_limit_micro_usd` per scope kind;
@@ -775,7 +771,7 @@ All deterministic with the fake upstream and fake harnesses [SPEC §104].
 - **33-AC-22** Contention (review COST-3): with an execution scope whose limit admits two worst-case reservations only one at a time, two concurrent `fake-slow` requests both end 2xx (the second waits for the first's settlement); `ledger.denials` has no `SC_BUDGET_EXHAUSTED` row, `last_denied_at` stays null and `sc_budget_exhausted` stays 0. Held open past the wait, the second request returns 429 `SC_BUDGET_CONTENDED`, dimension `cost_reserved`.
 - **33-AC-23** Shipped defaults vs real request sizes (review COST-2): `make policy-check` on the shipped `policy/` (with the implementation-time price cards) passes invariants 8–10; a fixture price card that makes the largest-class model's full-window worst case exceed `perRequest.maxCostUsd` is rejected with the model and both amounts in the error.
 - **33-AC-24** Attempt counting (review COST-8): `make policy-check` rejects a policy with `perTask.maxAttempts` below the ladder + review + infrastructure sum; in the Runner unit tests, a task with 2 refunded infrastructure failures and 5 implementer merit failures under the **shipped** policy still reaches the frontier rung (no `ATTEMPTS_EXHAUSTED` before `escalation_ladder_exhausted`).
-- **33-AC-25** Token-dense overrun accounting (review COST-4): a fake request whose body is 50 KB of base64 and whose fake usage reports 3× the estimated input yields `budget_charge_micro_usd > reserved_micro_usd`, `sc_gateway_reservation_overrun_micro_usd_total` increases by exactly the difference, and the scope's `spent_micro_usd` includes the full charge.
+- **33-AC-25** Hard ceiling and bound violation (CD-28): (a) 1 000 random requests from the adversarial fixture corpus (plan 53 53-AC-36) through the fake family each have `budget_charge_micro_usd ≤ reserved_micro_usd ≤ perRequest.maxCostUsd` in micro-USD and no `bound_violation`; (b) a policy whose full-window worst case for a model exceeds `perRequest.maxCostUsd` is rejected by `make policy-check` (invariant 8); (c) with `fake-over-bound`, the scope's `spent_micro_usd` includes the full real charge, the row has `bound_violation=true`, and the next request for that model is `SC_MODEL_QUARANTINED`.
 
 ### GATE-C10 (moved from GATE-C06; they need fake-harness Jobs (C02), Hermes (C08) or evidence (C04), which C06 does not depend on — review COST-10 / GC-01)
 

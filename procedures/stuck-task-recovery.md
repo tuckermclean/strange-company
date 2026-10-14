@@ -4,7 +4,7 @@
 **SPEC references:** §72–§74, §96, §113 ("stuck task recovery")
 **Severity / urgency:** degraded (one or a few tasks)
 **Expected duration:** 10–45 min
-**Requires break-glass:** cluster kubeconfig and `SC-RUNNER-ADMIN` (recovery bundle) for inspection and admin-API steps; the SQL step in §E additionally needs the CNPG superuser path of `agent-runner-failure.md` and is break-glass
+**Requires break-glass:** cluster kubeconfig and `SC-RUNNER-ADMIN` (your per-operator `scadm_<kid>` credential; the break-glass credential from the recovery bundle only as fallback) for inspection and admin-API steps; the SQL step in §E additionally needs the CNPG superuser path of `agent-runner-failure.md` and is break-glass
 
 ## When to use
 
@@ -18,10 +18,10 @@ Not for: decisions on TDD outcomes (`tdd-task-recovery.md`), Runner down (`agent
 
 - Toolbox shell: `./bootstrap shell`, then `sc-env`.
   ```sh
-  read -rs SC_RUNNER_ADMIN; export SC_RUNNER_ADMIN; export SC_ACTOR="human:<you>"
+  read -rs SC_RUNNER_ADMIN; export SC_RUNNER_ADMIN   # your per-operator credential scadm_<kid>.<secret> (CD-30); the break-glass credential only if yours is unavailable
   kubectl -n strange-company port-forward deploy/agent-runner 18080:8080 >/tmp/pf-runner.log 2>&1 &
   RUNNER=http://127.0.0.1:18080
-  AUTH=(-H "Authorization: Bearer ${SC_RUNNER_ADMIN}" -H "X-SC-Actor: ${SC_ACTOR}")
+  AUTH=(-H "Authorization: Bearer ${SC_RUNNER_ADMIN}" -H "X-SC-Reason: <incident or task id and why>")   # no X-SC-Actor: identity comes from the credential (CD-30); a request carrying it gets 400
   psql_ro() { kubectl -n strange-company exec -i "$(kubectl -n strange-company get pod -l cnpg.io/cluster=sc-pg,role=primary -o name)" -c postgres -- psql -d strange_company -At -c "$1"; }
   ```
 - A Forgejo account in team `Owners` or `engineers` for `/sc` commands.
@@ -101,7 +101,7 @@ Not for: decisions on TDD outcomes (`tdd-task-recovery.md`), Runner down (`agent
 
 - `psql_ro "select count(*) from runner.tasks where state not in ('DONE','CANCELLED') and state_entered_at < now() - interval '72 hours' and state not in ('NEEDS_HUMAN','BLOCKED','AWAITING_MERGE','SPECIFIED')"` returns 0.
 - `sum(sc_tasks_stuck) == 0` in Prometheus 15 min later; `SCTaskStuck`/`SCExecutionStuck` resolved.
-- Every task touched has a new transition row with actor `human:<you>` or a normal Runner/CI actor.
+- Every task touched has a new transition row with actor `human:<your operator identity>` (from the credential) or a normal Runner/CI actor.
 
 ## Rollback / abort
 

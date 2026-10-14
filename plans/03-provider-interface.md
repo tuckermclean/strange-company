@@ -93,7 +93,7 @@ Adding a provider means adding one Go package, one compute root module with guar
 
 - `infra/profiles/self-hosting-minimum.yaml`: SPEC §11 verbatim (the `substrate.schema.yaml` example).
 - `infra/profiles/small-ha.yaml`: SPEC §12 verbatim (the `cluster-profile.schema.yaml` example).
-- `infra/profiles/lab-small.yaml`, `infra/profiles/lab-ha.yaml`: lab substrates labeled `strange.company/lab: "true"` (plan 05 §14.6).
+- `infra/profiles/lab-small.yaml`, `infra/profiles/lab-ha.yaml`, `infra/profiles/lab-seed.yaml` (4 CPU / 8Gi / 40Gi, CD-31): lab substrates labeled `strange.company/lab: "true"` (plan 05 §14.6).
 
 **Command/kind rules.** `./bootstrap --profile X` (fresh install) requires `kind: BootstrapSubstrate`. `./bootstrap expand --profile X` requires `kind: ClusterProfile`. `recover` uses the profile recorded in the committed config. A mismatch fails PF-03.
 

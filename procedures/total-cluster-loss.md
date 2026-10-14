@@ -3,7 +3,7 @@
 **Owning plan:** plans/45-recovery.md (§14)
 **SPEC references:** §108, §110, §111, §112, §113 ("total cluster loss"), §22, §114
 **Severity / urgency:** disaster
-**Expected duration:** ≈ 3 h 30 min – 4 h from the decision to rebuild to `RECOVERY VERIFIED — MIRROR PENDING` (plan 45 §14.3); then 30–60 min for reconnect, the finalize PR and forced restore tests until `CONTROL TRANSFER COMPLETE (RECOVERY)`, plus worker resume
+**Expected duration (two RTOs, CD-32; clock from the decision to rebuild, plan 45 §14.3):** Forgejo serving `main` with Flux reconciling (SR-1) after 2 h 35 – 3 h 05 min (target ≤ 4 h); all data available (end of step 9) after 3 h 05 – 3 h 35 min (SPEC §108 ≤ 4 h); `RECOVERY VERIFIED — MIRROR PENDING` after 3 h 30 – 4 h; Runner dispatching again (SR-2) after 4 h 10 – 5 h 10 min (target ≤ 6 h)
 **Requires break-glass:** yes — `SC-BREAK-GLASS-INFRA` (provider console) if the provider account itself is involved; the recovery bundle (`SC-RECOVERY-PASSPHRASE`) always; the offline recovery age identity (`SC-AGE-RECOVERY`) only if the bundle is unusable
 
 ## When to use
@@ -80,8 +80,8 @@ All tools come from the toolbox (`./bootstrap shell` / `./bootstrap exec -- <cmd
    projects/*: <k> repositories fast-forwarded from bundles, <d> divergent refs saved under refs/recovered/<run-id>/
    ```
    `REFS_DIVERGED strange-company main` → stop; decide with `github-mirror-failure.md` §C (never force); rerun recover afterwards. With `--pitr-target T`, confirm the proposed heads (all ≤ T).
-8. **Source switch** (≈ 10 min, automatic). **Expected:** `transfer: root sourced from GitRepository/flux-system @ <sha>; seeded UIDs unchanged; Bucket deleted`.
-9. **Restore remaining state** (≈ 30 min, automatic). **Expected:** `authentik-pg`, `woodpecker-pg`, `sc-pg` Ready from `g<N>` archiving to `g<N+1>`; first base backups completed; `hermes-data` restored (or created empty); observed RPO per database printed from the heartbeat markers (`observed RPO: forgejo-pg 412 s …`); `create window closed` (`kubectl -n flux-system get cm sc-cnpg-create-window` → NotFound). If `authentik-pg` was accepted empty: run `./bootstrap exec -- sc-bootstrap sso-init --from A0` when prompted (plan 15 §18); recover then resumes the Authentik layer.
+8. **Source switch** (≈ 10 min, automatic; its end is milestone **SR-1**, logged as `rto: sr1 <seconds>`). **Expected:** `transfer: root sourced from GitRepository/flux-system @ <sha>; seeded UIDs unchanged; Bucket deleted`.
+9. **Restore remaining state** (≈ 30 min, automatic; its end is the **data-availability** milestone, logged as `rto: data-availability <seconds>`). **Expected:** `authentik-pg`, `woodpecker-pg`, `sc-pg` Ready from `g<N>` archiving to `g<N+1>`; first base backups completed; `hermes-data` restored (or created empty); observed RPO per database printed from the heartbeat markers (`observed RPO: forgejo-pg 412 s …`); `create window closed` (`kubectl -n flux-system get cm sc-cnpg-create-window` → NotFound). If `authentik-pg` was accepted empty: run `./bootstrap exec -- sc-bootstrap sso-init --from A0` when prompted (plan 15 §18); recover then resumes the Authentik layer.
 10. **Recovery verify** (≈ 25 min, automatic). **Expected:** the report starts with
     ```text
     RECOVERY VERIFIED — MIRROR PENDING
@@ -103,7 +103,7 @@ All tools come from the toolbox (`./bootstrap shell` / `./bootstrap exec -- <cmd
     ```
     A failing forced restore test → `restore-test-failure.md`; rerun finalize after fixing.
 13. **Resume workers.**
-    The finalize PR reset `policy/budgets.yaml` `spec.emergencyStop.level` to `none`. Confirm no other source holds a stop: `./bootstrap exec -- kubectl -n strange-company get configmap sc-emergency-stop` → NotFound. Confirm the effective level is `none` (Gateway `/sc/v1/status` via port-forward, or `PQ 'max(sc_emergency_stop_level{source="effective"})'` = 0). List blocked tasks (`GET /v1/tasks?state=BLOCKED&blocked_reason=emergency_stop`) and resume each one deliberately with the human transition API (plan 33 §14.5); cancel tasks whose work is obsolete.
+    The finalize PR reset `policy/budgets.yaml` `spec.emergencyStop.level` to `none`. Confirm no other source holds a stop: `./bootstrap exec -- kubectl -n strange-company get configmap sc-emergency-stop` → NotFound. Confirm the effective level is `none` (Gateway `/sc/v1/status` via port-forward, or `PQ 'max(sc_emergency_stop_level{source="effective"})'` = 0). List blocked tasks (`GET /v1/tasks?state=BLOCKED&blocked_reason=emergency_stop`) and resume each one deliberately with the human transition API (plan 33 §14.5); cancel tasks whose work is obsolete. The first dispatch is milestone **SR-2**; `recover` records it in the report as `rto_sr2_seconds` (target ≤ 6 h from the decision).
 14. **Re-enable outage detection:** resume the external heartbeat check if it was paused; confirm a ping arrives.
 
 ### §Bundle (exit 8)
@@ -131,6 +131,7 @@ When the provider API for the lost installation's region is reachable again: for
 - GitHub `main` == Forgejo `main`; `SCGitHubMirror*` alerts not firing.
 - `kubectl -n flux-system get cm sc-recovery-mode` → NotFound.
 - Observed RPO per database (heartbeat markers) ≤ 900 s, or the deviation explained in the evidence.
+- Report `rto_data_availability_seconds` ≤ 14400, `rto_sr1_seconds` ≤ 14400 and `rto_sr2_seconds` ≤ 21600; the finalize PR's `config/recovery.yaml` contains `spec.rto` with the first two.
 
 ## Rollback / abort
 
@@ -139,7 +140,7 @@ Recovery never deletes recovery data, so aborting is always safe: stop the run (
 ## Evidence to record
 
 - The recovery report `s3://<prefix>-tofu-state/<cluster>/reports/recovery-<run-id>.json` (step durations, observed RPO, ref report, fencing outcome, generations) — produced automatically.
-- An incident issue in Forgejo (`incident` label) with: loss time, cause, decisions taken (`accept-empty`, divergences, attestation), data lost per plan 45 §7.2 S11 column, total RTO, and follow-up actions.
+- An incident issue in Forgejo (`incident` label) with: loss time, cause, decisions taken (`accept-empty`, divergences, attestation), data lost per plan 45 §7.2 S11 column, the three RTO measurements (data availability, SR-1, SR-2) and follow-up actions.
 - If any SPEC §108 target was missed, a note in the issue and a plan 45 open-question update.
 
 ## Follow-ups

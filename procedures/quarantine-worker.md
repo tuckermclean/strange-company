@@ -4,7 +4,7 @@
 **SPEC references:** §84–§88, §94, §105, §113 (added procedure)
 **Severity / urgency:** degraded/security — act within 30 min for secret exposure or unexplained ref changes; routine review for ordinary policy violations already auto-quarantined
 **Expected duration:** 15–45 min
-**Requires break-glass:** cluster kubeconfig; `SC-RUNNER-ADMIN`; for the manual path, a Forgejo admin or `sc-runner` token (`SC-FORGEJO-BOT-TOKENS`)
+**Requires break-glass:** cluster kubeconfig; your per-operator `SC-RUNNER-ADMIN` credential (CD-30); for the manual path, a Forgejo admin or `sc-runner` token (`SC-FORGEJO-BOT-TOKENS`)
 
 ## When to use
 

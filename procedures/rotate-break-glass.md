@@ -13,7 +13,7 @@
 - Custodian change (anyone who knew the passphrase leaves).
 - Compromise: `credential-compromise.md` sends you here after containment.
 
-Systems and classes: `#cluster` (`SC-BREAK-GLASS-CLUSTER`), `#authentik` (`SC-BREAK-GLASS-AUTHENTIK`), `#forgejo` (`SC-BREAK-GLASS-FORGEJO`), `#grafana` (`SC-BREAK-GLASS-GRAFANA` = `SC-GRAFANA-ADMIN/admin`), `#infrastructure` (`SC-BREAK-GLASS-INFRA` and the bundled infrastructure toolkit).
+Systems and classes: `#runner-admin` (`SC-RUNNER-ADMIN/breakglass`), `#cluster` (`SC-BREAK-GLASS-CLUSTER`), `#authentik` (`SC-BREAK-GLASS-AUTHENTIK`), `#forgejo` (`SC-BREAK-GLASS-FORGEJO`), `#grafana` (`SC-BREAK-GLASS-GRAFANA` = `SC-GRAFANA-ADMIN/admin`), `#infrastructure` (`SC-BREAK-GLASS-INFRA` and the bundled infrastructure toolkit).
 
 ## Preconditions and required material
 
@@ -68,6 +68,16 @@ Common pattern (each section adds system specifics):
 1. Provider console: change the console password and regenerate MFA recovery codes; store them offline (`SC-BREAK-GLASS-INFRA` is operator-held only).
 2. Rotate the bundled toolkit credentials whose schedule is due or which were exposed, each with its own procedure: `SC-INFRA-PROVIDER`, `SC-DNS-API`, `SC-DNS-TUNNEL` (`rotate-secrets.md`), `SC-OBJECT-STORAGE/admin` (`rotate-storage-credentials.md`), `SC-TOFU-ENCRYPTION` (on compromise only).
 3. Seal; verify with the drill (`--only infrastructure`: provider `/me`, Cloudflare token verify, S3 `ListBuckets`, `tofu state list`).
+
+### runner-admin
+
+`SC-RUNNER-ADMIN/breakglass` (actor always `breakglass:runner-admin`, CD-30). Rotate **after every use**, yearly, and on custodian change.
+1. `./bootstrap rotate secret SC-RUNNER-ADMIN/breakglass` → generates a new token and kid, adds its hash to `secrets/strange-company/runner-admin-credentials.sops.yaml` (PR as `sc-admin`), seals the new plaintext into the bundle.
+2. Merge; wait ≤ 60 s for the Runner to reload `agent-runner-admin`.
+3. Revoke the old kid: `POST /v1/admin/credentials/<old-kid>:revoke` (port-forward, using the new break-glass token).
+4. *Verify:* `GET /v1/policy/status` with the new token returns 200 and the audit row shows actor `breakglass:runner-admin` with the new kid; the old token gets 401.
+
+Per-operator instances (`operator:<login>`) are not break-glass: they are issued by `sc-bootstrap access join` (365-day expiry, plaintext only with that operator) and revoked by `sc-bootstrap access leave` or `POST /v1/admin/credentials/{kid}:revoke`.
 
 ## Verification
 

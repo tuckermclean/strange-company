@@ -55,7 +55,7 @@ None of the data itself. This plan owns the retention numbers (Git: this plan, `
 
 ## 7. External interfaces
 
-- **Register IDs** `R-01` … `R-45`, cited by plan 11 (§6, "Retention" column) and plan 14 (§9.1).
+- **Register IDs** `R-01` … `R-47`, cited by plan 11 (§6, "Retention" column) and plan 14 (§9.1).
 - **Metrics this plan requires from other plans** (assumed interfaces; owners must expose them):
 
 | Metric | Owner | Meaning |
@@ -146,6 +146,7 @@ Column legend. **Where:** storage location. **Retention:** the bound. **Mechanis
 | R-30 | **Bootstrap scratch state** ✔ | operator `.bootstrap/{work,tmp}/`, `.bootstrap/runs/` | `work/<module>` recreated fresh every run; `tmp/` deleted at the end of every run (and at the start, after a crash); local `runs/`: newest 20 | `sc-bootstrap` (50) | `./bootstrap status` reports `.bootstrap/` size; preflight warning PF (50) when > 2 GiB | — (off-cluster) |
 | R-31 | Seed snapshots | `bootstrap-seed/<cluster>/<sha>/` | ≥ 90 d after transfer **and** never fewer than the newest 3 per cluster; the snapshot of the current recovery or seed commit is never deleted | `sc-bootstrap seed-gc` at the end of the seed phase and in every `./bootstrap verify` (50/19), with `seed-write` (`DeleteObject` → delete markers; noncurrent 30 d) | `./bootstrap verify` V-check: count ≥ min(3, seeds ever) | — (off-cluster) |
 | R-32 | Recovery bundles | `recovery` | current + **all** previous generations, noncurrent kept 3650 d (effectively never; each < 1 MiB; old generations hold previous tofu passphrases needed for old state versions, plan 06 §20.3) | lifecycle noncurrent 3650 d (14); no other deletion (35) | OA-03 | — |
+| R-47 | Bootstrap capsules (CD-33, plan 45 §9.4) | `recovery/<cluster>/capsule/<capsule-id>/` (≈ 5 GiB each) and `capsule/LATEST.json` | keep the **3 newest capsules plus any younger than 35 days**; `LATEST.json` never expires | each capsule object carries a 35-day Object Lock retention (set by `capsule-writer`, plan 14); lifecycle rule `capsule-expiry` on prefix `<cluster>/capsule/2` (matches capsule ids, never `LATEST.json`) expires current versions after 100 d and noncurrent after 1 d. Because capsules are refreshed at least every 30 days (plan 45 refresh trigger 3), at least the 3 newest are always younger than 100 d; if refreshes stop, the daily capsule check fails at 31 days, long before the oldest of the 3 reaches 100 d | daily `rt-bootstrap-capsule` light check (plan 44 RT-8): newest capsule ≤ 31 d old, ≥ 3 capsules or all younger than 35 d listed, `LATEST.json` resolves; OA-03 rule present | `SCBootstrapCapsuleCheckFailed` |
 
 ✔ marks the SPEC §107 items. Every §107 item has a row.
 

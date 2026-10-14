@@ -4,7 +4,7 @@
 **SPEC references:** §56, §58, §100, §102, §106
 **Severity / urgency:** outage-class for the engineering process (unverified code on a protected branch); act within 4 hours, before the next release tag
 **Expected duration:** 30–90 min
-**Requires break-glass:** cluster kubeconfig and `SC-RUNNER-ADMIN` (recovery bundle) for inspection; Forgejo repository-admin rights for protection checks; never the Forgejo site-admin break-glass unless protection itself was tampered with (§D)
+**Requires break-glass:** cluster kubeconfig and `SC-RUNNER-ADMIN` (your per-operator `scadm_<kid>` credential; the break-glass credential from the recovery bundle only as fallback) for inspection; Forgejo repository-admin rights for protection checks; never the Forgejo site-admin break-glass unless protection itself was tampered with (§D)
 
 ## When to use
 
@@ -17,11 +17,11 @@
 
 - Toolbox shell: `./bootstrap shell`, then `sc-env`.
   ```sh
-  read -rs SC_RUNNER_ADMIN; export SC_RUNNER_ADMIN; export SC_ACTOR="human:<you>"
+  read -rs SC_RUNNER_ADMIN; export SC_RUNNER_ADMIN   # your per-operator credential scadm_<kid>.<secret> (CD-30); the break-glass credential only if yours is unavailable
   kubectl -n strange-company port-forward deploy/agent-runner 18080:8080 >/tmp/pf-runner.log 2>&1 &
   kubectl -n forgejo port-forward svc/forgejo-http 13000:3000 >/tmp/pf-fj.log 2>&1 &
   RUNNER=http://127.0.0.1:18080; FJ=http://127.0.0.1:13000/api/v1
-  AUTH=(-H "Authorization: Bearer ${SC_RUNNER_ADMIN}" -H "X-SC-Actor: ${SC_ACTOR}")
+  AUTH=(-H "Authorization: Bearer ${SC_RUNNER_ADMIN}" -H "X-SC-Reason: <incident or task id and why>")   # no X-SC-Actor: identity comes from the credential (CD-30); a request carrying it gets 400
   read -rs FJ_TOKEN; export FJ_TOKEN   # your own Forgejo token (read:repository) — not a bot token
   FJAUTH=(-H "Authorization: token ${FJ_TOKEN}")
   psql_ro() { kubectl -n strange-company exec -i "$(kubectl -n strange-company get pod -l cnpg.io/cluster=sc-pg,role=primary -o name)" -c postgres -- psql -d strange_company -At -c "$1"; }

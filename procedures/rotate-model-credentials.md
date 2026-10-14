@@ -22,12 +22,12 @@ Worker gateway tokens (`SC-GATEWAY-TOKEN`, per execution) are never rotated. The
 
 - Toolbox shell: `./bootstrap shell`, then `sc-env` (kubeconfig + tunnel, plan 50). All commands below run inside it.
 - Section A: the provider console account (operator-owned, API organization, **not** a consumer subscription [SPEC §77]), and an age identity able to decrypt SOPS files (the recovery identity, or the cluster key from the recovery bundle, per `procedures/rotate-secrets.md`).
-- Sections B–D: `SC-RUNNER-ADMIN` (`read -rs SC_RUNNER_ADMIN; export SC_RUNNER_ADMIN`) and `export SC_ACTOR="human:<you>"`.
+- Sections B–D: your per-operator `SC-RUNNER-ADMIN` credential `scadm_<kid>.<secret>` (issued by `sc-bootstrap access join`; the Runner derives the actor `human:<login>` from the key id, CD-30), or, if you have none, the break-glass credential from the recovery bundle (`procedures/break-glass-access.md`; actor `breakglass:runner-admin`): `read -rs SC_RUNNER_ADMIN; export SC_RUNNER_ADMIN`, and the audit reason `export SC_REASON="<rotation id>: <why>"` (sent as `X-SC-Reason`; identity comes from the credential, CD-30).
 - Helpers (same as `procedures/budget-emergency-stop.md`):
 
   ```sh
   kubectl -n strange-company port-forward deploy/agent-runner 18080:8080 >/tmp/pf-runner.log 2>&1 &
-  RUNNER=http://127.0.0.1:18080; AUTH=(-H "Authorization: Bearer ${SC_RUNNER_ADMIN}" -H "X-SC-Actor: ${SC_ACTOR}")
+  RUNNER=http://127.0.0.1:18080; AUTH=(-H "Authorization: Bearer ${SC_RUNNER_ADMIN}" -H "X-SC-Reason: ${SC_REASON}")   # no X-SC-Actor: it is rejected (CD-30)
   gw_status() { for p in $(kubectl -n strange-company get pods -l app.kubernetes.io/name=model-gateway -o name); do
       kubectl -n strange-company port-forward "$p" 19090:9090 >/dev/null 2>&1 & pf=$!; sleep 2
       echo "== $p"; curl -fsS http://127.0.0.1:19090/sc/v1/status | jq '.providers'; kill $pf; done; }

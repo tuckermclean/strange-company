@@ -8,7 +8,7 @@
 
 ## When to use
 
-- Alerts: `SCAnomalousSpend`, `SCBudgetExhausted`, `SCBudgetHourlyCapReached`, `SCBudgetThresholdReached` (when the trend is unexpected), `SCEmergencyStopActive` (someone engaged a stop: verify and track it), `SCEmergencyStopNotApplied`, `SCTaskNeedsHuman` with `reason=budget_exceeded`, `SCGatewayReservationOverrun` with a large value, `SCModelMismatch` showing a much more expensive model.
+- Alerts: `SCAnomalousSpend`, `SCBudgetExhausted`, `SCBudgetHourlyCapReached`, `SCBudgetThresholdReached` (when the trend is unexpected), `SCEmergencyStopActive` (someone engaged a stop: verify and track it), `SCEmergencyStopNotApplied`, `SCTaskNeedsHuman` with `reason=budget_exceeded`, `SCGatewayBoundViolation`, `SCModelMismatch` showing a much more expensive model.
 - Suspected credential compromise of a provider key or a gateway token (then also follow `procedures/rotate-model-credentials.md` §C).
 - A prompt-injected or misbehaving Hermes or worker generating unexpected traffic.
 - Planned freezes: provider invoice review, price-card uncertainty, maintenance.
@@ -17,9 +17,9 @@
 ## Preconditions and required material
 
 - A working toolbox: `./bootstrap shell`. Every command below runs **inside** that shell unless marked `./bootstrap exec`. The shell provides `kubectl`, `curl`, `jq` and `yq`, and sets up the kubeconfig and SSH tunnel on demand with `sc-env` (plan 50).
-- `SC-RUNNER-ADMIN` from the recovery bundle (`procedures/break-glass-access.md` §"open the recovery bundle"). Paste it only into the shell's environment:
+- your per-operator `SC-RUNNER-ADMIN` credential `scadm_<kid>.<secret>` (issued by `sc-bootstrap access join`; the Runner derives the actor `human:<login>` from the key id, CD-30), or, if you have none, the break-glass credential from the recovery bundle (`procedures/break-glass-access.md`; actor `breakglass:runner-admin`). Paste it only into the shell's environment:
   `read -rs SC_RUNNER_ADMIN; export SC_RUNNER_ADMIN`.
-- Your operator name for the audit actor: `export SC_ACTOR="human:<your-name>"`.
+- The audit reason sent as `X-SC-Reason` on every admin call: `export SC_REASON="<incident id>: <one line why>"`. Your identity is **not** sent: the Runner derives it from the credential (CD-30). For the ConfigMap annotation of path 3, `export SC_OPERATOR="<your login>"`.
 - Helper port-forwards (keep the shell open):
 
   ```sh
@@ -27,7 +27,7 @@
   kubectl -n strange-company port-forward deploy/agent-runner 18080:8080 >/tmp/pf-runner.log 2>&1 &
   kubectl -n monitoring port-forward svc/prometheus-operated 19091:9090 >/tmp/pf-prom.log 2>&1 &
   RUNNER=http://127.0.0.1:18080; PROM=http://127.0.0.1:19091
-  AUTH=(-H "Authorization: Bearer ${SC_RUNNER_ADMIN}" -H "X-SC-Actor: ${SC_ACTOR}")
+  AUTH=(-H "Authorization: Bearer ${SC_RUNNER_ADMIN}" -H "X-SC-Reason: ${SC_REASON}")   # no X-SC-Actor: it is rejected (CD-30)
   gw_status() { for p in $(kubectl -n strange-company get pods -l app.kubernetes.io/name=model-gateway -o name); do
       kubectl -n strange-company port-forward "$p" 19090:9090 >/dev/null 2>&1 & pf=$!; sleep 2
       echo "== $p"; curl -fsS http://127.0.0.1:19090/sc/v1/status | jq '{estop, policy: .policy}'; kill $pf; done; }
@@ -89,7 +89,7 @@ kubectl -n strange-company create configmap sc-emergency-stop \
   --from-literal=level=workers --from-literal=reason="<incident id + why>" \
   --dry-run=client -o yaml | kubectl apply -f -
 kubectl -n strange-company annotate configmap sc-emergency-stop --overwrite \
-  strange.company/set-by="${SC_ACTOR}" strange.company/set-at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  strange.company/set-by="human:${SC_OPERATOR}" strange.company/set-at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 ```
 
 - Expected: `gw_status` shows `.estop.sources.k8s.level == "workers"` and `.estop.effective_level` ≥ `workers` within 10 s. This step is idempotent: re-applying changes nothing.
@@ -136,7 +136,7 @@ kubectl -n strange-company annotate configmap sc-emergency-stop --overwrite \
    - (a) legitimate load above the budget;
    - (b) a runaway loop in one task;
    - (c) Hermes behavior;
-   - (d) a price-card or usage-parsing error (`SCModelUsageUnknown`, `SCGatewayReservationOverrun`; then `procedures/pricing-update.md` / `procedures/gateway-failure.md`);
+   - (d) a price-card or usage-parsing error (`SCModelUsageUnknown`, `SCGatewayBoundViolation`; then `procedures/pricing-update.md` / `procedures/gateway-failure.md`);
    - (e) credential misuse (then `procedures/rotate-model-credentials.md` §C).
 5. For (b): cancel that task (`curl -fsS -X POST "$RUNNER/v1/tasks/<id>/cancel" "${AUTH[@]}" -H 'Content-Type: application/json' -d '{"reason":"runaway spend"}'`) before releasing.
 
@@ -218,7 +218,7 @@ A point-in-time restore discards emergency-stop events written after the recover
 
 - Stop engaged: `sc_emergency_stop_level{source="effective"} ≥ 1` on every Gateway replica, `sc_runner_emergency_stop_level{source="effective"}` equal to it, zero worker spend increase over 5 min, no running worker Jobs, all Flux Kustomizations Ready.
 - Stop released: `effective = 0` everywhere, `.estop.sources` all `none`, and a test dispatch, or the next Hermes dispatch, succeeds.
-- Resumed tasks: each listed task left `BLOCKED` through a transition whose actor is your `SC_ACTOR` (`GET /v1/tasks/<id>/transitions`).
+- Resumed tasks: each listed task left `BLOCKED` through a transition whose actor is the identity of your credential (`human:<login>` or `breakglass:runner-admin`) (`GET /v1/tasks/<id>/transitions`).
 
 ## Rollback / abort
 
@@ -240,6 +240,6 @@ In the incident issue (Forgejo, label `incident/budget`):
 
 ## Follow-ups
 
-- Tune `policy/budgets.yaml` (limits, `anomaly.*`, `inputBytesPerTokenEstimate`) by PR if the incident showed a gap.
+- Tune `policy/budgets.yaml` (limits, `anomaly.*`) and `policy/model-routing.yaml` `inputBound` values by PR if the incident showed a gap.
 - Credential exposure → `procedures/rotate-model-credentials.md`. Pricing errors → `procedures/pricing-update.md`. Gateway defects → `procedures/gateway-failure.md`.
-- Path 1 used → consider rotating `SC-RUNNER-ADMIN` (`procedures/rotate-secrets.md`).
+- Break-glass `SC-RUNNER-ADMIN` used → rotate it (`procedures/rotate-secrets.md`); per-operator credentials need no rotation after normal use.

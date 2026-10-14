@@ -203,7 +203,7 @@ G-3: the Runner rotates every 30 days with a 24 h overlap (ADR-0401). Forced: `.
 Same as [§sc-runner-hermes](#sc-runner-hermes) (same Secret, same rotation timer).
 
 #### sc-runner-admin
-G-2: the plaintext lives in the bundle, the cluster holds only its sha256. `./bootstrap rotate secret SC-RUNNER-ADMIN` → PR updating `agent-runner-admin` (`token-sha256`), merge, wait ≤ 60 s for the Runner to reload, verify with the new token (`GET /v1/policy/status` via port-forward), seal the bundle. Rotate after every use during an incident (`after-use` trigger).
+CD-30: per-operator instances `operator:<login>` are issued and revoked with `sc-bootstrap access join|leave` (365-day expiry; re-join before expiry); the `breakglass` instance is rotated with `rotate-break-glass.md#runner-admin`. Revoke any single credential with `POST /v1/admin/credentials/{kid}:revoke`. The cluster holds hashes only (`secrets/strange-company/runner-admin-credentials.sops.yaml` → Secret `agent-runner-admin`).
 
 #### sc-worker-deploy-key
 G-4. Containment: `credential-compromise.md#ephemeral-execution-credentials`.

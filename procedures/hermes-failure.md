@@ -4,7 +4,7 @@
 **SPEC references:** §4.6, §43, §96, §113 ("Hermes failure"), lessons L-1, L-5
 **Severity / urgency:** degraded — human orchestration is unavailable; the Runner, running workers, CI and Flux continue. Act within the working day; within 1 h if Hermes misbehaves (§H).
 **Expected duration:** 10–45 min; volume restore up to 2 h
-**Requires break-glass:** cluster kubeconfig; `SC-RUNNER-ADMIN` for §B/§H rotation calls
+**Requires break-glass:** cluster kubeconfig; your per-operator `SC-RUNNER-ADMIN` credential for §B/§H calls
 
 ## When to use
 

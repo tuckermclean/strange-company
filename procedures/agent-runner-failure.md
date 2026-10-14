@@ -4,7 +4,7 @@
 **SPEC references:** §59, §96, §113 ("Agent Runner failure"), §1.3, §4.8
 **Severity / urgency:** outage for orchestration (no dispatch, no ingestion, no RED/GREEN transitions); the platform, Forgejo, CI and Flux keep working. Act within 30 min for `SCRunnerDown`.
 **Expected duration:** triage 10 min; typical fix 15–60 min; DB restore cases per `restore-cnpg.md`
-**Requires break-glass:** cluster kubeconfig for every section; `SC-RUNNER-ADMIN` (recovery bundle) for admin-API steps
+**Requires break-glass:** cluster kubeconfig for every section; your per-operator `SC-RUNNER-ADMIN` credential (break-glass credential from the recovery bundle only if you have none) for admin-API steps
 
 ## When to use
 
@@ -15,12 +15,12 @@
 ## Preconditions and required material
 
 - Toolbox shell: `./bootstrap shell`, then `sc-env` (kubeconfig + tunnel, plan 50). Commands below run inside it.
-- For admin-API steps: `read -rs SC_RUNNER_ADMIN; export SC_RUNNER_ADMIN; export SC_ACTOR="human:<you>"`, then:
+- For admin-API steps: your **personal** admin credential (`SC-RUNNER-ADMIN`, issued by `sc-bootstrap access join`; CD-30) — or, only if you have none, the break-glass credential from the recovery bundle (its use pages everyone). `read -rs SC_RUNNER_ADMIN; export SC_RUNNER_ADMIN; export SC_REASON="<incident id: why>"`, then:
 
   ```sh
   kubectl -n strange-company port-forward deploy/agent-runner 18080:8080 >/tmp/pf-runner.log 2>&1 &
   RUNNER=http://127.0.0.1:18080
-  AUTH=(-H "Authorization: Bearer ${SC_RUNNER_ADMIN}" -H "X-SC-Actor: ${SC_ACTOR}")
+  AUTH=(-H "Authorization: Bearer ${SC_RUNNER_ADMIN}" -H "X-SC-Reason: ${SC_REASON}")   # never send X-SC-Actor: the actor is your credential (CD-30)
   psql_ro() { kubectl -n strange-company exec -i "$(kubectl -n strange-company get pod -l cnpg.io/cluster=sc-pg,role=primary -o name)" -c postgres -- psql -d strange_company -At -c "$1"; }
   ```
 

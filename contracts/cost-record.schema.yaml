@@ -90,6 +90,8 @@ required:
   - pricing
   - cost
   - reserved_micro_usd
+  - computed_bound
+  - bound_violation
   - budget_charge_micro_usd
   - budget_scope_keys
   - policy_revision
@@ -241,8 +243,27 @@ properties:
       - $ref: "#/$defs/Cost"
       - type: "null"
   reserved_micro_usd:
+    description: The provable worst-case cost admitted for this request (CD-28); equal to the per-request ceiling check's amount.
     type: integer
     minimum: 0
+  computed_bound:
+    description: Token bounds the reservation was computed from (plan 53 §14.1 step 6). Null for rows whose request never reached reservation (not used today; reserved for future paths).
+    oneOf:
+      - type: "null"
+      - type: object
+        additionalProperties: false
+        required: [input_tokens, output_tokens, reasoning_tokens]
+        properties:
+          input_tokens: {type: integer, minimum: 0}
+          output_tokens: {type: integer, minimum: 0}
+          reasoning_tokens: {type: integer, minimum: 0}
+  bound_violation:
+    description: |
+      True when provider-reported usage exceeded `computed_bound` (input, or output + reasoning)
+      or the priced cost exceeded `reserved_micro_usd` (CD-28). The row keeps the reported usage
+      and real cost; the Gateway raises SCGatewayBoundViolation and quarantines the (provider,
+      model) until acknowledged (plan 53 §14.4a).
+    type: boolean
   budget_charge_micro_usd:
     type: integer
     minimum: 0
@@ -537,6 +558,8 @@ examples:
       reasoning_micro_usd: 0
       total_micro_usd: 60750
     reserved_micro_usd: 1250000
+    computed_bound: {input_tokens: 120000, output_tokens: 32000, reasoning_tokens: 0}
+    bound_violation: false
     budget_charge_micro_usd: 60750
     budget_scope_keys: ["execution:sc-184-x3", "task:sc-184", "provider-day:anthropic:2026-10-13", "provider-month:anthropic:2026-10", "global-hour:2026-10-13T10", "global-day:2026-10-13", "global-month:2026-10"]
     policy_revision: 0123456789abcdef0123456789abcdef01234567
@@ -602,6 +625,8 @@ examples:
     pricing: null
     cost: null
     reserved_micro_usd: 410000
+    computed_bound: {input_tokens: 120000, output_tokens: 32000, reasoning_tokens: 0}
+    bound_violation: false
     budget_charge_micro_usd: 410000
     budget_scope_keys: ["orchestration-day:2026-10-13", "orchestration-month:2026-10", "provider-day:deepseek:2026-10-13", "provider-month:deepseek:2026-10", "global-hour:2026-10-13T10", "global-day:2026-10-13", "global-month:2026-10"]
     policy_revision: 0123456789abcdef0123456789abcdef01234567
@@ -659,6 +684,8 @@ x-invalid-examples:
       pricing: null
       cost: null
       reserved_micro_usd: 0.5
+      computed_bound: {input_tokens: 120000, output_tokens: 32000, reasoning_tokens: 0}
+      bound_violation: false
       budget_charge_micro_usd: 0
       budget_scope_keys: ["task:sc-184"]
       policy_revision: 0123456789abcdef0123456789abcdef01234567
@@ -708,6 +735,8 @@ x-invalid-examples:
       pricing: null
       cost: null
       reserved_micro_usd: 1250000
+      computed_bound: {input_tokens: 120000, output_tokens: 32000, reasoning_tokens: 0}
+      bound_violation: false
       budget_charge_micro_usd: 1250000
       budget_scope_keys: ["task:sc-184"]
       policy_revision: 0123456789abcdef0123456789abcdef01234567
@@ -757,6 +786,8 @@ x-invalid-examples:
       pricing: null
       cost: null
       reserved_micro_usd: 1250000
+      computed_bound: {input_tokens: 120000, output_tokens: 32000, reasoning_tokens: 0}
+      bound_violation: false
       budget_charge_micro_usd: 0
       budget_scope_keys: ["global-day:2026-10-13"]
       policy_revision: 0123456789abcdef0123456789abcdef01234567

@@ -459,7 +459,7 @@ All deterministic; no paid model calls [SPEC §104].
 ### GATE-C06
 
 - **42-AC-14** k3d scenario (d) passes (two deliveries for two tasks; one grouped message), and the posted payloads validate against `notification.schema.yaml` (the sink stores them; the test validates).
-- **42-AC-15** moved to GATE-C11 (it needs the fake harness, the Forgejo and Woodpecker adapters and Hermes, which C06 does not depend on; GC-01).
+- Note: 42-AC-15 moved to GATE-C11 (it needs the fake harness, the Forgejo and Woodpecker adapters and Hermes, which C06 does not depend on; GC-01).
 - **42-AC-16** Live: setting a fake provider budget to exhaustion (plan 33 test fixture) makes `ALERTS{alertname="SCBudgetExhausted",alertstate="firing"}` present within 2 min and Alertmanager records a `human-page` delivery.
 
 ### GATE-C11
@@ -595,6 +595,7 @@ All deterministic; no paid model calls [SPEC §104].
 | `SCEgressPolicyLoadFailed` | security | warning / notify | none | rule / 0s | `sum(increase(sc_egress_policy_load_errors_total[10m])) > 0` | C11 | both | 36 | `agent-runner-failure.md` |
 | `SCBreakGlassTestOverdue` (aka `BreakGlassDrillOverdue`) | security | warning / notify | black-start-threat | rule / 1h | `time() - sc_breakglass_drill_last_success_timestamp_seconds > 8640000 or absent(sc_breakglass_drill_last_success_timestamp_seconds)` | P10 | both | 15 | `break-glass-access.md` |
 | `SCRecoveryDrillOverdue` | black-start-threat | warning / notify | black-start-threat | check-cronjob / fail 1h, stale 26h | `dr-tests/rt-drill-freshness` (ADR-0553) | P10 | both | 45 | `recovery-drill.md` |
+| `SCBootstrapCapsuleCheckFailed` | black-start-threat | warning / notify | black-start-threat | check-cronjob / fail 2h, stale 26h | `dr-tests/rt-bootstrap-capsule` (ADR-0553) | H04 | both | 44 | `github-black-start.md` |
 | `SCHADrillOverdue` | black-start-threat | warning / notify | black-start-threat | rule / 1h | `time() - sc_ha_drill_last_success_timestamp_seconds > 100 * 86400` | H04 | small-ha | 47 | `expand-to-small-ha.md` |
 | `SCObjectStorageUnreachable` (aka `ObjectStorageDown`) | black-start-threat | critical / page | black-start-threat | rule / 10m | `probe_success{probe="object-storage"} == 0` | P09 | both | 14 | `object-storage-outage.md` |
 | `SCObjectStorageCanaryFailing` | black-start-threat | critical / page | black-start-threat | check-cronjob / fail 30m, stale 45m | `dr-tests/objstore-canary` (ADR-0553) | P10 | both | 14 | `object-storage-outage.md` |
@@ -751,6 +752,7 @@ All deterministic; no paid model calls [SPEC §104].
 | `SCBudgetDispatchRefused` | budget | warning / notify | none | rule / 15m | `sum(increase(sc_runner_dispatch_refusals_total{code="BUDGET_EXCEEDED"}[15m])) > 0` | C11 | both | 33 | `budget-emergency-stop.md` |
 | `SCBudgetMetricsStale` | budget | warning / notify | none | rule / 5m | `time() - max(sc_budget_metrics_updated_timestamp_seconds) > 300` | C11 | both | 33 | `gateway-failure.md` |
 | `SCAnomalousSpend` (aka `AnomalousModelSpend`) | spend | critical / page | budget-stop | rule / 0s | `(sc:model_spend_micro_usd:increase15m > 4 * quantile_over_time(0.95, sc:model_spend_micro_usd:increase15m[7d] offset 15m) and sc:model_spend_micro_usd:increase15m > 500000) or sc:model_spend_micro_usd:increase15m > 8000000` | C11 | both | 33 | `budget-emergency-stop.md` |
+| `SCGatewayBoundViolation` | spend | critical / page | budget-stop | rule / 0s | `sum by (provider, model) (increase(sc_gateway_bound_violations_total[15m])) > 0` | C11 | both | 53 | `gateway-failure.md` |
 | `SCNotificationTest` | notification-test | info / notify | none | external-post by bootstrap,operator / ttl 15m | API post (§7.4) | P09 | both | 42 | `notification-failure.md` |
 
 ### 23.6 Name mapping for consolidation (generated from catalogue `aliases`)

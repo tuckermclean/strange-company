@@ -15,7 +15,7 @@ info:
 
     | Listener | Bind | Paths | Caller | Credential |
     |---|---|---|---|---|
-    | `api` | 127.0.0.1:8080 (loopback; reachable only via `kubectl port-forward`) | `/v1/tasks*`, `/v1/executions*`, `/v1/admin/*`, `/v1/policy/*` | human operator (break-glass) and the Runner's own CLI | `SC-RUNNER-ADMIN` bearer + `X-SC-Actor: human:<name>` |
+    | `api` | 127.0.0.1:8080 (loopback; reachable only via `kubectl port-forward`) | `/v1/tasks*`, `/v1/executions*`, `/v1/admin/*`, `/v1/policy/*` | human operators and the toolbox CLIs | `SC-RUNNER-ADMIN` bearer `scadm_<kid>.<secret>`: per-operator credentials (actor `human:<login>`) or the single break-glass credential (actor `breakglass:runner-admin`). The actor is derived from the credential's key id, never from a header (CD-30); a request carrying `X-SC-Actor` is rejected with 400 `VALIDATION_FAILED`. Mutating calls carry `X-SC-Reason` |
     | `mcp` | 0.0.0.0:8081 | `/mcp` | Hermes (namespace `hermes`) | `SC-RUNNER-HERMES` bearer |
     | `worker` | 0.0.0.0:8082 | `/v1/worker/*` | the `sc-worker` container of worker pods (namespace `agent-jobs`) | `SC-WORKER-TASK-TOKEN` with `token_use: runner`, `aud: [sc-agent-runner-worker]` (`contracts/task-token.schema.yaml`) |
     | `hooks` | 0.0.0.0:8083 | `/v1/hooks/forgejo`; `/v1/ci/intents*` | Forgejo webhook deliveries (namespace `forgejo`); the Woodpecker configuration extension `sc-ci-config` (namespace `woodpecker`, plan 20) | HMAC-SHA256 `X-Forgejo-Signature` with `SC-RUNNER-WEBHOOK`; `SC-CI-INTENTS` bearer for `/v1/ci/intents*` |
@@ -55,7 +55,7 @@ paths:
       summary: Create a task from an embedded definition and dispatch its first execution (agent_start with `task`).
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
-        - $ref: "#/components/parameters/Actor"
+        - $ref: "#/components/parameters/Reason"
       requestBody:
         required: true
         content:
@@ -121,7 +121,7 @@ paths:
       summary: Dispatch one execution of a role on an existing task (agent_start with `task_id`).
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
-        - $ref: "#/components/parameters/Actor"
+        - $ref: "#/components/parameters/Reason"
       requestBody:
         required: true
         content:
@@ -171,7 +171,7 @@ paths:
       summary: Cancel the task or hand it to a human (agent_cancel).
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
-        - $ref: "#/components/parameters/Actor"
+        - $ref: "#/components/parameters/Reason"
       requestBody:
         required: true
         content:
@@ -249,7 +249,7 @@ paths:
       summary: Human-only transition (e.g. BLOCKED -> SPECIFIED, NEEDS_HUMAN -> DONE, approve a TEST_SPEC_CONFLICT decision). Only transitions whose actor class is `human` in plan 29's state machine are accepted.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
-        - $ref: "#/components/parameters/Actor"
+        - $ref: "#/components/parameters/Reason"
       requestBody:
         required: true
         content:
@@ -272,7 +272,7 @@ paths:
       summary: Kill a worker, revoke its task token, gateway token and deploy key, and preserve evidence (procedures/quarantine-worker.md).
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
-        - $ref: "#/components/parameters/Actor"
+        - $ref: "#/components/parameters/Reason"
       requestBody:
         required: true
         content:
@@ -304,7 +304,7 @@ paths:
       summary: Break-glass re-ingestion of the stored result object (S3 evidence `results/<task>/<execution>/result.json`) after an sc-pg PITR lost the ingestion (plan 29 Q7, `stuck-task-recovery.md`). If a judged-facts snapshot exists for the execution (plan 26 §14.4 judge phase), the verdict is re-applied from it without re-deriving Git facts; otherwise the full ingestion of plan 26 §14.4 runs under the execution's recorded policy revision and records `facts_rederived_at`. Idempotent per (execution, result digest).
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
-        - $ref: "#/components/parameters/Actor"
+        - $ref: "#/components/parameters/Reason"
       requestBody:
         required: true
         content:
@@ -343,7 +343,7 @@ paths:
       summary: Set the DB source of the emergency stop (ADR-0452). The Runner appends a row to `ledger.emergency_stop_events` and applies its own part (dispatch halt, cancellation of queued/running executions at `workers`/`all`). The Gateway reads the DB source directly; there is no Gateway admin endpoint. The response reports the effective level over all three sources (plan 33).
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
-        - $ref: "#/components/parameters/Actor"
+        - $ref: "#/components/parameters/Reason"
       requestBody:
         required: true
         content:
@@ -376,7 +376,7 @@ paths:
       summary: Human override of a task budget limit. Writes `ledger.budget_limit_overrides`, updates the scope row (`limit_source = override:<id>`) and raises `SCRunnerAdminAccess`.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
-        - $ref: "#/components/parameters/Actor"
+        - $ref: "#/components/parameters/Reason"
       requestBody:
         required: true
         content:
@@ -411,7 +411,7 @@ paths:
       summary: Force rotation of Runner-managed Hermes credentials (ADR-0401). Re-renders Secret `hermes/hermes-managed-env`, restarts Hermes, and revokes the previous credentials after the overlap or immediately.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
-        - $ref: "#/components/parameters/Actor"
+        - $ref: "#/components/parameters/Reason"
       requestBody:
         required: true
         content:
@@ -452,6 +452,65 @@ paths:
                   managed_revision: {type: string, pattern: "^sha256:[a-f0-9]{64}$"}
         default:
           $ref: "#/components/responses/Error"
+  /v1/admin/model-quarantine/{provider}/{model}:acknowledge:
+    parameters:
+      - {name: provider, in: path, required: true, schema: {type: string, pattern: "^[a-z][a-z0-9-]{1,30}$"}}
+      - {name: model, in: path, required: true, schema: {type: string, pattern: "^[A-Za-z0-9._:-]{1,120}$"}}
+    post:
+      tags: [admin]
+      operationId: acknowledgeModelQuarantine
+      summary: Human acknowledgement that lifts the Gateway's `BOUND_VIOLATION` quarantine of a (provider, model) (plan 53 §14, CD-28) after the bound, caps or price card were corrected by PR. Sets `ledger.model_quarantine.acknowledged_at/by` (actor and key id from the admin credential, CD-30) and raises `SCRunnerAdminAccess`. 404 if no unacknowledged quarantine row exists; repeated calls are idempotent by key.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/Reason"
+      responses:
+        "200":
+          description: Quarantine acknowledged; new requests for the model are no longer denied `SC_MODEL_QUARANTINED`.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [provider, model, quarantined_since, acknowledged_at, acknowledged_by]
+                properties:
+                  provider: {type: string}
+                  model: {type: string}
+                  quarantined_since: {type: string, format: date-time}
+                  acknowledged_at: {type: string, format: date-time}
+                  acknowledged_by: {type: string, pattern: "^(human:[A-Za-z0-9_.-]{1,64}|breakglass:runner-admin)$"}
+        default:
+          $ref: "#/components/responses/Error"
+  /v1/admin/whoami:
+    get:
+      tags: [admin]
+      operationId: adminWhoami
+      summary: Identity bound to the presented admin credential (key id, actor, kind, expiry). Used by `sc-bootstrap access` to verify a newly issued credential.
+      responses:
+        "200":
+          description: Credential identity.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AdminCredential"}
+        default:
+          $ref: "#/components/responses/Error"
+  /v1/admin/credentials/{kid}:revoke:
+    parameters:
+      - {name: kid, in: path, required: true, schema: {type: string, pattern: "^[a-z2-7]{12}$"}}
+    post:
+      tags: [admin]
+      operationId: revokeAdminCredential
+      summary: Immediate revocation of an admin credential (CD-30). Effective for the next request (sticky DB deny row, independent of the Git-delivered registry). Callable by any valid admin credential, including the one being revoked. Raises `SCRunnerAdminAccess`.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/Reason"
+      responses:
+        "200":
+          description: Revoked (or already revoked).
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AdminCredential"}
+        default:
+          $ref: "#/components/responses/Error"
   /v1/admin/gateway-tokens:verify:
     post:
       tags: [admin]
@@ -459,7 +518,7 @@ paths:
       summary: Mint a short-lived verification gateway token for `./bootstrap verify` and Gateway smoke checks (plan 50, plan 53 Q4; review RA-8). Synthetic task `sc-0`, execution `sc-0-x<n>`, role `tester`, harness `fake-success`, `allowed_models` limited to the test-only `fake` provider unless `provider` names an enabled production provider for a one-request smoke, budget scope `execution:sc-0-x<n>` with the given cap. Lifetime ≤ 600 s; revoked automatically at expiry or by the next call. Raises `SCRunnerAdminAccess`.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
-        - $ref: "#/components/parameters/Actor"
+        - $ref: "#/components/parameters/Reason"
       requestBody:
         required: true
         content:
@@ -496,7 +555,7 @@ paths:
       summary: Containment for a misbehaving or compromised Hermes (review RA-10). Revokes the MCP bearer, the Hermes gateway token and the API key immediately, sets `hermes_disabled` in `sc-pg` (the ensure loop stops re-rendering `hermes-managed-env`, the `mcp` listener rejects every bearer with 401), and deletes the Secret's credential values. Re-enabling is a separate human call.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
-        - $ref: "#/components/parameters/Actor"
+        - $ref: "#/components/parameters/Reason"
       requestBody:
         required: true
         content:
@@ -522,7 +581,7 @@ paths:
       summary: Clear `hermes_disabled`; the Runner mints fresh credentials, renders `hermes-managed-env` and restarts Hermes.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
-        - $ref: "#/components/parameters/Actor"
+        - $ref: "#/components/parameters/Reason"
       requestBody:
         required: true
         content:
@@ -548,7 +607,7 @@ paths:
       summary: Record an operator cost adjustment (plan 32 §20, plan 33 §20), e.g. spend lost to an sc-pg PITR. Inserts `ledger.cost_adjustments` and updates the matching provider/global month (and day) scope `spent` columns in one transaction.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
-        - $ref: "#/components/parameters/Actor"
+        - $ref: "#/components/parameters/Reason"
       requestBody:
         required: true
         content:
@@ -830,7 +889,7 @@ components:
     adminBearer:
       type: http
       scheme: bearer
-      description: SC-RUNNER-ADMIN break-glass token (plan 26 §10). Valid only on the loopback `api` listener.
+      description: SC-RUNNER-ADMIN admin credential `scadm_<kid>.<secret>` (plan 26 §10, CD-30). The key id selects a registered credential (per-operator, actor `human:<login>`, or the break-glass credential, actor `breakglass:runner-admin`); the Runner compares sha256(secret) in constant time and rejects revoked or expired keys. Valid only on the loopback `api` listener.
     hermesBearer:
       type: http
       scheme: bearer
@@ -860,12 +919,12 @@ components:
       in: header
       required: true
       schema: {$ref: "https://strange.company/contracts/mcp-surface/v1alpha1#/$defs/IdempotencyKey"}
-    Actor:
-      name: X-SC-Actor
+    Reason:
+      name: X-SC-Reason
       in: header
       required: true
-      description: Recorded as the transition actor. Must be `human:<username>` on the api listener.
-      schema: {type: string, pattern: "^human:[A-Za-z0-9_.-]{1,64}$"}
+      description: Caller-supplied justification recorded in the admin audit row (and as the transition reason where the body has none). The actor is NOT a header; it is the identity bound to the credential's key id (CD-30). Any request carrying `X-SC-Actor` is rejected with 400 VALIDATION_FAILED.
+      schema: {type: string, minLength: 10, maxLength: 500}
   responses:
     Error:
       description: Error (see ErrorCode for the status mapping).
@@ -955,7 +1014,7 @@ components:
               description: True when the Kubernetes source has not been read for 60 s (counts as `workers`).
               type: boolean
         set_at: {type: string, format: date-time}
-        set_by: {type: string, pattern: "^(runner|migration|human:[A-Za-z0-9_.-]{1,64}|budget:[a-z0-9_:-]{1,80})$"}
+        set_by: {type: string, pattern: "^(runner|migration|human:[A-Za-z0-9_.-]{1,64}|breakglass:runner-admin|budget:[a-z0-9_:-]{1,80})$"}
         reason: {type: string, maxLength: 1000}
         runner_applied:
           description: The Runner halted dispatch and cancelled executions for the effective level.
@@ -995,6 +1054,17 @@ components:
               path: {type: string}
               kind: {type: string}
               digest: {type: string, pattern: "^sha256:[a-f0-9]{64}$"}
+    AdminCredential:
+      type: object
+      additionalProperties: false
+      required: [kid, actor, kind, created_at]
+      properties:
+        kid: {type: string, pattern: "^[a-z2-7]{12}$"}
+        actor: {type: string, pattern: "^(human:[A-Za-z0-9_.-]{1,64}|breakglass:runner-admin)$"}
+        kind: {type: string, enum: [operator, breakglass]}
+        created_at: {type: string, format: date-time}
+        expires_at: {type: [string, "null"], format: date-time}
+        revoked_at: {type: [string, "null"], format: date-time}
     HermesCredentialState:
       type: object
       additionalProperties: false
@@ -1002,7 +1072,7 @@ components:
       properties:
         hermes_disabled: {type: boolean}
         changed_at: {type: string, format: date-time}
-        changed_by: {type: string, pattern: "^human:[A-Za-z0-9_.-]{1,64}$"}
+        changed_by: {type: string, pattern: "^(human:[A-Za-z0-9_.-]{1,64}|breakglass:runner-admin)$"}
         managed_revision: {type: [string, "null"], pattern: "^sha256:[a-f0-9]{64}$"}
     VerificationIntent:
       description: Verification intent (ADR-0302). Expires 15 minutes after creation.

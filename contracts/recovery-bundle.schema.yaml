@@ -26,7 +26,9 @@ description: |
   - every class in contracts/secret-classes.yaml with `inRecoveryBundle: true` has at least
     one entry (per instance where the class has bundled instances);
   - the `SC-AGE-CLUSTER` entry's public key equals `age_recipients.cluster`, and that key is a
-    recipient of every `.sops.yaml` creation rule for cluster secrets.
+    recipient of every `.sops.yaml` creation rule for cluster secrets;
+  - `public_files[trusted-keys]` equals `security/cosign/trusted-keys.yaml` at `source_commit` and is
+    refreshed whenever that file changes (needed to verify bootstrap-capsule signatures offline, CD-33).
 type: object
 additionalProperties: false
 required: [schema_version, kind, bundle_version, install_id, created_at, created_by, source_commit, previous_bundle_sha256, reason, encryption, age_recipients, entries]
@@ -120,6 +122,26 @@ properties:
         class:
           const: SC-AGE-CLUSTER
       required: [class]
+  public_files:
+    description: Non-secret files carried in the bundle so that offline verification works without GitHub (CD-33), e.g. a copy of security/cosign/trusted-keys.yaml to verify bootstrap-capsule signatures.
+    type: array
+    items:
+      type: object
+      additionalProperties: false
+      required: [name, path, sha256, source_commit]
+      properties:
+        name:
+          type: string
+          enum: [trusted-keys]
+        path:
+          type: string
+          pattern: "^public/[a-z0-9._-]+$"
+        sha256:
+          type: string
+          pattern: "^[a-f0-9]{64}$"
+        source_commit:
+          type: string
+          pattern: "^[a-f0-9]{40}$"
   verification:
     description: Result of the post-creation verification run (decrypt in a clean container).
     type: object
@@ -331,6 +353,11 @@ examples:
         size_bytes: 96
         generation: 2
         rotated_at: "2026-10-13T20:10:00Z"
+    public_files:
+      - name: trusted-keys
+        path: public/trusted-keys.yaml
+        sha256: "5555555555555555555555555555555555555555555555555555555555555555"
+        source_commit: 0123456789abcdef0123456789abcdef01234567
     verification:
       verified_at: "2026-10-13T20:16:30Z"
       sops_files_decrypted: 41

@@ -47,7 +47,7 @@ properties:
   created_by:
     description: Actor that created this version (`hermes` or `human:<login>`); workers never author criteria directly (planner output is a proposal Hermes may adopt).
     type: string
-    pattern: "^(hermes|human:[A-Za-z0-9_.-]{1,64})$"
+    pattern: "^(hermes|human:[A-Za-z0-9_.-]{1,64}|breakglass:runner-admin)$"
   frozen_at:
     type: string
     format: date-time

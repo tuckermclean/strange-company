@@ -1,7 +1,7 @@
 # 44 — Backup and restore testing
 
 **Status:** Stage-0 plan (draft)
-**DAG nodes:** P10 (primary owner: backups, restore tests, RPO/RTO verification; co-owners 12, 13, 35), C08 (`rt-longhorn-volume` for `hermes-data`, GC-01), H02 (data side: backup streams and restore tests survive the 1→3 expansion). P10's ACs need `woodpecker-pg` (P08): DAG edge P10 → P08 is required (GC-01).
+**DAG nodes:** P10 (primary owner: backups, restore tests, RPO/RTO verification; co-owners 12, 13, 35), C08 (`rt-longhorn-volume` for `hermes-data`, GC-01), H02 (data side: backup streams and restore tests survive the 1→3 expansion), H04 (bootstrap-capsule restore test, CD-33). P10's ACs need `woodpecker-pg` (P08): DAG edge P10 → P08 is required (GC-01).
 **Related plans:** [06](06-opentofu-state.md), [07](07-k3s.md), [11](11-storage.md), [12](12-cnpg.md), [13](13-longhorn.md), [14](14-object-storage.md), [15](15-authentik.md), [16](16-forgejo.md), [17](17-github-mirror.md), [18](18-flux.md), [35](35-secrets.md), [36](36-network-policy.md), [37](37-admission-policy.md), [38](38-prometheus.md), [42](42-alerting-notifications.md), [43](43-retention-gc.md), [45](45-recovery.md), [47](47-ha-expansion.md), [49](49-destroy.md), [51](51-capacity-and-scheduling.md)
 **Contracts:** owns `contracts/restore-test-result.schema.yaml`; consumes `alert-catalog.yaml` (42), `secret-classes.yaml` (35), `recovery-bundle.schema.yaml` (35)
 **ADRs:** ADR-0006, ADR-0012, ADR-0553 (check-CronJob pattern), ADR-0554 (recovery generations); introduces ADR-0202 (repository bundles: incremental chains, age encryption, write-without-delete)
@@ -182,6 +182,8 @@ Then Forgejo is scaled up. Plan 16's `restore-forgejo.md` calls this step instea
 | `restore-test-tofu-state` | `0 5 * * *` | `rt-tofu-state` (freshness of the off-cluster result) | 8d / 1h | `SCTofuStateRestoreTestFailed` |
 | `check-tofu-lock-age` | `30 * * * *` | `rt-tofu-lock-age` (no `.tflock` object older than 6 h; plan 06 §21) | 26h / 1h | `SCTofuStateLockStale` |
 | `restore-test-apps` | `0 4 1 * *` (1st of the month) | `rt-app-forgejo`, `rt-app-authentik` | 35d / 4h | `SCRestoreTestAppsFailed` (new) |
+| `restore-test-bootstrap-capsule-light` (from H04) | `30 6 * * *` | `rt-bootstrap-capsule` (light) | 26h / 1h | `SCBootstrapCapsuleCheckFailed` (CD-33) |
+| `restore-test-bootstrap-capsule-full` (from H04) | `0 4 * * 6` (Sat) | `rt-bootstrap-capsule` (full) | 8d / 3h | `SCBootstrapCapsuleFullCheckFailed` (new) |
 | `objstore-canary`, `objstore-audit` | plan 14 §21 | | | plan 14 |
 | `storage-audit` | `15 7 * * *` | plan 11 | 36h | `SCStorageAuditFailed` (new, plan 11) |
 | `retention-audit`, `oci-retention-audit`, `oci-retention` | plan 43 §21 | | | plan 43 |
@@ -226,6 +228,11 @@ RT-6 holds no age identity: the in-cluster copy of the cluster key proposed earl
 - `rt-app-forgejo`: record the production repository list (`sc-backup` API) at time T, then PITR `forgejo-pg` "latest" into `rt-forgejo-pg` exactly as RT-1 (no archiver). Start a scratch Forgejo pod `rt-forgejo` (production image digest read from the Forgejo Deployment; `OFFLINE_MODE=true`, `[mirror] ENABLED=false`, `[cron] ENABLED=false`, `[webhook] ALLOWED_HOST_LIST=loopback`, a random `SECRET_KEY` (encrypted columns are not tested), repository root on an empty `emptyDir`, NetworkPolicy egress only to `rt-forgejo-pg`). Checks: `lfs-sample` (STO-11): for up to 20 random rows of `lfs_meta_object` in the scratch DB, `HEAD` the object under `forgejo-objects/lfs/` with `dr-tests-reader` and compare size (sha256 for objects ≤ 50 MiB); `/api/healthz` passes; `select count(*) from repository` on the scratch DB ≥ the production count at T minus repositories created after T; every repository name from T exists. Measures `restore_duration_seconds` (DB + app start).
 - `rt-app-authentik`: PITR `authentik-pg` "latest" into `rt-authentik-pg`; start a scratch Authentik server (production image digest, random `AUTHENTIK_SECRET_KEY`, no outbound email, egress only to the scratch DB, blueprint discovery disabled). Checks: `/-/health/ready/` returns 200; the user `sc-dr-marker` (created by plan 15's blueprint) exists in `authentik_core_user`; the brand `sc` exists.
 - Deviation from plan 16 16-AC-29's "marker issue": no writer may create issues in production for testing (44-R-2), so repository presence replaces it (§25 Q-44-4).
+
+**RT-8 `rt-bootstrap-capsule`** (CD-33, plan 45 §9.4; active from H04, when the capsule exists). Reads with `recovery-reader` (plan 14 §10), which now covers `<cluster>/capsule/`.
+- **Light, daily** (`restore-test-bootstrap-capsule-light`, light check: no heavy-slot request): resolve `capsule/LATEST.json`; verify `capsule.json` with `cosign verify-blob --bundle capsule.json.sig` against `security/cosign/trusted-keys.yaml` from the deployed revision (the same key file the recovery bundle carries); `HeadObject` every file listed in `capsule.json` (size equals the manifest; `x-amz-object-lock-retain-until-date` present and ≥ upload time + 34 d); the capsule's lock-file sha256 values equal those of current `main` (a mismatch older than the 24 h refresh grace fails, `RT_CAPSULE_STALE`); the newest capsule is ≤ 31 days old; at least 3 capsules exist, or every existing capsule is younger than 35 days (plan 43 R-47).
+- **Full, weekly** (`restore-test-bootstrap-capsule-full`, heavy test: `strange.company/heavy-slot` = 8, `emptyDir` sized to 1.2 × the capsule size from `capsule.json`, capacity gate of §9.3): stream every file through sha256 and compare with `capsule.json`; `skopeo inspect oci-archive:<file>` per image (the digest equals the lock-file digest); `helm show chart` per chart archive (version equals `versions/charts.lock.yaml`; vendored library subcharts are `type: library`, CD-26); `git bundle verify` of the repository bundle; check that the toolbox OCI archive's digest equals `toolbox/image.lock`. The toolbox `docker load` + `./bootstrap version` smoke test needs a container runtime, which a restricted pod does not have; it runs weekly in plan 52's off-cluster lane (requested) and in drill RD2.
+- Results: `test_kind: bootstrap-capsule`, `subject: capsule:<capsule-id>`, failure codes `RT_CAPSULE_SIGNATURE`, `RT_CAPSULE_MISSING_OBJECT`, `RT_CAPSULE_RETENTION`, `RT_CAPSULE_STALE`, `RT_CAPSULE_DIGEST`.
 
 ### 9.6 RPO/RTO → mechanism → measured verification
 
@@ -327,7 +334,7 @@ Only one heavy test runs at a time (Lease `dr-tests/restore-slot`). Exclusion ag
 | Mirror out of sync during RT-6 | `refs-in-sync` failed | black start would miss commits | none | plan 17 `github-mirror-failure.md` |
 | SOPS file missing a recipient or not reachable from the cluster root | `sops-recipients` / `sops-reachable` failed | black start would fail | none | plan 35 `sops-decryption-failure.md` |
 
-**Failure codes** (stable, `restore-test-result.failure.code`): `RT_INSUFFICIENT_CAPACITY`, `RT_TIMEOUT`, `RT_API_ERROR`, `RT_BACKUP_NOT_FOUND`, `RT_BACKUP_STALE`, `RT_RESTORE_FAILED`, `RT_MARKER_MISSING`, `RT_MARKER_UNEXPECTED`, `RT_SCHEMA_MISSING`, `RT_CHECKSUM_MISMATCH`, `RT_DECRYPT_FAILED`, `RT_BUNDLE_INVALID`, `RT_FSCK_FAILED`, `RT_REF_MISMATCH`, `RT_DIVERGED`, `RT_RENDER_FAILED`, `RT_SOPS_RECIPIENTS`, `RT_SECRET_PATTERN`, `RT_LFS_POINTER`, `RT_ETCD_INTEGRITY`, `RT_RTO_BUDGET_EXCEEDED`, `RT_APP_UNHEALTHY`, `RT_RESULT_STALE`, `RT_LOCK_HELD`, `RT_TOFU_LOCK_STALE`, `RT_SOPS_UNREACHABLE`.
+**Failure codes** (stable, `restore-test-result.failure.code`): `RT_INSUFFICIENT_CAPACITY`, `RT_TIMEOUT`, `RT_API_ERROR`, `RT_BACKUP_NOT_FOUND`, `RT_BACKUP_STALE`, `RT_RESTORE_FAILED`, `RT_MARKER_MISSING`, `RT_MARKER_UNEXPECTED`, `RT_SCHEMA_MISSING`, `RT_CHECKSUM_MISMATCH`, `RT_DECRYPT_FAILED`, `RT_BUNDLE_INVALID`, `RT_FSCK_FAILED`, `RT_REF_MISMATCH`, `RT_DIVERGED`, `RT_RENDER_FAILED`, `RT_SOPS_RECIPIENTS`, `RT_SECRET_PATTERN`, `RT_LFS_POINTER`, `RT_ETCD_INTEGRITY`, `RT_RTO_BUDGET_EXCEEDED`, `RT_APP_UNHEALTHY`, `RT_RESULT_STALE`, `RT_LOCK_HELD`, `RT_CAPSULE_SIGNATURE`, `RT_CAPSULE_MISSING_OBJECT`, `RT_CAPSULE_RETENTION`, `RT_CAPSULE_STALE`, `RT_CAPSULE_DIGEST`, `RT_TOFU_LOCK_STALE`, `RT_SOPS_UNREACHABLE`.
 
 ## 16. Retry behavior
 
@@ -378,6 +385,8 @@ Only one heavy test runs at a time (Lease `dr-tests/restore-slot`). Exclusion ag
 | `SCRestoreTestAppsFailed` | check-cronjob `restore-test-apps`  | maxAge 35d, failAfter 4h, warning |
 | `SCDrCanaryWriterFailed` | check-cronjob `dr-canary-writer` | maxAge 26h, failAfter 1h, warning (`alwaysNotify: none`; the Longhorn test catches consequences) |
 | `SCDrMarkerHeartbeatFailed` | check-cronjob `dr-marker-heartbeat` | maxAge 30m, failAfter 15m, warning (`alwaysNotify: failed-backup`: without heartbeats the RPO signal is invalid) |
+| `SCBootstrapCapsuleCheckFailed` | check-cronjob `restore-test-bootstrap-capsule-light` | maxAge 26h, failAfter 1h, warning, `black-start-threat` (CD-33; already named by plan 45) |
+| `SCBootstrapCapsuleFullCheckFailed` | check-cronjob `restore-test-bootstrap-capsule-full` | maxAge 8d, failAfter 3h, warning, `black-start-threat` |
 
 - **Dashboard (plan 39):** "Disaster recovery": newest result per `test_id` (outcome, age, `restore_duration_seconds`, `backup_age_seconds`), backup freshness per stream, the §9.6 table with live values.
 
@@ -419,6 +428,9 @@ Only one heavy test runs at a time (Lease `dr-tests/restore-slot`). Exclusion ag
 - **44-AC-15** After expansion to three CNPG instances, each cluster's plugin `serverName` is unchanged (`<cluster>-g<N>`, no generation bump), WAL archiving is OK, and a base backup completed after the expansion (`kubectl cnpg status`).
 - **44-AC-16** A forced run of `restore-test-cnpg` and `restore-test-longhorn` after H02 passes. The Longhorn result shows the source volume had `numberOfReplicas: 2` (recorded in `checks[].observed` of `source-replicas`).
 - **44-AC-17** `repo-bundle-backup` keeps producing manifests during the node-loss drill (13-AC-17): no gap > 1 h in `git/weekly/strange-company/strange-company/` manifests (the CronJob reschedules to a surviving node; its cache PVC is local-path, so on a different node it starts from S3 state, §9.2.2 step 4).
+
+### GATE-H04
+- **44-AC-24** Bootstrap capsule (CD-33): `kubectl -n dr-tests get cronjob restore-test-bootstrap-capsule-light restore-test-bootstrap-capsule-full` exist; the newest `rt-bootstrap-capsule` documents (light and full) have `outcome: passed`; the light document names the capsule that `capsule/LATEST.json` points to, and the full document's checks include every image of `versions/images.lock.yaml` (one `skopeo-inspect` check each). In the k3d e2e (`make e2e-dr`), a capsule with one object removed fails the light check with `RT_CAPSULE_MISSING_OBJECT`, and a lock-file change on `main` older than 24 h without a new capsule fails it with `RT_CAPSULE_STALE`; `SCBootstrapCapsuleCheckFailed` reaches the test receiver within `failAfter + 5m`.
 
 ## 24. Explicit non-goals
 

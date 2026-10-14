@@ -17,7 +17,7 @@
 | `SCModelProviderUnavailable`, `SCModelCredentialRejected` | §provider |
 | `SCModelProviderErrorsHigh` | §upstream |
 | `SCModelUsageUnknown`, `SCUsageNormalizationInconsistent` | §usage |
-| `SCGatewayReservationOverrun` | §overrun |
+| `SCGatewayBoundViolation` (critical); requests failing `SC_MODEL_QUARANTINED` | §bound |
 | `SCModelMismatch` | §mismatch |
 | spike of `SC_TOKEN_INVALID` denials; readiness reason `jwks` | §tokens |
 | `SCEmergencyStopSourceUnavailable` | §estop |
@@ -111,11 +111,15 @@ Symptoms without an alert: workers fail with `model_unavailable`; Hermes answers
 4. Capture fresh fixtures (opt-in, real keys, a few cents): `make record-provider-fixtures PROVIDERS=<p>`. Open a task or PR that updates the dialect parser and the fixtures (plan 32 §8, plan 53 §22.2). That is ordinary test-first work.
 5. If worst-case charging blocks work (`SCBudgetExhausted` driven by unknown rows), consider disabling the affected provider or family by PR until the parser is fixed. Do **not** raise budgets to compensate without recording why.
 
-### §overrun — reservations below actual cost
+### §bound — provider usage above the provable bound (`SCGatewayBoundViolation`)
 
-1. `psqlro "SELECT provider, model_requested, count(*), max(budget_charge_micro_usd - reserved_micro_usd)/1e6 FROM ledger.cost_records WHERE budget_charge_micro_usd > reserved_micro_usd AND started_at > now()-interval '1 day' GROUP BY 1,2;"`
-2. Overruns come from token-dense input (non-Latin text, base64, images) beating the bytes/token estimate (plan 33 §14.3). Lower `perRequest.inputBytesPerTokenEstimate` (e.g. 2.0 → 1.0) by PR in `policy/budgets.yaml`. Expect more conservative reservations and possibly more `SC_REQUEST_COST_CAP` denials for large prompts.
-3. Expected after deployment: `increase(sc_gateway_reservation_overrun_micro_usd_total[1d])` stays at 0.
+Under CD-28 a request's charge can exceed its reservation only if a provider breaks its documented tokenizer, context-window, output-cap or price behaviour. The Gateway then quarantines the (provider, model) (plan 53 §14.4a): requests for it fail `SC_MODEL_QUARANTINED` and routing skips it.
+
+1. `psqlro "SELECT record_id, provider, model_requested, usage, computed_bound, reserved_micro_usd, budget_charge_micro_usd, started_at FROM ledger.cost_records WHERE bound_violation ORDER BY started_at DESC LIMIT 20;"` identifies the dimension (input, output or cost) and the size of the excess.
+2. Diagnose: input above the bound → the family's `inputBound` (per-byte factor or overheads) is wrong for some content, or the provider billed beyond the window; output above → the output/reasoning cap is not enforced as documented (VS-8); cost above with usage inside the bound → the price card or service-tier mapping is wrong (`procedures/pricing-update.md`).
+3. Fix by PR: raise `inputBound` values (and add the triggering content shape to `testdata/tokenizer-bound/`), set `outputCapCoversReasoning: false` with the enforced reasoning cap, or disable the model. Re-run the corpus smoke for that provider (53-AC-36).
+4. Only after the fix is deployed, acknowledge: `curl -fsS -X POST "$RUNNER/v1/admin/model-quarantine/<provider>/<model>:acknowledge" "${AUTH[@]}"` (`RUNNER`/`AUTH` as in `procedures/budget-emergency-stop.md`; the `X-SC-Reason` names the fix PR). Expected: 200; `sc_gateway_model_quarantined{provider,model}` returns to 0 and requests succeed.
+5. If the excess was material, check the affected scopes (`procedures/budget-emergency-stop.md` §E) and record it in the incident.
 
 ### §mismatch — provider answered with another model
 
@@ -180,7 +184,7 @@ The Gateway forwards only allowlisted body members, tool types and beta headers,
 
 - Every Gateway pod is Ready and `/readyz` returns `{"ready":true}`. `up{job="model-gateway"}` = 1 per replica.
 - The triggering alert has resolved and stayed resolved for 15 min.
-- For §ledger: `sc_gateway_reservations_open` returned to baseline. For §usage/§overrun: the respective counters are flat for 1 h after the fix.
+- For §ledger: `sc_gateway_reservations_open` returned to baseline. For §usage/§bound: the respective counters are flat for 1 h after the fix.
 - One end-to-end request succeeds: the next worker execution or Hermes turn produces a `ledger.cost_records` row with `usage_status='reported'`, or, in a fake-only installation, `./bootstrap verify --only <gateway check id>` passes (plan 50).
 
 ## Rollback / abort

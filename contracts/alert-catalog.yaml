@@ -2028,6 +2028,44 @@ spec:
       signalOwnerPlan: "45"
       runbook: procedures/recovery-drill.md
       specRefs: ["§109", "§112"]
+    - alertname: SCBootstrapCapsuleCheckFailed
+      summary: The bootstrap capsule check failed or is overdue (bad signature, digest or retention, or stale lock hashes). Black start without GitHub is at risk (CD-33).
+      category: black-start-threat
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: black-start-threat
+      blackStartThreat: true
+      source:
+        kind: check-cronjob
+        cronjob: restore-test-bootstrap-capsule-light
+        namespace: dr-tests
+        maxAge: 26h
+        failAfter: 1h
+      profiles: [self-hosting-minimum, small-ha]
+      gate: H04
+      ownerPlan: "42"
+      signalOwnerPlan: "44"
+      runbook: procedures/github-black-start.md
+      specRefs: ["§111", "§112"]
+    - alertname: SCBootstrapCapsuleFullCheckFailed
+      summary: The weekly full bootstrap-capsule check (load every image archive, render the capsule chart sources, verify the repository bundle) failed or is overdue. Black start without GitHub is at risk (CD-33).
+      category: black-start-threat
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: black-start-threat
+      blackStartThreat: true
+      source:
+        kind: check-cronjob
+        cronjob: restore-test-bootstrap-capsule-full
+        namespace: dr-tests
+        maxAge: 8d
+        failAfter: 3h
+      profiles: [self-hosting-minimum, small-ha]
+      gate: H04
+      ownerPlan: "42"
+      signalOwnerPlan: "44"
+      runbook: procedures/github-black-start.md
+      specRefs: ["§109", "§111", "§112"]
     - alertname: SCHADrillOverdue
       summary: No successful HA drill within 100 days.
       category: black-start-threat
@@ -4733,6 +4771,23 @@ spec:
       runbook: procedures/budget-emergency-stop.md
       specRefs: ["§81", "§96"]
       aliases: [AnomalousModelSpend]
+    - alertname: SCGatewayBoundViolation
+      summary: Reported provider usage exceeded the Gateway computed bound; the request cost more than reserved and the model is quarantined until acknowledged (plan 53 §14.4a, CD-28).
+      category: spend
+      severity: critical
+      notifyClass: page
+      alwaysNotify: budget-stop
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum by (provider, model) (increase(sc_gateway_bound_violations_total[15m])) > 0'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "53"
+      runbook: procedures/gateway-failure.md
+      specRefs: ["§81", "§97"]
 
     # ------------------------------------------------------------------ notification test
     - alertname: SCNotificationTest

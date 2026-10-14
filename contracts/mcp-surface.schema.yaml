@@ -323,9 +323,9 @@ $defs:
     properties:
       at: {type: string, format: date-time}
       actor:
-        description: "`runner`, `hermes`, `human:<username>`, `ci:woodpecker/<pipeline>`. Worker results are recorded with actor `runner`, which judges them (plan 29)."
+        description: "`runner`, `hermes`, `human:<username>` (from a per-operator admin credential or a Forgejo `/sc` command), `breakglass:runner-admin`, `ci:woodpecker/<pipeline>`. Worker results are recorded with actor `runner`, which judges them (plan 29)."
         type: string
-        pattern: "^(runner|hermes|human:[A-Za-z0-9_.-]{1,64}|ci:woodpecker/[0-9]+)$"
+        pattern: "^(runner|hermes|human:[A-Za-z0-9_.-]{1,64}|breakglass:runner-admin|ci:woodpecker/[0-9]+)$"
       from: {$ref: "#/$defs/TaskState"}
       to: {$ref: "#/$defs/TaskState"}
       reason: {type: string, maxLength: 1000}

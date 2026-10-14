@@ -70,7 +70,14 @@ This procedure establishes a **trusted source tree** for black start: obtaining 
 ### §D GitHub platform outage (plan 45 S19b)
 1. Black start depends on GitHub-hosted artifacts: the toolbox image (GHCR) or, for a local build, tool downloads from GitHub releases; k3s release assets; Flux, CNPG and plugin images on `ghcr.io`; chart repositories on `*.github.io`. A repository bundle (§C.2) replaces only the source tree.
 2. If you have a working toolbox image locally (`docker image ls` shows the pinned digest) **and** the required images and charts are reachable from another registry or cache: seed from §C.2 or §C.3 with `seed-without-github <cluster>`; expect pull failures for anything not cached.
-3. Otherwise **wait** for GitHub; record the waiting time separately in the incident (it is outside the plan 45 RTO budget, recorded as a SPEC false-assumption issue).
+3. **From H04:** use the bootstrap capsule (§E). **Before H04, or if the capsule check is failing:** **wait** for GitHub; record the waiting time separately in the incident. This is an accepted, recorded risk (SI-43, CD-33).
+
+### §E Black start from the bootstrap capsule (from H04; plan 45 §9.4)
+1. On the clean machine, with the object-storage credentials from `bootstrap.env`: `aws s3 cp s3://<prefix>-recovery/<cluster>/capsule/LATEST.json -` names the capsule id; `aws s3 cp --recursive s3://<prefix>-recovery/<cluster>/capsule/<id>/ ./capsule/`. **Expected:** ≈ 5 GiB, 5–10 min.
+2. `git clone ./capsule/strange-company.bundle strange-company && cd strange-company`.
+3. `./bootstrap recover --from-capsule ../capsule` — it loads the toolbox from the capsule archive, unlocks the recovery bundle, verifies `capsule.json` with the bundle's copy of the trusted signing keys and every file digest, then fast-forwards `main` from the newest `repo-backups` chain (trust anchor). **Expected:** `capsule <id>: signature ok, <n>/<n> digests ok`; then continue with `total-cluster-loss.md` from step 2. Nodes import images from the capsule; charts come from the seed Bucket.
+4. Finalize: if GitHub is still down, type `defer-mirror <cluster>`; the mirror stays disabled and `SCGitHubMirrorRecoveryModeTooLong` keeps notifying until §C.5 / `forge-reconnect` after GitHub returns.
+5. A signature or digest failure: do not use the capsule; try the previous capsule id (kept ≥ 35 days), otherwise wait (step §D.3).
 
 ## Verification
 

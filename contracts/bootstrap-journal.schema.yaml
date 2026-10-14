@@ -128,6 +128,21 @@ properties:
         properties:
           env_digest: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
           notification_test_at: {$ref: '#/$defs/timestampOrNull'}
+      recover:
+        description: Recovery pipeline facts (plan 45; CD-33).
+        type: object
+        additionalProperties: false
+        properties:
+          source_kind:
+            description: Where the seeded commit came from.
+            enum: [github, repo-bundle, operator-clone, capsule]
+          capsule_id:
+            type: string
+            pattern: '^[0-9]{12}-[A-Za-z0-9._-]+$'
+          capsule_manifest_sha256: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
+          mirror_deferred:
+            description: True when finalize ran with `defer-mirror`.
+            type: boolean
       fenced_nodes:
         description: Compute addresses moved out of managed state by recover (plan 03 §20.1, DR-12).
         type: array
@@ -151,7 +166,7 @@ properties:
       required: [kind, subject_digest, confirmed_at, run_id, method]
       properties:
         kind:
-          enum: [paid-footprint, existing-nodes, expand-footprint, storage-footprint, destroy-install-name, destroy-plan, unlock-run-lock, stale-lock-takeover, abandon-identity, accept-unmirrored-loss, accept-stale-prices, accept-data-loss, accept-empty, model-budget, accept-weak-protection, accept-state-unprotected, notification-nonce, old-installation-destroyed, fence-live, fence-nodes, migrate-provider, migrate-object-storage, seed-without-github, node-remove, upgrade-k3s, handoff-rollback, state-restore, state-unlock, state-import, accept-github-commits, accept-generation, fence-nodes-cleanup]
+          enum: [paid-footprint, existing-nodes, expand-footprint, storage-footprint, destroy-install-name, destroy-plan, unlock-run-lock, stale-lock-takeover, abandon-identity, accept-unmirrored-loss, accept-stale-prices, accept-data-loss, accept-empty, model-budget, accept-weak-protection, accept-state-unprotected, notification-nonce, old-installation-destroyed, fence-live, fence-nodes, migrate-provider, migrate-object-storage, seed-without-github, node-remove, upgrade-k3s, handoff-rollback, state-restore, state-unlock, state-import, accept-github-commits, accept-generation, fence-nodes-cleanup, defer-mirror]
         subject_digest:
           description: Digest of what was confirmed (plan digest, node-list digest, lock content digest).
           $ref: '#/$defs/digest'
@@ -320,7 +335,7 @@ $defs:
           image_digest:
             $ref: '#/$defs/digest'
           source:
-            enum: [pulled, built, built-fallback]
+            enum: [pulled, built, built-fallback, capsule]
       git_head:
         type: string
         pattern: '^[0-9a-f]{40}$'

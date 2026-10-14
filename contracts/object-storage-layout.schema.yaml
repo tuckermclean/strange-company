@@ -69,7 +69,7 @@ $defs:
           type: string
           enum: [admin, tofu-state, tofu-state-ro, recovery, recovery-reader, seed-write, seed-read, pg-backups-forgejo-pg, pg-backups-authentik-pg, pg-backups-woodpecker-pg,
             pg-backups-sc-pg, longhorn-backups, etcd-snapshots, forgejo-objects, repo-backups, evidence, telemetry-debug, dr-tests-results, dr-tests-reader, objstore-audit,
-            telemetry, drill-reader]
+            telemetry, drill-reader, capsule-writer]
         uniqueItems: true
       offClusterWriters:
         type: array
@@ -77,7 +77,7 @@ $defs:
           type: string
           enum: [admin, tofu-state, tofu-state-ro, recovery, recovery-reader, seed-write, seed-read, pg-backups-forgejo-pg, pg-backups-authentik-pg, pg-backups-woodpecker-pg,
             pg-backups-sc-pg, longhorn-backups, etcd-snapshots, forgejo-objects, repo-backups, evidence, telemetry-debug, dr-tests-results, dr-tests-reader, objstore-audit,
-            telemetry, drill-reader]
+            telemetry, drill-reader, capsule-writer]
         uniqueItems: true
       readers:
         type: array
@@ -85,7 +85,7 @@ $defs:
           type: string
           enum: [admin, tofu-state, tofu-state-ro, recovery, recovery-reader, seed-write, seed-read, pg-backups-forgejo-pg, pg-backups-authentik-pg, pg-backups-woodpecker-pg,
             pg-backups-sc-pg, longhorn-backups, etcd-snapshots, forgejo-objects, repo-backups, evidence, telemetry-debug, dr-tests-results, dr-tests-reader, objstore-audit,
-            telemetry, drill-reader]
+            telemetry, drill-reader, capsule-writer]
         uniqueItems: true
       objectLock: {$ref: '#/$defs/objectLock'}
       lifecycle:
@@ -170,7 +170,9 @@ $defs:
     required: [id]
     properties:
       id: {type: string, pattern: '^[a-z][a-z0-9-]{0,62}$'}
-      prefix: {description: Key prefix filter; empty or absent = whole bucket. Must end with '/'., type: string, pattern: '^([A-Za-z0-9._*-]+/)+$'}
+      prefix: {description: 'Key prefix filter (literal S3 prefix); absent = whole bucket. `{cluster}` is replaced by the cluster name at render time. Usually ends
+          with ''/''; a partial last segment (e.g. `{cluster}/capsule/2`, matching capsule ids that start with the year but not `LATEST.json`) is allowed.', type: string,
+        pattern: '^([A-Za-z0-9._*{}-]+/)+[A-Za-z0-9._*{}-]*$'}
       currentDays: {description: Expire current versions after N days (creates a delete marker on versioned buckets)., type: integer, minimum: 1, maximum: 3650}
       noncurrentDays: {description: Permanently delete noncurrent versions N days after they became noncurrent., type: integer, minimum: 1, maximum: 3650}
       newerNoncurrentVersions: {description: Keep at least this many newest noncurrent versions per key (provider support tested by OC-06)., type: integer, minimum: 1,
@@ -197,18 +199,19 @@ examples:
         objectLock: {enabled: false}
         lifecycle:
         - {id: noncurrent, noncurrentDays: 365, newerNoncurrentVersions: 100, retentionRef: R-29}
-        - {id: runs, prefix: runs/, currentDays: 180, retentionRef: R-29}
-        - {id: conformance, prefix: conformance/, currentDays: 1, noncurrentDays: 1, retentionRef: R-29}
+        - {id: runs, prefix: '{cluster}/runs/', currentDays: 180, retentionRef: R-29}
+        - {id: conformance, prefix: '{cluster}/conformance/', currentDays: 1, noncurrentDays: 1, retentionRef: R-29}
       recovery:
-        description: Passphrase-encrypted recovery bundles, manifests, attestations
+        description: Passphrase-encrypted recovery bundles, manifests, attestations; bootstrap capsule (CD-33, 35-day per-object retention set by capsule-writer)
         systemOfRecord: true
         backupStream: false
         sharedModeProtection: separate-account
-        inClusterWriters: []
+        inClusterWriters: [capsule-writer]
         offClusterWriters: [recovery]
         readers: [recovery-reader, objstore-audit]
         objectLock: {enabled: true, defaultRetentionDays: 365, modeWhenScoped: GOVERNANCE, modeWhenShared: COMPLIANCE}
         lifecycle:
+        - {id: capsule-expiry, prefix: '{cluster}/capsule/2', currentDays: 100, noncurrentDays: 1, retentionRef: R-47}
         - {id: noncurrent, noncurrentDays: 3650, retentionRef: R-32}
       bootstrap-seed:
         description: Seed snapshots and control-transfer reports
@@ -331,18 +334,19 @@ x-invalid-examples:
           objectLock: {enabled: false}
           lifecycle:
           - {id: noncurrent, noncurrentDays: 365, newerNoncurrentVersions: 100, retentionRef: R-29}
-          - {id: runs, prefix: runs/, currentDays: 180, retentionRef: R-29}
-          - {id: conformance, prefix: conformance/, currentDays: 1, noncurrentDays: 1, retentionRef: R-29}
+          - {id: runs, prefix: '{cluster}/runs/', currentDays: 180, retentionRef: R-29}
+          - {id: conformance, prefix: '{cluster}/conformance/', currentDays: 1, noncurrentDays: 1, retentionRef: R-29}
         recovery:
-          description: Passphrase-encrypted recovery bundles, manifests, attestations
+          description: Passphrase-encrypted recovery bundles, manifests, attestations; bootstrap capsule (CD-33, 35-day per-object retention set by capsule-writer)
           systemOfRecord: true
           backupStream: false
           sharedModeProtection: separate-account
-          inClusterWriters: []
+          inClusterWriters: [capsule-writer]
           offClusterWriters: [recovery]
           readers: [recovery-reader, objstore-audit]
           objectLock: {enabled: true, defaultRetentionDays: 365, modeWhenScoped: GOVERNANCE, modeWhenShared: COMPLIANCE}
           lifecycle:
+          - {id: capsule-expiry, prefix: '{cluster}/capsule/2', currentDays: 100, noncurrentDays: 1, retentionRef: R-47}
           - {id: noncurrent, noncurrentDays: 3650, retentionRef: R-32}
         bootstrap-seed:
           description: Seed snapshots and control-transfer reports
@@ -451,18 +455,19 @@ x-invalid-examples:
           objectLock: {enabled: false}
           lifecycle:
           - {id: noncurrent, noncurrentDays: 365, newerNoncurrentVersions: 100, retentionRef: R-29}
-          - {id: runs, prefix: runs/, currentDays: 180, retentionRef: R-29}
-          - {id: conformance, prefix: conformance/, currentDays: 1, noncurrentDays: 1, retentionRef: R-29}
+          - {id: runs, prefix: '{cluster}/runs/', currentDays: 180, retentionRef: R-29}
+          - {id: conformance, prefix: '{cluster}/conformance/', currentDays: 1, noncurrentDays: 1, retentionRef: R-29}
         recovery:
-          description: Passphrase-encrypted recovery bundles, manifests, attestations
+          description: Passphrase-encrypted recovery bundles, manifests, attestations; bootstrap capsule (CD-33, 35-day per-object retention set by capsule-writer)
           systemOfRecord: true
           backupStream: false
           sharedModeProtection: separate-account
-          inClusterWriters: []
+          inClusterWriters: [capsule-writer]
           offClusterWriters: [recovery]
           readers: [recovery-reader, objstore-audit]
           objectLock: {enabled: true, defaultRetentionDays: 365, modeWhenScoped: GOVERNANCE, modeWhenShared: COMPLIANCE}
           lifecycle:
+          - {id: capsule-expiry, prefix: '{cluster}/capsule/2', currentDays: 100, noncurrentDays: 1, retentionRef: R-47}
           - {id: noncurrent, noncurrentDays: 3650, retentionRef: R-32}
         bootstrap-seed:
           description: Seed snapshots and control-transfer reports
@@ -584,18 +589,19 @@ x-invalid-examples:
           objectLock: {enabled: false}
           lifecycle:
           - {id: noncurrent, noncurrentDays: 365, newerNoncurrentVersions: 100, retentionRef: R-29}
-          - {id: runs, prefix: runs/, currentDays: 180, retentionRef: R-29}
-          - {id: conformance, prefix: conformance/, currentDays: 1, noncurrentDays: 1, retentionRef: R-29}
+          - {id: runs, prefix: '{cluster}/runs/', currentDays: 180, retentionRef: R-29}
+          - {id: conformance, prefix: '{cluster}/conformance/', currentDays: 1, noncurrentDays: 1, retentionRef: R-29}
         recovery:
-          description: Passphrase-encrypted recovery bundles, manifests, attestations
+          description: Passphrase-encrypted recovery bundles, manifests, attestations; bootstrap capsule (CD-33, 35-day per-object retention set by capsule-writer)
           systemOfRecord: true
           backupStream: false
           sharedModeProtection: separate-account
-          inClusterWriters: []
+          inClusterWriters: [capsule-writer]
           offClusterWriters: [recovery]
           readers: [recovery-reader, objstore-audit]
           objectLock: {enabled: true, defaultRetentionDays: 365, modeWhenScoped: GOVERNANCE, modeWhenShared: COMPLIANCE}
           lifecycle:
+          - {id: capsule-expiry, prefix: '{cluster}/capsule/2', currentDays: 100, noncurrentDays: 1, retentionRef: R-47}
           - {id: noncurrent, noncurrentDays: 3650, retentionRef: R-32}
         bootstrap-seed:
           description: Seed snapshots and control-transfer reports
@@ -730,18 +736,19 @@ x-invalid-examples:
           objectLock: {enabled: false}
           lifecycle:
           - {id: noncurrent, noncurrentDays: 365, newerNoncurrentVersions: 100, retentionRef: R-29}
-          - {id: runs, prefix: runs/, currentDays: 180, retentionRef: R-29}
-          - {id: conformance, prefix: conformance/, currentDays: 1, noncurrentDays: 1, retentionRef: R-29}
+          - {id: runs, prefix: '{cluster}/runs/', currentDays: 180, retentionRef: R-29}
+          - {id: conformance, prefix: '{cluster}/conformance/', currentDays: 1, noncurrentDays: 1, retentionRef: R-29}
         recovery:
-          description: Passphrase-encrypted recovery bundles, manifests, attestations
+          description: Passphrase-encrypted recovery bundles, manifests, attestations; bootstrap capsule (CD-33, 35-day per-object retention set by capsule-writer)
           systemOfRecord: true
           backupStream: false
           sharedModeProtection: separate-account
-          inClusterWriters: []
+          inClusterWriters: [capsule-writer]
           offClusterWriters: [recovery]
           readers: [recovery-reader, objstore-audit]
           objectLock: {enabled: true, defaultRetentionDays: 365, modeWhenScoped: GOVERNANCE, modeWhenShared: COMPLIANCE}
           lifecycle:
+          - {id: capsule-expiry, prefix: '{cluster}/capsule/2', currentDays: 100, noncurrentDays: 1, retentionRef: R-47}
           - {id: noncurrent, noncurrentDays: 3650, retentionRef: R-32}
         bootstrap-seed:
           description: Seed snapshots and control-transfer reports
@@ -863,18 +870,19 @@ x-invalid-examples:
           objectLock: {enabled: false}
           lifecycle:
           - {id: noncurrent, noncurrentDays: 365, newerNoncurrentVersions: 100, retentionRef: R-29}
-          - {id: runs, prefix: runs/, currentDays: 180, retentionRef: R-29}
-          - {id: conformance, prefix: conformance/, currentDays: 1, noncurrentDays: 1, retentionRef: R-29}
+          - {id: runs, prefix: '{cluster}/runs/', currentDays: 180, retentionRef: R-29}
+          - {id: conformance, prefix: '{cluster}/conformance/', currentDays: 1, noncurrentDays: 1, retentionRef: R-29}
         recovery:
-          description: Passphrase-encrypted recovery bundles, manifests, attestations
+          description: Passphrase-encrypted recovery bundles, manifests, attestations; bootstrap capsule (CD-33, 35-day per-object retention set by capsule-writer)
           systemOfRecord: true
           backupStream: false
           sharedModeProtection: separate-account
-          inClusterWriters: []
+          inClusterWriters: [capsule-writer]
           offClusterWriters: [recovery]
           readers: [recovery-reader, objstore-audit]
           objectLock: {enabled: true, defaultRetentionDays: 365, modeWhenScoped: GOVERNANCE, modeWhenShared: COMPLIANCE}
           lifecycle:
+          - {id: capsule-expiry, prefix: '{cluster}/capsule/2', currentDays: 100, noncurrentDays: 1, retentionRef: R-47}
           - {id: noncurrent, noncurrentDays: 3650, retentionRef: R-32}
         bootstrap-seed:
           description: Seed snapshots and control-transfer reports
@@ -997,18 +1005,19 @@ x-invalid-examples:
           objectLock: {enabled: false}
           lifecycle:
           - {id: noncurrent, noncurrentDays: 365, newerNoncurrentVersions: 100, retentionRef: R-29}
-          - {id: runs, prefix: runs/, currentDays: 180, retentionRef: R-29}
-          - {id: conformance, prefix: conformance/, currentDays: 1, noncurrentDays: 1, retentionRef: R-29}
+          - {id: runs, prefix: '{cluster}/runs/', currentDays: 180, retentionRef: R-29}
+          - {id: conformance, prefix: '{cluster}/conformance/', currentDays: 1, noncurrentDays: 1, retentionRef: R-29}
         recovery:
-          description: Passphrase-encrypted recovery bundles, manifests, attestations
+          description: Passphrase-encrypted recovery bundles, manifests, attestations; bootstrap capsule (CD-33, 35-day per-object retention set by capsule-writer)
           systemOfRecord: true
           backupStream: false
           sharedModeProtection: separate-account
-          inClusterWriters: []
+          inClusterWriters: [capsule-writer]
           offClusterWriters: [recovery]
           readers: [recovery-reader, objstore-audit]
           objectLock: {enabled: true, defaultRetentionDays: 365, modeWhenScoped: GOVERNANCE, modeWhenShared: COMPLIANCE}
           lifecycle:
+          - {id: capsule-expiry, prefix: '{cluster}/capsule/2', currentDays: 100, noncurrentDays: 1, retentionRef: R-47}
           - {id: noncurrent, noncurrentDays: 3650, retentionRef: R-32}
         bootstrap-seed:
           description: Seed snapshots and control-transfer reports
@@ -1130,18 +1139,19 @@ x-invalid-examples:
           objectLock: {enabled: false}
           lifecycle:
           - {id: noncurrent, noncurrentDays: 365, newerNoncurrentVersions: 100, retentionRef: R-29}
-          - {id: runs, prefix: runs/, currentDays: 180, retentionRef: R-29}
-          - {id: conformance, prefix: conformance/, currentDays: 1, noncurrentDays: 1, retentionRef: R-29}
+          - {id: runs, prefix: '{cluster}/runs/', currentDays: 180, retentionRef: R-29}
+          - {id: conformance, prefix: '{cluster}/conformance/', currentDays: 1, noncurrentDays: 1, retentionRef: R-29}
         recovery:
-          description: Passphrase-encrypted recovery bundles, manifests, attestations
+          description: Passphrase-encrypted recovery bundles, manifests, attestations; bootstrap capsule (CD-33, 35-day per-object retention set by capsule-writer)
           systemOfRecord: true
           backupStream: false
           sharedModeProtection: separate-account
-          inClusterWriters: []
+          inClusterWriters: [capsule-writer]
           offClusterWriters: [recovery]
           readers: [recovery-reader, objstore-audit]
           objectLock: {enabled: true, defaultRetentionDays: 365, modeWhenScoped: GOVERNANCE, modeWhenShared: COMPLIANCE}
           lifecycle:
+          - {id: capsule-expiry, prefix: '{cluster}/capsule/2', currentDays: 100, noncurrentDays: 1, retentionRef: R-47}
           - {id: noncurrent, noncurrentDays: 3650, retentionRef: R-32}
         bootstrap-seed:
           description: Seed snapshots and control-transfer reports
@@ -1263,18 +1273,19 @@ x-invalid-examples:
           objectLock: {enabled: false}
           lifecycle:
           - {id: noncurrent, noncurrentDays: 365, newerNoncurrentVersions: 100, retentionRef: R-29}
-          - {id: runs, prefix: runs/, currentDays: 180, retentionRef: R-29}
-          - {id: conformance, prefix: conformance/, currentDays: 1, noncurrentDays: 1, retentionRef: R-29}
+          - {id: runs, prefix: '{cluster}/runs/', currentDays: 180, retentionRef: R-29}
+          - {id: conformance, prefix: '{cluster}/conformance/', currentDays: 1, noncurrentDays: 1, retentionRef: R-29}
         recovery:
-          description: Passphrase-encrypted recovery bundles, manifests, attestations
+          description: Passphrase-encrypted recovery bundles, manifests, attestations; bootstrap capsule (CD-33, 35-day per-object retention set by capsule-writer)
           systemOfRecord: true
           backupStream: false
           sharedModeProtection: separate-account
-          inClusterWriters: []
+          inClusterWriters: [capsule-writer]
           offClusterWriters: [recovery]
           readers: [recovery-reader, objstore-audit]
           objectLock: {enabled: true, defaultRetentionDays: 365, modeWhenScoped: GOVERNANCE, modeWhenShared: COMPLIANCE}
           lifecycle:
+          - {id: capsule-expiry, prefix: '{cluster}/capsule/2', currentDays: 100, noncurrentDays: 1, retentionRef: R-47}
           - {id: noncurrent, noncurrentDays: 3650, retentionRef: R-32}
         bootstrap-seed:
           description: Seed snapshots and control-transfer reports
@@ -1396,18 +1407,19 @@ x-invalid-examples:
           objectLock: {enabled: false}
           lifecycle:
           - {id: noncurrent, noncurrentDays: 365, newerNoncurrentVersions: 100, retentionRef: R-29}
-          - {id: runs, prefix: runs/, currentDays: 180, retentionRef: R-29}
-          - {id: conformance, prefix: conformance/, currentDays: 1, noncurrentDays: 1, retentionRef: R-29}
+          - {id: runs, prefix: '{cluster}/runs/', currentDays: 180, retentionRef: R-29}
+          - {id: conformance, prefix: '{cluster}/conformance/', currentDays: 1, noncurrentDays: 1, retentionRef: R-29}
         recovery:
-          description: Passphrase-encrypted recovery bundles, manifests, attestations
+          description: Passphrase-encrypted recovery bundles, manifests, attestations; bootstrap capsule (CD-33, 35-day per-object retention set by capsule-writer)
           systemOfRecord: true
           backupStream: false
           sharedModeProtection: separate-account
-          inClusterWriters: []
+          inClusterWriters: [capsule-writer]
           offClusterWriters: [recovery]
           readers: [recovery-reader, objstore-audit]
           objectLock: {enabled: true, defaultRetentionDays: 365, modeWhenScoped: GOVERNANCE, modeWhenShared: COMPLIANCE}
           lifecycle:
+          - {id: capsule-expiry, prefix: '{cluster}/capsule/2', currentDays: 100, noncurrentDays: 1, retentionRef: R-47}
           - {id: noncurrent, noncurrentDays: 3650, retentionRef: R-32}
         bootstrap-seed:
           description: Seed snapshots and control-transfer reports
@@ -1529,18 +1541,19 @@ x-invalid-examples:
           objectLock: {enabled: false}
           lifecycle:
           - {id: noncurrent, noncurrentDays: 365, newerNoncurrentVersions: 100, retentionRef: R-29}
-          - {id: runs, prefix: runs/, currentDays: 180, retentionRef: R-29}
-          - {id: conformance, prefix: conformance/, currentDays: 1, noncurrentDays: 1, retentionRef: R-29}
+          - {id: runs, prefix: '{cluster}/runs/', currentDays: 180, retentionRef: R-29}
+          - {id: conformance, prefix: '{cluster}/conformance/', currentDays: 1, noncurrentDays: 1, retentionRef: R-29}
         recovery:
-          description: Passphrase-encrypted recovery bundles, manifests, attestations
+          description: Passphrase-encrypted recovery bundles, manifests, attestations; bootstrap capsule (CD-33, 35-day per-object retention set by capsule-writer)
           systemOfRecord: true
           backupStream: false
           sharedModeProtection: separate-account
-          inClusterWriters: []
+          inClusterWriters: [capsule-writer]
           offClusterWriters: [recovery]
           readers: [recovery-reader, objstore-audit]
           objectLock: {enabled: true, defaultRetentionDays: 365, modeWhenScoped: GOVERNANCE, modeWhenShared: COMPLIANCE}
           lifecycle:
+          - {id: capsule-expiry, prefix: '{cluster}/capsule/2', currentDays: 100, noncurrentDays: 1, retentionRef: R-47}
           - {id: noncurrent, noncurrentDays: 3650, retentionRef: R-32}
         bootstrap-seed:
           description: Seed snapshots and control-transfer reports

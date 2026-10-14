@@ -25,8 +25,8 @@ description: |
   every provider key names a provider in ModelRouting; `dispatch.minimumHeadroomUsd`
   values <= `perExecution.maxCostUsd`. Cross-file invariants (plan 33 §9.2, review COST-2/8):
   for every enabled production model routable in a tier, the worst case at its full
-  `contextWindowTokens` with the injected output cap (plus `maxReasoningTokens` where the cap
-  does not cover reasoning) is <= `perRequest.maxCostUsd` and <=
+  `contextWindowTokens` with the injected output cap (plus the enforced `maxReasoningTokens`
+  where the output cap does not cover reasoning), priced at the highest applicable rates, is <= `perRequest.maxCostUsd` and <=
   `dispatch.minimumHeadroomUsd[tier]`; `perTask.maxAttempts` (and every repository
   override) >= the sum of the tests and implementation ladder rungs + the review and
   consecutive-infrastructure retry limits of plan 29.
@@ -59,10 +59,15 @@ properties:
       perRequest:
         type: object
         additionalProperties: false
-        required: [maxCostUsd, maxOutputTokens, maxRequestBodyBytes, inputBytesPerTokenEstimate]
+        required: [maxCostUsd, maxOutputTokens, maxRequestBodyBytes]
         properties:
           maxCostUsd:
-            description: Ceiling on the WORST-CASE reservation of one provider request (SC_REQUEST_COST_CAP).
+            description: |
+              HARD ceiling on the cost of one provider request (SPEC §81, CD-28). A request is admitted
+              only if its provable worst-case cost (input bound of the family's `inputBound`, enforced
+              output and reasoning caps, highest applicable rates) is <= this value; otherwise
+              SC_REQUEST_COST_CAP. The reservation equals that worst case, so neither the request nor any
+              scope can overshoot except through a recorded BOUND_VIOLATION (plan 53 §14.4a).
             $ref: "#/$defs/Money"
           maxOutputTokens:
             description: Ceiling on the requested output cap; larger requests are denied (SC_MAX_TOKENS_EXCEEDS_POLICY); absent caps are injected as min(this, model maxOutputTokens).
@@ -73,12 +78,6 @@ properties:
             type: integer
             minimum: 1048576
             maximum: 67108864
-          inputBytesPerTokenEstimate:
-            description: Conservative divisor for the input-token estimate (estimated tokens = ceil(body bytes / this)). Lower = more conservative.
-            type: number
-            minimum: 1
-            maximum: 4
-            multipleOf: 0.1
       perExecution:
         type: object
         additionalProperties: false
@@ -273,7 +272,6 @@ examples:
         maxCostUsd: "5.00"
         maxOutputTokens: 64000
         maxRequestBodyBytes: 33554432
-        inputBytesPerTokenEstimate: 2.0
       perExecution:
         maxCostUsd: "8.00"
         maxTotalTokens: 20000000
@@ -320,7 +318,7 @@ examples:
     spec:
       currency: USD
       calendarTimezone: UTC
-      perRequest: {maxCostUsd: "2.00", maxOutputTokens: 32000, maxRequestBodyBytes: 33554432, inputBytesPerTokenEstimate: 2.0}
+      perRequest: {maxCostUsd: "2.00", maxOutputTokens: 32000, maxRequestBodyBytes: 33554432}
       perExecution: {maxCostUsd: "3.00", maxTotalTokens: 5000000, maxRequests: 500, maxWallTimeSeconds: 2700, maxConcurrentRequests: 4}
       perTask: {maxCostUsd: "10.00", maxAttempts: 6}
       providers:
@@ -342,7 +340,7 @@ x-invalid-examples:
       spec:
         currency: USD
         calendarTimezone: UTC
-        perRequest: {maxCostUsd: 5.0, maxOutputTokens: 64000, maxRequestBodyBytes: 33554432, inputBytesPerTokenEstimate: 2.0}
+        perRequest: {maxCostUsd: 5.0, maxOutputTokens: 64000, maxRequestBodyBytes: 33554432}
         perExecution: {maxCostUsd: "8.00", maxTotalTokens: 20000000, maxRequests: 1500, maxWallTimeSeconds: 3600, maxConcurrentRequests: 8}
         perTask: {maxCostUsd: "25.00", maxAttempts: 10}
         providers: {anthropic: {dailyUsd: "40.00", monthlyUsd: "400.00"}}
@@ -360,7 +358,7 @@ x-invalid-examples:
       spec:
         currency: USD
         calendarTimezone: UTC
-        perRequest: {maxCostUsd: "5.00", maxOutputTokens: 64000, maxRequestBodyBytes: 33554432, inputBytesPerTokenEstimate: 2.0}
+        perRequest: {maxCostUsd: "5.00", maxOutputTokens: 64000, maxRequestBodyBytes: 33554432}
         perExecution: {maxCostUsd: "8.00", maxTotalTokens: 20000000, maxRequests: 1500, maxWallTimeSeconds: 3600, maxConcurrentRequests: 8}
         perTask: {maxCostUsd: "25.00", maxAttempts: 10}
         providers: {anthropic: {dailyUsd: "40.00", monthlyUsd: "400.00"}}
@@ -378,7 +376,7 @@ x-invalid-examples:
       spec:
         currency: USD
         calendarTimezone: Europe/Paris
-        perRequest: {maxCostUsd: "5.00", maxOutputTokens: 64000, maxRequestBodyBytes: 33554432, inputBytesPerTokenEstimate: 2.0}
+        perRequest: {maxCostUsd: "5.00", maxOutputTokens: 64000, maxRequestBodyBytes: 33554432}
         perExecution: {maxCostUsd: "8.00", maxTotalTokens: 20000000, maxRequests: 1500, maxWallTimeSeconds: 3600, maxConcurrentRequests: 8}
         perTask: {maxCostUsd: "25.00", maxAttempts: 10}
         providers: {anthropic: {dailyUsd: "40.00", monthlyUsd: "400.00"}}
@@ -396,7 +394,7 @@ x-invalid-examples:
       spec:
         currency: USD
         calendarTimezone: UTC
-        perRequest: {maxCostUsd: "5.00", maxOutputTokens: 64000, maxRequestBodyBytes: 33554432, inputBytesPerTokenEstimate: 2.0}
+        perRequest: {maxCostUsd: "5.00", maxOutputTokens: 64000, maxRequestBodyBytes: 33554432}
         perExecution: {maxCostUsd: "8.00", maxTotalTokens: 20000000, maxRequests: 1500, maxWallTimeSeconds: 3600, maxConcurrentRequests: 8}
         perTask: {maxCostUsd: "25.00", maxAttempts: 10}
         providers: {anthropic: {dailyUsd: "40.00", monthlyUsd: "400.00"}}

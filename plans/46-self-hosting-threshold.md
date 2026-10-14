@@ -185,7 +185,7 @@ Run on the live cluster against `sc-e2e/fake-target` with `modelGateway.fakeUpst
 
 ## 10. Secrets
 
-Consumes (toolbox-side, never stored by `sc-e2e`): `SC-RUNNER-ADMIN` (from the recovery bundle or operator vault, plan 35), `SC-HERMES-API` (Hermes Secret, cluster break-glass), the `sc-e2e-human` Forgejo token (test account; created at C10 setup, stored only in the operator's toolbox session, revoked at the end of the run). The `sc-e2e-human` token is a test credential of class `SC-FORGEJO-BOT-TOKENS` (instance `sc-e2e-human`) — requested addition to plan 35's register. No new class.
+Consumes (toolbox-side, never stored by `sc-e2e`): the operator's own per-operator `SC-RUNNER-ADMIN` credential (CD-30; never the break-glass credential), `SC-HERMES-API` (Hermes Secret, cluster break-glass), the `sc-e2e-human` Forgejo token (test account; created at C10 setup, stored only in the operator's toolbox session, revoked at the end of the run). The `sc-e2e-human` token is a test credential of class `SC-FORGEJO-BOT-TOKENS` (instance `sc-e2e-human`) — requested addition to plan 35's register. No new class.
 
 ## 11. Storage
 

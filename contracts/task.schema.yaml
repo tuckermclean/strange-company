@@ -276,9 +276,9 @@ $defs:
     type: string
     enum: [researcher, planner, tester, implementer, reviewer]
   Actor:
-    description: "`runner`, `hermes`, `human:<login>`, `ci:woodpecker/<pipeline>`. Workers are never actors."
+    description: "`runner`, `hermes`, `human:<login or operator identity>`, `breakglass:runner-admin` (break-glass admin credential, CD-30), `ci:woodpecker/<pipeline>`. Workers are never actors. Admin-API actors come from the credential, never from a header."
     type: string
-    pattern: "^(runner|hermes|human:[A-Za-z0-9_.-]{1,64}|ci:woodpecker/[0-9]+)$"
+    pattern: "^(runner|hermes|human:[A-Za-z0-9_.-]{1,64}|breakglass:runner-admin|ci:woodpecker/[0-9]+)$"
   ActorClass:
     type: string
     enum: [runner, ci, hermes, human]
@@ -680,6 +680,10 @@ $defs:
         properties:
           autonomous_used: {type: integer, minimum: 0}
           autonomous_max: {type: integer, minimum: 1}
+      credential_kid:
+        description: Key id of the admin credential used (admin-API transitions only, CD-30).
+        type: string
+        maxLength: 64
       trace_id: {type: string, pattern: "^[a-f0-9]{32}$"}
 examples:
   - schema_version: v1alpha1

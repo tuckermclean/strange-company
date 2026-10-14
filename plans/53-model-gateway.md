@@ -109,6 +109,7 @@ The Gateway is the **system of record for the invocation ledger** (with plan 32 
 | `ledger.budget_scopes` columns `limit_*` and the row itself for `task:`/`execution:` scopes | Runner (plan 33) | Gateway | Runner-only columns (column-level grants) |
 | `ledger.gateway_tokens` | Runner | Gateway (SELECT) | Runner inserts and sets `revoked_at` |
 | `ledger.emergency_stop_events` | Runner admin API | Gateway (SELECT) | append-only |
+| `ledger.model_quarantine` (`provider`, `model`, `since`, `cost_record_id`, `dimension`, `acknowledged_at`, `acknowledged_by`, `reason`) | Gateway inserts (bound violation, §14.4a); `ledger.acknowledge_model_quarantine()` (`SECURITY DEFINER`, called by the Runner admin endpoint) sets the acknowledgement | Gateway (admission), Runner (routing filter 8) | append-only except the acknowledgement columns |
 | `ledger.provider_status` (one row per provider: `provider`, `available`, `reason`, `key_fingerprint`, `updated_at`) | Gateway leader (upsert every 30 s) | Runner (routing eligibility, plan 31 §14.2) | overwritten in place; derived, rebuildable |
 
 DDL is owned by plans 32 (ledger, pricing snapshots) and 33 (scopes, reservations, e-stop, denials). **The Runner owns every `sc-pg` migration, including the `ledger` schema (CD-04).** Migrations run in-process at Runner startup under its Postgres advisory lock and are forward-only (plan 26 §19). **The Gateway never migrates.** It reads `max(version)` from `runner.schema_migrations` (SELECT grant for `sc_gateway`) at startup and every 30 s, and is not ready while that value is below its compiled `requiredSchemaVersion` (readiness reason `schema`).
@@ -181,6 +182,7 @@ Denials are returned *in the caller's provider error envelope*, so SDKs and CLIs
 | `SC_FAMILY_NOT_ALLOWED` | 403 | permission_error | provider does not declare the family | no |
 | `SC_PROVIDER_UNAVAILABLE` | 503 | api_error / server_error | provider disabled, or key missing, empty or forbidden-prefixed | no (operator action) |
 | `SC_MODEL_NOT_ALLOWED` | 403 | permission_error | (provider, family, model) not in `allowed_models` | no |
+| `SC_MODEL_QUARANTINED` | 403 | permission_error | the model has an unacknowledged bound violation (§14.4a) | no |
 | `SC_BODY_INVALID` | 400 | invalid_request_error | body is not JSON, or `model` is missing | no |
 | `SC_BODY_TOO_LARGE` | 413 | request_too_large / invalid_request_error | body > `perRequest.maxRequestBodyBytes` | no |
 | `SC_REQUEST_FEATURE_DENIED` | 400 | invalid_request_error | any request feature outside the family's `requestPolicy` allowlist or on the always-denied list (§7.3), named by ADR-0004's COST-1 amendment. `details.feature_class` ∈ {`body_member`, `tool_type`, `beta_header`, `content_source`, `conversation_state`, `pinned_parameter`, `subscription_auth`} and `details.member` names the feature (never its value) | no |
@@ -342,23 +344,34 @@ No PVC. `emptyDir` is not needed (read-only root filesystem; `/tmp` as an `empty
 3. **Authenticate.** Verify the JWS and claims (§8 `authn`). Token registry membership is checked transactionally in step 7.
 4. **Inspect.** Parse the body. Extract `model` (`SC_BODY_INVALID` if missing). Check `(provider, family, model) ∈ allowed_models` (`SC_MODEL_NOT_ALLOWED`). Enforce the family's request allowlist and the always-denied features (§7.3): unknown members, tool types, betas, non-inline sources and provider-side state are denied with zero upstream contact.
 5. **Concurrency.** Acquire a per-`jti` slot (in-memory per replica, limit `max_concurrent_requests`). The cross-replica bound is enforced in step 7 by counting open reservations for the `jti`.
-6. **Price and estimate** (plan 32 §10): find the effective priced entry at `now` for (provider, model, `service_tier` requested or `standard`), else `SC_PRICE_UNKNOWN`. Then compute:
+6. **Price and provable worst case** (CD-28; plan 32 §10): find the effective priced entry at `now` for (provider, model, `service_tier` pinned or `standard`), else `SC_PRICE_UNKNOWN`. Then compute the **provable** bounds; the request is admitted only if `worst ≤ perRequest.maxCostUsd` (else `SC_REQUEST_COST_CAP`), and step 7 reserves exactly `worst`:
 
    ```
-   window    = model.contextWindowTokens                       # effective window; no allowed beta enlarges it (§7.2)
-   est_input = min(ceil(len(body_bytes_after_mutation) / perRequest.inputBytesPerTokenEstimate), window)
-   out_cap   = requested cap (after alias normalisation and injection, §14.3)
-   reason    = model.outputCapCoversReasoning ? 0 : model.maxReasoningTokens
-   rate_in   = max over candidate rate sets of max(input, cacheWrite)
-               (cacheWrite1h instead of cacheWrite only if the bounded parse saw cache_control.ttl = "1h")
+   ib        = providers.<p>.apiFamilies.<f>.inputBound            # model-routing contract, per family
+   window    = model.contextWindowTokens                          # no allowed beta enlarges it (§7.2)
+   bytes     = UTF-8 bytes of the body as sent (after mutation), minus base64 payload bytes of image blocks
+   in_bound  = min( ceil(ib.tokensPerByteUpperBound × bytes)
+                    + ib.perMessageOverhead × (messages or input items, + 1 for system/instructions)
+                    + ib.perRequestOverhead
+                    + ib.imageTokensUpperBound × images,        # images denied if the family has no bound
+                    window )                                       # the provider rejects longer inputs (VS-12)
+   out_bound = enforced output cap (after alias normalisation and injection, §14.3)   # covers reasoning
+   rsn_bound = model.outputCapCoversReasoning ? 0 : model.maxReasoningTokens          # enforced via reasoningCapField
+   rate_in   = max over candidate rate sets of the highest input-side rate APPLICABLE to the request:
+               max(input, cachedInput, cacheWrite), and cacheWrite1h if any cache_control.ttl = "1h" is present
    rate_out  = max over candidate rate sets of max(output, reasoning or output)
-   worst     = ceil(est_input × rate_in / 1e6) + ceil((out_cap + reason) × rate_out / 1e6)   (micro-USD)
-   worst_tok = est_input + out_cap + reason
+   worst     = ceil(in_bound × rate_in / 1e6) + ceil((out_bound + rsn_bound) × rate_out / 1e6)   (micro-USD)
+   worst_tok = in_bound + out_bound + rsn_bound
    ```
 
-   The candidate rate sets are: the base rates, every time window, and **every** long-context tier whose `aboveInputTokens` is below `window`, **taken over every model in the token's `allowed_models`** (so a mismatch to the auxiliary or any other allowed model cannot exceed the reservation; review COST-4). Cache reads are priced at most at the input rate, so `max(input, cacheWrite)` is a true upper bound for every input category; the 2× 1-hour write rate applies only when the request asks for it (review COST-2). Using only the tier selected by `est_input` would under-reserve when the estimate falls just below a threshold that the actual input crosses (plan 33 §14.3). If `worst > perRequest.maxCostUsd` the request is denied with `SC_REQUEST_COST_CAP`.
+   The candidate rate sets are: the base rates, every time window, and every long-context tier whose `aboveInputTokens` is below `window`, taken over **every** model in the token's `allowed_models` (a mismatch cannot exceed the reservation). Because the input bound is a token **upper** bound, the output is a provider-enforced cap, and every rate is the highest that can apply, the billed cost of a request is ≤ `worst` whenever the provider honours its own window, cap and price card. A violation of that assumption is detected and handled as a `BOUND_VIOLATION` (§14.4a); it is never treated as a normal overrun.
 
-   **Decision:** input is estimated from bytes, not from a provider count-tokens call. Count-tokens is not uniform across providers, adds a round trip and its own rate limit, and Anthropic's is approximate anyway. A divisor of 2.0 bytes/token over-estimates typical English/code (≈3–4 bytes/token), which is the safe direction. Because the estimate is capped at `window`, and the input the provider bills is bounded by the same window (provider-side state and non-inline sources are denied, §7.3), the input part of `worst` is a hard bound once the body is larger than `2 × window` bytes. The remaining overrun channel is token-dense content below that size; plan 33 §14.3 states the bound.
+   **Decision — input bound method.** MVP uses the declared upper bound (`inputBound.method: upper_bound`). It needs no round trip, is deterministic and is identical for every family; with `tokensPerByteUpperBound: 1.0` it holds for byte-level BPE tokenizers by construction (every byte is at most one token), and per-family overheads cover chat formatting and tool-use system prompts. It is verified per family on an adversarial fixture corpus (53-AC-36). Alternatives considered (verify the current facts at implementation):
+   - **Provider count endpoints.** Anthropic's `POST /v1/messages/count_tokens` is free but separately rate-limited, adds one round trip (typically 100–300 ms) and is documented as an *estimate*, so it is not a provable bound. OpenAI offers an input-token count endpoint for the Responses API only (verify); DeepSeek and Z.ai offer none. Not used.
+   - **Pinned local tokenizers** (exact counts) are possible only where the tokenizer is published (OpenAI `o200k`-class, DeepSeek, GLM; not Anthropic). Reserved as `inputBound.method: local_tokenizer` (post-MVP); it would tighten reservations, not change the guarantee.
+   - The earlier byte-ratio *estimate* (`inputBytesPerTokenEstimate`) is removed (CD-28).
+
+   **Consequence:** reservations are larger than typical actual cost (input is bounded at up to 1 token per byte, capped at the window). This only affects headroom while requests are in flight; settlement releases the difference. Plan 33 §9.1 sizes the defaults for it.
 7. **Reserve.** One SQL transaction (plan 33 §14.2):
    - token registry check (exists, not revoked, digest equal);
    - DB e-stop level;
@@ -390,12 +403,13 @@ It is compared with the requested model's `responseModelMatch` (exact list plus 
 
 The Runner surfaces the flag on the execution (plan 26). An absent reported model is not a mismatch; it is recorded as null.
 
-### 14.3 Permitted body mutations (the only three)
+### 14.3 Permitted body mutations (the only four)
 
 1. **Output-cap injection.** The inspector reads **every** output-cap alias of the family (Chat: `max_tokens`, `max_completion_tokens`; Responses: `max_output_tokens`; Anthropic: `max_tokens`). Any alias > `perRequest.maxOutputTokens` (or > `model.maxOutputTokens`) is denied (`SC_MAX_TOKENS_EXCEEDS_POLICY`), not clamped. A value carried in a non-policy alias is moved to the policy `outputCapField` and the alias is removed, so the upstream receives exactly one cap (review COST-5). If no alias is present, inject `min(perRequest.maxOutputTokens, model.maxOutputTokens)` into `outputCapField`. Rationale: the reservation must be bounded by a value the provider enforces.
 2. **Stream usage injection** (`openai-chat-completions` and `fake`, `injectStreamUsage: true`). If `stream: true` and `stream_options.include_usage` is not `true`, set it. Without it, OpenAI-compatible streams report no usage and the ledger goes blind (prior-implementation evidence). This adds one final chunk with empty `choices`, which the OpenAI SDKs handle (verify per harness in R01 smoke).
 
 3. **Pinned parameters** (`requestPolicy.pinnedParameters`, review COST-4/COST-13). A pinned member that is absent is injected with its pinned value (e.g. Anthropic `service_tier: standard_only`, Responses `store: false` and `service_tier: default`; exact provider values verified, VS-11). A present member with another value is denied (feature class `pinned_parameter`). This keeps every request on a priced service tier and prevents provider-side storage that later requests could bill against.
+4. **Reasoning-cap injection** (CD-28). For a model with `outputCapCoversReasoning: false`, the provider-enforced reasoning cap `reasoningCapField` is injected at `maxReasoningTokens` when absent; a larger present value is denied (`SC_MAX_TOKENS_EXCEEDS_POLICY`). A model with neither property cannot be routed (contract `Model` schema), so reasoning is always bounded by an enforced cap.
 
 Mutation rewrites only the touched members. Every other member is re-emitted byte-identical (raw JSON pass-through), preserving numeric precision and key order.
 
@@ -414,6 +428,16 @@ Mutation rewrites only the touched members. Every other member is re-emitted byt
 For `unknown`, `usage` holds the reservation's estimate (every field in `estimated_fields`) and `cost` is that estimate priced at the reservation rates (cost-record description, review COST-12). For Anthropic, output components are taken **only** from `message_delta`; the `message_start` output count is never treated as a reported output component (review COST-11), so an abort after `message_start` charges `out_cap` for output.
 
 **Client disconnect:** the Gateway cancels the upstream request immediately (closes the upstream connection). Providers may still bill generated tokens, which is why missing output is charged at worst case.
+
+### 14.4a Bound violations (CD-28)
+
+At settlement, if provider-reported usage exceeds `computed_bound` (input tokens > `in_bound`, or output + reasoning > `out_bound + rsn_bound`) or the priced cost exceeds `reserved_micro_usd`, the Gateway:
+
+1. writes the cost record with the **reported** usage and real cost and `bound_violation: true` (the money is spent; the ledger never hides it). Scopes are charged the real cost;
+2. increments `sc_gateway_bound_violations_total{provider, model, dimension}` (`input`, `output`, `cost`), which fires **`SCGatewayBoundViolation`** (critical, page, `always_notify: budget-stop`; new, for plan 42);
+3. **quarantines the (provider, model)**: inserts `ledger.model_quarantine(provider, model, since, cost_record_id, dimension)`. While an unacknowledged row exists, every new request for that model is denied `SC_MODEL_QUARANTINED` (403) before reservation; routing skips the model (plan 31 filter 8 reads it with provider status). Acknowledgement is a human act through the Runner admin API (`POST /v1/admin/model-quarantine/{provider}/{model}:acknowledge`, plan 26, with a reason; it sets `acknowledged_at/by`), after the operator has corrected the family's `inputBound`, the model's caps or the price card by PR (`procedures/gateway-failure.md` §bound).
+
+Decision: deny until acknowledged. A violation means the admission proof no longer holds for that model, so continuing would admit requests whose cost is not provably capped (SPEC §81). The overshoot is therefore limited to the violating request plus the requests of that model already in flight when it settled.
 
 ### 14.5 Hermes path
 
@@ -456,7 +480,7 @@ Both replicas are stateless. All coordination happens in `sc-pg` (row locks, adv
 | Usage parse failures (provider format change) | `sc_gateway_usage_status_total{usage_status="unknown"}` share > 5 % over 1 h → **`SCModelUsageUnknown`** (warning) | ledger over-charges at worst case; `cost_complete=false` | none | `gateway-failure.md` §usage; re-record fixtures |
 | Reservation contention (headroom held by open reservations) | `sc_budget_denials_total{code="SC_BUDGET_CONTENDED"}` | caller retries after `retry-after`; no task state change | bounded wait, then 429 | `budget-emergency-stop.md` §E (only if persistent) |
 | Request uses a feature outside the allowlist | `sc_gateway_denials_total{code="SC_REQUEST_FEATURE_DENIED"}` | that request fails; a harness upgrade that needs a new feature fails its R01/C08 capture check (53-AC-29) | none | update `requestPolicy` by PR after review of what the feature does |
-| Reservation underestimate (actual > reserved) | `sc_gateway_reservation_overrun_micro_usd_total` increase → **`SCGatewayReservationOverrun`** (warning) | scope may exceed limit by the overrun | none; next requests denied | plan 33 §14.3 |
+| Provider usage exceeds the computed bound (tokenizer, window or cap assumption broken) | `sc_gateway_bound_violations_total` → **`SCGatewayBoundViolation`** (critical) | that request's real cost is above its reservation; scopes charged the real cost | model quarantined: new requests `SC_MODEL_QUARANTINED` until acknowledged (§14.4a) | `gateway-failure.md` §bound |
 | Model mismatch | §14.2 → **`SCModelMismatch`** | possibly mispriced or unexpected model | row flagged | `gateway-failure.md` §mismatch |
 | JWKS missing or rotated without overlap | `SC_TOKEN_INVALID` spike; readiness reason `jwks` | all tokens rejected | none | `gateway-failure.md` §tokens |
 | Kubernetes API unreachable | e-stop K8s source stale > 60 s (`sc_gateway_estop_source_up{source="k8s"}` = 0) → **`SCEmergencyStopSourceUnavailable`** | effective level raised to `workers` (plan 33 §14.6) | automatic | `gateway-failure.md` §estop |
@@ -517,6 +541,8 @@ Provider keys come from `bootstrap.env` → SOPS Secret `model-api-keys` (plans 
 | VS-9 | harnesses stop calling after a 403 budget/e-stop denial (no internal retry loop) | 53-AC-33 |
 | VS-10 | the pinned harnesses' request members, tool types and betas lie inside the shipped allowlists | 53-AC-29 |
 | VS-11 | provider values for pinned parameters (`standard_only`, `default`, `store: false`) and the reported service-tier strings mapped by plan 32 §8 | fixtures + 53-AC-17 |
+| VS-12 | each provider rejects inputs longer than the model's context window instead of billing them (the input bound is capped at `contextWindowTokens`) | 53-AC-36 (one over-window fixture per family) |
+| VS-13 | per family: billed input tokens ≤ `tokensPerByteUpperBound × bytes + overheads` on the adversarial corpus | 53-AC-36 |
 
 ## 20. Recovery behavior
 
@@ -544,7 +570,8 @@ Provider keys come from `bootstrap.env` → SOPS Secret `model-api-keys` (plans 
 | `sc_gateway_settlement_failures_total` | counter | — |
 | `sc_gateway_reservations_open` | gauge | — |
 | `sc_gateway_reservations_expired_total` | counter | — |
-| `sc_gateway_reservation_overrun_micro_usd_total` | counter | provider |
+| `sc_gateway_bound_violations_total` | counter | provider, model, dimension (`input`, `output`, `cost`) |
+| `sc_gateway_model_quarantined` | gauge (0/1) | provider, model |
 | `sc_gateway_provider_available` | gauge | provider |
 | `sc_gateway_policy_load_errors_total` | counter | file |
 | `sc_gateway_policy_info` | gauge (=1) | routing_rev, pricing_rev, budgets_rev (12-hex prefixes; one series at a time) |
@@ -566,7 +593,7 @@ Mapping to the telemetry enums: `sc.usage.status` carries the ledger `usage_stat
 
 **Parent context.** An incoming `traceparent` header is honoured. Otherwise the parent is the token claim `trace_parent` (W3C traceparent of the execution span, minted by the Runner, `gateway-token.schema.yaml`), so every invocation nests under its execution [SPEC §93]. Orchestrator tokens carry no `trace_parent`, and Hermes calls start a root span. There is no content, no prompt and no completion [SPEC §94].
 
-**Alerts** (catalogue names, `contracts/alert-catalog.yaml`, CD-01): `SCModelGatewayDown`, `SCGatewayNotReady`, `SCLedgerWriteFailing`, `SCGatewayPolicyInvalid`, `SCModelProviderUnavailable`, `SCModelCredentialRejected`, `SCModelProviderErrorsHigh`, `SCModelUsageUnknown`, `SCGatewayReservationOverrun`, `SCModelMismatch`, `SCEmergencyStopSourceUnavailable`, `SCGatewayLatencyOverheadHigh`. Budget and e-stop alerts are in plan 33. Runbook: `procedures/gateway-failure.md` (credential alerts: `procedures/rotate-model-credentials.md`).
+**Alerts** (catalogue names, `contracts/alert-catalog.yaml`, CD-01): `SCModelGatewayDown`, `SCGatewayNotReady`, `SCLedgerWriteFailing`, `SCGatewayPolicyInvalid`, `SCModelProviderUnavailable`, `SCModelCredentialRejected`, `SCModelProviderErrorsHigh`, `SCModelUsageUnknown`, `SCGatewayBoundViolation`, `SCModelMismatch`, `SCEmergencyStopSourceUnavailable`, `SCGatewayLatencyOverheadHigh`. Budget and e-stop alerts are in plan 33. Runbook: `procedures/gateway-failure.md` (credential alerts: `procedures/rotate-model-credentials.md`).
 
 ## 22. Testing strategy
 
@@ -616,6 +643,7 @@ Additional behaviours (requested by plans 24 and 31):
 - **Scripted tool calls.** When the last user message contains the marker `[fake:tool <name> <json-args>]`, the upstream answers with exactly one tool call to `<name>` with those arguments, in the wire format of the route: an OpenAI Chat Completions `tool_calls` entry (finish reason `tool_calls`) or an Anthropic Messages `tool_use` block (stop reason `tool_use`), streaming or not, with normal usage. Without a marker it answers text. Plan 24's 24-AC-4/24-AC-12 depend on it.
 - **`fake-529` scenario:** every request answers HTTP 529 with an Anthropic-style `overloaded_error` body (or 503 on chat routes). Used by plan 31's fallback test (31-AC-8).
 - **Scripted conversation `fake-hermes-watch`** (review RA-12), selected by request model. Deterministic rules over the whole conversation, not only the last user message: if no tool result is present yet → one tool call `agent_list` with `{"states":["RED_VERIFIED"]}`; if the latest tool result lists a task in state `RED_VERIFIED` → one tool call `agent_start` with `{"task_id":"<first such id>","role":"implementer","harness":"fake-success","profile":"implementation","model_tier":"bargain","idempotency_key":"watch-<task id>"}`; otherwise a text answer. Tool results are recognised in both wire formats (Chat `role: tool`, Anthropic `tool_result` blocks). Plan 24 points the watcher at this model in the C10 overlay.
+- **`fake-over-bound` scenario** (CD-28, 53-AC-37): answers normally but reports `usage.prompt_tokens` = 2 × the input bound the Gateway would compute for the request (the fake recomputes it from the same family values), so the bound-violation path is testable without a real provider.
 - **Second provider prefix:** the same server also serves every route under `/b/v1/...`, so that the test-only provider `fake-b` (`upstream.baseUrl: …/b/v1`, `model-routing.schema.yaml` example `e2e-test`) is a distinct upstream. `/_fake/requests` records the prefix of each request.
 
 ### 22.4 Integration (`make e2e-k3d`, deterministic)
@@ -654,7 +682,8 @@ It is run before R01, monthly via `pricing-update.md`, and on any harness CLI bu
 - **53-AC-16** Provider-hosted tools: an Anthropic request with `tools:[{"type":"web_search_20250305",...}]` and a Responses request with `tools:[{"type":"web_search"}]` are denied `SC_REQUEST_FEATURE_DENIED` with no upstream contact.
 - **53-AC-28** Allowlist (review COST-1), one request fixture each, every one denied with the listed code, `details.member` naming the feature, and zero requests at the fake upstream (`/_fake/requests` count unchanged): Responses `tools:[{"type":"web_search_preview_2025_03_11"}]`; Chat `tools:[{"type":"web_search"}]` and `tools:[{"type":"retrieval"}]`; Chat `web_search_options`; Anthropic `mcp_servers` with `anthropic-beta: mcp-client-2025-04-04` (feature class `beta_header` or `body_member`); Anthropic image block with `source.type: url`; Anthropic `document` with `source.type: url` and with `source.type: base64` PDF; Responses `input_file.file_url` and `input_image.image_url` = `https://…`; Responses `previous_response_id`; top-level unknown member `foo`; `anthropic-beta: context-1m-2025-08-07`; Responses `store: true` (feature class `pinned_parameter`). A body with an inline `data:` image is forwarded.
 - **53-AC-30** Contention (review COST-3): with an execution scope whose limit admits two worst-case reservations only sequentially, two concurrent requests to `fake-slow` both end 2xx; the second waited ≤ `contentionWaitSeconds`; no `SC_BUDGET_EXHAUSTED` row exists and `last_denied_at` of the scope stays null. With the first request held open past the wait (`fake-hang`, test wait 2 s), the second returns 429 `SC_BUDGET_CONTENDED` with `retry-after: 5`.
-- **53-AC-31** Estimator (review COST-2): `go test ./... -run TestWorstCaseEstimator` passes golden vectors, including: a body of 4 × `window` bytes reserves exactly `window` input tokens; a request without `cache_control.ttl:"1h"` is priced at `max(input, cacheWrite)`, with it at `cacheWrite1h`; a model with `outputCapCoversReasoning: false` adds `maxReasoningTokens`; a token whose `allowed_models` contains a pricier auxiliary uses the pricier rates. The request-size replay against the real harness is 53-AC-35 at GATE-R01, because its fixtures only exist after R01 captures them.
+- **53-AC-31** Worst-case computation (CD-28): `go test ./... -run TestWorstCase` passes golden vectors, including: a body of 4 × `window` bytes bounds input at exactly `window`; a 10 000-byte body with 3 messages bounds input at `ceil(1.0 × 10 000) + 3×8 + 1024`; image payload bytes are excluded and each image adds `imageTokensUpperBound`; an image to a family without `imageTokensUpperBound` is denied `SC_REQUEST_FEATURE_DENIED`; without `cache_control.ttl:"1h"` the input rate is `max(input, cachedInput, cacheWrite)`, with it `cacheWrite1h`; a model with `outputCapCoversReasoning: false` adds `maxReasoningTokens` and the request carries `reasoningCapField`; a token whose `allowed_models` contains a pricier auxiliary uses the pricier rates; `worst` 1 µUSD above `perRequest.maxCostUsd` is denied `SC_REQUEST_COST_CAP` and equal is admitted; the reservation row's `amount_micro_usd` equals `worst`. The request-size replay against the real harness is 53-AC-35 at GATE-R01.
+- **53-AC-37** Bound violation (CD-28): the fake upstream scenario `fake-over-bound` reports `input_tokens` = 2 × `in_bound`; the row has `bound_violation=true` and the real cost, `SCGatewayBoundViolation` fires (`promtool test rules` and test receiver), the next request for that model returns `SC_MODEL_QUARANTINED` with zero upstream contact, routing skips the model, and after `POST /v1/admin/model-quarantine/fake/fake-model:acknowledge` requests succeed again.
 - **53-AC-32** Cap aliases (review COST-5): a Chat request with `max_tokens: 100, max_completion_tokens: 900000` is denied `SC_MAX_TOKENS_EXCEEDS_POLICY`; a Chat request to a family whose `outputCapField` is `max_completion_tokens` carrying only `max_tokens: 100` reaches the fake upstream with `max_completion_tokens: 100` and no `max_tokens` member.
 - **53-AC-34** Settlement durability (review COST-21/22): with `sc-pg` unreachable for 3 min (k3d NetworkPolicy) during and after a completed request, the row written after recovery has `usage_status=reported` (not `reservation_expired`). A reservation older than 30 d removed by retention leaves its cost record intact (`SELECT count(*) FROM ledger.cost_records WHERE reservation_id=$r` = 1; there is no FK from `cost_records.reservation_id`).
 - **53-AC-17** Real-provider re-verification evidence exists and validates for every provider enabled in the production `policy/model-routing.yaml` **whose key is present in the installation** (review COST-10: GATE-C05 needs no paid calls when no keys are configured; the check is mandatory for every enabled provider at GATE-R01). The file `evidence/provider-smoke/*-<provider>.json` is ≤ 31 days old, has `normalization_invariants_ok: true`, `model_match: true`, `cap_covers_reasoning` equal to each model's `outputCapCoversReasoning`, and `service_tier_mapped: true`. Checked by `make check-provider-evidence` (deterministic file check).
@@ -672,6 +701,7 @@ It is run before R01, monthly via `pricing-update.md`, and on any harness CLI bu
 - **53-AC-23** (R01) With the pinned Claude Code (and Codex, when enabled) image, a real-harness smoke task completes with `ANTHROPIC_BASE_URL` pointing at the Gateway. Every request in `ledger.cost_records` for the execution has `usage_status=reported`, `model_mismatch=false`, and the harness-reported usage total (plan 28 cross-check) is within ±2 % of the ledger token totals.
 - **53-AC-24** (C08) A Hermes chat turn produces ≥ 1 row with `token_kind=orchestrator`, `harness=hermes`. After the Hermes token's jti is revoked, Hermes' next model call fails, and Hermes surfaces the error.
 - **53-AC-29** (C08 for Hermes, R01 for each real harness; VS-10) Request capture: with the Gateway in `captureFeatures` test mode (records member names, tool types, betas and source types only, never values), a full scripted Hermes session (including one context compression) and the R01 smoke task produce zero `SC_REQUEST_FEATURE_DENIED` and `SC_MODEL_NOT_ALLOWED` denials, and every captured feature lies inside the shipped `requestPolicy`.
+- **53-AC-36** (R01 for every enabled production family; VS-12/VS-13; CD-28) Input-bound corpus: `make smoke-providers --corpus` sends each item of `testdata/tokenizer-bound/` (≥ 40 items: plain English, code, minified JSON, CJK, Arabic/RTL, emoji with ZWJ sequences and skin-tone modifiers, combining-mark stacks, zero-width characters, mixed scripts, long runs of rare multi-byte characters, `\uXXXX`-escaped surrogate pairs, whitespace runs, a tool-heavy request, a 20-message conversation, one over-window request) with `max_tokens: 1` to every enabled production family. Evidence `evidence/provider-smoke/<date>-<provider>-corpus.json` records reported vs computed input per item; `make check-provider-evidence` fails unless reported ≤ computed for every item and the over-window item was rejected (not billed). The deterministic CI part checks the evidence file and runs the corpus through the bound function for the fake family.
 - **53-AC-35** (R01; review COST-2) Replay: the request-byte sizes and concurrency recorded during the R01 Claude Code smoke (≥ 200 requests, captured by `captureFeatures` mode, sizes only) are replayed through the estimator with the **shipped** policy and price cards: zero `SC_REQUEST_COST_CAP`, and the peak sum of concurrent reservations of one execution ≤ `global.hourlyUsd`. The size file is committed as `testdata/estimator/claude-code-r01-sizes.yaml` and becomes a regression input for every later policy change (`make test-estimator-replay`).
 - **53-AC-33** (R01, C08; VS-9) After a forced `SC_BUDGET_EXHAUSTED` (task scope set to its spent value), the harness (Claude Code at R01; Hermes at C08) makes ≤ 1 further request with the same token within 60 s (`ledger.denials` count for the jti ≤ 2).
 
@@ -693,3 +723,4 @@ It is run before R01, monthly via `pricing-update.md`, and on any harness CLI bu
 4. **Verify-only token.** Resolved (review RA-8): `POST /v1/admin/gateway-tokens:verify` exists in `runner-api.openapi.yaml`. Its tokens are `execution` tokens for the synthetic task `sc-0` whose shape `gateway-token.schema.yaml` now defines (budget scope `execution:sc-0-x<n>` only, lifetime ≤ 600 s; §14.5a).
 5. **ADR-0004 wording.** Resolved: ADR-0004's COST-1 amendment describes the allowlisted, token-priced request surface; plan 53 uses its denial code `SC_REQUEST_FEATURE_DENIED`.
 6. **Inline PDF documents are denied** until a per-page token estimate exists. Blocking: no. Harness capture (53-AC-29) shows whether the pinned harnesses send them. Owner: plan 53.
+7. **Model-quarantine acknowledgement endpoint** (CD-28). Plan 26 must add `POST /v1/admin/model-quarantine/{provider}/{model}:acknowledge` (admin credential, `X-SC-Reason` required, CD-30) calling `ledger.acknowledge_model_quarantine()`. Blocking: no for C05 (53-AC-37 can acknowledge through the function in the test harness). Owner: plan 26.

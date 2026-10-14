@@ -368,6 +368,8 @@ Procedure `procedures/manage-human-access.md` (owner: this plan) implements thes
 | §Lost MFA device | admin (or `sc-breakglass`, if the lost device belonged to the only admin) deletes the user's authenticators; next login forces re-enrolment | — | — | — | — |
 | §Lost device (laptop) | §Lost MFA device + delete sessions | delete PATs, OAuth2 grants and sessions | delete sessions (restart Grafana if needed) | invalidate sessions | revoke token |
 
+Runner admin access (CD-30): §Join issues the operator's per-operator `SC-RUNNER-ADMIN` credential (generated locally, shown once, hash entry added by PR to `secrets/strange-company/runner-admin-credentials.sops.yaml`, verified with `GET /v1/admin/whoami`); §Leave and §Lost device revoke it immediately with `POST /v1/admin/credentials/{kid}:revoke`, then a PR removes the hash entry. The Runner takes identity only from the credential (no `X-SC-Actor`).
+
 Acceptance: 15-AC-33 (k3d).
 
 ## 15. Failure modes

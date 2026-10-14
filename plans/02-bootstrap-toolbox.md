@@ -93,7 +93,7 @@ Derived requirements:
 |---|---|
 | `SC_IN_CONTAINER=1` | set in both images (Makefile re-exec guard, plan 01 §8.1) |
 | `SC_REPO_ROOT` | repository path; identical to the host path (§14.2) |
-| `SC_TOOLBOX_SOURCE` | `pulled` \| `built` \| `built-fallback` (pull failed) |
+| `SC_TOOLBOX_SOURCE` | `pulled` \| `built` \| `built-fallback` (pull failed) \| `capsule` (CD-33) |
 | `SC_TOOLBOX_IMAGE_REF` | `<repo>@sha256:<digest>` (pulled) or `localhost/…:in-<inputs12>@<image-id>` (built) |
 | `SC_ENGINE` | `docker`, `docker-rootless` or `podman-rootless` / `podman-rootful` |
 | `/run/sc/` | tmpfs, mode 0700, owned by the container user; holds derived secrets (plan 50 §10.2), `ssh/id_key` (copied, 0600), `aws/`, `kubeconfig`, `home/` |
@@ -201,6 +201,7 @@ Versions are selected at implementation time by the stated rule and re-verified 
 | Go toolchain | ci | golang base image by digest | `src/go.mod` `toolchain` directive | `make test/build` |
 | `golangci-lint`, `shfmt`, `kubeconform`, `k3d`, `promtool`, `helm-unittest` (Helm plugin), `goimports`, `actionlint`, `woodpecker-cli` (version = pinned Woodpecker server), envtest assets (`kube-apiserver`, `etcd` binaries for the pinned Kubernetes minor via `setup-envtest`) | ci | GitHub releases + sha256 (Go tools may be `go install` at a pinned version with `GOFLAGS=-mod=mod` and sum-DB verification) | latest stable each | plan 01 §7.1 targets |
 | `yamllint`, `ansible-lint`, `jsonschema` (crosscheck) | ci | pip hash-locked | latest | 01, 07 |
+| Stage-0 validator dependencies (`python3` from Debian plus every pin in `tools/stage0/requirements.txt`, installed hash-checked into `/opt/sc/stage0-venv`) | ci | pip hash-locked from `tools/stage0/requirements.txt` | exactly those pins (ADR-0021) | 01 `stage0-validate` |
 | QEMU, `cloud-localds`, `genisoimage` | ci | Debian (snapshot) | Debian 13 version | 05 lab |
 | SeaweedFS `weed` (the `s3-emulator`, ADR-0205/CD-12) | ci | upstream release binary + sha256 | the version that passes plan 14's `make test-s3-emulator` | 05 lab, 06, 14, 49, 50 |
 | `sc-lab` | ci | built from `src/` | repository HEAD | 05 lab |
@@ -252,12 +253,13 @@ The build context is the repository root, restricted by the root `.dockerignore`
 2. Parse wrapper flags; determine the env file (default `$REPO/bootstrap.env`; may be absent for `exec`, `shell`, `version`).
 3. Read from the env file, **without evaluating it** (02-R-6): `SSH_PRIVATE_KEY_PATH`, `SSH_PUBLIC_KEY_PATH`, `SSH_USE_AGENT`. Line grammar: `^[A-Z][A-Z0-9_]*=` then the value with one level of matching single or double quotes removed; leading `~/` → `$HOME/`. Nothing else is interpreted.
 4. Select the engine (§9.1) and its mode: `docker` (rootful), `docker-rootless` (`docker info --format '{{.SecurityOptions}}'` contains `rootless`), `podman-rootless` (`podman info --format '{{.Host.Security.Rootless}}'` = `true`), or `podman-rootful`.
-5. Compute the **inputs id**: for every file in `git ls-files -co --exclude-standard -- toolbox src .dockerignore` excluding `toolbox/image.lock`, `**/testdata/**` and `**/*_test.go`, sorted, emit `<git hash-object FILE> <path>`; the inputs id is `git hash-object --stdin` of that listing. Only Git is needed, and uncommitted edits are included.
+5. Compute the **inputs id**: for every file in `git ls-files -co --exclude-standard -- toolbox src .dockerignore tools/stage0/requirements.txt` excluding `toolbox/image.lock`, `**/testdata/**` and `**/*_test.go`, sorted, emit `<git hash-object FILE> <path>`; the inputs id is `git hash-object --stdin` of that listing. Only Git is needed, and uncommitted edits are included.
 6. Resolve the image for the requested target (`toolbox` or `ci`):
    - (a) `--toolbox-build` → build (§14.1), tag `localhost/strange-company-<target>:in-<inputs12>`, label with the full inputs id. Source `built`.
    - (b) Else if `image.lock` `inputsId` equals the computed id and the digest is non-empty → use `<image>@<digest>`: if absent locally, `<engine> pull <image>@<digest>`. Source `pulled`. If the pull fails and `SC_TOOLBOX_REQUIRE_PULL` is unset → build, source `built-fallback`, with a stderr notice; otherwise exit 3 `WRAPPER_TOOLBOX_PULL_FAILED`.
    - (c) Else (inputs differ, e.g. a development checkout) → reuse `localhost/…:in-<inputs12>` if it exists with a matching label, otherwise build. Source `built`.
    A build failure exits 3 `WRAPPER_TOOLBOX_BUILD_FAILED` with the engine's log path.
+   - (d) **Capsule (CD-33, plan 45 §9.4; implemented at H04):** when `./bootstrap recover --from-capsule <dir>` is used (or `SC_TOOLBOX_CAPSULE=<dir>`), the wrapper does not pull or build. It first verifies, in a minimal pre-step that needs only `sha256sum`/`shasum` on the host, that the capsule's toolbox OCI archive matches the sha256 listed in `capsule.json`, and that `capsule.json`'s cosign bundle verifies against the trusted key exported from the unlocked recovery bundle (the signature check runs in a throwaway container started **from the archive only after** the digest check passed; a mismatch exits 3 `WRAPPER_CAPSULE_UNVERIFIED`). It then loads the archive (`docker load` / `podman load`) and requires the loaded image's digest to equal `toolbox/image.lock` `toolboxDigest` at the capsule's release commit. Source `capsule`.
 7. If the source is `built*`, the target is `toolbox`, and the command is `run`, `expand` or `recover`, ensure `.bootstrap/toolbox/<inputs-id>.oci.tar` exists (`<engine> save --format oci-archive` for Podman, `docker save` for Docker) (§14.8).
 8. Prepare mounts (§14.3, §14.4) and run the container (§14.5).
 

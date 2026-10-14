@@ -119,8 +119,11 @@ strange-company/
 │   └── lab/                     lab substrate definitions: lab.yaml VM shapes, cloud-init templates (plan 05 §14.6)
 ├── secrets/
 │   ├── offcluster/<cluster>/    SOPS files encrypted ONLY to the recovery recipient (plan 35; §6.5)
+│   ├── strange-company/         repository-level SOPS registers changed only by PR, e.g. `runner-admin-credentials.sops.yaml` (hash entries of per-operator Runner admin credentials, CD-30; plans 26, 35, 50)
 │   └── ci/<cluster>/            CI-side SOPS secrets for trusted build pipelines (`ci-secrets apply`, `supply-chain init`; plans 17, 20, 23, 35)
 ├── evidence/                    small, non-secret, committed evidence records that policy requires in Git (e.g. provider-smoke, plan 53). Never logs.
+├── tools/
+│   └── stage0/                  Stage-0 validator `validate.py`, `PLAN.md` generator `genplan.py`, pinned `requirements.txt` (ADR-0021; Python by exception to ADR-0002; ships in no image) (protected)
 ├── test/
 │   ├── fixtures/                shared fixtures (bootstrap env files, fake provider, tofu plan JSON, …)
 │   ├── e2e/                     end-to-end harnesses (fake bootstrap, handoff, lab, fresh-vps)
@@ -324,6 +327,7 @@ Execution model (§8.1): every target runs inside the pinned `ci` image (plan 02
 | `chart-test` | V | `helm lint`, values-schema validation, `helm template` + kubeconform, `helm unittest` for `charts/strange-company` (SPEC §116 first four items) | 54 |
 | `commit-lint` | V (warn for humans) | §6.4 commit subject rules on `origin/main..HEAD` | 01/55 |
 | `dag-check` | V | Implementable today with only `dag.yaml` and the plans (GC-01): (a) `plans/dag.yaml` validates and is **acyclic** (topological sort), every `deps`/`after` id exists; (b) every node has a `### GATE-<node>` section in **each** plan listed in its `plans`, and every `### GATE-<node>` heading found in a plan belongs to a node whose `plans` list that plan; (c) every AC id (`<plan>-AC-<n>`) is defined exactly once across `plans/*.md`. Optional: an AC may carry a `<!-- uses: tag1,tag2 -->` marker and `dag.yaml` may carry `components:` (tag → introducing node); when both exist, a marker naming a component from a non-upstream node is reported as a warning. **Hidden-edge detection** (failing on undeclared component use) is a post-MVP extension. Writes `out/dag-check/report.json` | 01/52 |
+| `stage0-validate` | V | runs `python3 -I tools/stage0/validate.py` (checks C01–C14: schemas and examples, state machine, DAG and gate coverage, references, alert and secret names, `PLAN.md` freshness) in the `ci` image; exit non-zero on any violation (ADR-0021, CD-27). GitHub Actions runs the same command in `.github/workflows/stage0-validate.yaml` | 01 |
 | `quarantine-check` | V | `policy/test-quarantine.yaml` (`TestQuarantine`) is schema-valid, every entry unexpired and owned; nightly `--wall-clock` variant (plan 52 §9.3) | 52 |
 | `test-flaky-scan` | E (nightly) | reruns the unit suite N times to detect flaky tests and proposes quarantine entries (plan 52) | 52 |
 | `fuzz-short` | E (nightly) | Go fuzz targets for a bounded time each (plan 52) | 52 |
@@ -476,7 +480,7 @@ CODEOWNERS  **/CODEOWNERS  .forgejo/**  .gitea/**  .gitmodules  **/*.sops.yaml
 .strange-company/**  .woodpecker/**  .github/**  .sops.yaml  .gitattributes  .gitignore
 Makefile  mk/**  bootstrap  bootstrap.env.example
 contracts/**  policy/**  context/company/**  plans/**  procedures/**  adr/**
-versions/**  toolbox/**  harnesses/**  forge/**
+versions/**  toolbox/**  harnesses/**  forge/**  tools/stage0/**
 infra/tofu/**  infra/catalog/**  infra/profiles/**  infra/bootstrap/**  infra/objstore/**
 gitops/clusters/**  gitops/layers/**  gitops/components/**  gitops/profiles/**
 gitops/platform/strange-company/generated/**  gitops/platform/admission/**  gitops/clusters/*/flux-system/**

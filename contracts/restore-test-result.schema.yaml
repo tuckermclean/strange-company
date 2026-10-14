@@ -71,6 +71,7 @@ properties:
       - drill-freshness
       - longhorn-attach-drill
       - repo-rehydrate
+      - bootstrap-capsule
   subject:
     description: >
       What was restored or audited: a CNPG cluster name, `<org>/<repo>`, a Longhorn

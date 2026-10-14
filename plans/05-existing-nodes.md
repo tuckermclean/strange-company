@@ -1,7 +1,7 @@
 # 05 — Existing-nodes provider and the lab substrate
 
 **Status:** Stage-0 plan (draft)
-**DAG nodes:** F09 (co-owner with 03, 04), P02 (co-owner with 03, 04); lab-based contributions to P03 and H01 (§23, GC-01). Supplies the lab substrate that F10 (plans 07, 08), F08 (plan 50 `e2e-lab`) and the engine matrix of plan 02 use.
+**DAG nodes:** F09 (co-owner with 03, 04), P02 (co-owner with 03, 04); lab-based contributions to P03, P06 (lab-seed, CD-31) and H01 (§23, GC-01). Supplies the lab substrate that F10 (plans 07, 08), F08 (plan 50 `e2e-lab`) and the engine matrix of plan 02 use.
 **Related plans:** [02](02-bootstrap-toolbox.md), [03](03-provider-interface.md), [04](04-ovh-provider.md), [07](07-k3s.md), [08](08-node-security.md), [14](14-object-storage.md), [47](47-ha-expansion.md), [49](49-destroy.md), [50](50-bootstrap-orchestrator.md), [52](52-ci-strategy.md)
 **Contracts:** conforms to `contracts/provider.schema.yaml`; reads `bootstrap-config.schema.yaml` `spec.provider.existing`; uses the lab substrates in `contracts/substrate.schema.yaml` examples (`lab-small`)
 **ADRs:** relies on ADR-0011, ADR-0020, ADR-0102; introduces ADR-0105 (lab substrate: unprivileged QEMU/KVM VMs presented to `existing`)
@@ -112,6 +112,7 @@ None on the operator side beyond run artifacts. Lab: per VM a qcow2 overlay (≤
 
 - Discovery: < 30 s per node, negligible load.
 - Lab-small: 1 VM, 2 vCPU / 4 GiB / 20 GiB. Runs on a standard 4-vCPU / 16 GiB GitHub-hosted Linux runner with KVM.
+- Lab-seed: 1 VM, 4 vCPU / 8 GiB / 40 GiB thin qcow2; requires a runner with ≥ 8 vCPU, ≥ 16 GiB RAM, KVM and ≥ 60 GiB free disk (a larger hosted runner or the self-hosted lab host; plan 52 lab lane).
 - Lab-ha: 3 VMs, 2 vCPU / 4 GiB / 20 GiB each; requires a runner with ≥ 8 vCPU / 24 GiB (larger hosted runner or a self-hosted lab host; plan 52 schedules it nightly).
 
 ## 13. Security boundary
@@ -205,12 +206,15 @@ The node marker `/etc/strange-company/install-uid` is written by plan 08's basel
 
 **`infra/lab/lab.yaml`** (`kind: LabSpec`; its schema is the `LabSpec` `$defs` entry of `contracts/version-locks.schema.yaml`, next to `LabImageLock`):
 
-| Field | lab-small | lab-ha |
-|---|---|---|
-| VMs | `node-01` | `node-01..03` |
-| vCPU / memory / disk | 2 / 4 GiB / 20 GiB | 2 / 4 GiB / 20 GiB each |
-| Disk device | `virtio-blk` (exercises the attested path: `diskClassOverride: ssd`) | `virtio-scsi` + `scsi-hd,rotation_rate=1` (exercises the discovered-`ssd` path) |
-| Images (matrix) | Debian 13 genericcloud, Ubuntu 24.04 cloud image | same |
+| Field | lab-small | lab-ha | lab-seed (CD-31) |
+|---|---|---|---|
+| VMs | `node-01` | `node-01..03` | `node-01` |
+| vCPU / memory / disk | 2 / 4 GiB / 20 GiB | 2 / 4 GiB / 20 GiB each | 4 / 8 GiB / 40 GiB thin qcow2 |
+| Disk device | `virtio-blk` (exercises the attested path: `diskClassOverride: ssd`) | `virtio-scsi` + `scsi-hd,rotation_rate=1` (exercises the discovered-`ssd` path) | `virtio-blk`, attested `ssd` |
+| Images (matrix) | Debian 13 genericcloud, Ubuntu 24.04 cloud image | same | Debian 13 only |
+| Purpose | configure (F10) | expansion rehearsal (H01) | real seed with Longhorn, CNPG and Forgejo for plan 19's fault cases N4, N5, N6 (19-AC-21; plan 52 lab lane); `lab-small` is too small for them |
+
+**lab-seed runner check:** `sc-lab up --substrate lab-seed` first verifies that the filesystem holding `/tmp/sc-lab/<run-id>/` has ≥ 60 GiB free (the 40 GiB thin overlay can fill completely with Longhorn backing files, plus the base image cache and the `s3-emulator` data) and that `/dev/kvm` and 8 GiB of memory are available; otherwise it fails with `LAB_RUNNER_DISK_LOW` / `LAB_RUNNER_MEMORY_LOW` before any VM starts. Profile file `infra/profiles/lab-seed.yaml` (lab-labeled substrate, plan 03 §9.1).
 
 **Networking (unprivileged):**
 - NIC0: QEMU user-mode (`-netdev user,id=n0,hostfwd=tcp:127.0.0.1:220N-:22`) for SSH from the toolbox and NAT egress to the internet (package mirrors, k3s binary download).
@@ -222,7 +226,7 @@ The node marker `/etc/strange-company/install-uid` is written by plan 08's basel
 **Lab S3:** the SeaweedFS `s3-emulator` (`weed server -s3`, ADR-0205/CD-12) inside the ci container (`127.0.0.1:9000`, TLS with a run-local CA; certificate SANs `IP:127.0.0.1`, `IP:10.0.2.2`, `DNS:s3.lab.internal`). The toolbox side uses `S3_ENDPOINT=https://127.0.0.1:9000`; VMs reach the same server through QEMU's host alias `10.0.2.2`. In-cluster consumers therefore need a different endpoint (`https://10.0.2.2:9000`) and the lab CA: `sc-lab env` sets `SC_LAB_S3_INCLUSTER_ENDPOINT` and `SC_LAB_S3_CA_FILE` (test-mode-only runtime variables; interface assumption on plans 14/50, §25 OQ-05-3).
 
 **`sc-lab` commands:**
-- `sc-lab up --substrate lab-small|lab-ha --os debian-13|ubuntu-24.04 --run-id <id>`: verify `/dev/kvm`; fetch (or reuse from `.cache/lab-images/`) the pinned image and verify its checksum from `versions/lab-images.lock.yaml`; create qcow2 overlays; generate `SC-LAB-SSH`, host keys and seed ISOs; start QEMU (`-enable-kvm -cpu host -machine q35 -nographic -serial file:/tmp/sc-lab/<id>/node-0N.console`); wait until SSH answers (≤ 180 s per VM); start the `s3-emulator`; write `/run/sc/lab/<id>/bootstrap.env` and print its path.
+- `sc-lab up --substrate lab-small|lab-ha|lab-seed --os debian-13|ubuntu-24.04 --run-id <id>`: verify `/dev/kvm`; fetch (or reuse from `.cache/lab-images/`) the pinned image and verify its checksum from `versions/lab-images.lock.yaml`; create qcow2 overlays; generate `SC-LAB-SSH`, host keys and seed ISOs; start QEMU (`-enable-kvm -cpu host -machine q35 -nographic -serial file:/tmp/sc-lab/<id>/node-0N.console`); wait until SSH answers (≤ 180 s per VM); start the `s3-emulator`; write `/run/sc/lab/<id>/bootstrap.env` and print its path.
 - `sc-lab env --run-id <id>`: prints the generated `bootstrap.env` (non-secret values plus file paths).
 - `sc-lab status`: VM pids, SSH reachability, console tail.
 - `sc-lab down --run-id <id>`: kill QEMU and the `s3-emulator`, delete overlays and tmpfs material. Idempotent.
@@ -326,6 +330,10 @@ Run artifacts (`discovery/<node>.json`, footprint, provider output). The report 
 ### GATE-P03 (contribution; needs configure, plans 07/08 — GC-01)
 
 - **05-AC-22** Lab end-to-end through configure for both OS images: the run exits 0 with `SC_TEST_STOP_AFTER=configure`, `kubectl get nodes` (through `./bootstrap exec`-equivalent tunnel) shows `node-01 Ready`, and a second run reports provision and configure `skipped (already done)` (plan 07 07-AC-2 asserts `changed=0`).
+
+### GATE-P06 (contribution; seed→Flux fault cases on real components — CD-31)
+
+- **05-AC-24** On a runner meeting the lab-seed requirement, `make e2e-lab LAB_SUBSTRATE=lab-seed LAB_OS=debian-13` first passes the runner check (log line `sc-lab: runner ok disk_free_gib=<≥60> mem_gib=<≥8> kvm=ok`; a fixture runner with 50 GiB free fails with `LAB_RUNNER_DISK_LOW` and starts no VM), then seeds with real Longhorn, CNPG and Forgejo, and plan 19's cases N4, N5 and N6 (19-AC-21) pass on this VM. `sc-lab down` leaves no `qemu-system` process.
 
 ### GATE-H01 (contribution; expansion rehearsal — GC-01)
 
