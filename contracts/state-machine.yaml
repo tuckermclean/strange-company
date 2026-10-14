@@ -1,0 +1,1378 @@
+# Authoritative task workflow and execution state machine (SPEC §4.4, §47, §51, §53, §57,
+# §70–§74; owning plan 29). Validated by contracts/state-machine.schema.yaml and by the
+# loader invariants listed in that schema and in plan 29 §8.2.
+#
+# Evaluation rule (plan 29 §8.1): for an incoming (event, actor class), the library collects
+# every transition whose `from` contains the current state, whose `event` matches, whose
+# `actors` contain the actor class and whose `modes` contain the task's verification mode.
+# Candidates are evaluated in ascending `id` order; the first whose guards all pass fires.
+# If none fires the event is rejected (INVALID_STATE or GATE_NOT_SATISFIED) and recorded in
+# `rejected_events`, never silently dropped. Workers are never actors: their results reach
+# the machine only as Runner events after ingestion (plan 26 §14.4).
+apiVersion: strange.company/v1alpha1
+kind: TaskStateMachine
+metadata:
+  name: strange-company-tasks
+  revision: 3
+  description: Task workflow (test-first and verification-first), execution states and human projection.
+spec:
+  actorClasses: [runner, ci, hermes, human]
+  failureClasses: [merit, infrastructure, policy, budget]
+  modes: [test-first, verification-first]
+  initialState: SPECIFIED
+  terminalStates: [DONE, CANCELLED]
+
+  # ------------------------------------------------------------------ states
+  states:
+    - name: SPECIFIED
+      modes: [test-first, verification-first]
+      terminal: false
+      activeExecution: optional
+      dispatchableRoles: [researcher, planner, tester]
+      waitingOn: hermes
+      stall: {alertAfter: 168h, alertName: SCTaskStuck, policyKey: spec.watchdog.groups.specified}
+      description: Task exists with objective, base commit and acceptance criteria (version 1+). Criteria are still revisable by a human (/sc respec). Researcher and planner executions may run without changing state.
+    - name: TEST_AUTHORING
+      modes: [test-first]
+      terminal: false
+      activeExecution: required
+      returnTargets: [SPECIFIED, RED_VERIFIED, TEST_NEEDS_WORK, ALREADY_SATISFIED, NEEDS_INVESTIGATION, TEST_SPEC_CONFLICT]
+      waitingOn: worker
+      stall: {alertAfter: 30m, alertName: SCTaskStuck, policyKey: spec.watchdog.groups.noExecution}
+      description: A tester execution is producing the red test commit (tests, fixtures, minimal test infrastructure, declared stubs only). Acceptance criteria are frozen.
+    - name: RED_VERIFYING
+      modes: [test-first]
+      terminal: false
+      activeExecution: verification
+      waitingOn: ci
+      stall: {alertAfter: 1h, alertName: SCTddVerificationStalled, escalateAfter: 4h, escalateTo: NEEDS_HUMAN, policyKey: spec.watchdog.groups.verification}
+      description: The Runner triggered the trusted RED pipeline for the candidate red commit and waits for evidence (ADR-0008).
+    - name: RED_VERIFIED
+      modes: [test-first]
+      terminal: false
+      activeExecution: optional
+      dispatchableRoles: [implementer, tester, reviewer, researcher]
+      waitingOn: hermes
+      stall: {alertAfter: 24h, alertName: SCTaskStuck, escalateAfter: 72h, escalateTo: NEEDS_HUMAN, policyKey: spec.watchdog.groups.hermesWait}
+      description: Trusted CI recorded valid RED evidence for the current generation's red commit and the test manifest exists. Implementation may be dispatched. Also the state after a failed GREEN attempt.
+    - name: TEST_NEEDS_WORK
+      modes: [test-first, verification-first]
+      terminal: false
+      activeExecution: optional
+      dispatchableRoles: [tester, researcher]
+      waitingOn: hermes
+      stall: {alertAfter: 24h, alertName: SCTaskStuck, escalateAfter: 72h, escalateTo: NEEDS_HUMAN, policyKey: spec.watchdog.groups.hermesWait}
+      description: The red commit (or judge artifact) is not valid evidence (broken test infrastructure, error-class failures, missing or skipped tests, scope violation). A new tester attempt carrying the evidence is required.
+    - name: ALREADY_SATISFIED
+      modes: [test-first, verification-first]
+      terminal: false
+      activeExecution: optional
+      dispatchableRoles: [tester, researcher, reviewer]
+      waitingOn: hermes
+      stall: {alertAfter: 72h, alertName: SCTaskStuck, policyKey: spec.watchdog.groups.investigation}
+      description: Every behavior-change criterion's new tests (or the judge) pass on the unmodified base (SPEC §51). No artificial failure is manufactured. Investigation decides between stronger tests, a respecification or closure.
+    - name: NEEDS_INVESTIGATION
+      modes: [test-first, verification-first]
+      terminal: false
+      activeExecution: optional
+      dispatchableRoles: [tester, researcher, reviewer]
+      waitingOn: hermes
+      stall: {alertAfter: 72h, alertName: SCTaskStuck, policyKey: spec.watchdog.groups.investigation}
+      description: Verification could not establish valid RED for reasons that are not the tester's fault alone (pre-existing baseline failing, only some criteria failing, inconclusive or flaky results).
+    - name: TEST_SPEC_CONFLICT
+      modes: [test-first, verification-first]
+      terminal: false
+      activeExecution: optional
+      dispatchableRoles: [reviewer, researcher, tester, implementer]
+      waitingOn: hermes
+      stall: {alertAfter: 24h, alertName: SCTaskStuck, escalateAfter: 72h, escalateTo: NEEDS_HUMAN, policyKey: spec.watchdog.groups.hermesWait}
+      description: The implementer (or producer) reported that a protected acceptance test is invalid (SPEC §53, §70). An adjudication decides; changing the test needs approval and then a new red commit with new RED verification.
+    - name: IMPLEMENTING
+      modes: [test-first]
+      terminal: false
+      activeExecution: required
+      returnTargets: [RED_VERIFIED, CHANGES_REQUESTED, TEST_SPEC_CONFLICT]
+      waitingOn: worker
+      stall: {alertAfter: 30m, alertName: SCTaskStuck, policyKey: spec.watchdog.groups.noExecution}
+      description: An implementer execution started from the red commit (or a descendant containing it) is producing implementation commits.
+    - name: GREEN_VERIFYING
+      modes: [test-first]
+      terminal: false
+      activeExecution: verification
+      waitingOn: ci
+      stall: {alertAfter: 1h, alertName: SCTddVerificationStalled, escalateAfter: 4h, escalateTo: NEEDS_HUMAN, policyKey: spec.watchdog.groups.verification}
+      description: The Runner triggered the trusted GREEN pipeline for the implementation head and waits for evidence.
+    - name: GREEN_VERIFIED
+      modes: [test-first, verification-first]
+      terminal: false
+      activeExecution: optional
+      dispatchableRoles: [reviewer]
+      waitingOn: hermes
+      stall: {alertAfter: 24h, alertName: SCTaskStuck, escalateAfter: 72h, escalateTo: NEEDS_HUMAN, policyKey: spec.watchdog.groups.hermesWait}
+      description: All required deterministic validation passed at the current head, with the test manifest intact (SPEC §54). For verification-first tasks, the approved judge passed.
+    - name: REVIEW
+      modes: [test-first, verification-first]
+      terminal: false
+      activeExecution: required
+      returnTargets: [GREEN_VERIFIED]
+      waitingOn: worker
+      stall: {alertAfter: 30m, alertName: SCTaskStuck, policyKey: spec.watchdog.groups.noExecution}
+      description: A reviewer execution examines task, criteria, red commit and evidence, implementation diff, green evidence and handoffs, and judges legitimacy (SPEC §55).
+    - name: CHANGES_REQUESTED
+      modes: [test-first, verification-first]
+      terminal: false
+      activeExecution: optional
+      dispatchableRoles: [implementer, researcher]
+      waitingOn: hermes
+      stall: {alertAfter: 24h, alertName: SCTaskStuck, escalateAfter: 72h, escalateTo: NEEDS_HUMAN, policyKey: spec.watchdog.groups.hermesWait}
+      description: The reviewer requested changes. Findings are recorded and a new implementer (or producer) attempt is needed. Counts as a merit failure.
+    - name: AWAITING_MERGE
+      modes: [test-first, verification-first]
+      terminal: false
+      activeExecution: forbidden
+      waitingOn: human
+      stall: {alertAfter: 168h, alertName: SCTaskStuck, policyKey: spec.watchdog.groups.awaitingMerge}
+      description: Review accepted at the PR head; strange-company/tdd-provenance and strange-company/review are success. A human merges in Forgejo (ADR-0019). Added state (plan 29 §2) because the waiting party differs from REVIEW.
+    - name: DONE
+      modes: [test-first, verification-first]
+      terminal: true
+      activeExecution: forbidden
+      waitingOn: none
+      description: Merged with verified provenance, or a non-mergeable task accepted by review, or declared done by a human. Terminal.
+    - name: NEEDS_HUMAN
+      modes: [test-first, verification-first]
+      terminal: false
+      activeExecution: forbidden
+      waitingOn: human
+      stall: {alertAfter: 72h, alertName: SCNeedsHumanBacklog, policyKey: spec.watchdog.groups.needsHuman}
+      description: Autonomous progress stopped (exhaustion, violation, budget, rejection, bypass, stall or escalation). Every exit is human-only (lesson L-4). A notification is raised on entry (SPEC §97).
+    - name: BLOCKED
+      modes: [test-first, verification-first]
+      terminal: false
+      activeExecution: forbidden
+      waitingOn: human
+      description: Deliberate hold (operator stop lever or external dependency). Entering is allowed to hermes and humans; every exit is human-only (lesson L-4).
+    - name: CANCELLED
+      modes: [test-first, verification-first]
+      terminal: true
+      activeExecution: forbidden
+      waitingOn: none
+      description: Abandoned. Branch archived, PR closed, credentials revoked. Terminal.
+    # ---- verification-first (judge-first) states, plan 29 §14.8 and ADR-0353
+    - name: JUDGE_AUTHORING
+      modes: [verification-first]
+      terminal: false
+      activeExecution: required
+      returnTargets: [SPECIFIED, TEST_NEEDS_WORK, ALREADY_SATISFIED, NEEDS_INVESTIGATION, TEST_SPEC_CONFLICT, JUDGE_APPROVED]
+      waitingOn: worker
+      stall: {alertAfter: 30m, alertName: SCTaskStuck, policyKey: spec.watchdog.groups.noExecution}
+      description: A tester execution writes the judge artifact (rubric, invariants, benchmark threshold, validation scenario) under the exemption class's judge paths before any production.
+    - name: JUDGE_VALIDATING
+      modes: [verification-first]
+      terminal: false
+      activeExecution: verification
+      waitingOn: ci
+      stall: {alertAfter: 1h, alertName: SCTddVerificationStalled, escalateAfter: 4h, escalateTo: NEEDS_HUMAN, policyKey: spec.watchdog.groups.verification}
+      description: Trusted CI checks that a deterministic judge is well-formed and fails on the unmodified base (the verification-first equivalent of RED).
+    - name: JUDGE_AWAITING_APPROVAL
+      modes: [verification-first]
+      terminal: false
+      activeExecution: forbidden
+      waitingOn: human
+      stall: {alertAfter: 72h, alertName: SCTaskStuck, policyKey: spec.watchdog.groups.approval}
+      description: The exemption class requires human approval (non-deterministic judge or approval human). One human decision approves the exemption and the judge together (ADR-0353).
+    - name: JUDGE_APPROVED
+      modes: [verification-first]
+      terminal: false
+      activeExecution: optional
+      dispatchableRoles: [implementer, researcher, tester, reviewer]
+      waitingOn: hermes
+      stall: {alertAfter: 24h, alertName: SCTaskStuck, escalateAfter: 72h, escalateTo: NEEDS_HUMAN, policyKey: spec.watchdog.groups.hermesWait}
+      description: The judge is defined and approved. Production may be dispatched. Also the state after a failed judging attempt.
+    - name: PRODUCING
+      modes: [verification-first]
+      terminal: false
+      activeExecution: required
+      returnTargets: [JUDGE_APPROVED, CHANGES_REQUESTED, TEST_SPEC_CONFLICT]
+      waitingOn: worker
+      stall: {alertAfter: 30m, alertName: SCTaskStuck, policyKey: spec.watchdog.groups.noExecution}
+      description: A producer execution (implementer for repository changes, researcher for reports) produces the answer within the exemption class's allowed paths.
+    - name: JUDGING
+      modes: [verification-first]
+      terminal: false
+      activeExecution: verification
+      waitingOn: ci
+      stall: {alertAfter: 1h, alertName: SCTddVerificationStalled, escalateAfter: 4h, escalateTo: NEEDS_HUMAN, policyKey: spec.watchdog.groups.verification}
+      description: Trusted CI (or the Runner for runner-local judges) evaluates the approved judge and required validation at the produced head.
+
+  # ------------------------------------------------------------------ guards
+  guards:
+    G_ACTOR_AUTHORIZED: Implicit on every transition. The actor class is listed and authenticated through its channel (human = authorized /sc command or admin API; hermes = MCP credential; ci = authentic evidence of a Runner-triggered pipeline; runner = internal).
+    G_REPOSITORY_MANAGED: The repository is listed in forgejo.managedRepositories and has .strange-company/repo.yaml at the base commit.
+    G_BASE_COMMIT_RESOLVED: target_branch is a protected branch of merged policy; base_ref is that branch (base = its current tip) or a 40-hex ancestor of its tip at most spec.task.maxBaseLag behind (default 20 commits and 24 h) whose .strange-company/{repo,policy,validation}.yaml blobs equal the tip's; tags, agent/*, sc-archive/*, sc-quarantine/* and other refs are refused (SPEC §44; plan 29 §14.1).
+    G_REPO_POLICY_VALID: Base-revision RepositoryPolicy and RepositoryValidation validate and merge tighten-only with platform policy (plan 22 §9.4).
+    G_ACCEPTANCE_CRITERIA_VALID: The criteria document validates against acceptance-criteria.schema.yaml and the testable-text rules of plan 21 §9.3.
+    G_VERIFICATION_MODE_ALLOWED: test-first, or verification-first with an exemption class allowed for this repository and path scope by merged policy (plan 22 §9.2).
+    G_DISPATCH_PREREQUISITES: Plan 26 dispatch checks pass (emergency stop, policy loaded, role/harness/profile/tier allowed, budget headroom, context projection).
+    G_NO_ACTIVE_EXECUTION: No execution of this task is QUEUED, STARTING or RUNNING and no verification pipeline is pending.
+    G_ATTEMPTS_REMAIN: For the dispatched (or failing) role class the attempt counter is below its maximum - implementer/producer autonomous_used < autonomous_max, tester tester_used < tester_max - and the plan 31 escalation ladder is not exhausted (plan 29 §16).
+    G_ATTEMPTS_EXHAUSTED: Negation of G_ATTEMPTS_REMAIN evaluated after counting the current failure.
+    G_NOT_IDENTICAL_REPLAY: The dispatch fingerprint differs from every earlier execution of the same role that ended in a deterministic (merit or policy) failure (plan 29 §16.4).
+    G_EXECUTION_ACCEPTED: The execution's result passed Runner ingestion (outcome accepted, no violations).
+    G_COMMIT_PUSHED: The accepted result carries exactly one new commit on agent/<task-id> whose parent is the execution's start commit.
+    G_RED_SCOPE_VALID: Every path changed in the generation's red range matches testPaths, fixturePaths, testInfraPaths or a well-formed declared stub (plan 22 §14.2).
+    G_EVIDENCE_AUTHENTIC: The evidence came from a pipeline created by sc-runner for this task, phase and expected SHA with trusted config, and validates against its schema (ADR-0008).
+    G_VERIFICATION_OUTCOME: The Runner-computed classification of the evidence equals one of the comma-separated arguments.
+    G_INFRA_RETRIGGERS_REMAIN: Verification infrastructure retriggers for this phase and commit are below spec.red/green.maxInfraRetriggers.
+    G_INFRA_RETRIGGERS_EXHAUSTED: Negation of G_INFRA_RETRIGGERS_REMAIN.
+    G_RED_EVIDENCE_VALID: The current generation has a red commit with red_valid evidence and a test manifest (SPEC §52).
+    G_START_DESCENDS_FROM_RED: The start commit computed for the dispatch is the red commit or a descendant containing it.
+    G_DESCENDS_FROM_RED: The pushed head is a descendant of the current generation's red commit (Forgejo compare).
+    G_TEST_MANIFEST_INTACT: Every manifest file has the manifest blob SHA at the head; no manifest file was deleted or renamed (plan 22 §14.6).
+    G_HEAD_UNCHANGED: The branch head equals the SHA the evidence was produced for.
+    G_GREEN_EVIDENCE_AT_HEAD: green_pass (or judging_pass) evidence exists for the current branch head.
+    G_REVIEWS_REMAIN: reviews_used < spec.retry.maxReviewExecutions.
+    G_REVIEW_VERDICT: The accepted reviewer result maps to the argument (accept, changes_requested, reject_bypass; plan 21 §14.7).
+    G_REVIEWED_COMMIT_IS_HEAD: reviewed_commit equals the current branch head and the green evidence SHA.
+    G_HAS_MERGEABLE_CHANGE: The task produces a repository change that is merged through a PR.
+    G_NO_MERGEABLE_CHANGE: The task produces no repository change (exemption class with producesMergeableChange false).
+    G_PROVENANCE_COMPLETE: Every merge fact of plan 22 §14.9 holds for the head SHA.
+    G_CHILDREN_TERMINAL: Every child task is DONE or CANCELLED.
+    G_MERGE_PROVENANCE_VERIFIED: At the merged PR head, every merge fact re-derived by the Runner holds and the merged head equals the SHA carrying the Runner's success statuses.
+    G_MERGE_PROVENANCE_FAILED: Negation of G_MERGE_PROVENANCE_VERIFIED.
+    G_BRANCH_EXISTS: agent/<task-id> exists (or existed) for this task.
+    G_RESUME_STATE_VALID: resume_state is recorded, non-terminal, not BLOCKED or NEEDS_HUMAN, and its own preconditions still hold.
+    G_RED_CANDIDATE_UNIMPLEMENTED: The branch head is a tester commit of the current generation (no implementation commit after it).
+    G_CONFLICTS_REMAIN: conflicts_raised < spec.testSpecConflict.maxConflictsPerTask.
+    G_CONFLICTS_EXHAUSTED: Negation of G_CONFLICTS_REMAIN after counting the current conflict.
+    G_TEST_CHANGE_APPROVED: The open conflict has test_change_approved true (human, or adjudicator when policy allows).
+    G_GENERATIONS_REMAIN: generation < spec.testSpecConflict.maxGenerations.
+    G_CONFLICT_REJECTED: The open conflict was rejected (adjudication test_valid).
+    G_NO_IMPLEMENTER_DISPATCHED_IN_GENERATION: No implementer execution was ever dispatched in the current generation (whatever its outcome); after one, test changes need TEST_SPEC_CONFLICT.
+    G_NO_PRODUCER_DISPATCHED_IN_GENERATION: No producer execution was ever dispatched in the current generation.
+    G_STRENGTHEN_AUTHORIZED: A human /sc strengthen-tests decision is recorded for the current ALREADY_SATISFIED / NEEDS_INVESTIGATION episode (SPEC §51 - no failure is manufactured without a human).
+    G_REVIEW_INPUT_COMPLETE: The reviewer packet's implementation_diff was not truncated, or ReviewerOutput.inspected_paths lists every omitted path (SPEC §55).
+    G_ROLE_AUXILIARY_HERE: The dispatched role is non-producing in this state (researcher or planner anywhere listed; reviewer outside REVIEW).
+    G_AUXILIARY_REMAIN: auxiliary_used < spec.retry.maxAuxiliaryExecutions.
+    G_FAILURE_CLASS: The terminal execution's failure class equals the argument.
+    G_FAILURE_CODE: The terminal execution's failure code is one of the comma-separated arguments.
+    G_REFUSAL_CODE: The dispatch refusal code (and scope) equals one of the comma-separated arguments - BUDGET_EXCEEDED_TASK (BUDGET_EXCEEDED on the task scope), ATTEMPTS_EXHAUSTED (excluding detail identical_replay).
+    G_INFRA_REQUEUE_ALLOWED: consecutive_infrastructure < spec.retry.infrastructure.maxConsecutive, infrastructure total < maxTotal, and consecutive_timeouts < spec.retry.infrastructure.maxConsecutiveTimeouts (deadline timeouts are infrastructure-class but capped separately).
+    G_INFRA_REQUEUE_EXHAUSTED: Negation of G_INFRA_REQUEUE_ALLOWED after counting the current failure.
+    G_BLOCKED_RESULTS_REMAIN: blocked_results < spec.retry.maxBlockedResults.
+    G_BLOCKED_RESULTS_EXHAUSTED: Negation of G_BLOCKED_RESULTS_REMAIN after counting the current blocked result.
+    G_JUDGE_SOURCE: The granted exemption class's judge.source equals the argument (artifact, acceptance-criteria).
+    G_APPROVAL: The granted exemption class's approval equals the argument (auto, human), after repository tightening.
+    G_JUDGE_DETERMINISTIC: The judge kind is deterministic (executable by CI or the Runner).
+    G_JUDGE_NONDETERMINISTIC: The judge kind is rubric (judged by the reviewer).
+    G_JUDGE_SCOPE_VALID: Every path changed by the judge author matches the class judge.artifactPaths.
+    G_JUDGE_APPROVED: The current generation's judge has an approval record (auto or human).
+    G_PRODUCER_ROLE_ALLOWED: The dispatched role is in the exemption class's producerRoles.
+    G_PRODUCTION_SCOPE_VALID: Every path changed by the producer matches the class allowedPaths and no deniedPaths or protected path.
+    G_JUDGE_ARTIFACT_INTACT: The judge artifact files are byte-identical to the approved judge manifest at the head.
+    G_NO_PRODUCTION_IN_GENERATION: No producer commit exists after the current generation's judge commit.
+    G_ACTOR_NOT_MACHINE_ACCOUNT: The Forgejo sender is not in spec.humanAuthority.machineAccounts.
+    G_EXEMPTION_GRANTED: The verification decision recorded at creation granted the requested exemption class (status granted or pending_approval).
+
+  # ------------------------------------------------------------------ effects
+  effects:
+    E_FREEZE_BASE_COMMIT: Record base_commit and target branch; they never change for the task.
+    E_RECORD_AC_VERSION: Insert acceptance-criteria version (argument 1 or next) with history row.
+    E_RECORD_VERIFICATION_DECISION: Record mode, requested and granted exemption class, approval mode and the policy revision that decided it.
+    E_ENSURE_TRACKING_ISSUE: Link or create the Forgejo tracking issue and labels (plan 55 §14.1).
+    E_FREEZE_ACCEPTANCE_CRITERIA: Set frozen_at on the current criteria version; later edits require a new version through respec.
+    E_CREATE_EXECUTION: Insert a QUEUED execution for the argument role class (tester, implementer, reviewer, producer, auxiliary) with fingerprint, phase tag and branch mode.
+    E_START_GENERATION: Begin generation n+1 with the argument reason (test_change_approved or strengthened) - tag the branch head sc-archive/<task>/g<n>; for test_change_approved delete agent/<task> and recreate it at the previous red commit via the Forgejo API (for strengthened the head already is the red commit); the tester runs in branch mode continue; old provenance is retained and plan 22 rules R12/R13 apply to the next RED.
+    E_RECORD_TEST_EXECUTION: Record the tester execution id and its claimed AC-to-test mapping on the generation.
+    E_RECORD_CANDIDATE_RED_COMMIT: Append the pushed head to generation_candidates and point candidate_test_commit (a current-pointer column) at it.
+    E_TRIGGER_VERIFICATION: Insert a verification row and trigger the Woodpecker pipeline for the argument phase (red, green, judge_validate, judge) at the expected SHA (ADR-0008).
+    E_RECORD_EVIDENCE: Store the classified evidence document (S3 evidence + digest in sc-pg) for the argument phase.
+    E_CREATE_TEST_MANIFEST: Build, store and freeze the test (or judge) manifest of the generation from Git facts and evidence (plan 22 §14.5).
+    E_RECORD_RED_COMMIT: Promote the candidate red commit to the generation's red commit.
+    E_ENSURE_PR: Create or update the PR for agent/<task-id> in the argument mode (draft, ready) with the managed body (plan 55).
+    E_POST_STATUS: Recompute and post strange-company/tdd-provenance and strange-company/review for the head SHA; the argument is the minimum state to post (pending, success, failure).
+    E_COUNT_FAILURE: Increment the failure counter of the argument class and the role counters.
+    E_NOTIFY_HUMAN: Post SCTaskNeedsHuman (or SCTaskRetriesExhausted for retries_exhausted) with the argument reason (notification.schema.yaml).
+    E_RECORD_IMPLEMENTATION_COMMIT: Append the accepted implementer/producer commit to the generation's implementation_commits (append-only) and the execution's result_commit; the set-once implementation_commit is written by E_RECORD_REVIEW.
+    E_QUARANTINE_HEAD: Tag the offending head sc-quarantine/<execution-id> and reset the branch to the last verified commit; for SECRET_DETECTED delete the offending commit's branch state without any tag so the leaked value is not kept reachable (plan 55 §14.8).
+    E_RECORD_REVIEW: Record the review verdict, checks, findings and reviewed commit; on accept set the generation's set-once implementation_commit to the reviewed commit.
+    E_CLOSE_TRACKING: Close the tracking issue with the argument resolution label (merged, cancelled, declared-done, completed).
+    E_RECORD_MERGE: Record merge commit, merged head, merger and merge-time fact evaluation.
+    E_ARCHIVE_BRANCH: Tag the head sc-archive/<task>/<argument> and delete agent/<task-id>.
+    E_COUNT_BYPASS: Increment sc_tdd_merges_without_provenance_total and record the failing facts.
+    E_CANCEL_ACTIVE_EXECUTION: Cancel any non-terminal execution (revoke tokens and deploy key first; plan 26 §14.6).
+    E_CANCEL_PENDING_VERIFICATION: Mark pending verification superseded and request pipeline cancellation; later evidence for it is ignored.
+    E_CLOSE_PR: Close the PR without merge with a Runner comment.
+    E_RECORD_RESUME_STATE: Record resume_state as the dispatch-ready state for the current state ($return target if an execution was active, else the current state).
+    E_RESUME: Apply resume_state; for verifying states re-trigger the pipeline at the same SHA.
+    E_GRANT_ATTEMPTS: Raise autonomous_max by the human-supplied grant (default spec.retry.humanGrant) and reset consecutive_infrastructure.
+    E_ARCHIVE_GENERATION: Archive the current branch head (sc-archive/<task>/g<n>) and mark the generation superseded; provenance rows are kept.
+    E_RECORD_CONFLICT: Record the conflict claim (AC ids, tests, explanation) as an open conflict of the generation.
+    E_DISCARD_UNVERIFIED_PUSH: If the conflicting execution pushed a commit, archive it and reset the branch to the execution's start commit.
+    E_RECORD_ADJUDICATION: Record the adjudicator verdict. The first adjudication of a conflict is decisive; later ones are recorded but may only tighten (test_invalid -> test_valid). Disagreeing adjudications force human approval regardless of policy. On a decisive test_invalid set test_change_approved when resolutionApproval is adjudicator, else notify humans (reason test_spec_conflict).
+    E_APPROVE_TEST_CHANGE: Record the human approval of the corrected-test path (test_change_approved true) with the decision payload.
+    E_REJECT_CONFLICT: Close the open conflict as rejected; the tests stand.
+    E_AUTHORIZE_STRENGTHEN: Record the human authorization to re-author tests from ALREADY_SATISFIED / NEEDS_INVESTIGATION; plan 22 rule R12 keeps every previously declared test in the next RED.
+    E_RECORD_HUMAN_COMMITS: Record the listed external commits (SHA, author, pusher, approving human) as human_commit provenance on the generation; only these SHAs (plus accepted execution commits) are non-foreign for G2/F10.
+    E_RECORD_AUXILIARY_OUTPUT: Store the auxiliary (researcher, planner, reviewer) output for later context projection.
+    E_REQUEUE_EXECUTION: Queue a new execution with the same role, harness, profile and tier after spec.retry.infrastructure.backoff.
+    E_RECORD_JUDGE_APPROVAL: Record judge and exemption approval with the argument mode (auto or human) and approver.
+    E_SET_MODE: Change the verification mode to the argument and record why (exemption denial only tightens).
+    E_RECORD_HUMAN_DECISION: Store the human command, sender and payload on the transition row.
+    E_NOTE_EVENT: Record an event that does not change state (self transition) in history.
+
+  implicitEffects: [E_NOTE_EVENT]
+
+  # ------------------------------------------------------------------ events
+  events:
+    task_created: Hermes or a human created a task (agent_start with task, or POST /v1/tasks).
+    judge_bound: Runner-internal event fired immediately after creation of a verification-first task whose judge source is acceptance-criteria.
+    dispatch_tester: agent_start with role tester was accepted.
+    dispatch_implementer: agent_start with role implementer was accepted.
+    dispatch_producer: agent_start with a producer role of the granted exemption class was accepted.
+    dispatch_reviewer: agent_start with role reviewer from GREEN_VERIFIED was accepted.
+    dispatch_auxiliary: agent_start with a non-producing role in this state was accepted.
+    tester_result_accepted: A tester (or judge author) result passed ingestion with a commit.
+    implementer_result_accepted: An implementer result passed ingestion with a commit.
+    producer_result_accepted: A producer result passed ingestion.
+    implementer_reported_conflict: An implementer or producer result with state test_spec_conflict passed ingestion.
+    auxiliary_result_recorded: A non-producing execution finished with an accepted result.
+    adjudication_recorded: A reviewer execution dispatched in TEST_SPEC_CONFLICT finished with a conflict decision.
+    review_accepted: The reviewer verdict maps to accept with all checks pass.
+    review_changes_requested: The reviewer verdict maps to changes_requested.
+    review_rejected: The reviewer verdict maps to reject_bypass.
+    red_classified: The Runner classified authentic RED evidence.
+    green_classified: The Runner classified authentic GREEN evidence.
+    judge_classified: The Runner classified authentic judge-validation evidence (JUDGE_VALIDATING).
+    judging_classified: The Runner classified authentic judging evidence (JUDGING).
+    verification_infra_failed: The pipeline errored, timed out, was not created, ran the wrong commit, or its evidence was missing, truncated, corrupt or schema-invalid (plan 20 §8.5 outcomes of class infrastructure).
+    verification_evidence_forged: The pipeline log held an ambiguous evidence block (EVIDENCE_AMBIGUOUS, class policy).
+    execution_failed: A producing or reviewing execution reached FAILED or TIMED_OUT, or was CANCELLED by an emergency stop, with a failure class and code.
+    execution_blocked: A producing execution finished with worker state blocked.
+    pr_merged: Forgejo reported the task PR merged (webhook or resync).
+    pr_closed_by_human: A human closed the task PR without merging.
+    head_changed_externally: agent/<task-id> moved to a commit not produced by an accepted execution of this task.
+    cancel_requested: agent_cancel (disposition cancelled) or /sc cancel.
+    escalate: agent_cancel (disposition needs_human) or /sc escalate.
+    block: /sc block or the admin API (human only; the MCP surface has no block operation, and Hermes escalates instead).
+    unblock: /sc unblock.
+    retry: /sc retry [grant].
+    reverify_red: /sc reverify red.
+    reverify_green: /sc reverify green.
+    respec: /sc respec with a new acceptance-criteria document.
+    declare_done: /sc done (human closes the task without a merge).
+    approve_test_change: /sc accept-test-change.
+    strengthen_tests: /sc strengthen-tests (human authorizes stronger tests instead of closing an already-satisfied task).
+    accept_external_commit: /sc accept-external-commit <sha>... (human takes responsibility for commits pushed outside an execution).
+    reject_conflict: /sc reject-conflict.
+    approve_judge: /sc approve-judge.
+    reject_judge: /sc reject-judge.
+    deny_exemption: /sc deny-exemption.
+    dispatch_refused: agent_start for this task was refused at dispatch with a code that waiting cannot fix (plan 33 §14.5).
+    stall_timeout: The watchdog found the task in a state longer than its escalateAfter.
+
+  # ------------------------------------------------------------------ transitions
+  transitions:
+    # ---- creation
+    - id: T001
+      from: ["$none"]
+      to: SPECIFIED
+      event: task_created
+      actors: [hermes, human]
+      modes: [test-first, verification-first]
+      guards: [G_REPOSITORY_MANAGED, G_BASE_COMMIT_RESOLVED, G_REPO_POLICY_VALID, G_ACCEPTANCE_CRITERIA_VALID, G_VERIFICATION_MODE_ALLOWED]
+      effects: [E_FREEZE_BASE_COMMIT, "E_RECORD_AC_VERSION:1", E_RECORD_VERIFICATION_DECISION, E_ENSURE_TRACKING_ISSUE]
+      description: Create the task. Criteria version 1 is recorded but not frozen until tester dispatch.
+    - id: T002
+      from: [SPECIFIED]
+      to: JUDGE_APPROVED
+      event: judge_bound
+      actors: [runner]
+      modes: [verification-first]
+      guards: [G_EXEMPTION_GRANTED, "G_JUDGE_SOURCE:acceptance-criteria", "G_APPROVAL:auto"]
+      effects: [E_FREEZE_ACCEPTANCE_CRITERIA, "E_RECORD_JUDGE_APPROVAL:auto"]
+      description: The acceptance criteria are the judge and policy approves automatically (e.g. research).
+    - id: T003
+      from: [SPECIFIED]
+      to: JUDGE_AWAITING_APPROVAL
+      event: judge_bound
+      actors: [runner]
+      modes: [verification-first]
+      guards: [G_EXEMPTION_GRANTED, "G_JUDGE_SOURCE:acceptance-criteria", "G_APPROVAL:human"]
+      effects: [E_FREEZE_ACCEPTANCE_CRITERIA, "E_NOTIFY_HUMAN:approval_required"]
+      description: The acceptance criteria are the judge but the class needs a human to approve exemption and judge.
+
+    # ---- test-first: tester
+    - id: T010
+      from: [SPECIFIED]
+      to: TEST_AUTHORING
+      event: dispatch_tester
+      actors: [hermes, human]
+      modes: [test-first]
+      guards: [G_DISPATCH_PREREQUISITES, G_NO_ACTIVE_EXECUTION, G_ATTEMPTS_REMAIN]
+      effects: [E_FREEZE_ACCEPTANCE_CRITERIA, "E_CREATE_EXECUTION:tester"]
+      countsAttempt: true
+      description: First tester dispatch freezes the acceptance criteria (SPEC §45) and starts generation 1 from the base commit.
+    - id: T011
+      from: [TEST_NEEDS_WORK]
+      to: TEST_AUTHORING
+      event: dispatch_tester
+      actors: [hermes, human]
+      modes: [test-first]
+      guards: [G_DISPATCH_PREREQUISITES, G_NO_ACTIVE_EXECUTION, G_ATTEMPTS_REMAIN, G_NOT_IDENTICAL_REPLAY]
+      effects: ["E_CREATE_EXECUTION:tester"]
+      countsAttempt: true
+      description: Tester retry with prior evidence after invalid RED; the new tester commit continues on the generation's branch head.
+    - id: T015
+      from: [ALREADY_SATISFIED, NEEDS_INVESTIGATION]
+      to: TEST_AUTHORING
+      event: dispatch_tester
+      actors: [hermes, human]
+      modes: [test-first]
+      guards: [G_STRENGTHEN_AUTHORIZED, G_DISPATCH_PREREQUISITES, G_NO_ACTIVE_EXECUTION, G_ATTEMPTS_REMAIN, G_NOT_IDENTICAL_REPLAY]
+      effects: ["E_CREATE_EXECUTION:tester"]
+      countsAttempt: true
+      description: Stronger tests after a human authorized it (SPEC §51 - never a manufactured failure); the previously declared tests must remain (plan 22 R12).
+    - id: T016
+      from: [ALREADY_SATISFIED, NEEDS_INVESTIGATION]
+      to: "$same"
+      event: strengthen_tests
+      actors: [human]
+      modes: [test-first, verification-first]
+      guards: []
+      effects: [E_RECORD_HUMAN_DECISION, E_AUTHORIZE_STRENGTHEN]
+      humanCommand: /sc strengthen-tests
+      description: Human decides the tests (or judge) are insufficient rather than the behavior already existing.
+    - id: T012
+      from: [RED_VERIFIED]
+      to: TEST_AUTHORING
+      event: dispatch_tester
+      actors: [hermes, human]
+      modes: [test-first]
+      guards: [G_DISPATCH_PREREQUISITES, G_NO_ACTIVE_EXECUTION, G_ATTEMPTS_REMAIN, G_NO_IMPLEMENTER_DISPATCHED_IN_GENERATION]
+      effects: ["E_START_GENERATION:strengthened", "E_CREATE_EXECUTION:tester"]
+      countsAttempt: true
+      description: Strengthen tests before any implementer was dispatched (e.g. after a test review). Opens a new generation; the new RED must keep every manifest test and blob (plan 22 R12).
+    - id: T013
+      from: [TEST_SPEC_CONFLICT]
+      to: TEST_AUTHORING
+      event: dispatch_tester
+      actors: [hermes, human]
+      modes: [test-first]
+      guards: [G_DISPATCH_PREREQUISITES, G_NO_ACTIVE_EXECUTION, G_TEST_CHANGE_APPROVED, G_GENERATIONS_REMAIN, G_ATTEMPTS_REMAIN]
+      effects: ["E_START_GENERATION:test_change_approved", "E_CREATE_EXECUTION:tester"]
+      countsAttempt: true
+      description: Approved corrected test. New generation on top of the previous red commit; implementation commits are archived (SPEC §53, §70).
+    - id: T014
+      from: [TEST_AUTHORING]
+      to: RED_VERIFYING
+      event: tester_result_accepted
+      actors: [runner]
+      modes: [test-first]
+      guards: [G_EXECUTION_ACCEPTED, G_COMMIT_PUSHED, G_RED_SCOPE_VALID]
+      effects: [E_RECORD_TEST_EXECUTION, E_RECORD_CANDIDATE_RED_COMMIT, "E_TRIGGER_VERIFICATION:red"]
+      description: Tester commit accepted (including a worker claim of already_satisfied, which CI decides). Trigger RED.
+
+    # ---- test-first: RED classification
+    - id: T020
+      from: [RED_VERIFYING]
+      to: RED_VERIFIED
+      event: red_classified
+      actors: [ci]
+      modes: [test-first]
+      guards: [G_EVIDENCE_AUTHENTIC, G_HEAD_UNCHANGED, "G_VERIFICATION_OUTCOME:red_valid"]
+      effects: ["E_RECORD_EVIDENCE:red", E_RECORD_RED_COMMIT, E_CREATE_TEST_MANIFEST, "E_ENSURE_PR:draft", "E_POST_STATUS:pending"]
+      description: Valid RED (SPEC §50). The implementation gate opens (SPEC §52).
+    - id: T021
+      from: [RED_VERIFYING]
+      to: TEST_NEEDS_WORK
+      event: red_classified
+      actors: [ci]
+      modes: [test-first]
+      guards: [G_EVIDENCE_AUTHENTIC, "G_VERIFICATION_OUTCOME:red_invalid"]
+      effects: ["E_RECORD_EVIDENCE:red", "E_COUNT_FAILURE:merit"]
+      failureClass: merit
+      description: Broken tests are not RED evidence (SPEC §50 item 4, §106).
+    - id: T022
+      from: [RED_VERIFYING]
+      to: ALREADY_SATISFIED
+      event: red_classified
+      actors: [ci]
+      modes: [test-first]
+      guards: [G_EVIDENCE_AUTHENTIC, "G_VERIFICATION_OUTCOME:already_satisfied"]
+      effects: ["E_RECORD_EVIDENCE:red", "E_NOTIFY_HUMAN:already_satisfied"]
+      description: New tests pass before implementation (SPEC §51).
+    - id: T023
+      from: [RED_VERIFYING]
+      to: NEEDS_INVESTIGATION
+      event: red_classified
+      actors: [ci]
+      modes: [test-first]
+      guards: [G_EVIDENCE_AUTHENTIC, "G_VERIFICATION_OUTCOME:baseline_failing,partially_satisfied,inconclusive"]
+      effects: ["E_RECORD_EVIDENCE:red", "E_NOTIFY_HUMAN:needs_investigation"]
+      description: Baseline failing, partial satisfaction or inconclusive result.
+    - id: T024
+      from: [RED_VERIFYING, GREEN_VERIFYING, JUDGE_VALIDATING, JUDGING]
+      to: "$same"
+      event: verification_infra_failed
+      actors: [runner]
+      modes: [test-first, verification-first]
+      guards: [G_INFRA_RETRIGGERS_REMAIN]
+      effects: ["E_COUNT_FAILURE:infrastructure", E_CANCEL_PENDING_VERIFICATION, "E_TRIGGER_VERIFICATION:same"]
+      failureClass: infrastructure
+      description: Pipeline infrastructure failure; re-trigger the same phase at the same SHA (identical replay is allowed for infrastructure).
+    - id: T025
+      from: [RED_VERIFYING, GREEN_VERIFYING, JUDGE_VALIDATING, JUDGING]
+      to: NEEDS_HUMAN
+      event: verification_infra_failed
+      actors: [runner]
+      modes: [test-first, verification-first]
+      guards: [G_INFRA_RETRIGGERS_EXHAUSTED]
+      effects: ["E_COUNT_FAILURE:infrastructure", E_CANCEL_PENDING_VERIFICATION, E_RECORD_RESUME_STATE, "E_NOTIFY_HUMAN:infrastructure_exhausted"]
+      failureClass: infrastructure
+      description: Verification machinery keeps failing; a human repairs CI and re-verifies.
+
+    - id: T026
+      from: [RED_VERIFYING, GREEN_VERIFYING, JUDGE_VALIDATING, JUDGING]
+      to: NEEDS_HUMAN
+      event: verification_evidence_forged
+      actors: [runner]
+      modes: [test-first, verification-first]
+      guards: []
+      effects: ["E_COUNT_FAILURE:policy", E_CANCEL_PENDING_VERIFICATION, "E_POST_STATUS:failure", E_RECORD_RESUME_STATE, "E_NOTIFY_HUMAN:policy_violation"]
+      failureClass: policy
+      description: The step log held an ambiguous evidence block (EVIDENCE_AMBIGUOUS, plan 20 §8.5) - a possible forgery by code under test; no retry.
+
+    # ---- test-first: implementation and GREEN
+    - id: T030
+      from: [RED_VERIFIED, CHANGES_REQUESTED]
+      to: IMPLEMENTING
+      event: dispatch_implementer
+      actors: [hermes, human]
+      modes: [test-first]
+      guards: [G_DISPATCH_PREREQUISITES, G_NO_ACTIVE_EXECUTION, G_RED_EVIDENCE_VALID, G_START_DESCENDS_FROM_RED, G_ATTEMPTS_REMAIN, G_NOT_IDENTICAL_REPLAY]
+      effects: ["E_CREATE_EXECUTION:implementer"]
+      countsAttempt: true
+      description: Implementation gate (SPEC §52) - test commit exists, RED_VERIFIED recorded, start commit contains the red commit.
+    - id: T031
+      from: [TEST_SPEC_CONFLICT]
+      to: IMPLEMENTING
+      event: dispatch_implementer
+      actors: [hermes, human]
+      modes: [test-first]
+      guards: [G_DISPATCH_PREREQUISITES, G_NO_ACTIVE_EXECUTION, G_CONFLICT_REJECTED, G_RED_EVIDENCE_VALID, G_START_DESCENDS_FROM_RED, G_ATTEMPTS_REMAIN]
+      effects: ["E_CREATE_EXECUTION:implementer"]
+      countsAttempt: true
+      description: The adjudication found the test valid; the implementer retries with the decision in context.
+    - id: T032
+      from: [IMPLEMENTING]
+      to: GREEN_VERIFYING
+      event: implementer_result_accepted
+      actors: [runner]
+      modes: [test-first]
+      guards: [G_EXECUTION_ACCEPTED, G_COMMIT_PUSHED, G_DESCENDS_FROM_RED, G_TEST_MANIFEST_INTACT]
+      effects: [E_RECORD_IMPLEMENTATION_COMMIT, "E_POST_STATUS:pending", "E_TRIGGER_VERIFICATION:green"]
+      description: Implementation accepted by ingestion (no tamper); trigger GREEN.
+    - id: T033
+      from: [GREEN_VERIFYING]
+      to: GREEN_VERIFIED
+      event: green_classified
+      actors: [ci]
+      modes: [test-first]
+      guards: [G_EVIDENCE_AUTHENTIC, G_HEAD_UNCHANGED, "G_VERIFICATION_OUTCOME:green_pass"]
+      effects: ["E_RECORD_EVIDENCE:green", "E_ENSURE_PR:ready", "E_POST_STATUS:pending"]
+      description: SPEC §54 satisfied at the head.
+    - id: T034
+      from: [GREEN_VERIFYING]
+      to: RED_VERIFIED
+      event: green_classified
+      actors: [ci]
+      modes: [test-first]
+      guards: [G_EVIDENCE_AUTHENTIC, "G_VERIFICATION_OUTCOME:green_fail", G_ATTEMPTS_REMAIN]
+      effects: ["E_RECORD_EVIDENCE:green", "E_COUNT_FAILURE:merit"]
+      failureClass: merit
+      description: GREEN failed on merit; implementation is still needed and the next implementer gets the evidence (green_retry phase).
+    - id: T035
+      from: [GREEN_VERIFYING]
+      to: NEEDS_HUMAN
+      event: green_classified
+      actors: [ci]
+      modes: [test-first]
+      guards: [G_EVIDENCE_AUTHENTIC, "G_VERIFICATION_OUTCOME:green_fail", G_ATTEMPTS_EXHAUSTED]
+      effects: ["E_RECORD_EVIDENCE:green", "E_COUNT_FAILURE:merit", E_RECORD_RESUME_STATE, "E_NOTIFY_HUMAN:retries_exhausted"]
+      failureClass: merit
+      description: Bounded retries exhausted (SPEC §74).
+    - id: T036
+      from: [GREEN_VERIFYING]
+      to: NEEDS_HUMAN
+      event: green_classified
+      actors: [ci]
+      modes: [test-first]
+      guards: [G_EVIDENCE_AUTHENTIC, "G_VERIFICATION_OUTCOME:tamper_detected"]
+      effects: ["E_RECORD_EVIDENCE:green", "E_COUNT_FAILURE:policy", E_QUARANTINE_HEAD, "E_POST_STATUS:failure", E_RECORD_RESUME_STATE, "E_NOTIFY_HUMAN:policy_violation"]
+      failureClass: policy
+      description: Defense in depth - GREEN found the manifest, skip markers or discovery configuration altered.
+
+    # ---- review (both modes)
+    - id: T040
+      from: [GREEN_VERIFIED]
+      to: REVIEW
+      event: dispatch_reviewer
+      actors: [hermes, human]
+      modes: [test-first, verification-first]
+      guards: [G_DISPATCH_PREREQUISITES, G_NO_ACTIVE_EXECUTION, G_GREEN_EVIDENCE_AT_HEAD, G_REVIEWS_REMAIN]
+      effects: ["E_CREATE_EXECUTION:reviewer"]
+      description: Review follows green verification (SPEC §55).
+    - id: T041
+      from: [REVIEW]
+      to: AWAITING_MERGE
+      event: review_accepted
+      actors: [runner]
+      modes: [test-first, verification-first]
+      guards: ["G_REVIEW_VERDICT:accept", G_REVIEWED_COMMIT_IS_HEAD, G_REVIEW_INPUT_COMPLETE, G_HAS_MERGEABLE_CHANGE, G_PROVENANCE_COMPLETE]
+      effects: [E_RECORD_REVIEW, "E_POST_STATUS:success"]
+      description: Both Runner statuses become success for the head; a human merges.
+    - id: T042
+      from: [REVIEW]
+      to: DONE
+      event: review_accepted
+      actors: [runner]
+      modes: [verification-first]
+      guards: ["G_REVIEW_VERDICT:accept", G_NO_MERGEABLE_CHANGE, G_CHILDREN_TERMINAL]
+      effects: [E_RECORD_REVIEW, "E_CLOSE_TRACKING:completed"]
+      description: Non-mergeable work (e.g. research report) accepted by review.
+    - id: T043
+      from: [REVIEW]
+      to: NEEDS_HUMAN
+      event: review_accepted
+      actors: [runner]
+      modes: [test-first, verification-first]
+      guards: ["G_REVIEW_VERDICT:accept"]
+      effects: [E_RECORD_REVIEW, "E_POST_STATUS:failure", E_RECORD_RESUME_STATE, "E_NOTIFY_HUMAN:needs_investigation"]
+      description: Fallback when an accepting review cannot be applied (head moved, reviewer input truncated, provenance incomplete, children open). Fails closed.
+    - id: T044
+      from: [REVIEW]
+      to: CHANGES_REQUESTED
+      event: review_changes_requested
+      actors: [runner]
+      modes: [test-first, verification-first]
+      guards: ["G_REVIEW_VERDICT:changes_requested", G_ATTEMPTS_REMAIN]
+      effects: [E_RECORD_REVIEW, "E_COUNT_FAILURE:merit", "E_POST_STATUS:failure"]
+      failureClass: merit
+      description: Findings go to the next implementer.
+    - id: T045
+      from: [REVIEW]
+      to: NEEDS_HUMAN
+      event: review_changes_requested
+      actors: [runner]
+      modes: [test-first, verification-first]
+      guards: ["G_REVIEW_VERDICT:changes_requested", G_ATTEMPTS_EXHAUSTED]
+      effects: [E_RECORD_REVIEW, "E_COUNT_FAILURE:merit", "E_POST_STATUS:failure", E_RECORD_RESUME_STATE, "E_NOTIFY_HUMAN:retries_exhausted"]
+      failureClass: merit
+      description: Changes requested with no attempts left.
+    - id: T046
+      from: [REVIEW]
+      to: NEEDS_HUMAN
+      event: review_rejected
+      actors: [runner]
+      modes: [test-first, verification-first]
+      guards: ["G_REVIEW_VERDICT:reject_bypass"]
+      effects: [E_RECORD_REVIEW, "E_COUNT_FAILURE:policy", "E_POST_STATUS:failure", E_RECORD_RESUME_STATE, "E_NOTIFY_HUMAN:review_rejected"]
+      failureClass: policy
+      description: The reviewer believes verification was bypassed; a human decides.
+
+    # ---- merge (forge events)
+    - id: T050
+      from: [AWAITING_MERGE]
+      to: DONE
+      event: pr_merged
+      actors: [runner]
+      modes: [test-first, verification-first]
+      guards: [G_MERGE_PROVENANCE_VERIFIED]
+      effects: [E_RECORD_MERGE, "E_ARCHIVE_BRANCH:merged", "E_CLOSE_TRACKING:merged"]
+      description: DONE (plan 55 §14.7) - merged with every SPEC §102 fact re-verified at the merged head.
+    - id: T051
+      from: [AWAITING_MERGE]
+      to: NEEDS_HUMAN
+      event: pr_merged
+      actors: [runner]
+      modes: [test-first, verification-first]
+      guards: [G_MERGE_PROVENANCE_FAILED]
+      effects: [E_RECORD_MERGE, E_COUNT_BYPASS, E_RECORD_RESUME_STATE, "E_NOTIFY_HUMAN:merged_without_provenance"]
+      description: Merged but a fact failed at merge time (bypass detection, SCTddProvenanceBypass).
+    - id: T052
+      from: [SPECIFIED, TEST_AUTHORING, RED_VERIFYING, RED_VERIFIED, TEST_NEEDS_WORK, ALREADY_SATISFIED, NEEDS_INVESTIGATION, TEST_SPEC_CONFLICT, IMPLEMENTING, GREEN_VERIFYING, GREEN_VERIFIED, REVIEW, CHANGES_REQUESTED, JUDGE_AUTHORING, JUDGE_VALIDATING, JUDGE_AWAITING_APPROVAL, JUDGE_APPROVED, PRODUCING, JUDGING]
+      to: NEEDS_HUMAN
+      event: pr_merged
+      actors: [runner]
+      modes: [test-first, verification-first]
+      guards: []
+      effects: [E_CANCEL_ACTIVE_EXECUTION, E_CANCEL_PENDING_VERIFICATION, E_RECORD_MERGE, E_COUNT_BYPASS, E_RECORD_RESUME_STATE, "E_NOTIFY_HUMAN:merged_without_provenance"]
+      description: Merged before the task reached AWAITING_MERGE - always a bypass.
+    - id: T053
+      from: [BLOCKED, NEEDS_HUMAN]
+      to: "$same"
+      event: pr_merged
+      actors: [runner]
+      modes: [test-first, verification-first]
+      guards: []
+      effects: [E_RECORD_MERGE, E_COUNT_BYPASS]
+      description: Merge while held is recorded and alerted; the state stays held (only humans leave it).
+    - id: T054
+      from: [SPECIFIED, TEST_AUTHORING, RED_VERIFYING, RED_VERIFIED, TEST_NEEDS_WORK, ALREADY_SATISFIED, NEEDS_INVESTIGATION, TEST_SPEC_CONFLICT, IMPLEMENTING, GREEN_VERIFYING, GREEN_VERIFIED, REVIEW, CHANGES_REQUESTED, AWAITING_MERGE, NEEDS_HUMAN, BLOCKED, JUDGE_AUTHORING, JUDGE_VALIDATING, JUDGE_AWAITING_APPROVAL, JUDGE_APPROVED, PRODUCING, JUDGING]
+      to: CANCELLED
+      event: pr_closed_by_human
+      actors: [human]
+      modes: [test-first, verification-first]
+      guards: [G_ACTOR_NOT_MACHINE_ACCOUNT]
+      effects: [E_RECORD_HUMAN_DECISION, E_CANCEL_ACTIVE_EXECUTION, E_CANCEL_PENDING_VERIFICATION, "E_ARCHIVE_BRANCH:cancelled", "E_CLOSE_TRACKING:cancelled"]
+      description: A human closing the PR in Forgejo is a cancel decision.
+    - id: T055
+      from: [RED_VERIFYING, RED_VERIFIED, TEST_NEEDS_WORK, ALREADY_SATISFIED, NEEDS_INVESTIGATION, TEST_SPEC_CONFLICT, GREEN_VERIFYING, GREEN_VERIFIED, REVIEW, CHANGES_REQUESTED, AWAITING_MERGE, JUDGE_VALIDATING, JUDGE_AWAITING_APPROVAL, JUDGE_APPROVED, JUDGING]
+      to: NEEDS_HUMAN
+      event: head_changed_externally
+      actors: [runner]
+      modes: [test-first, verification-first]
+      guards: [G_BRANCH_EXISTS]
+      effects: [E_CANCEL_ACTIVE_EXECUTION, E_CANCEL_PENDING_VERIFICATION, "E_POST_STATUS:pending", E_RECORD_RESUME_STATE, "E_NOTIFY_HUMAN:external_push"]
+      description: A commit not produced by an accepted execution invalidates provenance until a human re-verifies.
+    - id: T056
+      from: [BLOCKED, NEEDS_HUMAN]
+      to: "$same"
+      event: head_changed_externally
+      actors: [runner]
+      modes: [test-first, verification-first]
+      guards: []
+      effects: ["E_POST_STATUS:pending"]
+      description: Record the external push and invalidate statuses while held.
+
+    # ---- cancel, escalate, block (L-4)
+    - id: T060
+      from: [SPECIFIED, TEST_AUTHORING, RED_VERIFYING, RED_VERIFIED, TEST_NEEDS_WORK, ALREADY_SATISFIED, NEEDS_INVESTIGATION, TEST_SPEC_CONFLICT, IMPLEMENTING, GREEN_VERIFYING, GREEN_VERIFIED, REVIEW, CHANGES_REQUESTED, AWAITING_MERGE, JUDGE_AUTHORING, JUDGE_VALIDATING, JUDGE_AWAITING_APPROVAL, JUDGE_APPROVED, PRODUCING, JUDGING]
+      to: CANCELLED
+      event: cancel_requested
+      actors: [hermes, human]
+      modes: [test-first, verification-first]
+      guards: []
+      effects: [E_CANCEL_ACTIVE_EXECUTION, E_CANCEL_PENDING_VERIFICATION, E_CLOSE_PR, "E_ARCHIVE_BRANCH:cancelled", "E_CLOSE_TRACKING:cancelled"]
+      humanCommand: /sc cancel
+      description: Cancel a task that is not held.
+    - id: T061
+      from: [BLOCKED, NEEDS_HUMAN]
+      to: CANCELLED
+      event: cancel_requested
+      actors: [human]
+      modes: [test-first, verification-first]
+      guards: []
+      effects: [E_RECORD_HUMAN_DECISION, E_CLOSE_PR, "E_ARCHIVE_BRANCH:cancelled", "E_CLOSE_TRACKING:cancelled"]
+      humanCommand: /sc cancel
+      description: Only a human may cancel a held task.
+    - id: T062
+      from: [SPECIFIED, TEST_AUTHORING, RED_VERIFYING, RED_VERIFIED, TEST_NEEDS_WORK, ALREADY_SATISFIED, NEEDS_INVESTIGATION, TEST_SPEC_CONFLICT, IMPLEMENTING, GREEN_VERIFYING, GREEN_VERIFIED, REVIEW, CHANGES_REQUESTED, AWAITING_MERGE, JUDGE_AUTHORING, JUDGE_VALIDATING, JUDGE_AWAITING_APPROVAL, JUDGE_APPROVED, PRODUCING, JUDGING]
+      to: NEEDS_HUMAN
+      event: escalate
+      actors: [hermes, human]
+      modes: [test-first, verification-first]
+      guards: []
+      effects: [E_CANCEL_ACTIVE_EXECUTION, E_CANCEL_PENDING_VERIFICATION, E_RECORD_RESUME_STATE, "E_NOTIFY_HUMAN:manual_escalation"]
+      humanCommand: /sc escalate
+      description: Hermes or a human hands the task to a human (agent_cancel disposition needs_human).
+    - id: T063
+      from: [SPECIFIED, TEST_AUTHORING, RED_VERIFYING, RED_VERIFIED, TEST_NEEDS_WORK, ALREADY_SATISFIED, NEEDS_INVESTIGATION, TEST_SPEC_CONFLICT, IMPLEMENTING, GREEN_VERIFYING, GREEN_VERIFIED, REVIEW, CHANGES_REQUESTED, AWAITING_MERGE, JUDGE_AUTHORING, JUDGE_VALIDATING, JUDGE_AWAITING_APPROVAL, JUDGE_APPROVED, PRODUCING, JUDGING]
+      to: BLOCKED
+      event: block
+      actors: [human]
+      modes: [test-first, verification-first]
+      guards: []
+      effects: [E_RECORD_HUMAN_DECISION, E_CANCEL_ACTIVE_EXECUTION, E_RECORD_RESUME_STATE]
+      humanCommand: /sc block
+      description: The operator stop lever (L-4). Active executions are cancelled without consuming attempts.
+    - id: T064
+      from: [NEEDS_HUMAN]
+      to: BLOCKED
+      event: block
+      actors: [human]
+      modes: [test-first, verification-first]
+      guards: []
+      effects: [E_RECORD_HUMAN_DECISION]
+      humanCommand: /sc block
+      description: Park a NEEDS_HUMAN task deliberately; resume_state is kept.
+    - id: T065
+      from: [BLOCKED]
+      to: "$resume"
+      event: unblock
+      actors: [human]
+      modes: [test-first, verification-first]
+      guards: [G_RESUME_STATE_VALID]
+      effects: [E_RECORD_HUMAN_DECISION, E_RESUME]
+      humanCommand: /sc unblock
+      description: Human-only exit from BLOCKED to the recorded dispatch-ready or verifying state.
+    - id: T066
+      from: [NEEDS_HUMAN]
+      to: "$resume"
+      event: retry
+      actors: [human]
+      modes: [test-first, verification-first]
+      guards: [G_RESUME_STATE_VALID]
+      effects: [E_RECORD_HUMAN_DECISION, E_GRANT_ATTEMPTS, E_RESUME]
+      humanCommand: /sc retry
+      description: Human grants more attempts and resumes the recorded state.
+    - id: T067
+      from: [NEEDS_HUMAN, NEEDS_INVESTIGATION, TEST_NEEDS_WORK]
+      to: RED_VERIFYING
+      event: reverify_red
+      actors: [human]
+      modes: [test-first]
+      guards: [G_RED_CANDIDATE_UNIMPLEMENTED, G_RED_SCOPE_VALID]
+      effects: [E_RECORD_HUMAN_DECISION, "E_TRIGGER_VERIFICATION:red"]
+      humanCommand: /sc reverify red
+      description: Re-run RED at the unchanged candidate red commit (e.g. after a baseline or CI repair).
+    - id: T068
+      from: [NEEDS_HUMAN]
+      to: GREEN_VERIFYING
+      event: reverify_green
+      actors: [human]
+      modes: [test-first]
+      guards: [G_RED_EVIDENCE_VALID, G_DESCENDS_FROM_RED, G_TEST_MANIFEST_INTACT]
+      effects: [E_RECORD_HUMAN_DECISION, "E_POST_STATUS:pending", "E_TRIGGER_VERIFICATION:green"]
+      humanCommand: /sc reverify green
+      description: Re-run GREEN at the current head (e.g. after an external human push or CI repair). Review must follow again.
+    - id: T069
+      from: [NEEDS_HUMAN]
+      to: JUDGING
+      event: reverify_green
+      actors: [human]
+      modes: [verification-first]
+      guards: [G_JUDGE_APPROVED, G_JUDGE_ARTIFACT_INTACT]
+      effects: [E_RECORD_HUMAN_DECISION, "E_POST_STATUS:pending", "E_TRIGGER_VERIFICATION:judge"]
+      humanCommand: /sc reverify green
+      description: Verification-first equivalent of reverify green.
+    - id: T070
+      from: [SPECIFIED, NEEDS_HUMAN, TEST_NEEDS_WORK, ALREADY_SATISFIED, NEEDS_INVESTIGATION, TEST_SPEC_CONFLICT, RED_VERIFIED, JUDGE_AWAITING_APPROVAL, JUDGE_APPROVED]
+      to: SPECIFIED
+      event: respec
+      actors: [human]
+      modes: [test-first, verification-first]
+      guards: []
+      effects: [E_RECORD_HUMAN_DECISION, E_ARCHIVE_GENERATION, "E_RECORD_AC_VERSION:next", E_GRANT_ATTEMPTS]
+      humanCommand: /sc respec
+      description: New acceptance-criteria version (SPEC §45 revisions are new versions with history). Earlier provenance is kept; the next tester starts a new generation from base.
+    - id: T071
+      from: [NEEDS_HUMAN, ALREADY_SATISFIED, NEEDS_INVESTIGATION]
+      to: DONE
+      event: declare_done
+      actors: [human]
+      modes: [test-first, verification-first]
+      guards: [G_CHILDREN_TERMINAL]
+      effects: [E_RECORD_HUMAN_DECISION, E_CLOSE_PR, "E_ARCHIVE_BRANCH:declared-done", "E_CLOSE_TRACKING:declared-done"]
+      humanCommand: /sc done
+      description: Human closes without merge (behavior already exists, requirement redundant, or merged-without-provenance accepted after review).
+    - id: T072
+      from: [NEEDS_HUMAN]
+      to: GREEN_VERIFYING
+      event: accept_external_commit
+      actors: [human]
+      modes: [test-first]
+      guards: [G_RED_EVIDENCE_VALID, G_DESCENDS_FROM_RED, G_TEST_MANIFEST_INTACT]
+      effects: [E_RECORD_HUMAN_DECISION, E_RECORD_HUMAN_COMMITS, "E_POST_STATUS:pending", "E_TRIGGER_VERIFICATION:green"]
+      humanCommand: /sc accept-external-commit
+      description: A human takes responsibility for commits pushed outside an execution (recorded as human_commit provenance, never inferred from trailers); GREEN and a new final review follow (TDD-9).
+    - id: T073
+      from: [NEEDS_HUMAN]
+      to: JUDGING
+      event: accept_external_commit
+      actors: [human]
+      modes: [verification-first]
+      guards: [G_JUDGE_APPROVED, G_JUDGE_ARTIFACT_INTACT]
+      effects: [E_RECORD_HUMAN_DECISION, E_RECORD_HUMAN_COMMITS, "E_POST_STATUS:pending", "E_TRIGGER_VERIFICATION:judge"]
+      humanCommand: /sc accept-external-commit
+      description: Verification-first equivalent of T072.
+
+    # ---- TEST_SPEC_CONFLICT (SPEC §53, §70)
+    - id: T080
+      from: [IMPLEMENTING, PRODUCING]
+      to: TEST_SPEC_CONFLICT
+      event: implementer_reported_conflict
+      actors: [runner]
+      modes: [test-first, verification-first]
+      guards: [G_EXECUTION_ACCEPTED, G_CONFLICTS_REMAIN]
+      effects: [E_RECORD_CONFLICT, E_DISCARD_UNVERIFIED_PUSH]
+      description: Explicit conflict condition; the implementer cannot change the test itself.
+    - id: T081
+      from: [IMPLEMENTING, PRODUCING]
+      to: NEEDS_HUMAN
+      event: implementer_reported_conflict
+      actors: [runner]
+      modes: [test-first, verification-first]
+      guards: [G_EXECUTION_ACCEPTED, G_CONFLICTS_EXHAUSTED]
+      effects: [E_RECORD_CONFLICT, E_DISCARD_UNVERIFIED_PUSH, E_RECORD_RESUME_STATE, "E_NOTIFY_HUMAN:test_spec_conflict"]
+      description: Too many conflicts on one task.
+    - id: T082
+      from: [TEST_SPEC_CONFLICT]
+      to: "$same"
+      event: adjudication_recorded
+      actors: [runner]
+      modes: [test-first, verification-first]
+      guards: [G_EXECUTION_ACCEPTED]
+      effects: [E_RECORD_ADJUDICATION]
+      description: Reviewer adjudication stored; test_invalid notifies a human unless policy delegates approval to the adjudicator.
+    - id: T083
+      from: [TEST_SPEC_CONFLICT]
+      to: "$same"
+      event: approve_test_change
+      actors: [human]
+      modes: [test-first, verification-first]
+      guards: []
+      effects: [E_RECORD_HUMAN_DECISION, E_APPROVE_TEST_CHANGE]
+      humanCommand: /sc accept-test-change
+      description: The distinct reviewable action that authorizes a corrected test (SPEC §53). Hermes then dispatches a tester.
+    - id: T084
+      from: [TEST_SPEC_CONFLICT]
+      to: RED_VERIFIED
+      event: reject_conflict
+      actors: [human]
+      modes: [test-first]
+      guards: [G_RED_EVIDENCE_VALID]
+      effects: [E_RECORD_HUMAN_DECISION, E_REJECT_CONFLICT]
+      humanCommand: /sc reject-conflict
+      description: Human decides the test stands.
+    - id: T085
+      from: [TEST_SPEC_CONFLICT]
+      to: JUDGE_APPROVED
+      event: reject_conflict
+      actors: [human]
+      modes: [verification-first]
+      guards: [G_JUDGE_APPROVED]
+      effects: [E_RECORD_HUMAN_DECISION, E_REJECT_CONFLICT]
+      humanCommand: /sc reject-conflict
+      description: Human decides the judge stands.
+
+    # ---- auxiliary (non-producing) executions
+    - id: T090
+      from: [SPECIFIED, RED_VERIFIED, TEST_NEEDS_WORK, ALREADY_SATISFIED, NEEDS_INVESTIGATION, TEST_SPEC_CONFLICT, CHANGES_REQUESTED, JUDGE_APPROVED]
+      to: "$same"
+      event: dispatch_auxiliary
+      actors: [hermes, human]
+      modes: [test-first, verification-first]
+      guards: [G_DISPATCH_PREREQUISITES, G_NO_ACTIVE_EXECUTION, G_ROLE_AUXILIARY_HERE, G_AUXILIARY_REMAIN]
+      effects: ["E_CREATE_EXECUTION:auxiliary"]
+      description: Researcher, planner or a read-only reviewer (test review, investigation, conflict adjudication) runs without changing the task state.
+    - id: T091
+      from: [SPECIFIED, RED_VERIFIED, TEST_NEEDS_WORK, ALREADY_SATISFIED, NEEDS_INVESTIGATION, TEST_SPEC_CONFLICT, CHANGES_REQUESTED, JUDGE_APPROVED]
+      to: "$same"
+      event: auxiliary_result_recorded
+      actors: [runner]
+      modes: [test-first, verification-first]
+      guards: []
+      effects: [E_RECORD_AUXILIARY_OUTPUT]
+      description: Auxiliary output (accepted or failed) is stored; failures count only toward auxiliary_used.
+
+    # ---- execution failures of producing / reviewing executions
+    - id: T100
+      from: [TEST_AUTHORING, IMPLEMENTING, REVIEW, JUDGE_AUTHORING, PRODUCING]
+      to: "$same"
+      event: execution_failed
+      actors: [runner]
+      modes: [test-first, verification-first]
+      guards: ["G_FAILURE_CLASS:infrastructure", G_INFRA_REQUEUE_ALLOWED]
+      effects: ["E_COUNT_FAILURE:infrastructure", E_REQUEUE_EXECUTION]
+      failureClass: infrastructure
+      description: Automatic requeue of infrastructure failures (evictions, image pulls, lost jobs, provider outages, deadline timeouts). Identical replay is allowed here; consecutive timeouts have their own cap.
+    - id: T101
+      from: [TEST_AUTHORING, IMPLEMENTING, REVIEW, JUDGE_AUTHORING, PRODUCING]
+      to: NEEDS_HUMAN
+      event: execution_failed
+      actors: [runner]
+      modes: [test-first, verification-first]
+      guards: ["G_FAILURE_CLASS:infrastructure", G_INFRA_REQUEUE_EXHAUSTED]
+      effects: ["E_COUNT_FAILURE:infrastructure", E_RECORD_RESUME_STATE, "E_NOTIFY_HUMAN:infrastructure_exhausted"]
+      failureClass: infrastructure
+      description: Consecutive or total infrastructure failures are bounded too (L-4).
+    - id: T102
+      from: [TEST_AUTHORING, IMPLEMENTING, REVIEW, JUDGE_AUTHORING, PRODUCING]
+      to: "$return"
+      event: execution_failed
+      actors: [runner]
+      modes: [test-first, verification-first]
+      guards: ["G_FAILURE_CLASS:merit", G_ATTEMPTS_REMAIN]
+      effects: ["E_COUNT_FAILURE:merit"]
+      failureClass: merit
+      description: Merit-class execution failure (a worker-reported merit reason, e.g. a researcher or reviewer that could not complete its judged work). Back to the dispatch-ready state; evidence goes to the next attempt.
+    - id: T103
+      from: [TEST_AUTHORING, IMPLEMENTING, REVIEW, JUDGE_AUTHORING, PRODUCING]
+      to: NEEDS_HUMAN
+      event: execution_failed
+      actors: [runner]
+      modes: [test-first, verification-first]
+      guards: ["G_FAILURE_CLASS:merit", G_ATTEMPTS_EXHAUSTED]
+      effects: ["E_COUNT_FAILURE:merit", E_RECORD_RESUME_STATE, "E_NOTIFY_HUMAN:retries_exhausted"]
+      failureClass: merit
+      description: Merit failure with no attempts left.
+    - id: T104
+      from: [TEST_AUTHORING, IMPLEMENTING, REVIEW, JUDGE_AUTHORING, PRODUCING]
+      to: NEEDS_HUMAN
+      event: execution_failed
+      actors: [runner]
+      modes: [test-first, verification-first]
+      guards: ["G_FAILURE_CLASS:policy"]
+      effects: ["E_COUNT_FAILURE:policy", E_QUARANTINE_HEAD, E_RECORD_RESUME_STATE, "E_NOTIFY_HUMAN:policy_violation"]
+      failureClass: policy
+      description: Any policy violation (protected path, test tamper, foreign ref, secret) stops autonomy at once (maxViolations 0).
+    - id: T105
+      from: [TEST_AUTHORING, IMPLEMENTING, REVIEW, JUDGE_AUTHORING, PRODUCING]
+      to: BLOCKED
+      event: execution_failed
+      actors: [runner]
+      modes: [test-first, verification-first]
+      guards: ["G_FAILURE_CLASS:budget", "G_FAILURE_CODE:EMERGENCY_STOP,BUDGET_SHARED_EXHAUSTED"]
+      effects: ["E_COUNT_FAILURE:budget", E_RECORD_RESUME_STATE]
+      failureClass: budget
+      description: Emergency stop or a shared (provider, global, orchestration) budget window stop (plan 33 §14.5). Not the task's fault - no attempt consumed, zero automatic retries; a human unblocks after the stop is lifted.
+    - id: T106
+      from: [TEST_AUTHORING, IMPLEMENTING, REVIEW, JUDGE_AUTHORING, PRODUCING]
+      to: NEEDS_HUMAN
+      event: execution_failed
+      actors: [runner]
+      modes: [test-first, verification-first]
+      guards: ["G_FAILURE_CLASS:budget"]
+      effects: ["E_COUNT_FAILURE:budget", E_RECORD_RESUME_STATE, "E_NOTIFY_HUMAN:budget_exceeded"]
+      failureClass: budget
+      description: Task-attributable budget limit (execution, task, request cap, undefined budget) - retrying cannot help; zero automatic retries.
+    - id: T107
+      from: [TEST_AUTHORING, IMPLEMENTING, JUDGE_AUTHORING, PRODUCING]
+      to: "$return"
+      event: execution_blocked
+      actors: [runner]
+      modes: [test-first, verification-first]
+      guards: [G_EXECUTION_ACCEPTED, G_BLOCKED_RESULTS_REMAIN]
+      effects: [E_DISCARD_UNVERIFIED_PUSH]
+      description: Worker cannot proceed without information; questions are in the handoff for Hermes.
+    - id: T108
+      from: [TEST_AUTHORING, IMPLEMENTING, JUDGE_AUTHORING, PRODUCING]
+      to: NEEDS_HUMAN
+      event: execution_blocked
+      actors: [runner]
+      modes: [test-first, verification-first]
+      guards: [G_EXECUTION_ACCEPTED, G_BLOCKED_RESULTS_EXHAUSTED]
+      effects: [E_DISCARD_UNVERIFIED_PUSH, E_RECORD_RESUME_STATE, "E_NOTIFY_HUMAN:worker_blocked"]
+      description: Repeatedly blocked workers need a human.
+
+    - id: T132
+      from: [SPECIFIED, RED_VERIFIED, TEST_NEEDS_WORK, ALREADY_SATISFIED, NEEDS_INVESTIGATION, TEST_SPEC_CONFLICT, GREEN_VERIFIED, CHANGES_REQUESTED, JUDGE_APPROVED]
+      to: NEEDS_HUMAN
+      event: dispatch_refused
+      actors: [runner]
+      modes: [test-first, verification-first]
+      guards: ["G_REFUSAL_CODE:BUDGET_EXCEEDED_TASK"]
+      effects: ["E_COUNT_FAILURE:budget", E_RECORD_RESUME_STATE, "E_NOTIFY_HUMAN:budget_exceeded"]
+      failureClass: budget
+      description: Task-scope budget headroom is below the dispatch minimum; it never returns by waiting (plan 33 §14.5, COST-7). Shared-scope and emergency-stop refusals leave the state unchanged.
+    - id: T133
+      from: [SPECIFIED, RED_VERIFIED, TEST_NEEDS_WORK, ALREADY_SATISFIED, NEEDS_INVESTIGATION, TEST_SPEC_CONFLICT, GREEN_VERIFIED, CHANGES_REQUESTED, JUDGE_APPROVED]
+      to: NEEDS_HUMAN
+      event: dispatch_refused
+      actors: [runner]
+      modes: [test-first, verification-first]
+      guards: ["G_REFUSAL_CODE:ATTEMPTS_EXHAUSTED"]
+      effects: [E_RECORD_RESUME_STATE, "E_NOTIFY_HUMAN:retries_exhausted"]
+      description: The role's attempts or the escalation ladder are exhausted; an identical-replay refusal does not escalate (Hermes can change the dispatch).
+
+    # ---- verification-first (judge-first) flow
+    - id: T110
+      from: [SPECIFIED]
+      to: JUDGE_AUTHORING
+      event: dispatch_tester
+      actors: [hermes, human]
+      modes: [verification-first]
+      guards: [G_EXEMPTION_GRANTED, "G_JUDGE_SOURCE:artifact", G_DISPATCH_PREREQUISITES, G_NO_ACTIVE_EXECUTION, G_ATTEMPTS_REMAIN]
+      effects: [E_FREEZE_ACCEPTANCE_CRITERIA, "E_CREATE_EXECUTION:tester"]
+      countsAttempt: true
+      description: Define the judge before producing the answer (SPEC §57).
+    - id: T111
+      from: [TEST_NEEDS_WORK]
+      to: JUDGE_AUTHORING
+      event: dispatch_tester
+      actors: [hermes, human]
+      modes: [verification-first]
+      guards: ["G_JUDGE_SOURCE:artifact", G_DISPATCH_PREREQUISITES, G_NO_ACTIVE_EXECUTION, G_ATTEMPTS_REMAIN, G_NOT_IDENTICAL_REPLAY]
+      effects: ["E_CREATE_EXECUTION:tester"]
+      countsAttempt: true
+      description: Judge retry with prior evidence.
+    - id: T131
+      from: [ALREADY_SATISFIED, NEEDS_INVESTIGATION]
+      to: JUDGE_AUTHORING
+      event: dispatch_tester
+      actors: [hermes, human]
+      modes: [verification-first]
+      guards: ["G_JUDGE_SOURCE:artifact", G_STRENGTHEN_AUTHORIZED, G_DISPATCH_PREREQUISITES, G_NO_ACTIVE_EXECUTION, G_ATTEMPTS_REMAIN, G_NOT_IDENTICAL_REPLAY]
+      effects: ["E_CREATE_EXECUTION:tester"]
+      countsAttempt: true
+      description: Stronger judge after a human authorized it.
+    - id: T112
+      from: [JUDGE_APPROVED]
+      to: JUDGE_AUTHORING
+      event: dispatch_tester
+      actors: [hermes, human]
+      modes: [verification-first]
+      guards: ["G_JUDGE_SOURCE:artifact", G_DISPATCH_PREREQUISITES, G_NO_ACTIVE_EXECUTION, G_ATTEMPTS_REMAIN, G_NO_PRODUCER_DISPATCHED_IN_GENERATION]
+      effects: ["E_START_GENERATION:strengthened", "E_CREATE_EXECUTION:tester"]
+      countsAttempt: true
+      description: Strengthen the judge before any production; it must be validated and approved again.
+    - id: T113
+      from: [TEST_SPEC_CONFLICT]
+      to: JUDGE_AUTHORING
+      event: dispatch_tester
+      actors: [hermes, human]
+      modes: [verification-first]
+      guards: ["G_JUDGE_SOURCE:artifact", G_DISPATCH_PREREQUISITES, G_NO_ACTIVE_EXECUTION, G_TEST_CHANGE_APPROVED, G_GENERATIONS_REMAIN, G_ATTEMPTS_REMAIN]
+      effects: ["E_START_GENERATION:test_change_approved", "E_CREATE_EXECUTION:tester"]
+      countsAttempt: true
+      description: Approved corrected judge; new generation.
+    - id: T114
+      from: [JUDGE_AUTHORING]
+      to: JUDGE_VALIDATING
+      event: tester_result_accepted
+      actors: [runner]
+      modes: [verification-first]
+      guards: [G_EXECUTION_ACCEPTED, G_COMMIT_PUSHED, G_JUDGE_SCOPE_VALID, G_JUDGE_DETERMINISTIC]
+      effects: [E_RECORD_TEST_EXECUTION, E_RECORD_CANDIDATE_RED_COMMIT, "E_TRIGGER_VERIFICATION:judge_validate"]
+      description: Deterministic judge - CI proves it is well-formed and fails on base.
+    - id: T115
+      from: [JUDGE_AUTHORING]
+      to: JUDGE_AWAITING_APPROVAL
+      event: tester_result_accepted
+      actors: [runner]
+      modes: [verification-first]
+      guards: [G_EXECUTION_ACCEPTED, G_COMMIT_PUSHED, G_JUDGE_SCOPE_VALID, G_JUDGE_NONDETERMINISTIC]
+      effects: [E_RECORD_TEST_EXECUTION, E_RECORD_CANDIDATE_RED_COMMIT, "E_NOTIFY_HUMAN:approval_required"]
+      description: Rubric judge - a human approves exemption and judge.
+    - id: T116
+      from: [JUDGE_VALIDATING]
+      to: JUDGE_APPROVED
+      event: judge_classified
+      actors: [ci]
+      modes: [verification-first]
+      guards: [G_EVIDENCE_AUTHENTIC, G_HEAD_UNCHANGED, "G_VERIFICATION_OUTCOME:judge_valid", "G_APPROVAL:auto"]
+      effects: ["E_RECORD_EVIDENCE:judge_validate", E_RECORD_RED_COMMIT, E_CREATE_TEST_MANIFEST, "E_RECORD_JUDGE_APPROVAL:auto", "E_ENSURE_PR:draft", "E_POST_STATUS:pending"]
+      description: Deterministic judge valid and policy approves automatically.
+    - id: T117
+      from: [JUDGE_VALIDATING]
+      to: JUDGE_AWAITING_APPROVAL
+      event: judge_classified
+      actors: [ci]
+      modes: [verification-first]
+      guards: [G_EVIDENCE_AUTHENTIC, G_HEAD_UNCHANGED, "G_VERIFICATION_OUTCOME:judge_valid", "G_APPROVAL:human"]
+      effects: ["E_RECORD_EVIDENCE:judge_validate", "E_NOTIFY_HUMAN:approval_required"]
+      description: Deterministic judge valid; the class still requires a human approval.
+    - id: T118
+      from: [JUDGE_VALIDATING]
+      to: TEST_NEEDS_WORK
+      event: judge_classified
+      actors: [ci]
+      modes: [verification-first]
+      guards: [G_EVIDENCE_AUTHENTIC, "G_VERIFICATION_OUTCOME:judge_invalid"]
+      effects: ["E_RECORD_EVIDENCE:judge_validate", "E_COUNT_FAILURE:merit"]
+      failureClass: merit
+      description: Malformed or erroring judge.
+    - id: T119
+      from: [JUDGE_VALIDATING]
+      to: ALREADY_SATISFIED
+      event: judge_classified
+      actors: [ci]
+      modes: [verification-first]
+      guards: [G_EVIDENCE_AUTHENTIC, "G_VERIFICATION_OUTCOME:already_satisfied"]
+      effects: ["E_RECORD_EVIDENCE:judge_validate", "E_NOTIFY_HUMAN:already_satisfied"]
+      description: The judge already passes on base.
+    - id: T120
+      from: [JUDGE_VALIDATING]
+      to: NEEDS_INVESTIGATION
+      event: judge_classified
+      actors: [ci]
+      modes: [verification-first]
+      guards: [G_EVIDENCE_AUTHENTIC, "G_VERIFICATION_OUTCOME:baseline_failing,partially_satisfied,inconclusive"]
+      effects: ["E_RECORD_EVIDENCE:judge_validate", "E_NOTIFY_HUMAN:needs_investigation"]
+      description: Base validation broken or inconclusive.
+    - id: T121
+      from: [JUDGE_AWAITING_APPROVAL]
+      to: JUDGE_APPROVED
+      event: approve_judge
+      actors: [human]
+      modes: [verification-first]
+      guards: [G_EXEMPTION_GRANTED]
+      effects: [E_RECORD_HUMAN_DECISION, E_RECORD_RED_COMMIT, E_CREATE_TEST_MANIFEST, "E_RECORD_JUDGE_APPROVAL:human", "E_ENSURE_PR:draft"]
+      humanCommand: /sc approve-judge
+      description: Single human gate approving the exemption and the judge (no self-exemption, SPEC §46).
+    - id: T122
+      from: [JUDGE_AWAITING_APPROVAL]
+      to: TEST_NEEDS_WORK
+      event: reject_judge
+      actors: [human]
+      modes: [verification-first]
+      guards: ["G_JUDGE_SOURCE:artifact"]
+      effects: [E_RECORD_HUMAN_DECISION]
+      humanCommand: /sc reject-judge
+      description: The judge artifact needs work; findings in the decision payload reach the next judge author.
+    - id: T123
+      from: [SPECIFIED, JUDGE_AWAITING_APPROVAL, JUDGE_APPROVED, TEST_NEEDS_WORK, ALREADY_SATISFIED, NEEDS_INVESTIGATION, NEEDS_HUMAN]
+      to: SPECIFIED
+      event: deny_exemption
+      actors: [human]
+      modes: [verification-first]
+      guards: [G_NO_PRODUCTION_IN_GENERATION]
+      effects: [E_RECORD_HUMAN_DECISION, E_ARCHIVE_GENERATION, "E_SET_MODE:test-first"]
+      humanCommand: /sc deny-exemption
+      description: Denial tightens - the task continues as test-first from SPECIFIED.
+    - id: T124
+      from: [JUDGE_APPROVED, CHANGES_REQUESTED]
+      to: PRODUCING
+      event: dispatch_producer
+      actors: [hermes, human]
+      modes: [verification-first]
+      guards: [G_DISPATCH_PREREQUISITES, G_NO_ACTIVE_EXECUTION, G_JUDGE_APPROVED, G_PRODUCER_ROLE_ALLOWED, G_ATTEMPTS_REMAIN, G_NOT_IDENTICAL_REPLAY]
+      effects: ["E_CREATE_EXECUTION:producer"]
+      countsAttempt: true
+      description: Production starts only after the judge is approved.
+    - id: T125
+      from: [TEST_SPEC_CONFLICT]
+      to: PRODUCING
+      event: dispatch_producer
+      actors: [hermes, human]
+      modes: [verification-first]
+      guards: [G_DISPATCH_PREREQUISITES, G_NO_ACTIVE_EXECUTION, G_CONFLICT_REJECTED, G_JUDGE_APPROVED, G_PRODUCER_ROLE_ALLOWED, G_ATTEMPTS_REMAIN]
+      effects: ["E_CREATE_EXECUTION:producer"]
+      countsAttempt: true
+      description: Adjudication upheld the judge; production retries.
+    - id: T126
+      from: [PRODUCING]
+      to: JUDGING
+      event: producer_result_accepted
+      actors: [runner]
+      modes: [verification-first]
+      guards: [G_EXECUTION_ACCEPTED, G_PRODUCTION_SCOPE_VALID, G_JUDGE_ARTIFACT_INTACT]
+      effects: [E_RECORD_IMPLEMENTATION_COMMIT, "E_POST_STATUS:pending", "E_TRIGGER_VERIFICATION:judge"]
+      description: Produced output accepted; evaluate the approved judge.
+    - id: T127
+      from: [JUDGING]
+      to: GREEN_VERIFIED
+      event: judging_classified
+      actors: [ci, runner]
+      modes: [verification-first]
+      guards: [G_EVIDENCE_AUTHENTIC, G_HEAD_UNCHANGED, "G_VERIFICATION_OUTCOME:judging_pass"]
+      effects: ["E_RECORD_EVIDENCE:judge", "E_ENSURE_PR:ready", "E_POST_STATUS:pending"]
+      description: The judge passed (actor runner only for runner-local judges such as research acceptance criteria).
+    - id: T128
+      from: [JUDGING]
+      to: JUDGE_APPROVED
+      event: judging_classified
+      actors: [ci, runner]
+      modes: [verification-first]
+      guards: [G_EVIDENCE_AUTHENTIC, "G_VERIFICATION_OUTCOME:judging_fail", G_ATTEMPTS_REMAIN]
+      effects: ["E_RECORD_EVIDENCE:judge", "E_COUNT_FAILURE:merit"]
+      failureClass: merit
+      description: The produced answer failed the judge.
+    - id: T129
+      from: [JUDGING]
+      to: NEEDS_HUMAN
+      event: judging_classified
+      actors: [ci, runner]
+      modes: [verification-first]
+      guards: [G_EVIDENCE_AUTHENTIC, "G_VERIFICATION_OUTCOME:judging_fail", G_ATTEMPTS_EXHAUSTED]
+      effects: ["E_RECORD_EVIDENCE:judge", "E_COUNT_FAILURE:merit", E_RECORD_RESUME_STATE, "E_NOTIFY_HUMAN:retries_exhausted"]
+      failureClass: merit
+      description: Judging retries exhausted.
+    - id: T130
+      from: [JUDGING]
+      to: NEEDS_HUMAN
+      event: judging_classified
+      actors: [ci, runner]
+      modes: [verification-first]
+      guards: [G_EVIDENCE_AUTHENTIC, "G_VERIFICATION_OUTCOME:tamper_detected"]
+      effects: ["E_RECORD_EVIDENCE:judge", "E_COUNT_FAILURE:policy", E_QUARANTINE_HEAD, "E_POST_STATUS:failure", E_RECORD_RESUME_STATE, "E_NOTIFY_HUMAN:policy_violation"]
+      failureClass: policy
+      description: Judge artifact or out-of-class paths changed.
+
+    # ---- watchdog
+    - id: T140
+      from: [RED_VERIFYING, RED_VERIFIED, TEST_NEEDS_WORK, TEST_SPEC_CONFLICT, GREEN_VERIFYING, GREEN_VERIFIED, CHANGES_REQUESTED, JUDGE_VALIDATING, JUDGE_APPROVED, JUDGING]
+      to: NEEDS_HUMAN
+      event: stall_timeout
+      actors: [runner]
+      modes: [test-first, verification-first]
+      guards: []
+      effects: [E_CANCEL_ACTIVE_EXECUTION, E_CANCEL_PENDING_VERIFICATION, E_RECORD_RESUME_STATE, "E_NOTIFY_HUMAN:stalled"]
+      description: A state exceeded its escalateAfter; autonomy stops and a human is notified.
+
+  # ------------------------------------------------------------------ execution machine
+  execution:
+    states: [QUEUED, STARTING, RUNNING, SUCCEEDED, FAILED, CANCELLED, TIMED_OUT]
+    terminalStates: [SUCCEEDED, FAILED, CANCELLED, TIMED_OUT]
+    transitions:
+      - from: QUEUED
+        to: STARTING
+        trigger: dispatched
+        description: "Dispatcher claimed the row (FOR UPDATE SKIP LOCKED), minted credentials and created the Job."
+      - from: QUEUED
+        to: CANCELLED
+        trigger: cancel_requested
+        description: "Task cancelled, blocked or escalated before a Job existed."
+      - from: QUEUED
+        to: FAILED
+        trigger: dispatch_refused
+        failureClasses: [budget, policy, infrastructure]
+        description: "Re-check at dispatch failed (emergency stop or budget -> budget; policy unavailable -> policy; dependency down beyond retry -> infrastructure)."
+      - from: QUEUED
+        to: FAILED
+        trigger: queue_timeout
+        failureClasses: [infrastructure]
+        description: "QUEUE_TIMEOUT - the execution waited longer than spec.retry.infrastructure.queueTimeout for a worker slot or heavy-slot units (the Job is not unsuspended while waiting, plan 26). Infrastructure class: refunded, requeue bounded by maxConsecutive."
+      - from: STARTING
+        to: RUNNING
+        trigger: packet_fetched
+        description: "First authenticated GET /v1/worker/packet."
+      - from: STARTING
+        to: FAILED
+        trigger: start_failed
+        failureClasses: [infrastructure]
+        description: "START_TIMEOUT (STARTING > watchdog.startTimeoutSeconds; the Job deadline cannot expire first because the Job is unsuspended only when slot units are free), IMAGE_PULL, JOB_LOST."
+      - from: STARTING
+        to: CANCELLED
+        trigger: cancel_requested
+        description: "Cancelled while starting."
+      - from: RUNNING
+        to: SUCCEEDED
+        trigger: result_accepted
+        description: "Ingestion accepted a completed, blocked, test_spec_conflict or already_satisfied result."
+      - from: RUNNING
+        to: FAILED
+        trigger: result_rejected
+        failureClasses: [policy, infrastructure]
+        description: "Violation (policy) or schema-invalid result (infrastructure)."
+      - from: RUNNING
+        to: FAILED
+        trigger: worker_failed
+        failureClasses: [infrastructure, policy, budget, merit]
+        description: "Worker reported failed; class from the failure reason table (plan 29 §15.2)."
+      - from: RUNNING
+        to: FAILED
+        trigger: result_missing
+        failureClasses: [infrastructure]
+        description: "Pod finished without a result, or the job or pod vanished."
+      - from: RUNNING
+        to: CANCELLED
+        trigger: cancel_requested
+        description: "Task-level cancel, block or escalation (no failure class). A QUEUED execution cancelled by an emergency stop records class budget, code EMERGENCY_STOP."
+      - from: RUNNING
+        to: TIMED_OUT
+        trigger: deadline_exceeded
+        failureClasses: [infrastructure]
+        description: "Profile deadline or harness timeout after the worker started - infrastructure class, capped by maxConsecutiveTimeouts (plan 29 §15.2)."
+
+  # ------------------------------------------------------------------ human projection
+  humanProjection:
+    - {humanState: Needs Human, label: status/needs-human, states: [NEEDS_HUMAN, JUDGE_AWAITING_APPROVAL, ALREADY_SATISFIED, NEEDS_INVESTIGATION], priority: 0}
+    - {humanState: Needs Human, label: status/needs-human, states: [TEST_SPEC_CONFLICT], when: open_conflict.awaiting_human_approval, priority: 1}
+    - {humanState: Blocked, label: status/blocked, states: [BLOCKED], priority: 2}
+    - {humanState: Done, label: status/done, states: [DONE, CANCELLED], priority: 3}
+    - {humanState: Review, label: status/review, states: [REVIEW, AWAITING_MERGE], priority: 4}
+    - {humanState: Ready, label: status/ready, states: [SPECIFIED], when: no_execution_dispatched, priority: 5}
+    - {humanState: In Progress, label: status/in-progress, states: [SPECIFIED, TEST_AUTHORING, RED_VERIFYING, RED_VERIFIED, TEST_NEEDS_WORK, TEST_SPEC_CONFLICT, IMPLEMENTING, GREEN_VERIFYING, GREEN_VERIFIED, CHANGES_REQUESTED, JUDGE_AUTHORING, JUDGE_VALIDATING, JUDGE_APPROVED, PRODUCING, JUDGING], priority: 6}

@@ -1,0 +1,357 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://strange.company/contracts/ci-policy/v1alpha1
+title: CIPolicy
+description: |
+  `policy/ci.yaml`, kind `CIPolicy`. This is the platform policy for trusted CI.
+  - Owning plan 20: trust model ADR-0301, verification ADR-0302, workspaces ADR-0305.
+  - Plan 52 owns `spec.tddDiscipline`.
+  - Plan 23 owns the build-lane values.
+
+  The file is delivered to `sc-ci-config` and `sc-ci-maint` as ConfigMap `woodpecker/sc-ci-policy` (ADR-0017).
+  It is a protected path. `make policy-check` validates it against this schema.
+
+  Fail-closed rules:
+  - An invalid file makes `sc-ci-config` keep its last-known-good policy and refuse new configurations
+    until a valid revision arrives.
+  - With no last-known-good policy, it serves nothing.
+type: object
+additionalProperties: false
+required: [apiVersion, kind, metadata, spec]
+properties:
+  apiVersion: {const: strange.company/v1alpha1}
+  kind: {const: CIPolicy}
+  metadata:
+    type: object
+    additionalProperties: false
+    required: [name]
+    properties:
+      name: {type: string, pattern: "^[a-z][a-z0-9-]{0,40}$"}
+  spec:
+    type: object
+    additionalProperties: false
+    required: [managedOwners, protectedBranches, releaseTagPattern, imageRegistries, cloneImage, stepSecurityContext, lanes, repoSettings, verify, retention]
+    properties:
+      managedOwners:
+        type: array
+        minItems: 1
+        uniqueItems: true
+        items: {type: string, pattern: "^[A-Za-z0-9_.-]{1,40}$"}
+      protectedBranches:
+        description: Exact branch names (no globs; SEC-1). A push to one of them, or to a `releaseBranches` entry, is classified `protected` only if Forgejo also reports an active protection rule covering it (plan 20 §8.2).
+        type: array
+        minItems: 1
+        items: {type: string, pattern: "^[A-Za-z0-9_./-]{1,100}$"}
+      releaseBranches:
+        description: Exact names of release maintenance branches that count as protected. Empty in MVP.
+        type: array
+        uniqueItems: true
+        items: {type: string, pattern: "^release/v[0-9]+\\.[0-9]+$"}
+      releaseTagPattern:
+        description: Anchored regular expression (RE2) for release tags (plan 23; SEC-12). It must start with ^ and end with $.
+        type: string
+        pattern: "^\\^.{1,100}\\$$"
+      imageRegistries:
+        description: Allowed image reference prefixes. Every served step image must start with one and be digest-pinned.
+        type: array
+        minItems: 1
+        items: {type: string, pattern: "^[A-Za-z0-9.${}<>_-]+(:[0-9]+)?/([A-Za-z0-9._${}<>-]+/)*$"}
+      cloneImage:
+        type: string
+        pattern: "^[^\\s@]+@sha256:[0-9a-f]{64}$"
+      stepSecurityContext:
+        description: Merged into every step's `backend_options.kubernetes.securityContext`. The values are fixed to PSA `restricted`.
+        type: object
+        additionalProperties: false
+        required: [runAsNonRoot, runAsUser, allowPrivilegeEscalation, privileged, seccompProfile, capabilities]
+        properties:
+          runAsNonRoot: {const: true}
+          runAsUser: {type: integer, minimum: 1000}
+          runAsGroup: {type: integer, minimum: 1000}
+          fsGroup: {type: integer, minimum: 1000}
+          allowPrivilegeEscalation: {const: false}
+          privileged: {const: false}
+          seccompProfile:
+            type: object
+            additionalProperties: false
+            required: [type]
+            properties:
+              type: {const: RuntimeDefault}
+          capabilities:
+            type: object
+            additionalProperties: false
+            required: [drop]
+            properties:
+              drop:
+                type: array
+                contains: {const: ALL}
+      lanes:
+        type: object
+        additionalProperties: false
+        required: [ci, build]
+        properties:
+          ci: {$ref: "#/$defs/Lane"}
+          build: {$ref: "#/$defs/Lane"}
+      repoSettings:
+        type: object
+        additionalProperties: false
+        required: [timeoutMinutes, maxTimeoutMinutes, requireApproval]
+        properties:
+          timeoutMinutes: {type: integer, minimum: 5, maximum: 120}
+          maxTimeoutMinutes: {type: integer, minimum: 5, maximum: 120}
+          requireApproval: {enum: [none, forks, pull_requests, all_events]}
+          allowPullRequests: {type: boolean}
+          cancelPreviousEvents:
+            type: array
+            uniqueItems: true
+            items: {enum: [push, pull_request, tag, deployment]}
+      crons:
+        type: array
+        items:
+          type: object
+          additionalProperties: false
+          required: [repo, name, branch, schedule]
+          properties:
+            repo: {type: string, pattern: "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"}
+            name: {type: string, pattern: "^[a-z][a-z0-9-]{0,40}$"}
+            branch: {type: string, maxLength: 100}
+            schedule:
+              description: Woodpecker cron syntax with seconds (6 fields).
+              type: string
+              pattern: "^\\S+ \\S+ \\S+ \\S+ \\S+ \\S+$"
+      verify:
+        type: object
+        additionalProperties: false
+        required: [installerImage]
+        properties:
+          installerImage:
+            type: string
+            pattern: "^[^\\s@]+@sha256:[0-9a-f]{64}$"
+          defaultWorkflow:
+            type: object
+            additionalProperties: false
+            properties:
+              stepImageFrom: {const: validation.yaml}
+      retention:
+        type: object
+        additionalProperties: false
+        required: [logDays]
+        properties:
+          logDays:
+            description: Woodpecker pipeline log retention (plan 43 R-19). The default is 30.
+            type: integer
+            minimum: 7
+            maximum: 365
+      offclusterLane:
+        description: ADR-0303. Read by plan 23's release gate.
+        type: object
+        additionalProperties: false
+        required: [provider, workflow, maxWaitMinutes]
+        properties:
+          provider: {enum: [github-actions, woodpecker-agent]}
+          workflow: {type: string, pattern: "^[a-z][a-z0-9-]{0,40}$"}
+          maxWaitMinutes: {type: integer, minimum: 1, maximum: 240}
+      tddDiscipline: {$ref: "#/$defs/TddDiscipline"}
+$defs:
+  Quantity:
+    type: string
+    pattern: "^[0-9]+(\\.[0-9]+)?(m|Ki|Mi|Gi|Ti)?$"
+  Resources:
+    type: object
+    additionalProperties: false
+    properties:
+      requests:
+        type: object
+        propertyNames: {enum: [cpu, memory, ephemeral-storage]}
+        additionalProperties: {$ref: "#/$defs/Quantity"}
+      limits:
+        type: object
+        propertyNames: {enum: [cpu, memory, ephemeral-storage]}
+        additionalProperties: {$ref: "#/$defs/Quantity"}
+  Lane:
+    type: object
+    additionalProperties: false
+    required: [heavySlotUnits, workspacePvcMax]
+    properties:
+      fromPlan:
+        description: Plan that owns this lane's resource values (build lane = "23").
+        type: string
+        pattern: "^[0-9]{2}$"
+      defaults: {$ref: "#/$defs/Resources"}
+      max: {$ref: "#/$defs/Resources"}
+      constrained: {$ref: "#/$defs/Resources"}
+      heavySlotUnits:
+        description: Forced value of `limits["strange.company/heavy-slot"]` per container (CD-05; ci 1, build 8).
+        type: integer
+        minimum: 1
+        maximum: 8
+      workspacePvcMax:
+        description: CD-06 cap (ci-jobs 8Gi, ci-build 10Gi).
+        type: string
+        pattern: "^([1-9]|10)Gi$"
+      sequentialStepsOnly: {type: boolean}
+  TddDiscipline:
+    description: Plan 52 §8.3 (`make tdd-discipline-check`).
+    type: object
+    additionalProperties: false
+    required: [excludedBranches, behaviorPaths, testPaths, redTargets, exemptionClasses]
+    properties:
+      excludedBranches:
+        type: array
+        items: {type: string, maxLength: 100}
+      behaviorPaths:
+        type: array
+        minItems: 1
+        items: {type: string, maxLength: 200}
+      testPaths:
+        type: array
+        minItems: 1
+        items: {type: string, maxLength: 200}
+      redTargets:
+        type: array
+        minItems: 1
+        uniqueItems: true
+        items: {type: string, pattern: "^[a-z][a-z0-9-]{0,40}$"}
+      exemptionClasses:
+        type: object
+        minProperties: 1
+        propertyNames: {pattern: "^[a-z][a-z0-9-]{0,40}$"}
+        additionalProperties:
+          type: object
+          additionalProperties: false
+          minProperties: 1
+          properties:
+            paths:
+              type: array
+              minItems: 1
+              items: {type: string, maxLength: 200}
+            subjectRegex: {type: string, maxLength: 200}
+            requires: {type: string, maxLength: 300}
+examples:
+  - apiVersion: strange.company/v1alpha1
+    kind: CIPolicy
+    metadata: {name: platform}
+    spec:
+      managedOwners: [strange-company, projects, sc-e2e]
+      protectedBranches: [main]
+      releaseBranches: []
+      releaseTagPattern: '^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$'
+      imageRegistries: ["git.${BASE_DOMAIN}/strange-company/", "ghcr.io/example/", "docker.io/woodpeckerci/"]
+      cloneImage: "docker.io/woodpeckerci/plugin-git:2.6.0@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+      stepSecurityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        allowPrivilegeEscalation: false
+        privileged: false
+        seccompProfile: {type: RuntimeDefault}
+        capabilities: {drop: [ALL]}
+      lanes:
+        ci:
+          defaults: {requests: {cpu: 500m, memory: 1Gi}, limits: {memory: 3Gi, ephemeral-storage: 4Gi}}
+          max: {requests: {cpu: "2", memory: 3Gi}, limits: {memory: 3Gi, ephemeral-storage: 6Gi}}
+          constrained: {limits: {memory: 2Gi}}
+          heavySlotUnits: 1
+          workspacePvcMax: 8Gi
+        build:
+          fromPlan: "23"
+          heavySlotUnits: 8
+          workspacePvcMax: 10Gi
+          sequentialStepsOnly: true
+      repoSettings: {timeoutMinutes: 45, maxTimeoutMinutes: 90, requireApproval: forks, allowPullRequests: true, cancelPreviousEvents: [pull_request]}
+      crons:
+        - {repo: strange-company/strange-company, name: nightly, branch: main, schedule: "0 0 2 * * *"}
+      verify:
+        installerImage: "git.example.org/strange-company/sc-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+        defaultWorkflow: {stepImageFrom: validation.yaml}
+      retention: {logDays: 30}
+      offclusterLane: {provider: github-actions, workflow: e2e, maxWaitMinutes: 90}
+      tddDiscipline:
+        excludedBranches: ["agent/*", "renovate/*"]
+        behaviorPaths: ["src/**", "charts/**", "gitops/platform/**", "policy/**", "contracts/**", "Makefile", "mk/**"]
+        testPaths: ["**/*_test.go", "**/testdata/**", "test/**"]
+        redTargets: [test, contracts, policy-check, gitops-validate, chart-test]
+        exemptionClasses:
+          docs-only: {paths: ["**/*.md", "adr/**", "plans/**", "procedures/**"]}
+          revert: {subjectRegex: '^Revert "'}
+x-invalid-examples:
+  - reason: A privileged step security context.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: CIPolicy
+      metadata: {name: platform}
+      spec:
+        managedOwners: [strange-company]
+        protectedBranches: [main]
+        releaseTagPattern: '^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$'
+        imageRegistries: ["ghcr.io/example/"]
+        cloneImage: "docker.io/woodpeckerci/plugin-git:2.6.0@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+        stepSecurityContext: {runAsNonRoot: true, runAsUser: 65532, allowPrivilegeEscalation: false, privileged: true, seccompProfile: {type: RuntimeDefault}, capabilities: {drop: [ALL]}}
+        lanes: {ci: {heavySlotUnits: 1, workspacePvcMax: 8Gi}, build: {heavySlotUnits: 8, workspacePvcMax: 10Gi}}
+        repoSettings: {timeoutMinutes: 45, maxTimeoutMinutes: 90, requireApproval: forks}
+        verify: {installerImage: "git.example.org/strange-company/sc-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"}
+        retention: {logDays: 30}
+  - reason: A heavy-slot value of 0 would let CI escape the mutual exclusion (CD-05).
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: CIPolicy
+      metadata: {name: platform}
+      spec:
+        managedOwners: [strange-company]
+        protectedBranches: [main]
+        releaseTagPattern: '^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$'
+        imageRegistries: ["ghcr.io/example/"]
+        cloneImage: "docker.io/woodpeckerci/plugin-git:2.6.0@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+        stepSecurityContext: {runAsNonRoot: true, runAsUser: 65532, allowPrivilegeEscalation: false, privileged: false, seccompProfile: {type: RuntimeDefault}, capabilities: {drop: [ALL]}}
+        lanes: {ci: {heavySlotUnits: 0, workspacePvcMax: 8Gi}, build: {heavySlotUnits: 8, workspacePvcMax: 10Gi}}
+        repoSettings: {timeoutMinutes: 45, maxTimeoutMinutes: 90, requireApproval: forks}
+        verify: {installerImage: "git.example.org/strange-company/sc-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"}
+        retention: {logDays: 30}
+  - reason: A tag-only clone image (not digest-pinned).
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: CIPolicy
+      metadata: {name: platform}
+      spec:
+        managedOwners: [strange-company]
+        protectedBranches: [main]
+        releaseTagPattern: '^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$'
+        imageRegistries: ["ghcr.io/example/"]
+        cloneImage: "docker.io/woodpeckerci/plugin-git:latest"
+        stepSecurityContext: {runAsNonRoot: true, runAsUser: 65532, allowPrivilegeEscalation: false, privileged: false, seccompProfile: {type: RuntimeDefault}, capabilities: {drop: [ALL]}}
+        lanes: {ci: {heavySlotUnits: 1, workspacePvcMax: 8Gi}, build: {heavySlotUnits: 8, workspacePvcMax: 10Gi}}
+        repoSettings: {timeoutMinutes: 45, maxTimeoutMinutes: 90, requireApproval: forks}
+        verify: {installerImage: "git.example.org/strange-company/sc-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"}
+        retention: {logDays: 30}
+  - reason: A ci-lane workspace cap above the CD-06 limit.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: CIPolicy
+      metadata: {name: platform}
+      spec:
+        managedOwners: [strange-company]
+        protectedBranches: [main]
+        releaseTagPattern: '^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$'
+        imageRegistries: ["ghcr.io/example/"]
+        cloneImage: "docker.io/woodpeckerci/plugin-git:2.6.0@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+        stepSecurityContext: {runAsNonRoot: true, runAsUser: 65532, allowPrivilegeEscalation: false, privileged: false, seccompProfile: {type: RuntimeDefault}, capabilities: {drop: [ALL]}}
+        lanes: {ci: {heavySlotUnits: 1, workspacePvcMax: 20Gi}, build: {heavySlotUnits: 8, workspacePvcMax: 10Gi}}
+        repoSettings: {timeoutMinutes: 45, maxTimeoutMinutes: 90, requireApproval: forks}
+        verify: {installerImage: "git.example.org/strange-company/sc-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"}
+        retention: {logDays: 30}
+  - reason: A glob branch pattern and an unanchored tag pattern (SEC-1, SEC-12).
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: CIPolicy
+      metadata: {name: platform}
+      spec:
+        managedOwners: [strange-company]
+        protectedBranches: [main, "release/*"]
+        releaseTagPattern: "v*"
+        imageRegistries: ["ghcr.io/example/"]
+        cloneImage: "docker.io/woodpeckerci/plugin-git:2.6.0@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+        stepSecurityContext: {runAsNonRoot: true, runAsUser: 65532, allowPrivilegeEscalation: false, privileged: false, seccompProfile: {type: RuntimeDefault}, capabilities: {drop: [ALL]}}
+        lanes: {ci: {heavySlotUnits: 1, workspacePvcMax: 8Gi}, build: {heavySlotUnits: 8, workspacePvcMax: 10Gi}}
+        repoSettings: {timeoutMinutes: 45, maxTimeoutMinutes: 90, requireApproval: forks}
+        verify: {installerImage: "git.example.org/strange-company/sc-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"}
+        retention: {logDays: 30}

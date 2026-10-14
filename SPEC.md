@@ -2,12 +2,15 @@
 
 ## Canonical System Specification
 
-**Specification version:** 1.1  
+**Specification version:** 1.2  
 **Status:** Frozen architecture baseline  
 **Repository:** `strange-company`  
 **System type:** Self-hosted autonomous software factory  
 **Bootstrap target:** One inexpensive VPS  
 **Production baseline:** Three-node resilient k3s cluster
+
+**Amendments:**
+- **1.2 (2026-10-14, operator decision during Stage 0).** Node disk sizing in §11 and §12 changed to minimum 100Gi and preferred 200Gi NVMe per node for both profiles. The previous values were 75Gi minimum and 100Gi preferred. Reason: the Stage-0 storage budget (plans 11 §12 and 51, spec issue SI-32) showed 75–100 GiB cannot hold the platform's images, snapshots, CI workspace and restore scratch with a useful growth horizon. Memory minimums are unchanged: 8Gi stays allowed as a constrained configuration (SI-12, ADR-0020).
 
 ---
 
@@ -623,7 +626,7 @@ spec:
       memory: 8Gi
 
       storage:
-        size: 75Gi
+        size: 100Gi
         class: ssd
 
     preferredPerNode:
@@ -631,7 +634,7 @@ spec:
       memory: 12Gi
 
       storage:
-        size: 100Gi
+        size: 200Gi
         class: nvme
 
   kubernetes:
@@ -682,8 +685,13 @@ spec:
       memory: 8Gi
 
       storage:
-        size: 75Gi
+        size: 100Gi
         class: ssd
+
+    preferredPerNode:
+      storage:
+        size: 200Gi
+        class: nvme
 
   kubernetes:
     servers: 3

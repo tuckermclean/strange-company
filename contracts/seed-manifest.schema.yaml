@@ -1,0 +1,138 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://strange.company/contracts/seed-manifest/v1alpha1
+title: SeedManifest
+description: |
+  Manifest of one seed snapshot (plan 19 §8.3, ADR-0005). `sc-bootstrap seed` uploads it last, as
+  `s3://<prefix>-bootstrap-seed/<cluster>/<commit_sha>/.sc-seed/manifest.json`; its presence marks a
+  complete snapshot.
+
+  The snapshot is the `gitops/` subtree of exactly one commit. Before anything is applied, the Flux
+  Bucket artifact is proven equal to `gitops_tree_sha`. Every file has mode 100644 (F11 check
+  `gitops-file-modes`), so the git tree hash can be recomputed from paths and blob contents.
+
+  Resume rule (U4): an existing manifest under the same prefix must equal the computed one in every
+  field except `created_at` and `created_by`; otherwise `SEED_SNAPSHOT_CONFLICT`.
+type: object
+additionalProperties: false
+required: [schema_version, cluster, commit_sha, gitops_tree_sha, profile, created_at, created_by, file_count, total_bytes, files, tool]
+properties:
+  schema_version:
+    const: v1alpha1
+  cluster:
+    description: Cluster name (`gitops/clusters/<cluster>/`).
+    type: string
+    pattern: "^[a-z][a-z0-9-]{1,40}$"
+  commit_sha:
+    description: The seeded commit `S` (`git rev-parse HEAD`).
+    type: string
+    pattern: "^[0-9a-f]{40}$"
+  gitops_tree_sha:
+    description: Git tree object id of `gitops/` at `commit_sha` (`git rev-parse <S>:gitops`).
+    type: string
+    pattern: "^[0-9a-f]{40}$"
+  profile:
+    enum: [self-hosting-minimum, small-ha]
+  mode:
+    description: "`install` for a fresh install, `recovery` for a black-start seed (plan 45), `emergency` for failed-flux-handoff §F."
+    enum: [install, recovery, emergency]
+    default: install
+  created_at:
+    type: string
+    format: date-time
+  created_by:
+    description: Operator machine identity recorded by sc-bootstrap (user@host). It is never a credential.
+    type: string
+    maxLength: 200
+  file_count:
+    type: integer
+    minimum: 1
+    maximum: 100000
+  total_bytes:
+    type: integer
+    minimum: 1
+  files:
+    type: array
+    minItems: 1
+    items:
+      type: object
+      additionalProperties: false
+      required: [path, size, sha256, git_blob]
+      properties:
+        path:
+          description: Repository-relative path, always under `gitops/`. No `..` segment and no leading slash.
+          type: string
+          pattern: "^(?!.*(^|/)\\.\\.(/|$))gitops/[A-Za-z0-9._@+/-]{1,500}$"
+        size:
+          type: integer
+          minimum: 0
+        sha256:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+        git_blob:
+          type: string
+          pattern: "^[0-9a-f]{40}$"
+  tool:
+    type: object
+    additionalProperties: false
+    required: [sc_bootstrap_version, sc_bootstrap_digest]
+    properties:
+      sc_bootstrap_version: {type: string, maxLength: 64}
+      sc_bootstrap_digest:
+        description: sha256 of the sc-bootstrap binary (or toolbox image digest) that wrote the manifest.
+        type: string
+        pattern: "^sha256:[0-9a-f]{64}$"
+examples:
+  - schema_version: v1alpha1
+    cluster: prod
+    commit_sha: "4f1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c"
+    gitops_tree_sha: "9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b"
+    profile: self-hosting-minimum
+    mode: install
+    created_at: "2026-10-13T21:40:00Z"
+    created_by: "operator@laptop"
+    file_count: 2
+    total_bytes: 3120
+    files:
+      - {path: gitops/layers/namespaces.yaml, size: 1020, sha256: "1111111111111111111111111111111111111111111111111111111111111111", git_blob: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+      - {path: gitops/clusters/prod/kustomization.yaml, size: 2100, sha256: "2222222222222222222222222222222222222222222222222222222222222222", git_blob: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
+    tool: {sc_bootstrap_version: "0.1.0", sc_bootstrap_digest: "sha256:3333333333333333333333333333333333333333333333333333333333333333"}
+x-invalid-examples:
+  - reason: A file outside gitops/ (the snapshot contains only the gitops subtree).
+    value:
+      schema_version: v1alpha1
+      cluster: prod
+      commit_sha: "4f1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c"
+      gitops_tree_sha: "9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b"
+      profile: self-hosting-minimum
+      created_at: "2026-10-13T21:40:00Z"
+      created_by: "operator@laptop"
+      file_count: 1
+      total_bytes: 10
+      files: [{path: bootstrap.env, size: 10, sha256: "1111111111111111111111111111111111111111111111111111111111111111", git_blob: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]
+      tool: {sc_bootstrap_version: "0.1.0", sc_bootstrap_digest: "sha256:3333333333333333333333333333333333333333333333333333333333333333"}
+  - reason: Abbreviated commit SHA.
+    value:
+      schema_version: v1alpha1
+      cluster: prod
+      commit_sha: "4f1c2d3"
+      gitops_tree_sha: "9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b"
+      profile: small-ha
+      created_at: "2026-10-13T21:40:00Z"
+      created_by: "operator@laptop"
+      file_count: 1
+      total_bytes: 10
+      files: [{path: gitops/a.yaml, size: 10, sha256: "1111111111111111111111111111111111111111111111111111111111111111", git_blob: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]
+      tool: {sc_bootstrap_version: "0.1.0", sc_bootstrap_digest: "sha256:3333333333333333333333333333333333333333333333333333333333333333"}
+  - reason: Path traversal.
+    value:
+      schema_version: v1alpha1
+      cluster: prod
+      commit_sha: "4f1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c"
+      gitops_tree_sha: "9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b"
+      profile: small-ha
+      created_at: "2026-10-13T21:40:00Z"
+      created_by: "operator@laptop"
+      file_count: 1
+      total_bytes: 10
+      files: [{path: gitops/../secrets/x.yaml, size: 10, sha256: "1111111111111111111111111111111111111111111111111111111111111111", git_blob: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]
+      tool: {sc_bootstrap_version: "0.1.0", sc_bootstrap_digest: "sha256:3333333333333333333333333333333333333333333333333333333333333333"}

@@ -1,0 +1,150 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://strange.company/contracts/gateway-status/v1alpha1
+title: GatewayStatus
+description: |
+  Response body of the Model Gateway operational endpoint `GET /sc/v1/status` on the
+  `metrics` port (9090) (owning plan 53 §7.4; review GC-19). Consumed by the Agent Runner
+  (emergency-stop comparison, plan 33 §7.4: `gateway_effective_level`) and by the operator
+  procedures `budget-emergency-stop.md`, `rotate-model-credentials.md` and
+  `gateway-failure.md`. It never contains a secret: provider keys appear only as a 12-hex
+  SHA-256 prefix.
+type: object
+additionalProperties: false
+required: [ready, reasons, schema_version, policy, providers, estop, open_reservations, build]
+properties:
+  ready:
+    type: boolean
+  reasons:
+    description: Readiness failure reasons (empty when ready).
+    type: array
+    uniqueItems: true
+    items:
+      type: string
+      enum: [db, policy, jwks, schema, providers]
+  schema_version:
+    type: object
+    additionalProperties: false
+    required: [current, required]
+    properties:
+      current:
+        description: max(version) of runner.schema_migrations (CD-04), null if unreadable.
+        type: [integer, "null"]
+        minimum: 0
+      required:
+        type: integer
+        minimum: 0
+  policy:
+    type: object
+    additionalProperties: false
+    required: [routing_rev, pricing_rev, budgets_rev, harnesses_rev, last_load_error]
+    properties:
+      routing_rev: {$ref: "#/$defs/Rev"}
+      pricing_rev: {$ref: "#/$defs/Rev"}
+      budgets_rev: {$ref: "#/$defs/Rev"}
+      harnesses_rev: {$ref: "#/$defs/Rev"}
+      last_load_error:
+        type: [string, "null"]
+        maxLength: 2000
+  providers:
+    type: object
+    propertyNames:
+      pattern: "^[a-z][a-z0-9-]{0,31}$"
+    additionalProperties:
+      type: object
+      additionalProperties: false
+      required: [enabled, available, key_fingerprint, key_loaded_at]
+      properties:
+        enabled:
+          type: boolean
+        available:
+          type: boolean
+        reason:
+          type: string
+          enum: [ok, disabled, key_missing, key_empty, key_forbidden_prefix]
+        key_fingerprint:
+          description: First 12 hex characters of sha256(key); null when no key is loaded.
+          type: [string, "null"]
+          pattern: "^[0-9a-f]{12}$"
+        key_loaded_at:
+          type: [string, "null"]
+          format: date-time
+  estop:
+    type: object
+    additionalProperties: false
+    required: [effective_level, sources]
+    properties:
+      effective_level: {$ref: "#/$defs/Level"}
+      sources:
+        type: object
+        additionalProperties: false
+        required: [db, git, k8s, degraded]
+        properties:
+          db: {$ref: "#/$defs/Level"}
+          git: {$ref: "#/$defs/Level"}
+          k8s:
+            type: object
+            additionalProperties: false
+            required: [level, last_read_ok_at]
+            properties:
+              level: {$ref: "#/$defs/Level"}
+              last_read_ok_at:
+                type: [string, "null"]
+                format: date-time
+              invalid_value:
+                description: True when data.level was unparseable (treated as `all`).
+                type: boolean
+          degraded: {$ref: "#/$defs/Level"}
+  open_reservations:
+    type: integer
+    minimum: 0
+  build:
+    type: object
+    additionalProperties: false
+    required: [version, image_digest]
+    properties:
+      version:
+        type: string
+        maxLength: 64
+      image_digest:
+        type: string
+        pattern: "^sha256:[0-9a-f]{64}$"
+$defs:
+  Level:
+    type: string
+    enum: [none, workers, all]
+  Rev:
+    description: 12-hex prefix of the policy file-set digest, or null before the first valid load.
+    type: [string, "null"]
+    pattern: "^[0-9a-f]{12}$"
+examples:
+  - ready: true
+    reasons: []
+    schema_version: {current: 42, required: 40}
+    policy: {routing_rev: 0a1b2c3d4e5f, pricing_rev: 1a2b3c4d5e6f, budgets_rev: 2a3b4c5d6e7f, harnesses_rev: 3a4b5c6d7e8f, last_load_error: null}
+    providers:
+      anthropic: {enabled: true, available: true, reason: ok, key_fingerprint: 9f86d081884c, key_loaded_at: "2026-10-14T08:00:00Z"}
+      openai: {enabled: false, available: false, reason: disabled, key_fingerprint: null, key_loaded_at: null}
+      fake: {enabled: true, available: true, reason: ok, key_fingerprint: 3c59dc048e88, key_loaded_at: "2026-10-14T08:00:00Z"}
+    estop:
+      effective_level: workers
+      sources:
+        db: none
+        git: none
+        k8s: {level: workers, last_read_ok_at: "2026-10-14T09:59:58Z"}
+        degraded: none
+    open_reservations: 3
+    build: {version: "0.1.0", image_digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+x-invalid-examples:
+  - reason: Exposes a provider key instead of a 12-hex fingerprint, and an unknown e-stop level.
+    value:
+      ready: true
+      reasons: []
+      schema_version: {current: 42, required: 40}
+      policy: {routing_rev: null, pricing_rev: null, budgets_rev: null, harnesses_rev: null, last_load_error: null}
+      providers:
+        anthropic: {enabled: true, available: true, key_fingerprint: "sk-ant-api03-abcdef", key_loaded_at: null}
+      estop:
+        effective_level: dispatch
+        sources: {db: none, git: none, k8s: {level: none, last_read_ok_at: null}, degraded: none}
+      open_reservations: 0
+      build: {version: "0.1.0", image_digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}

@@ -1,0 +1,475 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://strange.company/contracts/state-machine/v1alpha1
+title: TaskStateMachine
+description: |
+  Schema for `contracts/state-machine.yaml`, the authoritative, machine-readable task
+  workflow and execution state machine (SPEC §4.4, §47, §72, §73, §74; plan 29).
+
+  The Agent Runner's state-machine library (DAG node F05) loads the transition table
+  directly. The library's tests load the same file. Guard and effect identifiers are
+  symbolic: the library maps every identifier to exactly one implementation, and an
+  unknown identifier is a load error (fail closed).
+
+  Conventions:
+  - State names are UPPER_SNAKE_CASE and match master plan §7 (plus the states plan 29
+    adds with justification).
+  - `to` is a concrete state or one of three pseudo-targets: `$return` (the dispatch-ready
+    state recorded when the current execution was dispatched; allowed values listed in
+    the source state's `returnTargets`), `$resume` (the state a BLOCKED task is resumed
+    into; resolved by the rules in plan 29 §14.9) and `$same` (a self-transition that
+    records an event without changing the state, e.g. an infrastructure retry).
+  - `$none` in `from` denotes task creation.
+  - A guard or effect reference may carry one argument after a colon, e.g.
+    `G_VERIFICATION_OUTCOME:valid_red` or `E_CREATE_EXECUTION:implementation`.
+  - Actor classes: `runner` (deterministic Runner logic), `ci` (a transition the Runner
+    records on behalf of an authenticated verification pipeline; ADR-0008), `hermes`
+    (the orchestrator through the MCP surface) and `human` (an operator authenticated
+    through a human-only channel; plan 29 §7.3). Workers are never actors.
+
+  Invariants the loader enforces beyond this schema (plan 29 §8.2):
+  - every state named anywhere is declared in `states`, and `initialState` and every
+    `terminalStates` entry is declared with the matching `terminal` flag;
+  - every guard and effect identifier used is declared in `guards` / `effects` (an
+    argument after `:` is ignored for this check);
+  - transition IDs are unique;
+  - every state is reachable from `initialState`; every non-terminal state has a path
+    to a terminal state; terminal states have no outgoing transitions;
+  - `$return` is used only from states with `activeExecution: required` and every
+    `returnTargets` entry is a declared state;
+  - every transition whose `from` includes BLOCKED or NEEDS_HUMAN and whose `to` is not
+    `$same` lists only `human` in `actors` (lesson L-4); `$same` records an event without
+    leaving the held state;
+  - a transition whose only actor is `human` never targets a state with
+    `activeExecution: required` (humans do not choose harnesses or models; Hermes
+    dispatches after a human decision);
+  - every state listed in a `humanProjection` entry is declared, and every non-terminal
+    and terminal state is covered by at least one entry without a `when` condition;
+  - every `stall.escalateTo` is a declared non-terminal state;
+  - `humanCommand` is present on every transition whose only actor is `human`, except
+    forge-originated human events (`pr_closed_by_human`).
+type: object
+additionalProperties: false
+required: [apiVersion, kind, metadata, spec]
+properties:
+  apiVersion:
+    const: strange.company/v1alpha1
+  kind:
+    const: TaskStateMachine
+  metadata:
+    type: object
+    additionalProperties: false
+    required: [name, revision]
+    properties:
+      name:
+        type: string
+        pattern: "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
+      revision:
+        description: Monotonic integer revision of the table. Recorded on every task transition.
+        type: integer
+        minimum: 1
+      description:
+        type: string
+  spec:
+    type: object
+    additionalProperties: false
+    required:
+      - actorClasses
+      - failureClasses
+      - modes
+      - initialState
+      - terminalStates
+      - states
+      - guards
+      - effects
+      - events
+      - transitions
+      - execution
+      - humanProjection
+    properties:
+      actorClasses:
+        type: array
+        items:
+          enum: [runner, ci, hermes, human]
+        uniqueItems: true
+        minItems: 4
+        maxItems: 4
+      failureClasses:
+        type: array
+        items:
+          enum: [merit, infrastructure, policy, budget]
+        uniqueItems: true
+        minItems: 4
+        maxItems: 4
+      modes:
+        type: array
+        items:
+          enum: [test-first, verification-first]
+        uniqueItems: true
+        minItems: 2
+      initialState:
+        $ref: "#/$defs/StateName"
+      terminalStates:
+        type: array
+        items:
+          $ref: "#/$defs/StateName"
+        minItems: 1
+        uniqueItems: true
+      states:
+        type: array
+        minItems: 2
+        items:
+          $ref: "#/$defs/State"
+      guards:
+        description: Catalogue of guard identifiers with their normative meaning.
+        type: object
+        propertyNames:
+          pattern: "^G_[A-Z0-9_]+$"
+        additionalProperties:
+          type: string
+          minLength: 10
+      effects:
+        description: Catalogue of effect identifiers with their normative meaning.
+        type: object
+        propertyNames:
+          pattern: "^E_[A-Z0-9_]+$"
+        additionalProperties:
+          type: string
+          minLength: 10
+      events:
+        description: Catalogue of event names with their normative meaning.
+        type: object
+        propertyNames:
+          pattern: "^[a-z][a-z0-9_]*$"
+        additionalProperties:
+          type: string
+          minLength: 10
+      implicitEffects:
+        description: Effects applied by every successful task transition (history row, projection, metrics).
+        type: array
+        items:
+          $ref: "#/$defs/EffectRef"
+      transitions:
+        type: array
+        minItems: 1
+        items:
+          $ref: "#/$defs/Transition"
+      execution:
+        $ref: "#/$defs/ExecutionMachine"
+      humanProjection:
+        type: array
+        minItems: 1
+        items:
+          $ref: "#/$defs/Projection"
+$defs:
+  StateName:
+    type: string
+    pattern: "^[A-Z][A-Z_]*[A-Z]$"
+  GuardRef:
+    type: string
+    pattern: "^G_[A-Z0-9_]+(:[A-Za-z0-9_.,-]+)?$"
+  EffectRef:
+    type: string
+    pattern: "^E_[A-Z0-9_]+(:[A-Za-z0-9_./,-]+)?$"
+  ActorClass:
+    enum: [runner, ci, hermes, human]
+  Duration:
+    type: string
+    pattern: "^[0-9]+(s|m|h)$"
+  State:
+    type: object
+    additionalProperties: false
+    required: [name, modes, terminal, activeExecution, description]
+    properties:
+      name:
+        $ref: "#/$defs/StateName"
+      modes:
+        type: array
+        items:
+          enum: [test-first, verification-first]
+        minItems: 1
+        uniqueItems: true
+      terminal:
+        type: boolean
+      activeExecution:
+        description: |
+          `required`: a producing or judging worker execution is in flight while the task
+          is in this state. `verification`: a CI verification pipeline holds the claim.
+          `optional`: non-producing executions (investigation, adjudication) may run.
+          `forbidden`: no execution may be active.
+        enum: [required, verification, optional, forbidden]
+      dispatchableRoles:
+        description: Roles Hermes may dispatch from this state (non-producing roles do not change the state).
+        type: array
+        items:
+          enum: [researcher, planner, tester, implementer, reviewer]
+        uniqueItems: true
+      returnTargets:
+        type: array
+        items:
+          $ref: "#/$defs/StateName"
+        uniqueItems: true
+      waitingOn:
+        description: Which actor class is expected to act next (drives stall detection).
+        enum: [none, worker, ci, hermes, human]
+      stall:
+        type: object
+        additionalProperties: false
+        properties:
+          alertAfter:
+            $ref: "#/$defs/Duration"
+          alertName:
+            type: string
+            pattern: "^[A-Z][A-Za-z0-9]+$"
+          escalateAfter:
+            $ref: "#/$defs/Duration"
+          escalateTo:
+            $ref: "#/$defs/StateName"
+          policyKey:
+            description: Dotted path into VerificationPolicy (`spec.watchdog.groups.<group>`) whose `{alertAfter, escalateAfter}` values override these defaults; repository policy may only shorten them (plan 29 §9).
+            type: string
+      description:
+        type: string
+        minLength: 10
+  Transition:
+    type: object
+    additionalProperties: false
+    required: [id, from, to, event, actors, modes, guards, effects, description]
+    properties:
+      id:
+        type: string
+        pattern: "^T[0-9]{3}$"
+      from:
+        type: array
+        minItems: 1
+        items:
+          oneOf:
+            - $ref: "#/$defs/StateName"
+            - const: "$none"
+        uniqueItems: true
+      to:
+        oneOf:
+          - $ref: "#/$defs/StateName"
+          - enum: ["$return", "$resume", "$same"]
+      event:
+        type: string
+        pattern: "^[a-z][a-z0-9_]*$"
+      actors:
+        type: array
+        minItems: 1
+        uniqueItems: true
+        items:
+          $ref: "#/$defs/ActorClass"
+      modes:
+        type: array
+        minItems: 1
+        uniqueItems: true
+        items:
+          enum: [test-first, verification-first]
+      guards:
+        type: array
+        items:
+          $ref: "#/$defs/GuardRef"
+      effects:
+        type: array
+        items:
+          $ref: "#/$defs/EffectRef"
+      failureClass:
+        enum: [merit, infrastructure, policy, budget]
+      countsAttempt:
+        description: True when the transition dispatches a producing execution that consumes one autonomous attempt.
+        type: boolean
+      humanCommand:
+        description: The `/sc` command (plan 29 §7.3) that requests this transition, for human transitions.
+        type: string
+        pattern: "^/sc [a-z-]+"
+      description:
+        type: string
+        minLength: 10
+  ExecutionMachine:
+    type: object
+    additionalProperties: false
+    required: [states, terminalStates, transitions]
+    properties:
+      states:
+        type: array
+        items:
+          enum: [QUEUED, STARTING, RUNNING, SUCCEEDED, FAILED, CANCELLED, TIMED_OUT]
+        uniqueItems: true
+        minItems: 7
+        maxItems: 7
+      terminalStates:
+        type: array
+        items:
+          enum: [SUCCEEDED, FAILED, CANCELLED, TIMED_OUT]
+        uniqueItems: true
+      transitions:
+        type: array
+        minItems: 1
+        items:
+          type: object
+          additionalProperties: false
+          required: [from, to, trigger, description]
+          properties:
+            from:
+              enum: [QUEUED, STARTING, RUNNING]
+            to:
+              enum: [STARTING, RUNNING, SUCCEEDED, FAILED, CANCELLED, TIMED_OUT]
+            trigger:
+              type: string
+              pattern: "^[a-z][a-z0-9_]*$"
+            failureClasses:
+              type: array
+              items:
+                enum: [merit, infrastructure, policy, budget]
+              uniqueItems: true
+            description:
+              type: string
+  Projection:
+    type: object
+    additionalProperties: false
+    required: [humanState, label, states]
+    properties:
+      humanState:
+        enum: [Backlog, Ready, In Progress, Review, Done, Needs Human, Blocked]
+      label:
+        type: string
+        pattern: "^status/[a-z-]+$"
+      states:
+        type: array
+        minItems: 1
+        items:
+          $ref: "#/$defs/StateName"
+      when:
+        description: Optional condition (symbolic, evaluated by the projection function) narrowing the mapping.
+        type: string
+      priority:
+        description: When several entries match, the lowest priority number wins.
+        type: integer
+        minimum: 0
+examples:
+  - apiVersion: strange.company/v1alpha1
+    kind: TaskStateMachine
+    metadata:
+      name: minimal-example
+      revision: 1
+    spec:
+      actorClasses: [runner, ci, hermes, human]
+      failureClasses: [merit, infrastructure, policy, budget]
+      modes: [test-first, verification-first]
+      initialState: SPECIFIED
+      terminalStates: [CANCELLED]
+      states:
+        - name: SPECIFIED
+          modes: [test-first, verification-first]
+          terminal: false
+          activeExecution: forbidden
+          description: Task defined with frozen-able acceptance criteria.
+        - name: CANCELLED
+          modes: [test-first, verification-first]
+          terminal: true
+          activeExecution: forbidden
+          description: Task abandoned; terminal.
+      guards:
+        G_NOT_TERMINAL: The task is not in a terminal state.
+      effects:
+        E_CANCEL_EXECUTION: Cancel the active execution, if any.
+      events:
+        cancel: A cancel request was accepted.
+      transitions:
+        - id: T001
+          from: [SPECIFIED]
+          to: CANCELLED
+          event: cancel
+          actors: [hermes, human]
+          modes: [test-first, verification-first]
+          guards: [G_NOT_TERMINAL]
+          effects: [E_CANCEL_EXECUTION]
+          description: Cancel a task that has not started.
+      execution:
+        states: [QUEUED, STARTING, RUNNING, SUCCEEDED, FAILED, CANCELLED, TIMED_OUT]
+        terminalStates: [SUCCEEDED, FAILED, CANCELLED, TIMED_OUT]
+        transitions:
+          - from: QUEUED
+            to: CANCELLED
+            trigger: cancel_requested
+            description: Cancelled before a Job was created.
+      humanProjection:
+        - humanState: Ready
+          label: status/ready
+          states: [SPECIFIED]
+        - humanState: Done
+          label: status/done
+          states: [CANCELLED]
+x-invalid-examples:
+  - reason: Workers are never actors; `worker` is not an actor class.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: TaskStateMachine
+      metadata: {name: bad, revision: 1}
+      spec:
+        actorClasses: [runner, ci, hermes, worker]
+        failureClasses: [merit, infrastructure, policy, budget]
+        modes: [test-first, verification-first]
+        initialState: SPECIFIED
+        terminalStates: [CANCELLED]
+        states:
+          - {name: SPECIFIED, modes: [test-first], terminal: false, activeExecution: forbidden, description: Specified state.}
+        guards: {}
+        effects: {}
+        events: {}
+        transitions:
+          - {id: T001, from: [SPECIFIED], to: CANCELLED, event: cancel, actors: [hermes], modes: [test-first], guards: [], effects: [], description: Cancel it now.}
+        execution:
+          states: [QUEUED, STARTING, RUNNING, SUCCEEDED, FAILED, CANCELLED, TIMED_OUT]
+          terminalStates: [SUCCEEDED]
+          transitions: [{from: QUEUED, to: CANCELLED, trigger: cancel, description: x}]
+        humanProjection:
+          - {humanState: Ready, label: status/ready, states: [SPECIFIED]}
+  - reason: A transition actor list naming a worker role is rejected.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: TaskStateMachine
+      metadata: {name: bad, revision: 1}
+      spec:
+        actorClasses: [runner, ci, hermes, human]
+        failureClasses: [merit, infrastructure, policy, budget]
+        modes: [test-first, verification-first]
+        initialState: SPECIFIED
+        terminalStates: [CANCELLED]
+        states:
+          - {name: SPECIFIED, modes: [test-first], terminal: false, activeExecution: forbidden, description: Specified state.}
+        guards: {}
+        effects: {}
+        events: {}
+        transitions:
+          - {id: T001, from: [SPECIFIED], to: CANCELLED, event: cancel, actors: [implementer], modes: [test-first], guards: [], effects: [], description: Cancel it now.}
+        execution:
+          states: [QUEUED, STARTING, RUNNING, SUCCEEDED, FAILED, CANCELLED, TIMED_OUT]
+          terminalStates: [SUCCEEDED]
+          transitions: [{from: QUEUED, to: CANCELLED, trigger: cancel, description: x}]
+        humanProjection:
+          - {humanState: Ready, label: status/ready, states: [SPECIFIED]}
+  - reason: Human-facing state names are a closed set; "Cancelled" is not one of them.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: TaskStateMachine
+      metadata: {name: bad, revision: 1}
+      spec:
+        actorClasses: [runner, ci, hermes, human]
+        failureClasses: [merit, infrastructure, policy, budget]
+        modes: [test-first, verification-first]
+        initialState: SPECIFIED
+        terminalStates: [CANCELLED]
+        states:
+          - {name: SPECIFIED, modes: [test-first], terminal: false, activeExecution: forbidden, description: Specified state.}
+        guards: {}
+        effects: {}
+        events: {}
+        transitions:
+          - {id: T001, from: [SPECIFIED], to: CANCELLED, event: cancel, actors: [hermes], modes: [test-first], guards: [], effects: [], description: Cancel it now.}
+        execution:
+          states: [QUEUED, STARTING, RUNNING, SUCCEEDED, FAILED, CANCELLED, TIMED_OUT]
+          terminalStates: [SUCCEEDED]
+          transitions: [{from: QUEUED, to: CANCELLED, trigger: cancel, description: x}]
+        humanProjection:
+          - {humanState: Cancelled, label: status/cancelled, states: [CANCELLED]}

@@ -1,0 +1,506 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://strange.company/contracts/bootstrap-journal/v1alpha1
+title: BootstrapJournal
+description: |
+  Durable phase journal of one installation (plan 50 §6, §17). It drives
+  idempotency ("already done" detection), resume, `./bootstrap status`, and the
+  final report. One journal exists per installation (cluster name).
+
+  Locations: `.bootstrap/journal.json` (local working copy) and
+  `s3://<prefix>-tofu-state/<cluster>/journal/journal.json` (authoritative once the
+  bucket exists; versioned). On start sc-bootstrap loads both and uses the one
+  with the higher `journal_seq`; equal seq with different content is a
+  `JOURNAL_CONFLICT` error (procedure bootstrap-resume.md).
+
+  The journal never contains secret values. Output references point at files,
+  S3 objects, Git commits or Kubernetes objects. Owned by plan 50.
+type: object
+additionalProperties: false
+required: [schema_version, record_type, journal_seq, cluster, install_uid, created_at, updated_at, installation, recovery_bundle, pipelines, runs, confirmations]
+properties:
+  schema_version:
+    const: v1alpha1
+  record_type:
+    const: bootstrap_journal
+  journal_seq:
+    description: Monotonic counter, incremented on every write.
+    type: integer
+    minimum: 1
+  cluster:
+    type: string
+    pattern: '^[a-z][a-z0-9-]{1,30}[a-z0-9]$'
+  install_uid:
+    description: UUIDv4 generated once in plan.install-identity; never changes, survives recover.
+    type: string
+    format: uuid
+  created_at: {$ref: '#/$defs/timestamp'}
+  updated_at: {$ref: '#/$defs/timestamp'}
+  installation:
+    type: object
+    additionalProperties: false
+    required: [state, provider, profile, config_digest]
+    properties:
+      state:
+        description: Installation lifecycle state (plan 50 §14.1).
+        enum: [new, planned, provisioned, configured, seeded, forge-initialized, flux-sourced, verified, transferred, expanding, recovering, destroying, compute-destroyed]
+      provider:
+        enum: [ovh, existing, fake]
+      profile:
+        type: string
+      config_digest:
+        description: sha256 of the committed bootstrap-config.yaml.
+        $ref: '#/$defs/digest'
+      transferred_at:
+        $ref: '#/$defs/timestampOrNull'
+      compute_destroyed_at:
+        $ref: '#/$defs/timestampOrNull'
+  recovery_bundle:
+    type: object
+    additionalProperties: false
+    required: [status, generation]
+    properties:
+      status:
+        description: absent → created (local file written) → uploaded (S3 copy verified) → confirmed (passphrase re-entered and S3 copy decrypted).
+        enum: [absent, created, uploaded, confirmed]
+      generation:
+        description: Equals the bundle manifest `bundle_version` (plan 35) of the current bundle; incremented by every re-seal (`./bootstrap rotate ...`).
+        type: integer
+        minimum: 0
+      sha256:
+        $ref: '#/$defs/digest'
+      local_path:
+        type: string
+      s3_uri:
+        type: string
+        pattern: '^s3://'
+      s3_version_id:
+        type: string
+      created_at: {$ref: '#/$defs/timestampOrNull'}
+      confirmed_at: {$ref: '#/$defs/timestampOrNull'}
+  pipelines:
+    description: One entry per pipeline execution generation (install, expand, recover, destroy).
+    type: array
+    items:
+      $ref: '#/$defs/pipeline'
+  runs:
+    description: Most recent 100 invocations, oldest first.
+    type: array
+    maxItems: 100
+    items:
+      $ref: '#/$defs/run'
+  facts:
+    description: |
+      Typed facts later phases read (BOOT-16, SEED-7, SEED-19). They are hints like the rest of the
+      journal: every phase's Check() still probes reality (plan 50 §17.1), but resume and freeze
+      rules (plan 50 §17.1 rules 4–6) key on these recorded values instead of a moving HEAD.
+    type: object
+    additionalProperties: false
+    properties:
+      seed:
+        type: object
+        additionalProperties: false
+        properties:
+          commit: {$ref: '#/$defs/sha1'}
+          bucket_revision: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
+          complete_at: {$ref: '#/$defs/timestampOrNull'}
+      forge_init:
+        type: object
+        additionalProperties: false
+        properties:
+          pushed_sha: {$ref: '#/$defs/sha1'}
+          outputs_sha: {$ref: '#/$defs/sha1'}
+      transfer:
+        type: object
+        additionalProperties: false
+        properties:
+          switched_at: {$ref: '#/$defs/timestampOrNull'}
+          forgejo_sha: {$ref: '#/$defs/sha1'}
+          pre_snapshot: {$ref: '#/$defs/outputRef'}
+      sso_init:
+        type: object
+        additionalProperties: false
+        properties:
+          a0_done_at: {$ref: '#/$defs/timestampOrNull'}
+      preflight_cache:
+        description: Side-effecting preflight checks run once per configuration digest (plan 50 §14.2).
+        type: object
+        additionalProperties: false
+        properties:
+          env_digest: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
+          notification_test_at: {$ref: '#/$defs/timestampOrNull'}
+      fenced_nodes:
+        description: Compute addresses moved out of managed state by recover (plan 03 §20.1, DR-12).
+        type: array
+        items:
+          type: object
+          additionalProperties: false
+          required: [address, provider_id, fenced_at]
+          properties:
+            address: {type: string}
+            provider_id: {type: string}
+            fenced_at: {$ref: '#/$defs/timestamp'}
+      abandoned_identities:
+        description: install_uids abandoned with `./bootstrap abandon-identity` (BOOT-6); their journals are archived under journal/abandoned-<uid>.json.
+        type: array
+        items: {type: string, format: uuid}
+  confirmations:
+    type: array
+    items:
+      type: object
+      additionalProperties: false
+      required: [kind, subject_digest, confirmed_at, run_id, method]
+      properties:
+        kind:
+          enum: [paid-footprint, existing-nodes, expand-footprint, storage-footprint, destroy-install-name, destroy-plan, unlock-run-lock, stale-lock-takeover, abandon-identity, accept-unmirrored-loss, accept-stale-prices, accept-data-loss, accept-empty, model-budget, accept-weak-protection, accept-state-unprotected, notification-nonce, old-installation-destroyed, fence-live, fence-nodes, migrate-provider, migrate-object-storage, seed-without-github, node-remove, upgrade-k3s, handoff-rollback, state-restore, state-unlock, state-import, accept-github-commits, accept-generation, fence-nodes-cleanup]
+        subject_digest:
+          description: Digest of what was confirmed (plan digest, node-list digest, lock content digest).
+          $ref: '#/$defs/digest'
+        confirmed_at: {$ref: '#/$defs/timestamp'}
+        run_id: {$ref: '#/$defs/runId'}
+        method:
+          enum: [interactive, flag]
+$defs:
+  timestamp:
+    type: string
+    format: date-time
+  timestampOrNull:
+    oneOf:
+      - type: 'null'
+      - type: string
+        format: date-time
+  digest:
+    type: string
+    pattern: '^sha256:[0-9a-f]{64}$'
+  sha1:
+    type: string
+    pattern: '^[0-9a-f]{40}$'
+  runId:
+    description: '<UTC yyyymmddThhmmssZ>-<4 hex>'
+    type: string
+    pattern: '^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{4}$'
+  status:
+    enum: [pending, running, succeeded, failed, skipped, blocked, interrupted]
+  error:
+    type: object
+    additionalProperties: false
+    required: [code, message, retryable]
+    properties:
+      code:
+        type: string
+        description: Stable error code (plan 50 §15), optionally with a detail suffix, e.g. `SEED_LAYER_TIMEOUT:forgejo`, `TRANSFER_PRECONDITION:forge-outputs-scope`.
+        pattern: '^[A-Z][A-Z0-9_]+(:[a-z0-9-]+)?$'
+      message:
+        type: string
+        maxLength: 2000
+      retryable:
+        type: boolean
+      procedure:
+        description: Repository-relative procedure path to follow.
+        type: string
+        pattern: '^procedures/[a-z0-9-]+\.md(#[a-z0-9-]+)?$'
+  outputRef:
+    type: object
+    additionalProperties: false
+    required: [kind, ref]
+    properties:
+      kind:
+        enum: [file, s3-object, git-commit, k8s-object, tofu-state, url, report]
+      ref:
+        type: string
+      sha256:
+        $ref: '#/$defs/digest'
+  step:
+    type: object
+    additionalProperties: false
+    required: [name, status, attempt]
+    properties:
+      name:
+        type: string
+        description: "`<phase>.<step>[.<sub>…]`, e.g. `plan.storage-apply`, `expand.configure.join-node-02`, `transfer.switched`."
+        pattern: '^[a-z][a-z0-9_-]*(\.[a-z0-9][a-z0-9_-]*)+$'
+      status: {$ref: '#/$defs/status'}
+      attempt:
+        type: integer
+        minimum: 0
+      input_digest: {$ref: '#/$defs/digest'}
+      started_at: {$ref: '#/$defs/timestampOrNull'}
+      finished_at: {$ref: '#/$defs/timestampOrNull'}
+      output_refs:
+        type: array
+        items: {$ref: '#/$defs/outputRef'}
+      error:
+        oneOf:
+          - type: 'null'
+          - $ref: '#/$defs/error'
+  phase:
+    type: object
+    additionalProperties: false
+    required: [name, status, attempt, input_digest, started_at, finished_at, output_refs, steps]
+    properties:
+      name:
+        enum: [preflight, plan, provision, seed-prep, configure, seed, forge-init, flux-bootstrap, verify, control-transfer, unlock, state-recover, restore, profile-commit, peer-commit, platform-commit, converge-platform, data-commit, converge-data, converge, forge-reconnect, finalize, ci-init, sso-init, storage-apply, drain, etcd-remove, decommission, upgrade, destroy-guard, final-backup, destroy-compute, destroy-report]
+      status: {$ref: '#/$defs/status'}
+      attempt:
+        description: Number of times this phase has been started (all runs).
+        type: integer
+        minimum: 0
+      input_digest:
+        description: sha256 over the canonical JSON of the phase's declared inputs (plan 50 §17.2); null until first started.
+        oneOf:
+          - type: 'null'
+          - $ref: '#/$defs/digest'
+      started_at: {$ref: '#/$defs/timestampOrNull'}
+      finished_at: {$ref: '#/$defs/timestampOrNull'}
+      last_run_id:
+        oneOf:
+          - type: 'null'
+          - $ref: '#/$defs/runId'
+      output_refs:
+        type: array
+        items: {$ref: '#/$defs/outputRef'}
+      steps:
+        type: array
+        items: {$ref: '#/$defs/step'}
+      error:
+        oneOf:
+          - type: 'null'
+          - $ref: '#/$defs/error'
+  pipeline:
+    type: object
+    additionalProperties: false
+    required: [pipeline, generation, status, started_at, finished_at, phases]
+    properties:
+      pipeline:
+        description: Pipeline kind (plan 50 §7.1). `configure`, `storage` and `ci-init` are the standalone re-entry pipelines used after control transfer.
+        enum: [install, expand, recover, destroy, node-add, node-remove, upgrade-k3s, configure, storage, ci-init, sso-init]
+      generation:
+        type: integer
+        minimum: 1
+      target_profile:
+        type: string
+      status: {$ref: '#/$defs/status'}
+      started_at: {$ref: '#/$defs/timestampOrNull'}
+      finished_at: {$ref: '#/$defs/timestampOrNull'}
+      phases:
+        type: array
+        minItems: 1
+        items: {$ref: '#/$defs/phase'}
+  run:
+    type: object
+    additionalProperties: false
+    required: [run_id, command, started_at, finished_at, outcome, exit_code, operator, sc_bootstrap_version, toolbox, git_head]
+    properties:
+      run_id: {$ref: '#/$defs/runId'}
+      command:
+        enum: [run, plan, preflight, status, verify, expand, destroy, recover, rotate, report, state, unlock, configure, node, upgrade, storage, ci-init, sso-init, forge-init, handoff-rollback, abandon-identity, sync-local, kubeconfig]
+      started_at: {$ref: '#/$defs/timestamp'}
+      finished_at: {$ref: '#/$defs/timestampOrNull'}
+      outcome:
+        enum: [running, succeeded, failed, interrupted, waiting-on-human, refused]
+      exit_code:
+        oneOf:
+          - type: 'null'
+          - type: integer
+            minimum: 0
+            maximum: 255
+      operator:
+        type: object
+        additionalProperties: false
+        required: [user, host]
+        properties:
+          user: {type: string}
+          host: {type: string}
+      sc_bootstrap_version:
+        type: string
+      toolbox:
+        type: object
+        additionalProperties: false
+        required: [image_digest, source]
+        properties:
+          image_digest:
+            $ref: '#/$defs/digest'
+          source:
+            enum: [pulled, built, built-fallback]
+      git_head:
+        type: string
+        pattern: '^[0-9a-f]{40}$'
+examples:
+  - schema_version: v1alpha1
+    record_type: bootstrap_journal
+    journal_seq: 42
+    cluster: prod
+    install_uid: 6f1c2d3e-4b5a-4c6d-8e7f-0a1b2c3d4e5f
+    created_at: '2026-10-13T10:00:00Z'
+    updated_at: '2026-10-13T10:41:12Z'
+    installation:
+      state: provisioned
+      provider: ovh
+      profile: self-hosting-minimum
+      config_digest: sha256:aa11bb22cc33dd44ee55ff6600112233445566778899aabbccddeeff00112233
+      transferred_at: null
+      compute_destroyed_at: null
+    recovery_bundle:
+      status: confirmed
+      generation: 1
+      sha256: sha256:0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0
+      local_path: /blackstart/prod/bundles/sc-recovery-prod-v1.tar.age
+      s3_uri: s3://sc-prod-recovery/prod/bundles/sc-recovery-prod-v1.tar.age
+      s3_version_id: 3HL4kqtJlcpXroDTDmJ.rmSpXd3dIbrHY
+      created_at: '2026-10-13T10:05:00Z'
+      confirmed_at: '2026-10-13T10:12:30Z'
+    pipelines:
+      - pipeline: install
+        generation: 1
+        status: running
+        started_at: '2026-10-13T10:00:00Z'
+        finished_at: null
+        phases:
+          - name: preflight
+            status: succeeded
+            attempt: 2
+            input_digest: sha256:1111111111111111111111111111111111111111111111111111111111111111
+            started_at: '2026-10-13T10:38:00Z'
+            finished_at: '2026-10-13T10:39:10Z'
+            last_run_id: 20261013T103800Z-a1b2
+            output_refs:
+              - kind: file
+                ref: .bootstrap/runs/20261013T103800Z-a1b2/preflight.json
+                sha256: sha256:2222222222222222222222222222222222222222222222222222222222222222
+            steps: []
+            error: null
+          - name: plan
+            status: succeeded
+            attempt: 1
+            input_digest: sha256:3333333333333333333333333333333333333333333333333333333333333333
+            started_at: '2026-10-13T10:02:00Z'
+            finished_at: '2026-10-13T10:20:00Z'
+            last_run_id: 20261013T100000Z-9f8e
+            output_refs:
+              - kind: git-commit
+                ref: 4b825dc642cb6eb9a060e54bf8d69288fbee4904
+            steps:
+              - name: plan.install-identity
+                status: succeeded
+                attempt: 1
+                started_at: '2026-10-13T10:02:00Z'
+                finished_at: '2026-10-13T10:05:00Z'
+                output_refs:
+                  - kind: file
+                    ref: /blackstart/prod/bundles/sc-recovery-prod-v1.tar.age
+                error: null
+              - name: plan.storage-apply
+                status: succeeded
+                attempt: 1
+                output_refs:
+                  - kind: tofu-state
+                    ref: s3://sc-prod-tofu-state/prod/storage/terraform.tfstate
+              - name: plan.confirm
+                status: succeeded
+                attempt: 1
+            error: null
+          - name: provision
+            status: failed
+            attempt: 1
+            input_digest: sha256:4444444444444444444444444444444444444444444444444444444444444444
+            started_at: '2026-10-13T10:20:05Z'
+            finished_at: '2026-10-13T10:41:12Z'
+            last_run_id: 20261013T100000Z-9f8e
+            output_refs: []
+            steps:
+              - name: provision.apply
+                status: failed
+                attempt: 1
+                error:
+                  code: PROVIDER_DELIVERY_TIMEOUT
+                  message: ovh_vps order delivered no service within 20m
+                  retryable: true
+                  procedure: procedures/bootstrap-resume.md#provision
+            error:
+              code: PROVIDER_DELIVERY_TIMEOUT
+              message: ovh_vps order delivered no service within 20m
+              retryable: true
+              procedure: procedures/bootstrap-resume.md#provision
+    runs:
+      - run_id: 20261013T100000Z-9f8e
+        command: run
+        started_at: '2026-10-13T10:00:00Z'
+        finished_at: '2026-10-13T10:41:12Z'
+        outcome: failed
+        exit_code: 1
+        operator: {user: alice, host: laptop}
+        sc_bootstrap_version: v0.1.0
+        toolbox:
+          image_digest: sha256:5555555555555555555555555555555555555555555555555555555555555555
+          source: pulled
+        git_head: 4b825dc642cb6eb9a060e54bf8d69288fbee4904
+    confirmations:
+      - kind: paid-footprint
+        subject_digest: sha256:6666666666666666666666666666666666666666666666666666666666666666
+        confirmed_at: '2026-10-13T10:19:40Z'
+        run_id: 20261013T100000Z-9f8e
+        method: interactive
+x-invalid-examples:
+  - reason: unknown phase name
+    value:
+      schema_version: v1alpha1
+      record_type: bootstrap_journal
+      journal_seq: 1
+      cluster: prod
+      install_uid: 6f1c2d3e-4b5a-4c6d-8e7f-0a1b2c3d4e5f
+      created_at: '2026-10-13T10:00:00Z'
+      updated_at: '2026-10-13T10:00:00Z'
+      installation: {state: new, provider: ovh, profile: self-hosting-minimum, config_digest: 'sha256:aa11bb22cc33dd44ee55ff6600112233445566778899aabbccddeeff00112233'}
+      recovery_bundle: {status: absent, generation: 0}
+      pipelines:
+        - pipeline: install
+          generation: 1
+          status: running
+          started_at: '2026-10-13T10:00:00Z'
+          finished_at: null
+          phases:
+            - {name: helm-install, status: pending, attempt: 0, input_digest: null, started_at: null, finished_at: null, output_refs: [], steps: []}
+      runs: []
+      confirmations: []
+  - reason: journal_seq must be >= 1
+    value:
+      schema_version: v1alpha1
+      record_type: bootstrap_journal
+      journal_seq: 0
+      cluster: prod
+      install_uid: 6f1c2d3e-4b5a-4c6d-8e7f-0a1b2c3d4e5f
+      created_at: '2026-10-13T10:00:00Z'
+      updated_at: '2026-10-13T10:00:00Z'
+      installation: {state: new, provider: ovh, profile: self-hosting-minimum, config_digest: 'sha256:aa11bb22cc33dd44ee55ff6600112233445566778899aabbccddeeff00112233'}
+      recovery_bundle: {status: absent, generation: 0}
+      pipelines: []
+      runs: []
+      confirmations: []
+  - reason: secret-looking free field is not allowed (closed object)
+    value:
+      schema_version: v1alpha1
+      record_type: bootstrap_journal
+      journal_seq: 3
+      cluster: prod
+      install_uid: 6f1c2d3e-4b5a-4c6d-8e7f-0a1b2c3d4e5f
+      created_at: '2026-10-13T10:00:00Z'
+      updated_at: '2026-10-13T10:00:00Z'
+      installation: {state: new, provider: ovh, profile: self-hosting-minimum, config_digest: 'sha256:aa11bb22cc33dd44ee55ff6600112233445566778899aabbccddeeff00112233'}
+      recovery_bundle: {status: created, generation: 1, passphrase: hunter2hunter2hunter2}
+      pipelines: []
+      runs: []
+      confirmations: []
+  - reason: run outcome not in enum and malformed run id
+    value:
+      schema_version: v1alpha1
+      record_type: bootstrap_journal
+      journal_seq: 3
+      cluster: prod
+      install_uid: 6f1c2d3e-4b5a-4c6d-8e7f-0a1b2c3d4e5f
+      created_at: '2026-10-13T10:00:00Z'
+      updated_at: '2026-10-13T10:00:00Z'
+      installation: {state: new, provider: ovh, profile: self-hosting-minimum, config_digest: 'sha256:aa11bb22cc33dd44ee55ff6600112233445566778899aabbccddeeff00112233'}
+      recovery_bundle: {status: absent, generation: 0}
+      pipelines: []
+      runs:
+        - {run_id: run-1, command: run, started_at: '2026-10-13T10:00:00Z', finished_at: null, outcome: maybe, exit_code: null, operator: {user: a, host: b}, sc_bootstrap_version: v0.1.0, toolbox: {image_digest: 'sha256:5555555555555555555555555555555555555555555555555555555555555555', source: pulled}, git_head: 4b825dc642cb6eb9a060e54bf8d69288fbee4904}
+      confirmations: []

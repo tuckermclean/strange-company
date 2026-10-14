@@ -1,0 +1,140 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://strange.company/contracts/task-token/v1alpha1
+title: WorkerTaskTokenClaims
+description: |
+  Decoded claims (JWS payload) of the per-execution worker task tokens, secret class
+  `SC-WORKER-TASK-TOKEN` (owning plan 26; review RA-8). Compact JWS (RFC 7515), EdDSA/Ed25519,
+  signed by the Agent Runner with `SC-RUNNER-SIGNING`; the JOSE header MUST match
+  `$defs/JoseHeader`. The public keys are published in ConfigMap `sc-runner-jwks` (CD-08),
+  which carries the current and the previous `kid` during rotation.
+
+  Two tokens are minted per execution, one per container of the two-container worker pod
+  (plan 26 §13, ADR-0402 amendment), and they are never interchangeable:
+
+  | `token_use` | `aud` | delivered to | accepted by |
+  |---|---|---|---|
+  | `runner` | `[sc-agent-runner-worker]` | `sc-worker` container only (file `task-token`) | Runner `worker` listener (`/v1/worker/*`) |
+  | `egress` | `[sc-egress-proxy]` | `harness` container only (file `egress-token`) | egress proxy listener `agent` (plan 36 §9.9) |
+
+  Distinct `typ` from the gateway token (`sc-gw+jwt`, plan 53) and distinct audiences make
+  every cross-use fail. Validation rules beyond this schema:
+  - `nbf <= now + 30 s`, `exp > now - 30 s` (skew), `exp - iat <= 21600`;
+  - `exp` = Job deadline (pod deadline + startup grace) + 300 s at minting;
+  - Runner: the `jti` must exist in `runner.tokens` (kind `task`) with `revoked_at IS NULL`,
+    and `sub` must name an execution in `STARTING` or `RUNNING` (the result endpoint also
+    accepts the execution in its terminal-ingestion window);
+  - egress proxy: signature, `aud`, time and claim shape only. It has no revocation list in
+    MVP, so a revoked egress token stays usable for proxied package fetches until `exp`
+    (documented residual risk, plan 36; review RA-m14).
+type: object
+additionalProperties: false
+required: [iss, aud, sub, iat, nbf, exp, jti, sc_token_version, token_use, task_id, execution_id, attempt, repository]
+properties:
+  iss:
+    const: sc-agent-runner
+  aud:
+    type: array
+    minItems: 1
+    maxItems: 1
+    items:
+      type: string
+      enum: [sc-agent-runner-worker, sc-egress-proxy]
+  sub:
+    description: "`execution:<execution_id>`."
+    type: string
+    pattern: "^execution:sc-[0-9]+-x[0-9]+$"
+  iat:
+    $ref: "#/$defs/NumericDate"
+  nbf:
+    $ref: "#/$defs/NumericDate"
+  exp:
+    $ref: "#/$defs/NumericDate"
+  jti:
+    description: UUID (lower-case, hyphenated); primary key of `runner.tokens`.
+    type: string
+    pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+  sc_token_version:
+    const: 1
+  token_use:
+    type: string
+    enum: [runner, egress]
+  task_id:
+    type: string
+    pattern: "^sc-[0-9]+$"
+  execution_id:
+    type: string
+    pattern: "^sc-[0-9]+-x[0-9]+$"
+  attempt:
+    type: integer
+    minimum: 1
+    maximum: 20
+  repository:
+    type: string
+    pattern: "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+  egress_allow:
+    description: Host patterns the egress proxy permits for this execution (`agent-base` ∪ the repository's delegated `egressHosts`, plan 36 §5). Present only on `egress` tokens.
+    $ref: "https://strange.company/contracts/egress-policy/v1alpha1#/$defs/EgressAllowClaim"
+allOf:
+  - if: {properties: {token_use: {const: runner}}}
+    then:
+      properties:
+        aud: {const: [sc-agent-runner-worker]}
+      not: {required: [egress_allow]}
+  - if: {properties: {token_use: {const: egress}}}
+    then:
+      required: [egress_allow]
+      properties:
+        aud: {const: [sc-egress-proxy]}
+$defs:
+  NumericDate:
+    description: Seconds since the Unix epoch (RFC 7519 NumericDate).
+    type: integer
+    minimum: 1700000000
+  JoseHeader:
+    description: Required JOSE protected header.
+    type: object
+    additionalProperties: false
+    required: [alg, typ, kid]
+    properties:
+      alg: {const: EdDSA}
+      typ: {const: sc-task+jwt}
+      kid:
+        type: string
+        pattern: "^[A-Za-z0-9_-]{8,64}$"
+examples:
+  - iss: sc-agent-runner
+    aud: [sc-agent-runner-worker]
+    sub: execution:sc-184-x3
+    iat: 1791892800
+    nbf: 1791892800
+    exp: 1791895200
+    jti: 3f2b8c1e-4d5a-4b6c-8d7e-9f0a1b2c3d4e
+    sc_token_version: 1
+    token_use: runner
+    task_id: sc-184
+    execution_id: sc-184-x3
+    attempt: 2
+    repository: projects/example
+  - iss: sc-agent-runner
+    aud: [sc-egress-proxy]
+    sub: execution:sc-184-x3
+    iat: 1791892800
+    nbf: 1791892800
+    exp: 1791895200
+    jti: 7a1c2e3f-5b6d-4e8f-9a0b-1c2d3e4f5a6b
+    sc_token_version: 1
+    token_use: egress
+    task_id: sc-184
+    execution_id: sc-184-x3
+    attempt: 2
+    repository: projects/example
+    egress_allow: ["proxy.golang.org:443", "sum.golang.org:443"]
+x-invalid-examples:
+  - reason: Runner-use token carrying an egress claim (the harness container must not hold a Runner credential and vice versa).
+    value: {iss: sc-agent-runner, aud: [sc-agent-runner-worker], sub: "execution:sc-1-x1", iat: 1791892800, nbf: 1791892800, exp: 1791895200, jti: 3f2b8c1e-4d5a-4b6c-8d7e-9f0a1b2c3d4e, sc_token_version: 1, token_use: runner, task_id: sc-1, execution_id: sc-1-x1, attempt: 1, repository: a/b, egress_allow: ["proxy.golang.org:443"]}
+  - reason: Egress token with both audiences (a single token must never be accepted by both the Runner and the proxy).
+    value: {iss: sc-agent-runner, aud: [sc-agent-runner-worker, sc-egress-proxy], sub: "execution:sc-1-x1", iat: 1791892800, nbf: 1791892800, exp: 1791895200, jti: 3f2b8c1e-4d5a-4b6c-8d7e-9f0a1b2c3d4e, sc_token_version: 1, token_use: egress, task_id: sc-1, execution_id: sc-1-x1, attempt: 1, repository: a/b, egress_allow: []}
+  - reason: Egress token without the egress_allow claim.
+    value: {iss: sc-agent-runner, aud: [sc-egress-proxy], sub: "execution:sc-1-x1", iat: 1791892800, nbf: 1791892800, exp: 1791895200, jti: 3f2b8c1e-4d5a-4b6c-8d7e-9f0a1b2c3d4e, sc_token_version: 1, token_use: egress, task_id: sc-1, execution_id: sc-1-x1, attempt: 1, repository: a/b}
+  - reason: Gateway-token audience and missing jti.
+    value: {iss: sc-agent-runner, aud: [sc-model-gateway], sub: "execution:sc-1-x1", iat: 1791892800, nbf: 1791892800, exp: 1791895200, sc_token_version: 1, token_use: runner, task_id: sc-1, execution_id: sc-1-x1, attempt: 1, repository: a/b}

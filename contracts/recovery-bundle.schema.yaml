@@ -1,0 +1,431 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://strange.company/contracts/recovery-bundle/v1alpha1
+title: RecoveryBundleManifest
+description: |
+  Manifest (`manifest.json`) stored INSIDE a Strange Company recovery bundle (ADR-0012,
+  plans/35-secrets.md §"Recovery bundle"). The bundle is a tar archive encrypted with an age
+  passphrase recipient (scrypt). The archive contains this manifest plus one file per entry
+  under `entries/`. The manifest describes the entries (class, instance, path, format,
+  digest, size). It NEVER contains a secret value. `additionalProperties: false` on entries
+  together with the explicit `not` rule rejects `value`-like fields.
+
+  The plaintext pointer object `s3://<prefix>-recovery/<install>/bundles/LATEST.json` uses
+  `$defs/LatestPointer`. It also contains no secret material. `install_id` is the cluster name
+  (`CLUSTER_NAME`, plan 50).
+
+  Two further plaintext objects live next to the bundles and are read by the in-cluster checks
+  (plan 35 §14.6; they never contain secret values or digests of secret values):
+  - `bundles/sc-recovery-<install>-v<N>.inventory.json` uses `$defs/PublicInventory`;
+  - `attestations/<UTC timestamp>.json` uses `$defs/Attestation`.
+
+  Semantic checks enforced by `sc-bootstrap recovery-bundle verify` (plan 50 implements, plan 35 defines):
+  - every `entries[].sha256` equals the sha256 of the file at `entries[].path` in the archive;
+  - no entry file is empty (L-4), so `size_bytes >= 1`;
+  - `bundle_version` is strictly greater than the previous bundle's, and `previous_bundle_sha256`
+    equals the sha256 of the previous encrypted bundle object;
+  - every class in contracts/secret-classes.yaml with `inRecoveryBundle: true` has at least
+    one entry (per instance where the class has bundled instances);
+  - the `SC-AGE-CLUSTER` entry's public key equals `age_recipients.cluster`, and that key is a
+    recipient of every `.sops.yaml` creation rule for cluster secrets.
+type: object
+additionalProperties: false
+required: [schema_version, kind, bundle_version, install_id, created_at, created_by, source_commit, previous_bundle_sha256, reason, encryption, age_recipients, entries]
+properties:
+  schema_version:
+    const: v1alpha1
+  kind:
+    const: RecoveryBundleManifest
+  bundle_version:
+    description: Monotonic per-installation version. Any rotation of a bundled secret produces a new version.
+    type: integer
+    minimum: 1
+  install_id:
+    type: string
+    pattern: "^[a-z][a-z0-9-]{1,30}$"
+  created_at:
+    type: string
+    format: date-time
+  created_by:
+    type: object
+    additionalProperties: false
+    required: [tool, tool_version, toolbox_image]
+    properties:
+      tool:
+        const: sc-bootstrap
+      tool_version:
+        type: string
+        minLength: 1
+      toolbox_image:
+        description: Toolbox image digest reference, or `local-build:<sha256>` when built locally (ADR-0013).
+        type: string
+        pattern: "^([a-z0-9.-]+(:[0-9]+)?/[a-z0-9._/-]+@sha256:[a-f0-9]{64}|local-build:sha256:[a-f0-9]{64})$"
+  source_commit:
+    description: strange-company commit checked out when the bundle was produced.
+    type: string
+    pattern: "^[a-f0-9]{40}$"
+  previous_bundle_sha256:
+    description: sha256 of the previous encrypted bundle object, or null for version 1.
+    oneOf:
+      - type: "null"
+      - type: string
+        pattern: "^[a-f0-9]{64}$"
+  reason:
+    description: Why this version exists.
+    type: object
+    additionalProperties: false
+    required: [trigger]
+    properties:
+      trigger:
+        type: string
+        enum: [initial-bootstrap, rotation, recovery-drill, passphrase-change, black-start, manual]
+      rotated_classes:
+        type: array
+        items:
+          $ref: "#/$defs/ClassId"
+      note:
+        type: string
+        maxLength: 500
+  encryption:
+    type: object
+    additionalProperties: false
+    required: [scheme, scrypt_work_factor, archive_format]
+    properties:
+      scheme:
+        const: age-scrypt
+      scrypt_work_factor:
+        description: age scrypt log2(N). Minimum 18 (age default).
+        type: integer
+        minimum: 18
+        maximum: 22
+      archive_format:
+        const: tar
+  age_recipients:
+    description: PUBLIC age recipients in force when the bundle was made.
+    type: object
+    additionalProperties: false
+    required: [cluster, recovery]
+    properties:
+      cluster:
+        $ref: "#/$defs/AgeRecipient"
+      recovery:
+        $ref: "#/$defs/AgeRecipient"
+  entries:
+    type: array
+    minItems: 1
+    items:
+      $ref: "#/$defs/Entry"
+    contains:
+      type: object
+      properties:
+        class:
+          const: SC-AGE-CLUSTER
+      required: [class]
+  verification:
+    description: Result of the post-creation verification run (decrypt in a clean container).
+    type: object
+    additionalProperties: false
+    required: [verified_at, sops_files_decrypted, result]
+    properties:
+      verified_at:
+        type: string
+        format: date-time
+      sops_files_decrypted:
+        type: integer
+        minimum: 0
+      result:
+        type: string
+        enum: [pass, fail]
+$defs:
+  ClassId:
+    type: string
+    pattern: "^SC-[A-Z0-9]+(-[A-Z0-9]+)*$"
+  AgeRecipient:
+    type: string
+    pattern: "^age1[02-9ac-hj-np-z]{58}$"
+  Entry:
+    type: object
+    additionalProperties: false
+    required: [class, path, format, sha256, size_bytes, generation, rotated_at]
+    not:
+      anyOf:
+        - required: [value]
+        - required: [data]
+        - required: [secret]
+    properties:
+      class:
+        $ref: "#/$defs/ClassId"
+      instance:
+        type: string
+        pattern: "^[a-z0-9][a-z0-9-]{0,62}$"
+      path:
+        description: Path inside the archive.
+        type: string
+        pattern: "^entries/[A-Z0-9-]+(/[a-z0-9-]+)?/[a-z0-9._-]+$"
+      format:
+        type: string
+        enum: [age-identity, text, env, kubeconfig, ssh-private-key, json, yaml, pem]
+      sha256:
+        type: string
+        pattern: "^[a-f0-9]{64}$"
+      size_bytes:
+        description: Must be at least 1. Empty secrets are forbidden (lesson L-4).
+        type: integer
+        minimum: 1
+      generation:
+        description: Rotation generation of this class/instance (increments on each rotation).
+        type: integer
+        minimum: 1
+      rotated_at:
+        type: string
+        format: date-time
+  LatestPointer:
+    description: Plaintext pointer `bundles/LATEST.json` (no secrets).
+    type: object
+    additionalProperties: false
+    required: [install_id, bundle_version, object_key, sha256, created_at]
+    properties:
+      install_id:
+        type: string
+        pattern: "^[a-z][a-z0-9-]{1,30}$"
+      bundle_version:
+        type: integer
+        minimum: 1
+      object_key:
+        type: string
+        pattern: "^[a-z][a-z0-9-]{1,30}/bundles/sc-recovery-[a-z0-9-]+-v[0-9]+\\.tar\\.age$"
+      sha256:
+        type: string
+        pattern: "^[a-f0-9]{64}$"
+      created_at:
+        type: string
+        format: date-time
+  PublicInventory:
+    description: Plaintext inventory written next to each bundle version. Lists class/instance/generation only, never values or value digests.
+    type: object
+    additionalProperties: false
+    required: [install_id, bundle_version, bundle_sha256, created_at, scrypt_work_factor, age_recipients, items]
+    properties:
+      install_id:
+        type: string
+        pattern: "^[a-z][a-z0-9-]{1,30}$"
+      bundle_version:
+        type: integer
+        minimum: 1
+      bundle_sha256:
+        description: sha256 of the encrypted bundle object.
+        type: string
+        pattern: "^[a-f0-9]{64}$"
+      created_at:
+        type: string
+        format: date-time
+      scrypt_work_factor:
+        type: integer
+        minimum: 18
+        maximum: 22
+      age_recipients:
+        $ref: "#/properties/age_recipients"
+      items:
+        type: array
+        minItems: 1
+        items:
+          type: object
+          additionalProperties: false
+          required: [class, generation, rotated_at]
+          properties:
+            class:
+              $ref: "#/$defs/ClassId"
+            instance:
+              type: string
+              pattern: "^[a-z0-9][a-z0-9-]{0,62}$"
+            generation:
+              type: integer
+              minimum: 1
+            rotated_at:
+              type: string
+              format: date-time
+  Attestation:
+    description: Record written by `sc-bootstrap recovery-bundle verify --full` after the operator proved possession of the passphrase and the offline recovery identity (plan 35 §14.6).
+    type: object
+    additionalProperties: false
+    required: [install_id, attested_at, bundle_version, passphrase_ok, recovery_identity_ok, sops_files_decrypted_cluster_key, sops_files_decrypted_recovery_key, offcluster_files_decrypted, toolbox_image, operator]
+    properties:
+      install_id:
+        type: string
+        pattern: "^[a-z][a-z0-9-]{1,30}$"
+      attested_at:
+        type: string
+        format: date-time
+      bundle_version:
+        type: integer
+        minimum: 1
+      passphrase_ok:
+        const: true
+      recovery_identity_ok:
+        const: true
+      sops_files_decrypted_cluster_key:
+        type: integer
+        minimum: 1
+      sops_files_decrypted_recovery_key:
+        type: integer
+        minimum: 1
+      offcluster_files_decrypted:
+        type: integer
+        minimum: 0
+      toolbox_image:
+        type: string
+        minLength: 1
+      operator:
+        description: Free-text operator handle (no secret).
+        type: string
+        maxLength: 100
+examples:
+  - schema_version: v1alpha1
+    kind: RecoveryBundleManifest
+    bundle_version: 3
+    install_id: acme-prod
+    created_at: "2026-10-13T20:15:00Z"
+    created_by:
+      tool: sc-bootstrap
+      tool_version: 0.1.0
+      toolbox_image: ghcr.io/example/strange-company-toolbox@sha256:4f1c2b8a9d0e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a
+    source_commit: 0123456789abcdef0123456789abcdef01234567
+    previous_bundle_sha256: 9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b
+    reason:
+      trigger: rotation
+      rotated_classes: [SC-BREAK-GLASS-FORGEJO]
+      note: Annual break-glass rotation.
+    encryption:
+      scheme: age-scrypt
+      scrypt_work_factor: 20
+      archive_format: tar
+    age_recipients:
+      cluster: age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p
+      recovery: age1zvkyg2lqzraa2lnjvqej32nkuu0ues2s82hzrye869xeexvn73equnujwj
+    entries:
+      - class: SC-AGE-CLUSTER
+        path: entries/SC-AGE-CLUSTER/cluster.agekey
+        format: age-identity
+        sha256: "1111111111111111111111111111111111111111111111111111111111111111"
+        size_bytes: 189
+        generation: 1
+        rotated_at: "2026-09-01T10:00:00Z"
+      - class: SC-TOFU-ENCRYPTION
+        path: entries/SC-TOFU-ENCRYPTION/passphrase.txt
+        format: text
+        sha256: "2222222222222222222222222222222222222222222222222222222222222222"
+        size_bytes: 64
+        generation: 1
+        rotated_at: "2026-09-01T10:00:00Z"
+      - class: SC-OBJECT-STORAGE
+        instance: tofu-state
+        path: entries/SC-OBJECT-STORAGE/tofu-state/credentials.env
+        format: env
+        sha256: "3333333333333333333333333333333333333333333333333333333333333333"
+        size_bytes: 120
+        generation: 2
+        rotated_at: "2026-10-01T09:00:00Z"
+      - class: SC-BREAK-GLASS-FORGEJO
+        path: entries/SC-BREAK-GLASS-FORGEJO/credentials.json
+        format: json
+        sha256: "4444444444444444444444444444444444444444444444444444444444444444"
+        size_bytes: 96
+        generation: 2
+        rotated_at: "2026-10-13T20:10:00Z"
+    verification:
+      verified_at: "2026-10-13T20:16:30Z"
+      sops_files_decrypted: 41
+      result: pass
+x-invalid-examples:
+  - reason: An entry carries a secret value inside the manifest.
+    value:
+      schema_version: v1alpha1
+      kind: RecoveryBundleManifest
+      bundle_version: 1
+      install_id: acme-prod
+      created_at: "2026-10-13T20:15:00Z"
+      created_by: {tool: sc-bootstrap, tool_version: 0.1.0, toolbox_image: "local-build:sha256:4f1c2b8a9d0e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a"}
+      source_commit: 0123456789abcdef0123456789abcdef01234567
+      previous_bundle_sha256: null
+      reason: {trigger: initial-bootstrap}
+      encryption: {scheme: age-scrypt, scrypt_work_factor: 20, archive_format: tar}
+      age_recipients:
+        cluster: age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p
+        recovery: age1zvkyg2lqzraa2lnjvqej32nkuu0ues2s82hzrye869xeexvn73equnujwj
+      entries:
+        - class: SC-AGE-CLUSTER
+          path: entries/SC-AGE-CLUSTER/cluster.agekey
+          format: age-identity
+          sha256: "1111111111111111111111111111111111111111111111111111111111111111"
+          size_bytes: 189
+          generation: 1
+          rotated_at: "2026-09-01T10:00:00Z"
+          value: AGE-SECRET-KEY-1QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ
+  - reason: Empty entry file (size_bytes 0) is forbidden (L-4).
+    value:
+      schema_version: v1alpha1
+      kind: RecoveryBundleManifest
+      bundle_version: 1
+      install_id: acme-prod
+      created_at: "2026-10-13T20:15:00Z"
+      created_by: {tool: sc-bootstrap, tool_version: 0.1.0, toolbox_image: "local-build:sha256:4f1c2b8a9d0e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a"}
+      source_commit: 0123456789abcdef0123456789abcdef01234567
+      previous_bundle_sha256: null
+      reason: {trigger: initial-bootstrap}
+      encryption: {scheme: age-scrypt, scrypt_work_factor: 20, archive_format: tar}
+      age_recipients:
+        cluster: age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p
+        recovery: age1zvkyg2lqzraa2lnjvqej32nkuu0ues2s82hzrye869xeexvn73equnujwj
+      entries:
+        - class: SC-AGE-CLUSTER
+          path: entries/SC-AGE-CLUSTER/cluster.agekey
+          format: age-identity
+          sha256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+          size_bytes: 0
+          generation: 1
+          rotated_at: "2026-09-01T10:00:00Z"
+  - reason: Bundle without the cluster age identity entry.
+    value:
+      schema_version: v1alpha1
+      kind: RecoveryBundleManifest
+      bundle_version: 2
+      install_id: acme-prod
+      created_at: "2026-10-13T20:15:00Z"
+      created_by: {tool: sc-bootstrap, tool_version: 0.1.0, toolbox_image: "local-build:sha256:4f1c2b8a9d0e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a"}
+      source_commit: 0123456789abcdef0123456789abcdef01234567
+      previous_bundle_sha256: 9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b
+      reason: {trigger: rotation}
+      encryption: {scheme: age-scrypt, scrypt_work_factor: 20, archive_format: tar}
+      age_recipients:
+        cluster: age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p
+        recovery: age1zvkyg2lqzraa2lnjvqej32nkuu0ues2s82hzrye869xeexvn73equnujwj
+      entries:
+        - class: SC-TOFU-ENCRYPTION
+          path: entries/SC-TOFU-ENCRYPTION/passphrase.txt
+          format: text
+          sha256: "2222222222222222222222222222222222222222222222222222222222222222"
+          size_bytes: 64
+          generation: 1
+          rotated_at: "2026-09-01T10:00:00Z"
+  - reason: Work factor below the age default (weak passphrase KDF).
+    value:
+      schema_version: v1alpha1
+      kind: RecoveryBundleManifest
+      bundle_version: 1
+      install_id: acme-prod
+      created_at: "2026-10-13T20:15:00Z"
+      created_by: {tool: sc-bootstrap, tool_version: 0.1.0, toolbox_image: "local-build:sha256:4f1c2b8a9d0e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a"}
+      source_commit: 0123456789abcdef0123456789abcdef01234567
+      previous_bundle_sha256: null
+      reason: {trigger: initial-bootstrap}
+      encryption: {scheme: age-scrypt, scrypt_work_factor: 10, archive_format: tar}
+      age_recipients:
+        cluster: age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p
+        recovery: age1zvkyg2lqzraa2lnjvqej32nkuu0ues2s82hzrye869xeexvn73equnujwj
+      entries:
+        - class: SC-AGE-CLUSTER
+          path: entries/SC-AGE-CLUSTER/cluster.agekey
+          format: age-identity
+          sha256: "1111111111111111111111111111111111111111111111111111111111111111"
+          size_bytes: 189
+          generation: 1
+          rotated_at: "2026-09-01T10:00:00Z"

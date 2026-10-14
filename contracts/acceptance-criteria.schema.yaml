@@ -1,0 +1,188 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://strange.company/contracts/acceptance-criteria/v1alpha1
+title: AcceptanceCriteriaVersion
+description: |
+  One immutable version of a task's acceptance criteria (SPEC §44, §45, §102; owning plan 21).
+
+  Semantics (plan 21 §9.3 and §14.1):
+  - Hermes (or a human through the admin API) supplies version 1 when creating the task.
+    The Runner validates it against this schema and the deterministic `ac-lint` rules
+    (plan 21 §9.3) and stores it with `status: draft`.
+  - The version is **frozen** when the first tester (or judge author) is dispatched
+    (state-machine transition T010/T110, effect E_FREEZE_ACCEPTANCE_CRITERIA). A frozen
+    version never changes. A revision is a new version created only through the human
+    `respec` transition (T070); the previous version becomes `superseded` and stays in
+    the task history (SPEC §56 provenance survives).
+  - IDs are stable: `AC-<n>`, unique within the task across all versions. A criterion
+    whose text changes keeps its ID and gets `revision + 1`; a removed ID is retired and
+    never reused; a new criterion takes the next unused number.
+  - `kind: change` criteria describe behavior that must be absent before implementation:
+    at RED at least one mapped test must fail with an assertion-class failure.
+    `kind: preservation` criteria guard existing behavior (SPEC §45 example AC-3): at RED
+    at least one mapped test must pass. A test-first version needs >= 1 `change` criterion.
+  - The test-to-criterion mapping is declared by the tester (worker-result
+    `role_output.ac_mapping`) and frozen in the test manifest (`test-manifest.schema.yaml`).
+    Every criterion of the version must be covered by >= 1 manifest test (coverage check,
+    plan 22 §14.3 rule R6).
+
+  This is a payload (snake_case). The `/sc respec` command body uses the same item keys
+  (`id`, `text`, `kind`) under `acceptanceCriteria:` (plan 29 §7.3).
+type: object
+additionalProperties: false
+required: [version, status, created_at, created_by, criteria, digest]
+properties:
+  task_id:
+    type: string
+    pattern: "^sc-[0-9]+$"
+  version:
+    type: integer
+    minimum: 1
+    maximum: 50
+  status:
+    type: string
+    enum: [draft, frozen, superseded]
+  created_at:
+    type: string
+    format: date-time
+  created_by:
+    description: Actor that created this version (`hermes` or `human:<login>`); workers never author criteria directly (planner output is a proposal Hermes may adopt).
+    type: string
+    pattern: "^(hermes|human:[A-Za-z0-9_.-]{1,64})$"
+  frozen_at:
+    type: string
+    format: date-time
+  supersedes_version:
+    type: integer
+    minimum: 1
+  change_reason:
+    description: Required for versions > 1 (why the criteria changed; e.g. ALREADY_SATISFIED investigation or an approved TEST_SPEC_CONFLICT).
+    type: string
+    minLength: 20
+    maxLength: 2000
+  criteria:
+    type: array
+    minItems: 1
+    maxItems: 50
+    items:
+      $ref: "#/$defs/Criterion"
+  changes:
+    description: Runner-computed difference from the superseded version.
+    type: object
+    additionalProperties: false
+    properties:
+      added: {type: array, items: {$ref: "#/$defs/AcId"}}
+      modified: {type: array, items: {$ref: "#/$defs/AcId"}}
+      retired: {type: array, items: {$ref: "#/$defs/AcId"}}
+  digest:
+    description: sha256 of the canonical JSON of `criteria` (sorted by numeric id).
+    type: string
+    pattern: "^sha256:[a-f0-9]{64}$"
+allOf:
+  - if:
+      properties: {version: {minimum: 2}}
+    then:
+      required: [supersedes_version, change_reason, changes]
+  - if:
+      properties: {status: {enum: [frozen, superseded]}}
+    then:
+      required: [frozen_at]
+$defs:
+  AcId:
+    type: string
+    pattern: "^AC-[1-9][0-9]{0,2}$"
+  Criterion:
+    type: object
+    additionalProperties: false
+    required: [id, text, kind]
+    properties:
+      id:
+        $ref: "#/$defs/AcId"
+      text:
+        description: One observable, testable behavior. Deterministic lint rules AC-L1..AC-L6 apply (plan 21 §9.3).
+        type: string
+        minLength: 10
+        maxLength: 2000
+        not:
+          pattern: "\\b(TBD|TODO|[Ww]orks well|[Aa]s expected|[Uu]ser-friendly|[Ii]s intuitive|[Aa]nd so on)\\b"
+      kind:
+        type: string
+        enum: [change, preservation]
+      revision:
+        description: Starts at 1; incremented when the text of this id changes in a later version.
+        type: integer
+        minimum: 1
+        default: 1
+      verification_hint:
+        description: Advisory hint for the tester (never enforced).
+        type: string
+        enum: [unit, integration, end_to_end, contract, benchmark, documentation, invariant]
+      notes:
+        description: Non-normative clarification. Not part of the judged text.
+        type: string
+        maxLength: 1000
+examples:
+  - task_id: sc-184
+    version: 1
+    status: frozen
+    created_at: "2026-10-13T12:00:00Z"
+    created_by: hermes
+    frozen_at: "2026-10-13T12:00:01Z"
+    criteria:
+      - {id: AC-1, text: HTTP 307 preserves the original method., kind: change, verification_hint: unit}
+      - {id: AC-2, text: HTTP 307 preserves the request body., kind: change}
+      - {id: AC-3, text: Existing HTTP 302 behavior remains unchanged., kind: preservation}
+    digest: "sha256:0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"
+  - task_id: sc-184
+    version: 2
+    status: draft
+    created_at: "2026-10-14T09:00:00Z"
+    created_by: "human:alice"
+    supersedes_version: 1
+    change_reason: AC-2 was ambiguous about streaming bodies; the TEST_SPEC_CONFLICT decision narrowed it to replayable bodies.
+    criteria:
+      - {id: AC-1, text: HTTP 307 preserves the original method., kind: change}
+      - {id: AC-2, text: HTTP 307 resends the request body when the body is replayable (GetBody set)., kind: change, revision: 2}
+      - {id: AC-3, text: Existing HTTP 302 behavior remains unchanged., kind: preservation}
+    changes: {added: [], modified: [AC-2], retired: []}
+    digest: "sha256:0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c"
+x-invalid-examples:
+  - reason: Untestable text (vague phrase) is rejected.
+    value:
+      version: 1
+      status: draft
+      created_at: "2026-10-13T12:00:00Z"
+      created_by: hermes
+      criteria: [{id: AC-1, text: The redirect logic works well in all cases., kind: change}]
+      digest: "sha256:0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"
+  - reason: Malformed criterion id.
+    value:
+      version: 1
+      status: draft
+      created_at: "2026-10-13T12:00:00Z"
+      created_by: hermes
+      criteria: [{id: AC-01, text: HTTP 307 preserves the original method., kind: change}]
+      digest: "sha256:0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"
+  - reason: A revised version without change reason and supersession link.
+    value:
+      version: 2
+      status: draft
+      created_at: "2026-10-13T12:00:00Z"
+      created_by: "human:alice"
+      criteria: [{id: AC-1, text: HTTP 307 preserves the original method., kind: change}]
+      digest: "sha256:0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"
+  - reason: Workers cannot author criteria versions.
+    value:
+      version: 1
+      status: draft
+      created_at: "2026-10-13T12:00:00Z"
+      created_by: "worker:sc-1-x1"
+      criteria: [{id: AC-1, text: HTTP 307 preserves the original method., kind: change}]
+      digest: "sha256:0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"
+  - reason: A frozen version must record when it was frozen.
+    value:
+      version: 1
+      status: frozen
+      created_at: "2026-10-13T12:00:00Z"
+      created_by: hermes
+      criteria: [{id: AC-1, text: HTTP 307 preserves the original method., kind: change}]
+      digest: "sha256:0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"

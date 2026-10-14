@@ -1,0 +1,95 @@
+## G4a report (done)
+- SI: GitHub branch protection on private repos may need a paid plan (tier `unavailable-accepted` + compensating controls). Push mirrors always push tags even with a branch filter (worker deploy-key tags could be mirrored → protected-tag rule; residual risk → plan 34). The PAT may sit in git config on the PVC/backups.
+- Alert naming conflict: the catalogue uses `SC`-prefixed names, while plans 15/16 use unprefixed ones; break-glass alert type and username mismatches (sc-break-glass vs sc-breakglass); drill period 90 vs 100 days. → consolidate in 42.
+- New secret: SC-GITHUB-PROBE. New bootstrap.env keys: GITHUB_PROBE_TOKEN, GITHUB_MIRROR_PROTECTION_TIER.
+- Plan 50 V-08 should use the mirror-verify probe *tag*. Plan 19 C8 = mirror verify via tag.
+- Plan 38: scrape job platform-probes; sc_github_* metrics with a repository label.
+- Plan 16 Q-16-01 wants schemas forge-configuration, forge-init-result, GitHubMirrorConfig.
+- New sc-bootstrap subcommands (mirror/forge/authentik/sso-init/bundle/secrets/evidence), to be reconciled in plan 50.
+- Plan 20: re-authorize repos after OAuth rotation. Plan 26: secret_previous, quarantine foreign tags. Plan 36: forgejo egress 443, probes → api.github.com.
+## G7 report (done)
+- Emergency stop: levels none|workers|all; coordinated through DB tables ledger.emergency_stop_*, with no Gateway admin port. The Runner's emergency_stop table becomes a view. ConfigMap `sc-emergency-stop` is the k8s fallback (must never be rendered by Flux; CI check in 18/54; Gateway+Runner RBAC get/watch). → plan 26 must align (drop `dispatch` level, use runner.dispatchPaused; no :8091).
+- Plan 26 new endpoints: PUT /v1/admin/budget-scopes/{key}, POST /v1/admin/hermes-credentials:rotate, POST /v1/admin/ledger/adjustments; GET /v1/tasks needs state + blocked_reason filters; MCP error ROUTING_UNRESOLVABLE.
+- Plan 29: budget class 0 auto-retries; BLOCKED stores resume_state and is human-only exit; merit counter per (task, role, test generation).
+- Plan 25 role tiers must equal ModelRouting.roles (ROLE_TIER_MISMATCH).
+- Plan 28: fake-model-switch, fake-spend-loop; API-key mode only.
+- Plan 42: the catalog uses non-existent metric names (sc_budget_spent_usd, sc_model_cost_usd_total) → use plan 33 §14.4/§14.8/§21; runbook model-gateway-failure.md → gateway-failure.md.
+- Plan 35: the Hermes gateway token is Runner-minted (ADR-0401), not Git/bootstrap → fix the register. Register SC-RUNNER-ADMIN.
+- Plan 36: Gateway → kube-apiserver; Runner → Gateway :9090.
+- Plan 38: retention ≥ 8 days. Plan 45: the recovery commit sets the Git estop to workers. Plan 50: preflight confirms model budgets and rejects forbidden key prefixes; verify tolerates SC_EMERGENCY_STOP. Plan 43: reservations 30d, denials 90d.
+- SI: §81 wall-time timeout classified infrastructure (retryable) vs budget. Byte-based input estimate → bounded overrun.
+## G1 report (done)
+- SI: OVH ovh_vps declarative ordering unverified (spike S-1..S-7; blocks P02 only for PROVIDER=ovh; `existing` passes). S3 CLI = AWS CLI v2. An OVH monthly commitment is a cost risk.
+- Path fixes for other plans: versions.lock → versions/platform.lock.yaml (18, 19); k3s token path secrets/offcluster/<cluster>/k3s-token.sops.yaml, encrypted to the recovery key only (07); plan 35 {install} = cluster name, kubeconfig /blackstart/<cluster>/kubeconfig; Flux source Secret file name: plan 16 forgejo-deploy-key.sops.yaml vs plan 18 flux-source-auth.sops.yaml (G1 followed 18); plans 16/19 .bootstrap/secrets → /run/sc/secrets (ADR-0101); plan 26 src/runner → src/internal/runner.
+- Plan 50 test-mode additions: skip PF-15..20, SC_TEST_STOP_AFTER, SC_LAB_S3_INCLUSTER_ENDPOINT. Credential name bootstrap-admin (50) vs admin (14).
+- Plan 08 install-uid marker; amd64; kernel ≥ 6.1; AppArmor.
+- Plan 07 uses `./bootstrap configure`, which is not in plan 50's CLI → reconcile (G2 also proposes node add/remove/upgrade k3s).
+- Plan 52 needs a KVM runner (lab-small) and a 24 GiB runner (lab-ha).
+- Plan 23 publishes the toolbox and ci images and opens the image.lock PR.
+## G4b report (done)
+- SI false assumption: the Woodpecker manual-pipeline API cannot target a commit (branch + vars only) → ADR-0302 intents plus a commit check. Secrets can't be restricted by branch → ADR-0301 exclusive config extension `sc-ci-config`.
+- SI contradiction: the Woodpecker k8s backend requires a PVC per workflow (no emptyDir); conflicts with plan 11 SA-4 and SPEC §28 "CI SHOULD use disposable workspaces" → ADR-0305 `ci-workspace` StorageClass on a bounded node fs. (SPEC says SHOULD, so this is not a hard contradiction; record it in spec-issues.)
+- Cost/risk: k3d/QEMU privileged tests run off-cluster on GH Actions (ADR-0303) and gate releases, using ~1,400 of 2,000 free minutes a month. ADR-0018 needs an amendment.
+- 01: new targets quarantine-check, test-flaky-scan, fuzz-short, e2e-woodpecker, e2e-mirror, repo-size-check; protect policy/test-quarantine.yaml.
+- 02: the ci image adds envtest, helm-unittest, kubeconform, woodpecker-cli, actionlint, k3d.
+- 08/11/37: ci-workspace fs/SC/admission. 09: in-cluster DNS for git./ci. 12: woodpecker-pg 12Gi.
+- 16: bot sc-ci-config (read-only), webhook host allowlist, tag protection v*, required context ci/woodpecker/pr/ci, Flux Secret flux-system/flux-system.
+- 17: SC-GITHUB-PROBE needs Actions: read. 22: sc-verify is a static binary that emits a framed block; validation.yaml gains verification.image.
+- 26: intent endpoints on port 8083, identity checks I1–I7. 50: ./bootstrap ci-init, sc-bootstrap ci *, seed --emergency-source/--resume-after-emergency.
+- 51: ci-slot extended resource. 55: tdd-provenance failure for unbound agent/* PRs.
+- Secrets: SC-WOODPECKER-MAINT, SC-CI-INTENTS; SC-WOODPECKER-OAUTH creator/path conflict between 16 and the register.
+- Missing contracts to add: ci-policy.schema.yaml, test-quarantine.schema.yaml, seed-manifest.schema.yaml, control-transfer-report.schema.yaml.
+- Plan 38: drop the Woodpecker scrape token (:9001 needs none).
+## G3 report (done; resumed briefly for the ci-workspace/woodpecker-pg note)
+- SI: 75 GiB disk ≈ 1 yr headroom (measured at P12). R2 lacks versioning, so "S3-compatible" is not enough: versioning is mandatory, R2 unsupported, capability suite decides. CNPG/Longhorn/etcd backups have no client-side encryption (accepted; scoped creds). Repo backups every 30 min (tightened).
+- 18: new cluster-vars keys (LONGHORN_REPLICAS, CNPG_INSTANCES, STORAGE_PROFILE, CNPG_<ID>_GEN, …, S3_OBJECT_LOCK_MODE, S3_PROTECTION_LEVEL); prune-protect PV + Longhorn Volume; Longhorn no auto-rollback.
+- 16: persistence.create false; bundle path git/weekly/<org>/<repo>/<chain>/…bundle.age (restore-forgejo.md fix); bot sc-gc (write:package); package cleanup rules; 16-AC-29 marker issue → repo presence check.
+- 06/16/49/50: MinIO → SeaweedFS s3-emulator (ADR-0205). 06: restore-test outcome: passed; the storage guard must allow Object Lock/SSE/IAM resources.
+- 50: bootstrap.env S3_PROVIDER, S3_CREDENTIAL_MODE, S3_OBJECT_LOCK, S3_ALLOW_WEAK_PROTECTION, S3_CRED_<INSTANCE>_*; steps plan.storage-credentials, plan.objstore-capabilities; commands storage apply, backup now, shell --publish; dr V-check; tofu-state noncurrent retention 365d.
+- 02 toolbox: aws, age, etcdutl, kubectl cnpg. 51: Lease strange-company/heavy-execution (vs the G2 heavy-slot extended resource — reconcile!).
+- 37: VAP restricting restore-tester/cr-retention. 38: ksm custom metrics for Longhorn backups. 45: ADR-0554 gen path naming (gen-<N>/ vs serverName <cluster>-g<N>).
+- DAG: add plan 14 to P10, plan 43 to P10/P12/H03, plan 44 to H02.
+- Catalog runbook fix: SCRepoBundleBackupStale → restore-test-failure.md.
+- Secrets: SC-GITHUB-MIRROR-READ (new, owner 17); SC-OBJECT-STORAGE instances; sc-gc bot; SC-AGE-CLUSTER at dr-tests/blackstart-age (security review concern!).
+## G3 addendum
+- ci-workspace SC adopted (plans 11/13/43, ADR-0203). Woodpecker log retention 30d; woodpecker-pg stays 8Gi/4Gi.
+- TODO plan 20: retention.logDays default 30; ciWorkspaceFilesystemSize 12 GiB minimum / 24 GiB small-ha (ADR-0305 says 16 → amend).
+- TODO plan 42: remove SCRetentionWoodpeckerPurgeFailed. Plans 33/53: expose sc_ledger_reservations_oldest_closed_seconds.
+## G6 report (done)
+- SI: §115 interpretation: NetworkPolicies/quotas/VAPs stay outside the chart (ADR-0404). §43: learned context → researcher context_proposals → Forgejo issue → human PR. Residual risks: deploy key can fetch other refs; harness shares uid with sc-worker creds.
+- 35: SC-RUNNER-HERMES / SC-HERMES-API / Hermes gateway token: creator Runner, storage Secret hermes-managed-env, recovery regenerate. Per-exec Secret name `<execution-id>` with keys task-token/gateway-token (vs register sc-exec-…/task_token). Add sc-e2e-human token instance. SC-RUNNER-WEBHOOK.
+- 22: protected paths include **/AGENTS.md, **/CLAUDE.md, **/.claude|.codex|.opencode/**, gitops/platform/strange-company/generated/**, gitops/platform/admission/**; name an exemption class for researcher-only tasks.
+- 53: fake upstream scripted tool calls (blocks 24-AC-4/12); Secret name model-api-keys vs sc-model-api-keys; migrations Job (53/33) vs in-process advisory lock (26).
+- 36 vs 53: JWKS ConfigMap runner-jwks vs sc-runner-jwks (chart renders sc-runner-jwks).
+- 32/33: a fake pricing entry and per-repo budget overrides for sc-e2e/fake-target.
+- 29: failure codes HARNESS_GAVE_UP, OUTPUT_CONTRACT_VIOLATED, NO_CHANGES (merit), BUDGET_CLAIM_UNSUPPORTED need mappings.
+- 21: TEST_SPEC_CONFLICT decision payload, generation handling, branch-topology resets.
+- 55/26: issue creation for context proposals; SECRET_DETECTED → delete branch, no quarantine tag.
+- 18: chart sourced from GitRepository; sc-gitops policy-configmaps produces committed sc-policy and sc-company-context ConfigMaps.
+- 42: alert ID mismatches (SCRunnerDown vs SCAgentRunnerDown); new alerts SCContextSecretDetected, SCContextEvidenceMissing, SCContextCompileFailures, SCHermesRestartLoop, SCHermesMcpSilent.
+## G9 report (done)
+- Catalog 258 alerts with aliases; plan 42 §23.6 has 85 alias mappings → consolidation renames alert refs in plans (or accepts aliases).
+- SI: §108 Git RTO ≤2h met by GitHub; Forgejo depends on provider (drill D3). §95 measurement rule may defer Loki/Tempo. §94 archived worker logs = evidence. §88 workers may reach otel-collector-workers:4318. Cost/risk: object storage + compute in the same provider failure domain → recommend a separate provider (Q-45-3).
+- 26: req metrics (38 §21.2), post to every Alertmanager replica, persist trace ids, worker pod labels, contract span names, reporting.* views.
+- 29: export sc_tasks_stuck, sc_task_*, sc_runner_human_transitions_total.
+- 32: Q1–Q10 as ledger.v_* views; grafana_ro in sc_reporting.
+- 53: trace_parent gateway-token claim; span names; sc_gateway_estop_source_up.
+- 50: recover steps fence/commit/estop/reconcile-refs/restore/finalize; flags --old-installation --pitr-target --step --drill; PROVIDER change only in recover; V-24 nonce.
+- 14/35: SC-OBJECT-STORAGE/telemetry-debug, /drill-reader instances.
+- 06/44: tofu checks → check CronJobs restore-test-tofu-state, check-tofu-lock-age.
+- 18: layer names crds/monitoring/monitoring-config vs ADR-0550.
+- Disagree ADR-0009: budget stop is rule-based (not Runner-posted) → amend ADR-0009 wording. Failed-backup alerts not inhibited (SPEC §97).
+- Plan 33 span sc.estop.apply not in the telemetry enum.
+## G2 report (done)
+- SI-01 extension: 8 GiB short by about 2 GiB with any worker; 12 GiB passes V-30 only at the margin (exclusive heavy slot, 3 GiB workers). Proposal: SPEC minimum → 12 GiB (amendment), plan 04 evaluates ≥16 GiB default. **USER DECISION candidate.**
+- §83: standard implementation/reasoning profiles are 3 GiB, not 4. §89: max heavy CI 1 across both lanes. Cost/risk: ci-jobs direct internet egress from P08 until C02 (proxy not deployed until C01).
+- One mechanism: strange.company/heavy-slot units (plan 51 §8.4); replaces the Lease heavy-execution and ci-slot → fix 12/20/43/44 refs. Restore tests and Renovate use PriorityClass ci.
+- Port conflicts: metrics 8090 (26) / 9090 (53) / 9464 (38) → propose 9464 by name. Forgejo→Runner webhook 8080 (16) vs 8083 (26) → 8083. Runner→Gateway :8091 is gone (G6 updated 26) → OK.
+- Plan 50 CLI additions (configure, node add/remove, upgrade k3s, shell --api-node, sc-bootstrap tunnel/dns/secrets gen internal-ca/drill/runner pause|cancel); expand pipeline; V-30 formula; config fields network.*, node.maintenanceWindow, ingress.dnsProvider, ingress.acme.solver; SC_NODE_IP_1..5 in cluster-vars; CLOUDFLARE_API_TOKEN → SC-DNS-API.
+- 18: layers coredns-config (seed), capacity, kured, upgrade gates; delete Flux's generated allow-* NetworkPolicies.
+- 26: task token aud sc-egress-proxy + egress_allow; JWKS ConfigMap name runner-jwks vs sc-runner-jwks (chart renders sc-runner-jwks → fix 36); workers request 8 heavy-slot units; dispatch pause.
+- 37 VAPs: sc-hostport-traefik-only, sc-no-nodeport-lb, sc-worker-heavy-slot, priority-class-by-namespace, upgrade-gate label, managed-by label forging.
+- 35: SC-INTERNAL-CA is toolbox-generated, SOPS in Git; SC-DNS-API broadened.
+- 42 thresholds: SCNodeRootDiskLow <25%, Critical <15%.
+- dag.yaml: add plan 36 to P03/P04/C02; plan 51 to F12/P04/P12/C02/H04; plan 48 to F10/P10/P11.
+- **Unassigned procedure edge-ingress-failure.md → I must write it.**

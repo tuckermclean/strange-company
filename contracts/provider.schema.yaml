@@ -1,0 +1,766 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://strange.company/contracts/provider/v1alpha1
+title: ProviderOutput
+description: |
+  Normalized output of an infrastructure provider (SPEC §13): the nodes a provider
+  produced or accepted, its cost estimate and provider metadata. Higher layers
+  (configure, verify, expand, destroy, recover) consume only this document and
+  never provider-specific concepts. Owned by plan 03.
+
+  Produced by `inventory` (after `apply`, and on demand) and written to
+  `.bootstrap/runs/<run-id>/provider-output.json` and
+  `s3://<prefix>-tofu-state/<cluster>/provider/output.json` (versioned).
+  The non-secret node projection is also committed as
+  `gitops/clusters/<cluster>/inventory.yaml` (plan 01 §6.5).
+
+  Money is a decimal string (no binary floats). Byte quantities are integers.
+
+  `$defs` also carries two configuration-manifest kinds used by the paid-resource
+  guardrails (plan 03 §14): `InfraPriceCatalog` (files `infra/catalog/prices/<provider>.yaml`)
+  and `TofuPlanGuard` (files `infra/tofu/compute/<module>/guard.yaml`,
+  `infra/tofu/storage/guard.yaml`). Those files validate against
+  `provider.schema.yaml#/$defs/InfraPriceCatalog` and `#/$defs/TofuPlanGuard`;
+  the F02 contract test validates them with the `$defs` examples under
+  `x-defs-examples`.
+type: object
+additionalProperties: false
+required: [schema_version, record_type, cluster, generated_at, provider, region, nodes, cost_estimate, tofu, warnings]
+properties:
+  schema_version:
+    const: v1alpha1
+  record_type:
+    const: provider_output
+  cluster:
+    $ref: '#/$defs/clusterName'
+  generated_at:
+    type: string
+    format: date-time
+  provider:
+    type: object
+    additionalProperties: false
+    required: [name, implementation_version, product_line, capabilities]
+    properties:
+      name:
+        description: Provider implementation id. `fake` is the deterministic test provider (plan 03 §22).
+        enum: [ovh, existing, fake]
+      implementation_version:
+        description: sc-bootstrap semantic version that produced this output.
+        type: string
+        pattern: '^v?[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$'
+      product_line:
+        description: Provider-local product family. `none` for providers that create nothing.
+        enum: [vps, public-cloud, none, fake]
+      capabilities:
+        $ref: '#/$defs/capabilities'
+  region:
+    type: object
+    additionalProperties: false
+    required: [provider_region]
+    properties:
+      provider_region:
+        description: Provider-native region/datacenter code (e.g. OVH `GRA`); `n/a` for existing (whose nodes use `location.region` `existing`, or `lab` in the lab).
+        type: string
+        minLength: 1
+        maxLength: 64
+      display_name:
+        type: string
+  nodes:
+    type: array
+    minItems: 1
+    maxItems: 9
+    items:
+      $ref: '#/$defs/node'
+  cost_estimate:
+    $ref: '#/$defs/costEstimate'
+  tofu:
+    description: OpenTofu root-module reference; null for providers that do not use OpenTofu (existing).
+    oneOf:
+      - type: 'null'
+      - type: object
+        additionalProperties: false
+        required: [root_module, backend_key, state_serial, state_lineage]
+        properties:
+          root_module:
+            type: string
+            pattern: '^infra/tofu/compute/[a-z0-9-]+$'
+          backend_key:
+            type: string
+            pattern: '^[a-z][a-z0-9-]*/compute/terraform\.tfstate$'
+          state_serial:
+            type: integer
+            minimum: 0
+          state_lineage:
+            type: string
+            minLength: 1
+  warnings:
+    type: array
+    items:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          pattern: '^[A-Z][A-Z0-9_]+$'
+        message:
+          type: string
+        node:
+          type: string
+$defs:
+  clusterName:
+    type: string
+    pattern: '^[a-z][a-z0-9-]{1,30}[a-z0-9]$'
+  money:
+    type: string
+    pattern: '^(0|[1-9][0-9]{0,6})(\.[0-9]{1,4})?$'
+  currency:
+    type: string
+    pattern: '^[A-Z]{3}$'
+  capabilities:
+    type: object
+    additionalProperties: false
+    required: [provisions_compute, paid, reversible_within_hours, supports_expand, supports_destroy_compute, host_key_source]
+    properties:
+      provisions_compute:
+        type: boolean
+      paid:
+        description: Whether the provider can create billable resources. Paid providers require typed confirmation (plan 03 §14).
+        type: boolean
+      reversible_within_hours:
+        description: False when creation commits spend that cannot be undone quickly (e.g. monthly VPS commitment).
+        type: boolean
+      supports_expand:
+        type: boolean
+      supports_destroy_compute:
+        type: boolean
+      host_key_source:
+        description: How SSH host keys are established; `tofu` = trust on first use, recorded and pinned thereafter.
+        enum: [provider-api, cloud-init, operator-supplied, tofu]
+  node:
+    type: object
+    additionalProperties: false
+    required: [name, provider_id, machine_class, roles, addresses, ssh, hardware, os, location, state, substrate_validation]
+    properties:
+      name:
+        type: string
+        pattern: '^node-[0-9]{2}$'
+      provider_id:
+        description: Opaque provider identifier (OVH service name, `existing:<name>`).
+        type: string
+        minLength: 1
+      machine_class:
+        description: Catalogue product id (plan 03 §14.5) or `existing` / `lab`.
+        type: string
+        minLength: 1
+      roles:
+        type: array
+        minItems: 1
+        uniqueItems: true
+        items:
+          enum: [server, agent]
+      addresses:
+        type: object
+        additionalProperties: false
+        required: [internal_ip]
+        properties:
+          public_ipv4:
+            type: [string, 'null']
+            format: ipv4
+          public_ipv6:
+            type: [string, 'null']
+            format: ipv6
+          internal_ip:
+            description: Address k3s uses as --node-ip (ADR-0011). Equals public_ipv4 when no private network exists.
+            type: string
+          external_ip:
+            description: Address used as --node-external-ip / --flannel-external-ip; null when identical to internal_ip.
+            type: [string, 'null']
+      ssh:
+        type: object
+        additionalProperties: false
+        required: [host, port, user, host_key_fingerprints]
+        properties:
+          host:
+            description: SSH endpoint as seen from the toolbox (may be a NAT/forwarded address, e.g. lab 127.0.0.1).
+            type: string
+            minLength: 1
+          port:
+            type: integer
+            minimum: 1
+            maximum: 65535
+          user:
+            description: Initial login user (provider image default, or the user from EXISTING_NODES).
+            type: string
+            pattern: '^[a-z_][a-z0-9_-]{0,31}$'
+          admin_user:
+            description: |
+              Administrative user after plan 08's admin transition (`sc-admin`), or null before it.
+              Set by the configure transition commit; every SSH client uses `admin_user ?? user`,
+              falling back to trying `sc-admin` first when the record is missing (BOOT-8).
+            type: [string, 'null']
+            pattern: '^[a-z_][a-z0-9_-]{0,31}$'
+          host_key_fingerprints:
+            type: array
+            items:
+              type: string
+              pattern: '^SHA256:[A-Za-z0-9+/]{43}$'
+      hardware:
+        type: object
+        additionalProperties: false
+        required: [cpu_count, memory_bytes, disks, virtualization, architecture]
+        properties:
+          cpu_count:
+            type: integer
+            minimum: 1
+          memory_bytes:
+            description: MemTotal from /proc/meminfo (discovered) or catalogue value (pre-provision estimate).
+            type: integer
+            minimum: 1
+          disks:
+            type: array
+            minItems: 1
+            items:
+              type: object
+              additionalProperties: false
+              required: [name, size_bytes, class, class_source, role]
+              properties:
+                name:
+                  type: string
+                size_bytes:
+                  type: integer
+                  minimum: 1
+                class:
+                  enum: [nvme, ssd, hdd, unknown]
+                class_source:
+                  enum: [discovered, provider-catalog, operator-attested]
+                role:
+                  enum: [root, data]
+          virtualization:
+            description: systemd-detect-virt output (`none` = bare metal).
+            type: string
+          architecture:
+            enum: [amd64, arm64]
+      os:
+        type: object
+        additionalProperties: false
+        required: [id, version_id, kernel]
+        properties:
+          id:
+            type: string
+          version_id:
+            type: string
+          pretty_name:
+            type: string
+          kernel:
+            type: string
+      location:
+        type: object
+        additionalProperties: false
+        required: [region, failure_domain]
+        properties:
+          region:
+            type: string
+          failure_domain:
+            description: Value applied as topology.kubernetes.io/zone (plan 07). Providers without zones use the region.
+            type: string
+      state:
+        enum: [running, provisioning, stopped, unknown]
+      labels:
+        type: object
+        additionalProperties:
+          type: string
+      substrate_validation:
+        type: object
+        additionalProperties: false
+        required: [profile, meets_minimum, meets_preferred, findings]
+        properties:
+          profile:
+            type: string
+          meets_minimum:
+            type: boolean
+          meets_preferred:
+            type: [boolean, 'null']
+          findings:
+            type: array
+            items:
+              type: object
+              additionalProperties: false
+              required: [code, severity, message]
+              properties:
+                code:
+                  type: string
+                  pattern: '^[A-Z][A-Z0-9_]+$'
+                severity:
+                  enum: [info, warn, fail]
+                message:
+                  type: string
+  costEstimate:
+    type: object
+    additionalProperties: false
+    required: [currency, monthly_total, committed_minimum, max_monthly_cost, within_limit, complete, catalog_version, items]
+    properties:
+      currency:
+        $ref: '#/$defs/currency'
+      monthly_total:
+        $ref: '#/$defs/money'
+      committed_minimum:
+        description: Spend that is incurred even if everything is destroyed immediately after creation.
+        $ref: '#/$defs/money'
+      max_monthly_cost:
+        $ref: '#/$defs/money'
+      within_limit:
+        type: boolean
+      complete:
+        description: False if any resource lacked a price. An incomplete estimate always fails the guard (plan 03 §14.6).
+        type: boolean
+      catalog_version:
+        type: string
+      items:
+        type: array
+        items:
+          type: object
+          additionalProperties: false
+          required: [resource_type, product_id, count, unit_monthly, setup_fee, commitment_period, price_source]
+          properties:
+            resource_type:
+              type: string
+            product_id:
+              type: string
+            count:
+              type: integer
+              minimum: 0
+            unit_monthly:
+              $ref: '#/$defs/money'
+            setup_fee:
+              $ref: '#/$defs/money'
+            commitment_period:
+              description: ISO-8601 duration (P1M) or PT1H for hourly-billed resources.
+              type: string
+              pattern: '^P(T?[0-9]+[HDMY])+$'
+            price_source:
+              enum: [catalog, live-catalog-higher, none]
+  InfraPriceCatalog:
+    description: Version-controlled price catalogue (`infra/catalog/prices/<provider>.yaml`), plan 03 §14.5.
+    type: object
+    additionalProperties: false
+    required: [apiVersion, kind, metadata, spec]
+    properties:
+      apiVersion:
+        const: strange.company/v1alpha1
+      kind:
+        const: InfraPriceCatalog
+      metadata:
+        type: object
+        additionalProperties: false
+        required: [name, version]
+        properties:
+          name:
+            type: string
+          version:
+            description: Calendar version, bumped on any change (YYYY.MM.DD[.n]).
+            type: string
+            pattern: '^[0-9]{4}\.[0-9]{2}\.[0-9]{2}(\.[0-9]+)?$'
+      spec:
+        type: object
+        additionalProperties: false
+        required: [provider, currency, entries]
+        properties:
+          provider:
+            enum: [ovh, fake]
+          currency:
+            $ref: '#/$defs/currency'
+          entries:
+            type: array
+            minItems: 1
+            items:
+              type: object
+              additionalProperties: false
+              required: [productId, productLine, resourceType, planCode, specs, regions, monthlyPrice, setupFee, commitment, taxIncluded, effectiveFrom, verifiedAt, sourceUrl]
+              properties:
+                productId:
+                  description: Stable Strange Company id for MACHINE_CLASS (e.g. `ovh-vps-6c-12g-100nvme`).
+                  type: string
+                  pattern: '^[a-z0-9][a-z0-9-]{2,62}$'
+                productLine:
+                  enum: [vps, public-cloud, fake]
+                resourceType:
+                  description: OpenTofu resource type that creates this product.
+                  type: string
+                planCode:
+                  description: Provider order plan code or flavor name (verify at pin time).
+                  type: string
+                displayName:
+                  type: string
+                specs:
+                  type: object
+                  additionalProperties: false
+                  required: [cpu, memory, storage]
+                  properties:
+                    cpu: {type: integer, minimum: 1}
+                    memory: {type: string, pattern: '^[1-9][0-9]*(Mi|Gi|Ti|GB)$'}
+                    storage:
+                      type: object
+                      additionalProperties: false
+                      required: [size, class]
+                      properties:
+                        size: {type: string, pattern: '^[1-9][0-9]*(Gi|Ti|GB|TB)$'}
+                        class: {enum: [nvme, ssd, hdd]}
+                regions:
+                  type: array
+                  minItems: 1
+                  items: {type: string}
+                monthlyPrice: {$ref: '#/$defs/money'}
+                hourlyPrice: {$ref: '#/$defs/money'}
+                setupFee: {$ref: '#/$defs/money'}
+                commitment:
+                  type: string
+                  pattern: '^P(T?[0-9]+[HDMY])+$'
+                taxIncluded: {type: boolean}
+                effectiveFrom: {type: string, format: date}
+                verifiedAt: {type: string, format: date}
+                sourceUrl: {type: string, format: uri}
+  TofuPlanGuard:
+    description: Allowlist of resource changes a root module's plan may contain (plan 03 §14.4).
+    type: object
+    additionalProperties: false
+    required: [apiVersion, kind, metadata, spec]
+    properties:
+      apiVersion:
+        const: strange.company/v1alpha1
+      kind:
+        const: TofuPlanGuard
+      metadata:
+        type: object
+        additionalProperties: false
+        required: [name]
+        properties:
+          name:
+            type: string
+      spec:
+        type: object
+        additionalProperties: false
+        required: [rootModule, allowedProviders, resources]
+        properties:
+          rootModule:
+            type: string
+            pattern: '^infra/tofu/[a-z0-9/-]+$'
+          allowedProviders:
+            description: Fully qualified provider source addresses (registry.opentofu.org/ovh/ovh).
+            type: array
+            minItems: 1
+            items:
+              type: string
+              pattern: '^registry\.opentofu\.org/[a-z0-9-]+/[a-z0-9-]+$'
+          resources:
+            type: array
+            minItems: 1
+            items:
+              type: object
+              additionalProperties: false
+              required: [type, paid, allowedActions, maxCount]
+              properties:
+                type:
+                  type: string
+                  pattern: '^[a-z][a-z0-9_]+$'
+                paid:
+                  type: boolean
+                allowedActions:
+                  description: Actions permitted in normal plans. `delete` only ever appears in destroy-mode guards.
+                  type: array
+                  minItems: 1
+                  uniqueItems: true
+                  items:
+                    enum: [no-op, read, create, update, delete]
+                maxCount:
+                  description: >-
+                    Upper bound on instances after apply. The literal `expectedNodeCount` binds it to
+                    EXPECTED_NODE_COUNT.
+                  oneOf:
+                    - type: integer
+                      minimum: 0
+                    - const: expectedNodeCount
+                priceProductFrom:
+                  description: Resource attribute path holding the plan code matched against the catalogue.
+                  type: string
+          forbidReplace:
+            description: When true any replace (delete+create) of a paid resource fails the guard.
+            type: boolean
+            default: true
+examples:
+  - schema_version: v1alpha1
+    record_type: provider_output
+    cluster: prod
+    generated_at: '2026-10-13T12:00:00Z'
+    provider:
+      name: ovh
+      implementation_version: v0.1.0
+      product_line: vps
+      capabilities:
+        provisions_compute: true
+        paid: true
+        reversible_within_hours: false
+        supports_expand: true
+        supports_destroy_compute: true
+        host_key_source: tofu
+    region:
+      provider_region: GRA
+      display_name: Gravelines (FR)
+    nodes:
+      - name: node-01
+        provider_id: vps-0a1b2c3d.vps.ovh.net
+        machine_class: ovh-vps-6c-12g-100nvme
+        roles: [server]
+        addresses:
+          public_ipv4: 203.0.113.10
+          public_ipv6: '2001:db8::10'
+          internal_ip: 203.0.113.10
+          external_ip: null
+        ssh:
+          host: 203.0.113.10
+          port: 22
+          user: debian
+          admin_user: sc-admin
+          host_key_fingerprints:
+            - SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU
+        hardware:
+          cpu_count: 6
+          memory_bytes: 12541607936
+          disks:
+            - name: sda
+              size_bytes: 107374182400
+              class: nvme
+              class_source: provider-catalog
+              role: root
+          virtualization: kvm
+          architecture: amd64
+        os:
+          id: debian
+          version_id: '13'
+          pretty_name: Debian GNU/Linux 13 (trixie)
+          kernel: 6.12.48+deb13-amd64
+        location:
+          region: GRA
+          failure_domain: GRA
+        state: running
+        labels:
+          strange.company/install: prod
+        substrate_validation:
+          profile: self-hosting-minimum
+          meets_minimum: true
+          meets_preferred: true
+          findings: []
+    cost_estimate:
+      currency: EUR
+      monthly_total: '9.99'
+      committed_minimum: '9.99'
+      max_monthly_cost: '25.00'
+      within_limit: true
+      complete: true
+      catalog_version: 2026.10.01
+      items:
+        - resource_type: ovh_vps
+          product_id: ovh-vps-6c-12g-100nvme
+          count: 1
+          unit_monthly: '9.99'
+          setup_fee: '0'
+          commitment_period: P1M
+          price_source: catalog
+    tofu:
+      root_module: infra/tofu/compute/ovh-vps
+      backend_key: prod/compute/terraform.tfstate
+      state_serial: 4
+      state_lineage: 9f3c2a8e-5b1d-4c0e-9a77-2f6b1e0d4c11
+    warnings: []
+  - schema_version: v1alpha1
+    record_type: provider_output
+    cluster: lab-ci-4711
+    generated_at: '2026-10-13T12:00:00Z'
+    provider:
+      name: existing
+      implementation_version: v0.1.0
+      product_line: none
+      capabilities:
+        provisions_compute: false
+        paid: false
+        reversible_within_hours: true
+        supports_expand: true
+        supports_destroy_compute: false
+        host_key_source: cloud-init
+    region:
+      provider_region: n/a
+    nodes:
+      - name: node-01
+        provider_id: existing:node-01
+        machine_class: lab
+        roles: [server]
+        addresses:
+          public_ipv4: null
+          public_ipv6: null
+          internal_ip: 10.77.0.11
+          external_ip: null
+        ssh:
+          host: 127.0.0.1
+          port: 2201
+          user: debian
+          host_key_fingerprints:
+            - SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU
+        hardware:
+          cpu_count: 2
+          memory_bytes: 4100000000
+          disks:
+            - name: vda
+              size_bytes: 21474836480
+              class: ssd
+              class_source: operator-attested
+              role: root
+          virtualization: kvm
+          architecture: amd64
+        os:
+          id: debian
+          version_id: '13'
+          kernel: 6.12.48+deb13-cloud-amd64
+        location:
+          region: lab
+          failure_domain: lab
+        state: running
+        substrate_validation:
+          profile: lab-small
+          meets_minimum: true
+          meets_preferred: null
+          findings:
+            - code: DISK_CLASS_ATTESTED
+              severity: warn
+              message: virtio disk reports rotational=1; class ssd attested by EXISTING_NODES override
+    cost_estimate:
+      currency: EUR
+      monthly_total: '0'
+      committed_minimum: '0'
+      max_monthly_cost: '0'
+      within_limit: true
+      complete: true
+      catalog_version: none
+      items: []
+    tofu: null
+    warnings: []
+x-defs-examples:
+  InfraPriceCatalog:
+    - apiVersion: strange.company/v1alpha1
+      kind: InfraPriceCatalog
+      metadata:
+        name: ovh
+        version: 2026.10.01
+      spec:
+        provider: ovh
+        currency: EUR
+        entries:
+          - productId: ovh-vps-6c-12g-100nvme
+            productLine: vps
+            resourceType: ovh_vps
+            planCode: vps-2025-model2
+            displayName: VPS-2 (2025 range, verify)
+            specs: {cpu: 6, memory: 12Gi, storage: {size: 100GB, class: nvme}}
+            regions: [GRA, SBG, RBX, WAW, DE, UK]
+            monthlyPrice: '9.99'
+            setupFee: '0'
+            commitment: P1M
+            taxIncluded: false
+            effectiveFrom: '2026-10-01'
+            verifiedAt: '2026-10-01'
+            sourceUrl: https://www.ovhcloud.com/en-ie/vps/
+  TofuPlanGuard:
+    - apiVersion: strange.company/v1alpha1
+      kind: TofuPlanGuard
+      metadata:
+        name: ovh-vps
+      spec:
+        rootModule: infra/tofu/compute/ovh-vps
+        allowedProviders: [registry.opentofu.org/ovh/ovh]
+        forbidReplace: true
+        resources:
+          - type: ovh_vps
+            paid: true
+            allowedActions: [no-op, read, create, update]
+            maxCount: expectedNodeCount
+            priceProductFrom: plan[0].plan_code
+x-invalid-examples:
+  - reason: money must be a decimal string, not a float
+    value:
+      schema_version: v1alpha1
+      record_type: provider_output
+      cluster: prod
+      generated_at: '2026-10-13T12:00:00Z'
+      provider: {name: fake, implementation_version: v0.1.0, product_line: fake, capabilities: {provisions_compute: true, paid: false, reversible_within_hours: true, supports_expand: true, supports_destroy_compute: true, host_key_source: cloud-init}}
+      region: {provider_region: fake-1}
+      nodes:
+        - name: node-01
+          provider_id: fake:1
+          machine_class: fake-small
+          roles: [server]
+          addresses: {internal_ip: 10.0.0.1}
+          ssh: {host: 10.0.0.1, port: 22, user: debian, host_key_fingerprints: []}
+          hardware: {cpu_count: 4, memory_bytes: 8589934592, disks: [{name: vda, size_bytes: 80530636800, class: ssd, class_source: discovered, role: root}], virtualization: kvm, architecture: amd64}
+          os: {id: debian, version_id: '13', kernel: '6.12'}
+          location: {region: fake-1, failure_domain: fake-1}
+          state: running
+          substrate_validation: {profile: self-hosting-minimum, meets_minimum: true, meets_preferred: false, findings: []}
+      cost_estimate: {currency: EUR, monthly_total: 9.99, committed_minimum: '0', max_monthly_cost: '20', within_limit: true, complete: true, catalog_version: x, items: []}
+      tofu: null
+      warnings: []
+  - reason: provider-specific node name instead of normalized node-NN
+    value:
+      schema_version: v1alpha1
+      record_type: provider_output
+      cluster: prod
+      generated_at: '2026-10-13T12:00:00Z'
+      provider: {name: fake, implementation_version: v0.1.0, product_line: fake, capabilities: {provisions_compute: true, paid: false, reversible_within_hours: true, supports_expand: true, supports_destroy_compute: true, host_key_source: cloud-init}}
+      region: {provider_region: fake-1}
+      nodes:
+        - name: vps-0a1b2c3d.vps.ovh.net
+          provider_id: fake:1
+          machine_class: fake-small
+          roles: [server]
+          addresses: {internal_ip: 10.0.0.1}
+          ssh: {host: 10.0.0.1, port: 22, user: debian, host_key_fingerprints: []}
+          hardware: {cpu_count: 4, memory_bytes: 8589934592, disks: [{name: vda, size_bytes: 80530636800, class: ssd, class_source: discovered, role: root}], virtualization: kvm, architecture: amd64}
+          os: {id: debian, version_id: '13', kernel: '6.12'}
+          location: {region: fake-1, failure_domain: fake-1}
+          state: running
+          substrate_validation: {profile: self-hosting-minimum, meets_minimum: true, meets_preferred: false, findings: []}
+      cost_estimate: {currency: EUR, monthly_total: '0', committed_minimum: '0', max_monthly_cost: '20', within_limit: true, complete: true, catalog_version: x, items: []}
+      tofu: null
+      warnings: []
+  - reason: no nodes
+    value:
+      schema_version: v1alpha1
+      record_type: provider_output
+      cluster: prod
+      generated_at: '2026-10-13T12:00:00Z'
+      provider: {name: fake, implementation_version: v0.1.0, product_line: fake, capabilities: {provisions_compute: true, paid: false, reversible_within_hours: true, supports_expand: true, supports_destroy_compute: true, host_key_source: cloud-init}}
+      region: {provider_region: fake-1}
+      nodes: []
+      cost_estimate: {currency: EUR, monthly_total: '0', committed_minimum: '0', max_monthly_cost: '20', within_limit: true, complete: true, catalog_version: x, items: []}
+      tofu: null
+      warnings: []
+  - reason: unknown provider name (higher layers accept only registered providers)
+    value:
+      schema_version: v1alpha1
+      record_type: provider_output
+      cluster: prod
+      generated_at: '2026-10-13T12:00:00Z'
+      provider: {name: hetzner, implementation_version: v0.1.0, product_line: vps, capabilities: {provisions_compute: true, paid: true, reversible_within_hours: true, supports_expand: true, supports_destroy_compute: true, host_key_source: cloud-init}}
+      region: {provider_region: fsn1}
+      nodes:
+        - name: node-01
+          provider_id: h:1
+          machine_class: cx42
+          roles: [server]
+          addresses: {internal_ip: 10.0.0.1}
+          ssh: {host: 10.0.0.1, port: 22, user: debian, host_key_fingerprints: []}
+          hardware: {cpu_count: 4, memory_bytes: 8589934592, disks: [{name: vda, size_bytes: 80530636800, class: ssd, class_source: discovered, role: root}], virtualization: kvm, architecture: amd64}
+          os: {id: debian, version_id: '13', kernel: '6.12'}
+          location: {region: fsn1, failure_domain: fsn1}
+          state: running
+          substrate_validation: {profile: self-hosting-minimum, meets_minimum: true, meets_preferred: false, findings: []}
+      cost_estimate: {currency: EUR, monthly_total: '0', committed_minimum: '0', max_monthly_cost: '20', within_limit: true, complete: true, catalog_version: x, items: []}
+      tofu: null
+      warnings: []

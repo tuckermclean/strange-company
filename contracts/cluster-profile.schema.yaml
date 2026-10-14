@@ -1,0 +1,245 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://strange.company/contracts/cluster-profile/v1alpha1
+title: ClusterProfile
+description: |
+  Target topology for an existing installation (SPEC §12). Used by
+  `./bootstrap expand --profile <name>`. A ClusterProfile is applied *on top of*
+  the installation's BootstrapSubstrate: every field it omits is inherited from
+  the substrate recorded in `gitops/clusters/<cluster>/bootstrap-config.yaml`
+  (plan 03 §9.3 "effective profile" merge). The one-node system is reduced
+  redundancy of the same architecture, not a different one (SPEC §12).
+
+  Files: `infra/profiles/<name>.yaml`. Owned by plan 03; expansion behavior is
+  owned by plan 47.
+
+  Rules enforced by sc-bootstrap rather than this schema: servers <= nodes.count;
+  cnpg.instances <= nodes.count; longhorn.replicas <= nodes.count; the profile must
+  not reduce nodes.count, servers, cnpg.instances or longhorn.replicas below the
+  installation's current values (shrinking is a remove-node procedure, plan 47);
+  minimumPerNode must be >= the substrate minimum (SPEC v1.2 floor: 4 CPU, 8Gi, 100Gi ssd).
+type: object
+additionalProperties: false
+required: [apiVersion, kind, metadata, spec]
+properties:
+  apiVersion:
+    const: strange.company/v1alpha1
+  kind:
+    const: ClusterProfile
+  metadata:
+    type: object
+    additionalProperties: false
+    required: [name]
+    properties:
+      name:
+        type: string
+        pattern: '^[a-z][a-z0-9-]{1,61}[a-z0-9]$'
+      labels:
+        type: object
+        additionalProperties:
+          type: string
+          maxLength: 63
+      annotations:
+        type: object
+        additionalProperties:
+          type: string
+  spec:
+    type: object
+    additionalProperties: false
+    required: [nodes, kubernetes, storage, execution]
+    properties:
+      nodes:
+        type: object
+        additionalProperties: false
+        required: [count, minimumPerNode]
+        properties:
+          count:
+            type: integer
+            minimum: 1
+            maximum: 9
+          minimumPerNode:
+            $ref: '#/$defs/nodeShape'
+          preferredPerNode:
+            description: May be partial (SPEC §12 v1.2 states only the preferred storage); omitted fields are inherited from the substrate.
+            $ref: '#/$defs/partialNodeShape'
+      kubernetes:
+        type: object
+        additionalProperties: false
+        required: [servers, datastore]
+        properties:
+          distribution:
+            const: k3s
+          servers:
+            enum: [1, 3, 5]
+          datastore:
+            const: embedded-etcd
+      storage:
+        type: object
+        additionalProperties: false
+        required: [cnpg, longhorn]
+        properties:
+          cnpg:
+            type: object
+            additionalProperties: false
+            required: [instances]
+            properties:
+              instances:
+                type: integer
+                minimum: 1
+                maximum: 5
+              storageClass:
+                enum: [local]
+          longhorn:
+            type: object
+            additionalProperties: false
+            required: [replicas]
+            properties:
+              enabled:
+                const: true
+              replicas:
+                type: integer
+                minimum: 1
+                maximum: 3
+          objectStorage:
+            type: object
+            additionalProperties: false
+            required: [required]
+            properties:
+              required:
+                const: true
+      execution:
+        type: object
+        additionalProperties: false
+        required: [maximumConcurrentAgents]
+        properties:
+          maximumConcurrentAgents:
+            type: integer
+            minimum: 0
+            maximum: 64
+          maximumConcurrentCIJobs:
+            description: Inherited from the substrate when omitted (SPEC §12 does not state it).
+            type: integer
+            minimum: 0
+            maximum: 64
+$defs:
+  quantity:
+    type: string
+    pattern: '^[1-9][0-9]*(Mi|Gi|Ti)$'
+  nodeShape:
+    type: object
+    additionalProperties: false
+    required: [cpu, memory, storage]
+    properties:
+      cpu:
+        type: integer
+        minimum: 1
+        maximum: 256
+      memory:
+        $ref: '#/$defs/quantity'
+      storage:
+        type: object
+        additionalProperties: false
+        required: [size, class]
+        properties:
+          size:
+            $ref: '#/$defs/quantity'
+          class:
+            enum: [ssd, nvme]
+  partialNodeShape:
+    type: object
+    additionalProperties: false
+    minProperties: 1
+    properties:
+      cpu:
+        type: integer
+        minimum: 1
+        maximum: 256
+      memory:
+        $ref: '#/$defs/quantity'
+      storage:
+        type: object
+        additionalProperties: false
+        required: [size, class]
+        properties:
+          size:
+            $ref: '#/$defs/quantity'
+          class:
+            enum: [ssd, nvme]
+examples:
+  # SPEC §12 canonical manifest (SPEC v1.2), verbatim.
+  - apiVersion: strange.company/v1alpha1
+    kind: ClusterProfile
+    metadata:
+      name: small-ha
+    spec:
+      nodes:
+        count: 3
+        minimumPerNode:
+          cpu: 4
+          memory: 8Gi
+          storage:
+            size: 100Gi
+            class: ssd
+        preferredPerNode:
+          storage:
+            size: 200Gi
+            class: nvme
+      kubernetes:
+        servers: 3
+        datastore: embedded-etcd
+      storage:
+        cnpg:
+          instances: 3
+        longhorn:
+          replicas: 2
+      execution:
+        maximumConcurrentAgents: 2
+x-invalid-examples:
+  - reason: datastore must be embedded-etcd
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: ClusterProfile
+      metadata: {name: small-ha}
+      spec:
+        nodes: {count: 3, minimumPerNode: {cpu: 4, memory: 8Gi, storage: {size: 100Gi, class: ssd}}}
+        kubernetes: {servers: 3, datastore: external-postgres}
+        storage: {cnpg: {instances: 3}, longhorn: {replicas: 2}}
+        execution: {maximumConcurrentAgents: 2}
+  - reason: Longhorn cannot be disabled by a profile (SPEC §27 uses it for Forgejo repositories)
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: ClusterProfile
+      metadata: {name: small-ha}
+      spec:
+        nodes: {count: 3, minimumPerNode: {cpu: 4, memory: 8Gi, storage: {size: 100Gi, class: ssd}}}
+        kubernetes: {servers: 3, datastore: embedded-etcd}
+        storage: {cnpg: {instances: 3}, longhorn: {enabled: false, replicas: 2}}
+        execution: {maximumConcurrentAgents: 2}
+  - reason: missing required execution section
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: ClusterProfile
+      metadata: {name: small-ha}
+      spec:
+        nodes: {count: 3, minimumPerNode: {cpu: 4, memory: 8Gi, storage: {size: 100Gi, class: ssd}}}
+        kubernetes: {servers: 3, datastore: embedded-etcd}
+        storage: {cnpg: {instances: 3}, longhorn: {replicas: 2}}
+  - reason: even server count
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: ClusterProfile
+      metadata: {name: four}
+      spec:
+        nodes: {count: 4, minimumPerNode: {cpu: 4, memory: 8Gi, storage: {size: 100Gi, class: ssd}}}
+        kubernetes: {servers: 4, datastore: embedded-etcd}
+        storage: {cnpg: {instances: 3}, longhorn: {replicas: 2}}
+        execution: {maximumConcurrentAgents: 2}
+  - reason: preferredPerNode must not be empty
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: ClusterProfile
+      metadata: {name: small-ha}
+      spec:
+        nodes: {count: 3, minimumPerNode: {cpu: 4, memory: 8Gi, storage: {size: 100Gi, class: ssd}}, preferredPerNode: {}}
+        kubernetes: {servers: 3, datastore: embedded-etcd}
+        storage: {cnpg: {instances: 3}, longhorn: {replicas: 2}}
+        execution: {maximumConcurrentAgents: 2}

@@ -1,0 +1,472 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://strange.company/contracts/context/v1alpha1
+title: Context
+description: |
+  Two related documents (owning plan 25; SPEC §40–§44, §66, SI-03):
+
+  1. `RepositoryContext`: the manifest `.strange-company/repo.yaml` that every managed
+     repository carries (SPEC §42). It is a Kubernetes-style config manifest (camelCase).
+     The Runner reads it **from the task's recorded base commit** through the Forgejo API,
+     never from an agent branch (ADR-0017). It is descriptive context. Enforceable rules
+     live in `.strange-company/policy.yaml` and `validation.yaml` (plan 22).
+
+  2. `ContextPacket`: the compiled, role-projected context that the Runner's context
+     compiler produces for one worker execution and delivers inside the worker packet
+     (`worker-input.schema.yaml`). It is a payload (snake_case). Every section records
+     provenance (source kind, repository, path, commit, digest) and authority. Withheld
+     material is listed in `withheld` so that projection decisions can be audited.
+
+  The top-level schema accepts either document; `kind: RepositoryContext` vs
+  `packet_id` discriminates.
+oneOf:
+  - $ref: "#/$defs/RepositoryContext"
+  - $ref: "#/$defs/ContextPacket"
+$defs:
+  Sha256:
+    type: string
+    pattern: "^sha256:[a-f0-9]{64}$"
+  GitSha:
+    type: string
+    pattern: "^[a-f0-9]{40}$"
+  RepoPath:
+    description: Repository-relative POSIX path; no leading slash, no `..` segments.
+    type: string
+    pattern: "^(?!/)(?!.*(^|/)\\.\\.(/|$))[A-Za-z0-9._@+/-]{1,400}$"
+  Glob:
+    type: string
+    pattern: "^(?!/)[A-Za-z0-9._@+*?{},/\\[\\]-]{1,200}$"
+  SectionKind:
+    description: |
+      Closed vocabulary of context section kinds. Role definitions (`role.schema.yaml`)
+      include or forbid these kinds; the compiler fails closed on an unknown kind.
+    type: string
+    enum:
+      - company_rules          # context/company/*.md in strange-company (Git, authoritative)
+      - repository_context     # .strange-company/repo.yaml rendered summary
+      - agents_md              # AGENTS.md at base commit
+      - architecture           # .strange-company/architecture.md
+      - decisions              # .strange-company/decisions/*.md (titles + selected bodies)
+      - role_instructions      # policy/roles/<role>.yaml instructions + .strange-company/roles/<role>.md
+      - task_spec              # objective, source, constraints, verification mode
+      - acceptance_criteria    # stable AC ids + text (scoped subset marked)
+      - validation_rules       # validation commands and test paths at base (plan 22 excerpt)
+      - context_files          # repository files named by context_refs, at base commit
+      - research_reports       # outputs of researcher/planner executions of this task or parent
+      - red_test_diff          # diff base..red_commit (tests only)
+      - red_evidence           # red-result document summary (plan 22)
+      - implementation_diff    # diff red_commit..implementation head
+      - green_evidence         # green-result document summary (plan 22)
+      - tester_handoff         # handoff from the accepted tester execution
+      - implementer_handoff    # handoff from the latest implementer execution
+      - prior_attempt_evidence # role-filtered evidence of earlier failed attempts of the same role
+      - reviewer_findings      # findings from a CHANGES_REQUESTED review
+      - conflict_report        # implementer's TEST_SPEC_CONFLICT claim (reviewer only)
+      - conflict_decision      # reviewer/human decision on a TEST_SPEC_CONFLICT (tester-safe)
+      - orchestrator_notes     # Hermes-supplied notes; always non-authoritative
+  Layer:
+    type: string
+    enum: [company, repository, task, worker, handoff, evidence, orchestrator]
+  Authority:
+    description: |
+      `authoritative` = version-controlled rules or task definition (Git / Runner DB);
+      `evidence` = deterministic CI output or Git diffs;
+      `non_authoritative` = model-authored text (handoffs, notes, reports). Workers are
+      instructed that non_authoritative content never overrides authoritative content.
+    type: string
+    enum: [authoritative, evidence, non_authoritative]
+  Source:
+    type: object
+    additionalProperties: false
+    required: [kind, digest]
+    properties:
+      kind:
+        type: string
+        enum: [git, task_record, evidence_store, handoff, hermes, forgejo_issue]
+      repository:
+        type: string
+        pattern: "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+      path:
+        $ref: "#/$defs/RepoPath"
+      commit:
+        $ref: "#/$defs/GitSha"
+      ref:
+        description: Opaque reference for non-Git sources (execution id, evidence object key, task id, `owner/repo#<n>` for issues).
+        type: string
+        maxLength: 300
+      digest:
+        description: sha256 of the source bytes *before* truncation.
+        $ref: "#/$defs/Sha256"
+  # ------------------------------------------------------------------ RepositoryContext
+  RepositoryContext:
+    type: object
+    additionalProperties: false
+    required: [apiVersion, kind, metadata, spec]
+    properties:
+      apiVersion:
+        const: strange.company/v1alpha1
+      kind:
+        const: RepositoryContext
+      metadata:
+        type: object
+        additionalProperties: false
+        required: [name]
+        properties:
+          name:
+            description: Repository name (matches the Forgejo repository name).
+            type: string
+            pattern: "^[A-Za-z0-9_.-]{1,100}$"
+      spec:
+        type: object
+        additionalProperties: false
+        required: [project, purpose]
+        properties:
+          project:
+            description: Project id the repository belongs to; used for cost aggregation (SPEC §78, §80) and stamped into gateway tokens (`project` claim, plan 53).
+            type: string
+            pattern: "^[a-z0-9][a-z0-9_-]{0,62}$"
+          purpose:
+            type: string
+            minLength: 10
+            maxLength: 2000
+          languages:
+            type: array
+            maxItems: 10
+            items:
+              type: string
+              pattern: "^[a-z0-9+#-]{1,30}$"
+          importantPaths:
+            type: array
+            maxItems: 50
+            items:
+              type: object
+              additionalProperties: false
+              required: [path, description]
+              properties:
+                path:
+                  $ref: "#/$defs/Glob"
+                description:
+                  type: string
+                  maxLength: 300
+          buildCommands:
+            description: Informational. Enforced validation commands live in validation.yaml (plan 22).
+            type: array
+            maxItems: 10
+            items:
+              type: string
+              maxLength: 300
+          testCommands:
+            description: Informational. Enforced validation commands live in validation.yaml (plan 22).
+            type: array
+            maxItems: 10
+            items:
+              type: string
+              maxLength: 300
+          conventions:
+            type: array
+            maxItems: 40
+            items:
+              type: string
+              maxLength: 500
+          compatibility:
+            type: array
+            maxItems: 20
+            items:
+              type: string
+              maxLength: 500
+          sharpEdges:
+            type: array
+            maxItems: 30
+            items:
+              type: string
+              maxLength: 500
+          deploymentModel:
+            type: string
+            maxLength: 1000
+          prohibitedActions:
+            description: Advisory restatement for workers. Enforcement is platform policy (SPEC §42).
+            type: array
+            maxItems: 30
+            items:
+              type: string
+              maxLength: 300
+          contextFiles:
+            description: Paths (relative to the repository root) of the other repository-context files.
+            type: object
+            additionalProperties: false
+            properties:
+              architecture:
+                $ref: "#/$defs/RepoPath"
+              decisionsDir:
+                $ref: "#/$defs/RepoPath"
+              rolesDir:
+                $ref: "#/$defs/RepoPath"
+              agentsMd:
+                $ref: "#/$defs/RepoPath"
+          contextBudgets:
+            description: Repository-specific *tightening* of compiler budgets (bytes). Values above platform maxima are rejected at load.
+            type: object
+            propertyNames:
+              $ref: "#/$defs/SectionKind"
+            additionalProperties:
+              type: integer
+              minimum: 0
+              maximum: 262144
+  # ------------------------------------------------------------------ ContextPacket
+  ContextPacket:
+    type: object
+    additionalProperties: false
+    required: [packet_id, task_id, execution_id, role, compiled_at, compiler_version, policy_revision, base_commit, budget, sections, withheld, digest]
+    properties:
+      packet_id:
+        description: "Equals `ctx-<execution-id>`."
+        type: string
+        pattern: "^ctx-sc-[0-9]+-x[0-9]+$"
+      task_id:
+        type: string
+        pattern: "^sc-[0-9]+$"
+      execution_id:
+        type: string
+        pattern: "^sc-[0-9]+-x[0-9]+$"
+      role:
+        type: string
+        enum: [researcher, planner, tester, implementer, reviewer]
+      compiled_at:
+        type: string
+        format: date-time
+      compiler_version:
+        type: string
+        maxLength: 60
+      policy_revision:
+        description: Content digest of the platform policy set used for projection rules (plan 26 policy loader).
+        $ref: "#/$defs/Sha256"
+      base_commit:
+        $ref: "#/$defs/GitSha"
+      budget:
+        type: object
+        additionalProperties: false
+        required: [max_bytes, used_bytes]
+        properties:
+          max_bytes:
+            type: integer
+            minimum: 1024
+            maximum: 1048576
+          used_bytes:
+            type: integer
+            minimum: 0
+      sections:
+        type: array
+        maxItems: 200
+        items:
+          $ref: "#/$defs/Section"
+      withheld:
+        description: Material deliberately not delivered (role projection, budget, or failed scrub).
+        type: array
+        maxItems: 200
+        items:
+          type: object
+          additionalProperties: false
+          required: [kind, reason]
+          properties:
+            kind:
+              $ref: "#/$defs/SectionKind"
+            reason:
+              type: string
+              enum: [forbidden_for_role, not_included_for_role, over_budget, not_available, secret_detected, source_unreadable, post_red_material]
+            source:
+              $ref: "#/$defs/Source"
+      digest:
+        description: sha256 over the canonical JSON of `sections` (RFC 8785 JCS).
+        $ref: "#/$defs/Sha256"
+  Section:
+    type: object
+    additionalProperties: false
+    required: [id, kind, layer, authority, title, media_type, content, truncated, original_bytes, sources]
+    properties:
+      id:
+        type: string
+        pattern: "^[a-z0-9][a-z0-9_.-]{0,80}$"
+      kind:
+        $ref: "#/$defs/SectionKind"
+      layer:
+        $ref: "#/$defs/Layer"
+      authority:
+        $ref: "#/$defs/Authority"
+      title:
+        type: string
+        maxLength: 200
+      media_type:
+        type: string
+        enum: [text/markdown, text/x-diff, application/json, text/plain]
+      materialize_as:
+        description: File name under /workspace/context/ where sc-worker writes the content (plan 27).
+        type: string
+        pattern: "^[a-z0-9][a-z0-9_.-]{0,80}\\.(md|diff|json|txt)$"
+      content:
+        type: string
+        maxLength: 262144
+      truncated:
+        type: boolean
+      original_bytes:
+        type: integer
+        minimum: 0
+      sources:
+        type: array
+        minItems: 1
+        maxItems: 50
+        items:
+          $ref: "#/$defs/Source"
+    allOf:
+      - if:
+          properties: {kind: {const: orchestrator_notes}}
+        then:
+          properties:
+            authority: {const: non_authoritative}
+            layer: {const: orchestrator}
+examples:
+  - apiVersion: strange.company/v1alpha1
+    kind: RepositoryContext
+    metadata:
+      name: strange-company
+    spec:
+      project: strange-company
+      purpose: Self-hosted software factory; this repository is bootstrap, GitOps source and application source.
+      languages: [go, yaml, sh]
+      importantPaths:
+        - {path: "src/runner/**", description: Agent Runner service}
+        - {path: "contracts/*.schema.yaml", description: Machine-readable contracts (protected)}
+      buildCommands: [make build]
+      testCommands: [make test]
+      conventions: [Go code is formatted with gofmt; errors wrap with %w.]
+      sharpEdges: [Policy files are protected paths; agent branches must never modify them.]
+      deploymentModel: Merged commits are built by trusted CI and promoted to GitOps state; Flux reconciles.
+      prohibitedActions: [Do not modify .woodpecker/**, policy/** or contracts/**.]
+      contextFiles:
+        architecture: .strange-company/architecture.md
+        decisionsDir: .strange-company/decisions
+        rolesDir: .strange-company/roles
+        agentsMd: AGENTS.md
+      contextBudgets:
+        decisions: 16384
+  - packet_id: ctx-sc-184-x1
+    task_id: sc-184
+    execution_id: sc-184-x1
+    role: tester
+    compiled_at: "2026-10-13T12:00:00Z"
+    compiler_version: 0.1.0
+    policy_revision: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    base_commit: 0123456789abcdef0123456789abcdef01234567
+    budget: {max_bytes: 262144, used_bytes: 1830}
+    sections:
+      - id: company-rules
+        kind: company_rules
+        layer: company
+        authority: authoritative
+        title: Company rules
+        media_type: text/markdown
+        materialize_as: 00-company-rules.md
+        content: "- Git is authoritative.\n- Verification precedes implementation.\n"
+        truncated: false
+        original_bytes: 61
+        sources:
+          - {kind: git, repository: strange-company/strange-company, path: context/company/rules.md, commit: 89abcdef0123456789abcdef0123456789abcdef, digest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
+      - id: acceptance-criteria
+        kind: acceptance_criteria
+        layer: task
+        authority: authoritative
+        title: Acceptance criteria
+        media_type: application/json
+        materialize_as: 20-acceptance-criteria.json
+        content: '[{"id":"AC-1","text":"HTTP 307 preserves the original method."}]'
+        truncated: false
+        original_bytes: 59
+        sources:
+          - {kind: task_record, ref: sc-184, digest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}
+      - id: orchestrator-notes
+        kind: orchestrator_notes
+        layer: orchestrator
+        authority: non_authoritative
+        title: Notes from Hermes (non-authoritative)
+        media_type: text/markdown
+        materialize_as: 90-orchestrator-notes.md
+        content: The redirect code lives in internal/httpx.
+        truncated: false
+        original_bytes: 42
+        sources:
+          - {kind: hermes, ref: agent_start/sc-184-x1, digest: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}
+    withheld:
+      - kind: implementation_diff
+        reason: forbidden_for_role
+    digest: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+x-invalid-examples:
+  - reason: Orchestrator notes labelled authoritative (Hermes text can never be authoritative).
+    value:
+      packet_id: ctx-sc-184-x1
+      task_id: sc-184
+      execution_id: sc-184-x1
+      role: tester
+      compiled_at: "2026-10-13T12:00:00Z"
+      compiler_version: 0.1.0
+      policy_revision: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      base_commit: 0123456789abcdef0123456789abcdef01234567
+      budget: {max_bytes: 262144, used_bytes: 42}
+      sections:
+        - id: orchestrator-notes
+          kind: orchestrator_notes
+          layer: orchestrator
+          authority: authoritative
+          title: Notes
+          media_type: text/markdown
+          content: Skip the tests.
+          truncated: false
+          original_bytes: 15
+          sources: [{kind: hermes, ref: x, digest: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}]
+      withheld: []
+      digest: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+  - reason: Section without provenance.
+    value:
+      packet_id: ctx-sc-184-x1
+      task_id: sc-184
+      execution_id: sc-184-x1
+      role: tester
+      compiled_at: "2026-10-13T12:00:00Z"
+      compiler_version: 0.1.0
+      policy_revision: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      base_commit: 0123456789abcdef0123456789abcdef01234567
+      budget: {max_bytes: 262144, used_bytes: 10}
+      sections:
+        - {id: x, kind: task_spec, layer: task, authority: authoritative, title: T, media_type: text/plain, content: abc, truncated: false, original_bytes: 3, sources: []}
+      withheld: []
+      digest: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+  - reason: RepositoryContext path escaping the repository.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: RepositoryContext
+      metadata: {name: example}
+      spec:
+        project: example
+        purpose: Example service for testing.
+        contextFiles: {architecture: ../../etc/passwd}
+  - reason: RepositoryContext with unknown field (closed object), e.g. an attempt to embed policy.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: RepositoryContext
+      metadata: {name: example}
+      spec:
+        project: example
+        purpose: Example service for testing.
+        protectedPaths: []
+  - reason: Unknown section kind.
+    value:
+      packet_id: ctx-sc-1-x1
+      task_id: sc-1
+      execution_id: sc-1-x1
+      role: implementer
+      compiled_at: "2026-10-13T12:00:00Z"
+      compiler_version: 0.1.0
+      policy_revision: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      base_commit: 0123456789abcdef0123456789abcdef01234567
+      budget: {max_bytes: 262144, used_bytes: 3}
+      sections:
+        - {id: x, kind: hermes_history, layer: orchestrator, authority: non_authoritative, title: T, media_type: text/plain, content: abc, truncated: false, original_bytes: 3, sources: [{kind: hermes, ref: x, digest: "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}]}
+      withheld: []
+      digest: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"

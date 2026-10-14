@@ -1,0 +1,4751 @@
+# Strange Company alert catalogue (SPEC §96, §97; ADR-0009; plan 42).
+# Validated by contracts/alert-catalog.schema.yaml and by `make lint-alerts`.
+# Expressions are sketches with exact metric names. Plan 42 renders them
+# into PrometheusRule objects and pins them with promtool unit tests. Recording
+# rules named sc:* are defined in plan 42 §8.3.
+apiVersion: strange.company/v1alpha1
+kind: AlertCatalog
+metadata:
+  name: strange-company
+spec:
+  alwaysNotifyReasons:
+    - needs-human
+    - budget-stop
+    - failed-backup
+    - critical-outage
+    - failed-mirror
+    - black-start-threat
+    - security-audit
+
+  notificationClasses:
+    page:
+      description: Immediate delivery to every configured transport, at high priority where the transport supports it.
+      external: true
+      groupWait: 30s
+      groupInterval: 5m
+      repeatInterval: 4h
+      sendResolved: true
+    notify:
+      description: Delivery to every configured transport at normal priority.
+      external: true
+      groupWait: 2m
+      groupInterval: 10m
+      repeatInterval: 24h
+      sendResolved: true
+    silent:
+      description: Not delivered externally. Visible in Alertmanager and on the Grafana "Firing alerts" panels.
+      external: false
+      groupWait: 5m
+      groupInterval: 30m
+      repeatInterval: 7d
+      sendResolved: false
+    heartbeat:
+      description: Dead-man's switch. Watchdog goes to the operator's external heartbeat URL.
+      external: true
+      groupWait: 0s
+      groupInterval: 1m
+      repeatInterval: 1m
+      sendResolved: false
+
+  routing:
+    groupBy: [alertname, category]
+    severityFallback:
+      critical: page
+      warning: notify
+      info: silent
+      none: silent
+    inhibitRules:
+      - name: notifications-failing-stops-heartbeat
+        sourceMatchers: ['alertname="SCAlertmanagerNotificationsFailing"']
+        targetMatchers: ['alertname="Watchdog"']
+        equal: []
+        rationale: >
+          If Alertmanager cannot deliver to any transport, the operator's external
+          monitor must notice. Suppressing the heartbeat makes it fire.
+      - name: node-down-inhibits-node-symptoms
+        sourceMatchers: ['alertname="SCNodeDown"']
+        targetMatchers: ['always_notify="none"']
+        equal: [node]
+        rationale: A dead node explains its filesystem, memory and scrape symptoms.
+      - name: forgejo-down-inhibits-forgejo-symptoms
+        sourceMatchers: ['alertname="SCForgejoDown"']
+        targetMatchers: ['always_notify="none"', 'alertname=~"SCForgejoPublicEndpointDown|SCForgejoSSHDown|SCFluxReconciliationFailing"']
+        equal: []
+        rationale: Forgejo being down explains edge, SSH and Flux source failures.
+      - name: edge-down-inhibits-public-endpoints
+        sourceMatchers: ['alertname="SCEdgeDown"']
+        targetMatchers: ['always_notify="none"', 'alertname=~"SC.*PublicEndpointDown"']
+        equal: []
+        rationale: One edge outage, one notification.
+      - name: critical-inhibits-warning-same-alert
+        sourceMatchers: ['severity="critical"']
+        targetMatchers: ['severity="warning"', 'always_notify="none"']
+        equal: [alertname, namespace]
+        rationale: Upstream kube-prometheus convention, restricted to non-always-notify targets.
+      - name: warning-inhibits-info-same-alert
+        sourceMatchers: ['severity="warning"']
+        targetMatchers: ['severity="info"', 'always_notify="none"']
+        equal: [alertname, namespace]
+        rationale: Upstream kube-prometheus convention.
+      - name: info-inhibitor
+        sourceMatchers: ['alertname="InfoInhibitor"']
+        targetMatchers: ['severity="info"', 'always_notify="none"']
+        equal: [namespace]
+        rationale: Upstream kube-prometheus InfoInhibitor pattern.
+
+  upstreamRules:
+    chart: kube-prometheus-stack
+    addedLabels:
+      source: upstream
+    keepGroups:
+      - alertmanager.rules
+      - config-reloaders
+      - etcd
+      - general.rules
+      - k8s.rules
+      - kube-apiserver-availability.rules
+      - kube-apiserver-burnrate.rules
+      - kube-apiserver-histogram.rules
+      - kube-apiserver-slos
+      - kube-prometheus-general.rules
+      - kube-prometheus-node-recording.rules
+      - kube-state-metrics
+      - kubelet.rules
+      - kubernetes-apps
+      - kubernetes-resources
+      - kubernetes-storage
+      - kubernetes-system
+      - kubernetes-system-apiserver
+      - kubernetes-system-kubelet
+      - node-exporter
+      - node-exporter.rules
+      - node-network
+      - node.rules
+      - prometheus
+      - prometheus-operator
+    disableGroups:
+      - group: kubernetes-system-controller-manager
+        reason: k3s embeds the controller-manager. Its metrics are served from the shared k3s registry through the apiserver scrape (plan 38 §7.3), so the separate up-check would always fire.
+      - group: kubernetes-system-scheduler
+        reason: Same as controller-manager.
+      - group: kube-scheduler.rules
+        reason: No separate scheduler job on k3s.
+      - group: kubernetes-system-kube-proxy
+        reason: kube-proxy is embedded in k3s and not scraped.
+      - group: windows.node.rules
+        reason: No Windows nodes.
+      - group: windows.pod.rules
+        reason: No Windows nodes.
+    disableAlerts:
+      - alertname: KubeJobFailed
+        reason: Worker and CI Jobs fail by design (merit failures). Replaced by a platform-namespace-scoped rule.
+        replacedBy: SCPlatformJobFailed
+      - alertname: KubeCPUOvercommit
+        reason: On one node any request counts as overcommit (the rule subtracts the largest node).
+        profiles: [self-hosting-minimum]
+      - alertname: KubeMemoryOvercommit
+        reason: Same as KubeCPUOvercommit.
+        profiles: [self-hosting-minimum]
+      - alertname: CPUThrottlingHigh
+        reason: Noisy on small nodes where workers run at their limits by design. Throttling is a dashboard signal.
+      - alertname: etcdHighNumberofFailedGRPCRequests
+        reason: Known false positives on embedded etcd (verify on the implementation k3s version).
+      - alertname: Watchdog
+        reason: The upstream general.rules group defines its own Watchdog; the catalogue Watchdog (routed to the heartbeat) replaces it so exactly one Watchdog series fires (GC-12).
+        replacedBy: Watchdog
+      - alertname: KubeNodeNotReady
+        reason: Replaced by SCNodeDown, which has a shorter `for` and a defined route.
+        replacedBy: SCNodeDown
+
+  alerts:
+    # ------------------------------------------------------------------ monitoring meta
+    - alertname: Watchdog
+      summary: Always-firing heartbeat. Delivered to the external dead-man's switch.
+      category: monitoring
+      severity: info
+      notifyClass: heartbeat
+      alwaysNotify: none
+      blackStartThreat: false
+      source: {kind: prometheus-rule, expr: "vector(1)", for: 0s}
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "38"
+      runbook: procedures/monitoring-failure.md
+      specRefs: ["§96", "§97"]
+    - alertname: SCDeadMansSwitchNotConfigured
+      summary: No external heartbeat URL is configured, so a total outage would go unnoticed.
+      category: monitoring
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: black-start-threat
+      blackStartThreat: true
+      source: {kind: prometheus-rule, expr: "sc_notification_heartbeat_configured == 0", for: 1h}
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "42"
+      runbook: procedures/notification-failure.md
+      specRefs: ["§97"]
+    - alertname: SCAlertmanagerNotificationsFailing
+      summary: Alertmanager has been failing to deliver notifications on an integration for 10 minutes.
+      category: monitoring
+      severity: critical
+      notifyClass: page
+      alwaysNotify: critical-outage
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum by (integration) (rate(alertmanager_notifications_failed_total[10m])) > 0'
+        for: 10m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "38"
+      runbook: procedures/notification-failure.md
+      specRefs: ["§97"]
+    - alertname: SCRunnerNotificationPostFailing
+      summary: The Agent Runner cannot post organizational notifications to Alertmanager.
+      category: monitoring
+      severity: critical
+      notifyClass: page
+      alwaysNotify: needs-human
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum(increase(sc_runner_alert_posts_total{result="failure"}[10m])) > 0 and sum(increase(sc_runner_alert_posts_total{result="success"}[10m])) == 0'
+        for: 10m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "26"
+      runbook: procedures/notification-failure.md
+      specRefs: ["§97"]
+    - alertname: SCSilencePolicyViolation
+      summary: An Alertmanager silence covers an always-notify alert for more than 72 hours or has no issue reference (plan 42 §9.4).
+      category: monitoring
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: check-cronjob
+        cronjob: silence-audit
+        namespace: monitoring
+        maxAge: 2h
+        failAfter: 30m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "42"
+      runbook: procedures/notification-failure.md
+      specRefs: ["§97"]
+    - alertname: SCBreakGlassAlertSilenced
+      summary: An active Alertmanager silence matches a break-glass detection alert (security-audit class). Break-glass use could go unnoticed.
+      category: security
+      severity: critical
+      notifyClass: page
+      alwaysNotify: security-audit
+      blackStartThreat: false
+      source:
+        kind: check-cronjob
+        cronjob: silence-audit-breakglass
+        namespace: monitoring
+        maxAge: 30m
+        failAfter: 15m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "42"
+      runbook: procedures/break-glass-access.md
+      specRefs: ["§22"]
+    - alertname: SCPrometheusCardinalityHigh
+      summary: Prometheus head series exceed the cardinality budget.
+      category: monitoring
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source: {kind: prometheus-rule, expr: "max(prometheus_tsdb_head_series) > 250000", for: 30m}
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "38"
+      runbook: procedures/monitoring-failure.md
+      specRefs: ["§90", "§91"]
+    - alertname: SCPrometheusStorageNearCap
+      summary: Prometheus TSDB is above 90% of its retention size cap. Retention is shorter than configured.
+      category: monitoring
+      severity: info
+      notifyClass: silent
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: "max(prometheus_tsdb_storage_blocks_bytes + prometheus_tsdb_wal_storage_size_bytes) / max(sc_prometheus_retention_size_bytes) > 0.9"
+        for: 1h
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "38"
+      runbook: procedures/monitoring-failure.md
+      specRefs: ["§107"]
+    - alertname: SCPrometheusRetentionShort
+      summary: Effective Prometheus retention is below 8 days. The anomalous-spend baseline (plan 33) is incomplete.
+      category: monitoring
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: '(time() - min(prometheus_tsdb_lowest_timestamp_seconds)) < 8 * 86400 and on() (time() - min(kube_persistentvolumeclaim_created{namespace="monitoring",persistentvolumeclaim=~"prometheus-kps-prometheus-db-.*"})) > 9 * 86400'
+        for: 1h
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "38"
+      runbook: procedures/monitoring-failure.md
+      specRefs: ["§107"]
+    - alertname: SCMonitoringTargetDown
+      summary: A Strange Company scrape target has been down for 10 minutes.
+      category: monitoring
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'up{job=~"cnpg|longhorn|forgejo|authentik|flux|woodpecker|agent-runner|model-gateway|otel-collector|grafana|blackbox|cert-manager|traefik|cloudflared|kube-etcd|kube-state-metrics|node-exporter"} == 0'
+        for: 10m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "38"
+      runbook: procedures/monitoring-failure.md
+      specRefs: ["§91"]
+    - alertname: SCOTelCollectorDown
+      summary: The OpenTelemetry Collector is down. Spans and span metrics are being lost.
+      category: telemetry
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source: {kind: prometheus-rule, expr: 'absent(up{job="otel-collector"} == 1)', for: 10m}
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "40"
+      runbook: procedures/monitoring-failure.md
+      specRefs: ["§93"]
+    - alertname: SCOTelCollectorRefusingData
+      summary: The OpenTelemetry Collector is refusing or failing to export telemetry.
+      category: telemetry
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: "sum(rate(otelcol_receiver_refused_spans_total[10m])) + sum(rate(otelcol_exporter_send_failed_spans_total[10m])) > 0"
+        for: 15m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "40"
+      runbook: procedures/monitoring-failure.md
+      specRefs: ["§93"]
+    - alertname: SCTelemetryForbiddenAttributeDropped
+      summary: Telemetry carrying a forbidden attribute or a secret-pattern value was redacted. An emitter is leaking content.
+      category: security
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source: {kind: prometheus-rule, expr: "sum(increase(sc_span_redactions_total[1h])) > 0", for: 0s}
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "40"
+      runbook: procedures/credential-compromise.md
+      specRefs: ["§94"]
+    - alertname: SCTelemetryDebugCaptureActive
+      summary: A telemetry debug-capture grant is active, so content capture is enabled for its scope.
+      category: security
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source: {kind: prometheus-rule, expr: "max(sc_telemetry_debug_grants_active) > 0", for: 0s}
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "40"
+      runbook: procedures/monitoring-failure.md
+      specRefs: ["§94"]
+    - alertname: SCGrafanaDown
+      summary: Grafana has been unreachable in-cluster for 10 minutes.
+      category: monitoring
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source: {kind: prometheus-rule, expr: 'probe_success{probe="grafana"} == 0', for: 10m}
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "39"
+      runbook: procedures/monitoring-failure.md
+      specRefs: ["§92"]
+    - alertname: SCLokiDown
+      summary: Loki is unavailable. Logs are not being stored.
+      category: telemetry
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source: {kind: prometheus-rule, expr: 'absent(up{job="loki"} == 1)', for: 15m}
+      profiles: [small-ha]
+      gate: H03
+      ownerPlan: "42"
+      signalOwnerPlan: "41"
+      runbook: procedures/monitoring-failure.md
+      specRefs: ["§95"]
+    - alertname: SCTempoDown
+      summary: Tempo is unavailable. Traces are not being stored.
+      category: telemetry
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source: {kind: prometheus-rule, expr: 'absent(up{job="tempo"} == 1)', for: 15m}
+      profiles: [small-ha]
+      gate: H03
+      ownerPlan: "42"
+      signalOwnerPlan: "41"
+      runbook: procedures/monitoring-failure.md
+      specRefs: ["§95"]
+    - alertname: SCLogAgentDown
+      summary: A node has no running log agent, so its logs are not collected.
+      category: telemetry
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'kube_daemonset_status_number_available{namespace="monitoring-node",daemonset="otel-agent"} < kube_daemonset_status_desired_number_scheduled{namespace="monitoring-node",daemonset="otel-agent"}'
+        for: 15m
+      profiles: [small-ha]
+      gate: H03
+      ownerPlan: "42"
+      signalOwnerPlan: "41"
+      runbook: procedures/monitoring-failure.md
+      specRefs: ["§95"]
+    - alertname: SCLogIngestionErrors
+      summary: Loki is rejecting or dropping log lines.
+      category: telemetry
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source: {kind: prometheus-rule, expr: "sum(rate(loki_discarded_samples_total[15m])) > 0", for: 30m}
+      profiles: [small-ha]
+      gate: H03
+      ownerPlan: "42"
+      signalOwnerPlan: "41"
+      runbook: procedures/monitoring-failure.md
+      specRefs: ["§95"]
+    - alertname: SCTelemetryStorageWriteFailing
+      summary: Loki or Tempo cannot write to the S3 telemetry bucket. Logs or traces are buffered on local WAL and will be lost if it fills.
+      category: telemetry
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum(rate(loki_ingester_chunks_flush_failures_total[15m])) > 0 or sum(rate(tempodb_backend_request_duration_seconds_count{status_code=~"5..|error"}[15m])) > 0'
+        for: 30m
+      profiles: [small-ha]
+      gate: H03
+      ownerPlan: "42"
+      signalOwnerPlan: "41"
+      runbook: procedures/monitoring-failure.md
+      specRefs: ["§95", "§107"]
+    - alertname: SCLokiCompactorFailing
+      summary: The Loki compactor has not completed a successful run (including retention deletes) for 3 hours.
+      category: telemetry
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'time() - max(loki_boltdb_shipper_compact_tables_operation_last_successful_run_timestamp_seconds) > 10800 or absent(loki_boltdb_shipper_compact_tables_operation_last_successful_run_timestamp_seconds)'
+        for: 1h
+      profiles: [small-ha]
+      gate: H03
+      ownerPlan: "42"
+      signalOwnerPlan: "41"
+      runbook: procedures/monitoring-failure.md
+      specRefs: ["§95", "§107"]
+    - alertname: SCTempoCompactorFailing
+      summary: The Tempo compactor reports failures or has not compacted for 3 hours. Retention may not be enforced.
+      category: telemetry
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum(increase(tempodb_compaction_errors_total[1h])) > 0 or (time() - max(tempodb_blocklist_poll_last_successful_timestamp_seconds) > 10800)'
+        for: 1h
+      profiles: [small-ha]
+      gate: H03
+      ownerPlan: "42"
+      signalOwnerPlan: "41"
+      runbook: procedures/monitoring-failure.md
+      specRefs: ["§95", "§107"]
+
+    # ------------------------------------------------------------------ nodes / disks
+    - alertname: SCNodeDown
+      summary: A Kubernetes node is NotReady or its node-exporter is unreachable.
+      category: node
+      severity: critical
+      notifyClass: page
+      alwaysNotify: critical-outage
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'max by (node) (kube_node_status_condition{condition="Ready",status="true"} == 0) or max by (node) (label_replace(up{job="node-exporter"}, "node", "$1", "instance", "(.*)") == 0)'
+        for: 5m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "38"
+      runbook: procedures/lost-node.md
+      specRefs: ["§96"]
+      aliases: [NodeDown, KubeNodeNotReady]
+    - alertname: SCNodeDiskPressure
+      summary: The kubelet reports DiskPressure. Evictions are imminent or in progress.
+      category: node
+      severity: critical
+      notifyClass: page
+      alwaysNotify: critical-outage
+      blackStartThreat: false
+      source: {kind: prometheus-rule, expr: 'kube_node_status_condition{condition="DiskPressure",status="true"} == 1', for: 2m}
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "38"
+      runbook: procedures/disk-pressure.md
+      specRefs: ["§96", "§107"]
+    - alertname: SCNodeRootDiskLow
+      summary: A node root filesystem is more than 75% used (plan 11 §12 warning threshold).
+      category: node
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'node_filesystem_avail_bytes{mountpoint="/",fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{mountpoint="/",fstype!~"tmpfs|overlay"} < 0.25'
+        for: 10m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "38"
+      runbook: procedures/disk-pressure.md
+      specRefs: ["§96", "§107"]
+    - alertname: SCNodeRootDiskCritical
+      summary: A node root filesystem is more than 85% used. kubelet hard eviction starts at 10% free (plan 07 eviction-hard nodefs.available<10%).
+      category: node
+      severity: critical
+      notifyClass: page
+      alwaysNotify: critical-outage
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'node_filesystem_avail_bytes{mountpoint="/",fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{mountpoint="/",fstype!~"tmpfs|overlay"} < 0.15'
+        for: 5m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "38"
+      runbook: procedures/disk-pressure.md
+      specRefs: ["§96", "§107"]
+    - alertname: SCNodeRootDiskFillingUp
+      summary: A node root filesystem is predicted to drop below 10% free within 24 hours.
+      category: node
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'predict_linear(node_filesystem_avail_bytes{mountpoint="/",fstype!~"tmpfs|overlay"}[6h], 24 * 3600) < 0.10 * node_filesystem_size_bytes{mountpoint="/",fstype!~"tmpfs|overlay"}'
+        for: 1h
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "43"
+      runbook: procedures/disk-pressure.md
+      specRefs: ["§107"]
+    - alertname: SCNodeJournalOversize
+      summary: journald uses more than 1.1 GiB on a node.
+      category: node
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sc_node_journald_bytes > 1.1 * 1073741824'
+        for: 1h
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "43"
+      runbook: procedures/disk-pressure.md
+      specRefs: ["§107"]
+    - alertname: SCRetentionEtcdSnapshotsExcess
+      summary: More than 38 local etcd snapshots exist on a node.
+      category: node
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sc_etcd_snapshot_count{location="local"} > 38'
+        for: 6h
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "43"
+      runbook: procedures/disk-pressure.md
+      specRefs: ["§107", "§110"]
+    - alertname: SCEtcdSnapshotDirLarge
+      summary: The local etcd snapshot directory exceeds 2 GiB or snapshot pruning has not run for 2 days.
+      category: node
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sc_etcd_snapshot_dir_bytes > 2 * 1073741824 or (time() - sc_etcd_snapshot_prune_last_run_timestamp_seconds) > 2 * 86400'
+        for: 1h
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "08"
+      runbook: procedures/disk-pressure.md
+      specRefs: ["§107", "§110"]
+    - alertname: SCK3sUpgradeIncomplete
+      summary: Nodes have run different k3s versions for 6 hours during or after an upgrade.
+      category: node
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'count(count by (version) (sc_k3s_version_info)) > 1'
+        for: 6h
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "48"
+      runbook: procedures/upgrade-k3s.md
+      specRefs: ["§16"]
+    - alertname: SCUpgradeGateFailed
+      summary: An upgrade gate Job failed. Upgrade PRs are blocked.
+      category: gitops
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'max(kube_job_status_failed{job_name=~"upgrade-gate-.*"}) > 0'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "48"
+      runbook: procedures/upgrade-platform-component.md
+      specRefs: ["§116"]
+    - alertname: SCNodeMemoryPressure
+      summary: The kubelet reports MemoryPressure.
+      category: node
+      severity: critical
+      notifyClass: page
+      alwaysNotify: critical-outage
+      blackStartThreat: false
+      source: {kind: prometheus-rule, expr: 'kube_node_status_condition{condition="MemoryPressure",status="true"} == 1', for: 2m}
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "38"
+      runbook: procedures/lost-node.md
+      specRefs: ["§89", "§96"]
+    - alertname: SCNodeOOMKill
+      summary: The kernel OOM killer ran on a node in the last 15 minutes.
+      category: node
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source: {kind: prometheus-rule, expr: "increase(node_vmstat_oom_kill[15m]) > 0", for: 0s}
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "38"
+      runbook: procedures/lost-node.md
+      specRefs: ["§89"]
+    - alertname: SCPlatformPodOOMKilled
+      summary: A platform container was OOM-killed. A platform limit is too small, or the node is overcommitted.
+      category: node
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'max by (namespace, pod, container) (kube_pod_container_status_last_terminated_reason{reason="OOMKilled",namespace!~"agent-jobs|ci-jobs|apps"}) * on (namespace, pod, container) group_left increase(kube_pod_container_status_restarts_total[15m]) > 0'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "51"
+      runbook: procedures/monitoring-failure.md
+      specRefs: ["§89"]
+    - alertname: SCPlatformJobFailed
+      summary: A Job in a platform namespace failed (backup, check, or maintenance Job).
+      category: node
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'kube_job_status_failed{namespace!~"agent-jobs|ci-jobs|apps"} > 0'
+        for: 15m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "38"
+      runbook: procedures/monitoring-failure.md
+      specRefs: ["§96"]
+    - alertname: SCPlatformPodEvicted
+      summary: A platform pod was evicted (node memory or disk pressure).
+      category: node
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum by (namespace) (increase(kube_pod_status_reason{reason="Evicted",namespace!~"agent-jobs|ci-jobs|apps|dr-tests|renovate"}[15m])) > 0'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "51"
+      runbook: procedures/disk-pressure.md
+      specRefs: ["§89"]
+    - alertname: SCWorkerPendingCapacity
+      summary: A worker pod has been Pending for more than 30 minutes (capacity or quota).
+      category: runner
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'max(time() - kube_pod_created{namespace="agent-jobs"} * on (pod) group_left kube_pod_status_phase{namespace="agent-jobs",phase="Pending"}) > 1800'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "51"
+      runbook: procedures/stuck-task-recovery.md
+      specRefs: ["§89"]
+    - alertname: SCHeavySlotAdvertiserStale
+      summary: The heavy-execution slot advertiser check failed or is overdue.
+      category: node
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: check-cronjob
+        cronjob: heavy-slot-advertiser
+        namespace: kube-system
+        maxAge: 20m
+        failAfter: 15m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "51"
+      runbook: procedures/stuck-task-recovery.md
+      specRefs: ["§89"]
+    - alertname: SCHeavySlotMissing
+      summary: A Ready node advertises no heavy-execution slot.
+      category: node
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'count(kube_node_status_condition{condition="Ready",status="true"} == 1) > count(kube_node_status_capacity{resource="strange_company_heavy_slot"} > 0)'
+        for: 10m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "51"
+      runbook: procedures/stuck-task-recovery.md
+      specRefs: ["§89"]
+    - alertname: SCHeavySlotDeadlock
+      summary: A build-lane pod has been Pending for over 1 hour waiting for the heavy-execution slot.
+      category: ci
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'max(time() - kube_pod_created{namespace="ci-build"} * on (pod) group_left kube_pod_status_phase{namespace="ci-build",phase="Pending"}) > 3600'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "51"
+      runbook: procedures/woodpecker-failure.md
+      specRefs: ["§89"]
+    - alertname: SCNodeFactsStale
+      summary: The sc-node-facts textfile collector has not run for 30 minutes, so k3s, etcd-snapshot and break-glass node signals are stale.
+      category: monitoring
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'time() - max by (instance) (sc_node_facts_last_run_timestamp_seconds) > 1800'
+        for: 10m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "07"
+      runbook: procedures/monitoring-failure.md
+      specRefs: ["§91", "§110"]
+    - alertname: SCNodeMaintenanceStale
+      summary: The sc-maintenance window (k3s restart and certificate renewal) has not run on a node for 35 days.
+      category: node
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'time() - max by (instance) (sc_node_maintenance_last_run_timestamp_seconds) > 35 * 86400'
+        for: 1h
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "08"
+      runbook: procedures/upgrade-k3s.md
+      specRefs: ["§17", "§23"]
+    - alertname: SCNodeClockSkew
+      summary: A node clock is more than 50 ms off or not synchronized.
+      category: node
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'abs(node_timex_offset_seconds) > 0.05 or node_timex_sync_status == 0'
+        for: 15m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "08"
+      runbook: procedures/lost-node.md
+      specRefs: ["§17"]
+    - alertname: SCNodeRebootRequiredStale
+      summary: A node has needed a reboot (kernel or libc update) for more than 7 days.
+      category: node
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sc_node_reboot_required == 1 and (time() - sc_node_reboot_required_since_timestamp_seconds) > 7 * 86400'
+        for: 1h
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "08"
+      runbook: procedures/upgrade-platform-component.md
+      specRefs: ["§17"]
+    - alertname: SCHostFirewallNotLoaded
+      summary: A node host firewall ruleset is missing or differs from the rendered ruleset.
+      category: security
+      severity: critical
+      notifyClass: page
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sc_host_firewall_loaded == 0 or sc:host_firewall_ruleset_mismatch == 1'
+        for: 10m
+        recordingRulesUsed: ["sc:host_firewall_ruleset_mismatch"]
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "08"
+      runbook: procedures/add-node.md
+      specRefs: ["§17", "§18"]
+    - alertname: SCNodeSwapEnabled
+      summary: Swap is enabled on a node.
+      category: node
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sc_node_swap_bytes > 0'
+        for: 15m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "08"
+      runbook: procedures/lost-node.md
+      specRefs: ["§17"]
+    - alertname: SCNodeUpdatesFailing
+      summary: Unattended OS security updates have been failing for 24 hours.
+      category: node
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sc_node_unattended_upgrades_last_status != 0'
+        for: 24h
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "08"
+      runbook: procedures/upgrade-platform-component.md
+      specRefs: ["§17"]
+    - alertname: SCK3sServerConfigDrift
+      summary: k3s servers run with different critical configuration (config digest differs between servers).
+      category: node
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'count(count by (sha256) (sc_k3s_cluster_config_info{role="server"})) > 1'
+        for: 15m
+      profiles: [small-ha]
+      gate: H04
+      ownerPlan: "42"
+      signalOwnerPlan: "07"
+      runbook: procedures/upgrade-k3s.md
+      specRefs: ["§16"]
+      aliases: [SCK3sConfigDrift]
+    - alertname: SCK3sVersionDrift
+      summary: Nodes run different k3s versions for more than 2 hours.
+      category: node
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'count(count by (version) (sc_k3s_version_info)) > 1'
+        for: 2h
+      profiles: [small-ha]
+      gate: H04
+      ownerPlan: "42"
+      signalOwnerPlan: "07"
+      runbook: procedures/upgrade-k3s.md
+      specRefs: ["§16"]
+
+    # ------------------------------------------------------------------ etcd
+    - alertname: SCEtcdNoLeader
+      summary: An etcd member reports no leader. The Kubernetes API is unavailable or read-only.
+      category: etcd
+      severity: critical
+      notifyClass: page
+      alwaysNotify: critical-outage
+      blackStartThreat: false
+      source: {kind: prometheus-rule, expr: 'etcd_server_has_leader{job="kube-etcd"} == 0', for: 1m}
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "07"
+      runbook: procedures/restore-etcd.md
+      specRefs: ["§96", "§110"]
+    - alertname: SCEtcdMemberMissing
+      summary: Fewer etcd members are up than the profile expects. Quorum is degraded.
+      category: etcd
+      severity: critical
+      notifyClass: page
+      alwaysNotify: critical-outage
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'count(up{job="kube-etcd"} == 1) < on() sc:etcd_expected_members'
+        for: 5m
+        recordingRulesUsed: ["sc:etcd_expected_members"]
+      profiles: [small-ha]
+      gate: H04
+      ownerPlan: "42"
+      signalOwnerPlan: "07"
+      runbook: procedures/lost-etcd-member.md
+      specRefs: ["§96", "§16"]
+    - alertname: SCEtcdDbSizeHigh
+      summary: The etcd database is above 80% of its backend quota.
+      category: etcd
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'etcd_mvcc_db_total_size_in_bytes{job="kube-etcd"} / etcd_server_quota_backend_bytes{job="kube-etcd"} > 0.8'
+        for: 15m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "07"
+      runbook: procedures/restore-etcd.md
+      specRefs: ["§96"]
+    - alertname: SCEtcdSlowDisk
+      summary: The p99 etcd WAL fsync latency is above 500 ms. Disk contention threatens etcd stability.
+      category: etcd
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'histogram_quantile(0.99, sum by (instance, le) (rate(etcd_disk_wal_fsync_duration_seconds_bucket{job="kube-etcd"}[5m]))) > 0.5'
+        for: 10m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "07"
+      runbook: procedures/disk-pressure.md
+      specRefs: ["§89", "§96"]
+    - alertname: SCEtcdSnapshotUploadFailing
+      summary: No etcd snapshot has reached object storage within 13 hours.
+      category: backup
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: failed-backup
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: "time() - sc:etcd_last_s3_snapshot_timestamp_seconds > 46800 or absent(sc:etcd_last_s3_snapshot_timestamp_seconds)"
+        for: 15m
+        recordingRulesUsed: ["sc:etcd_last_s3_snapshot_timestamp_seconds"]
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P10
+      ownerPlan: "42"
+      signalOwnerPlan: "07"
+      runbook: procedures/restore-etcd.md
+      specRefs: ["§96", "§110"]
+    - alertname: SCEtcdSnapshotMissing
+      summary: No local etcd snapshot within 13 hours on a server node.
+      category: backup
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: failed-backup
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'time() - max by (instance) (sc_etcd_snapshot_last_success_timestamp_seconds{location="local"}) > 46800'
+        for: 15m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P10
+      ownerPlan: "42"
+      signalOwnerPlan: "07"
+      runbook: procedures/restore-etcd.md
+      specRefs: ["§110"]
+
+    # ------------------------------------------------------------------ CNPG
+    - alertname: SCCnpgClusterDown
+      summary: A CNPG cluster has no ready instance or no primary.
+      category: database
+      severity: critical
+      notifyClass: page
+      alwaysNotify: critical-outage
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sc:cnpg_ready_instances == 0 or sc:cnpg_primaries == 0'
+        for: 3m
+        recordingRulesUsed: ["sc:cnpg_ready_instances", "sc:cnpg_primaries"]
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "12"
+      runbook: procedures/cnpg-primary-loss.md
+      specRefs: ["§96"]
+      aliases: [CNPGClusterNotHealthy, CNPGNoPrimary, CNPGClusterNotReady]
+    - alertname: SCCnpgClusterDegraded
+      summary: A CNPG cluster has fewer ready instances than desired.
+      category: database
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: "sc:cnpg_ready_instances > 0 and sc:cnpg_ready_instances < sc:cnpg_desired_instances"
+        for: 10m
+        recordingRulesUsed: ["sc:cnpg_ready_instances", "sc:cnpg_desired_instances"]
+      profiles: [small-ha]
+      gate: H04
+      ownerPlan: "42"
+      signalOwnerPlan: "12"
+      runbook: procedures/cnpg-replica-loss.md
+      specRefs: ["§96"]
+      aliases: [CNPGReplicaCountBelowSpec]
+    - alertname: SCCnpgReplicationLagHigh
+      summary: CNPG replication lag has been above 5 minutes for 10 minutes.
+      category: database
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source: {kind: prometheus-rule, expr: "max by (cluster) (cnpg_pg_replication_lag) > 300", for: 10m}
+      profiles: [small-ha]
+      gate: H04
+      ownerPlan: "42"
+      signalOwnerPlan: "12"
+      runbook: procedures/cnpg-replica-loss.md
+      specRefs: ["§96"]
+      aliases: [CNPGReplicationLagHigh]
+    - alertname: SCCnpgWalArchiveFailing
+      summary: WAL archiving to object storage is failing. The PostgreSQL RPO is at risk.
+      category: backup
+      severity: critical
+      notifyClass: page
+      alwaysNotify: failed-backup
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: "max by (cluster) (cnpg_pg_stat_archiver_last_failed_time) > max by (cluster) (cnpg_pg_stat_archiver_last_archived_time)"
+        for: 5m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P10
+      ownerPlan: "42"
+      signalOwnerPlan: "12"
+      runbook: procedures/restore-cnpg.md
+      specRefs: ["§26", "§96", "§108"]
+      aliases: [CNPGWALArchivingFailing]
+    - alertname: SCCnpgWalArchiveBacklog
+      summary: No WAL segment has been archived for 15 minutes, which breaches the SPEC PostgreSQL RPO.
+      category: backup
+      severity: critical
+      notifyClass: page
+      alwaysNotify: failed-backup
+      blackStartThreat: false
+      source: {kind: prometheus-rule, expr: "max by (cluster) (cnpg_pg_stat_archiver_seconds_since_last_archival) > 900", for: 2m}
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P10
+      ownerPlan: "42"
+      signalOwnerPlan: "12"
+      runbook: procedures/restore-cnpg.md
+      specRefs: ["§26", "§108"]
+    - alertname: SCCnpgBaseBackupStale
+      summary: No successful CNPG base backup within 26 hours.
+      category: backup
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: failed-backup
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: "time() - sc:cnpg_last_backup_success_timestamp_seconds > 93600"
+        for: 15m
+        recordingRulesUsed: ["sc:cnpg_last_backup_success_timestamp_seconds"]
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P10
+      ownerPlan: "42"
+      signalOwnerPlan: "12"
+      runbook: procedures/restore-cnpg.md
+      specRefs: ["§26", "§96"]
+      aliases: [CNPGBaseBackupStale]
+    - alertname: SCCnpgBackupFailed
+      summary: A CNPG Backup object finished in phase failed.
+      category: backup
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: failed-backup
+      blackStartThreat: false
+      source: {kind: prometheus-rule, expr: 'sum by (namespace) (sc_cnpg_backup_info{phase="failed"}) > 0', for: 0s}
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P10
+      ownerPlan: "42"
+      signalOwnerPlan: "12"
+      runbook: procedures/restore-cnpg.md
+      specRefs: ["§96"]
+      aliases: [CNPGBaseBackupFailed]
+    - alertname: SCCnpgInstanceNotReady
+      summary: A CNPG instance pod has not been Ready for 5 minutes.
+      category: database
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'kube_pod_status_ready{condition="true",namespace=~"forgejo|authentik|woodpecker|strange-company",pod=~".+-pg-[0-9]+"} == 0'
+        for: 5m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "12"
+      runbook: procedures/cnpg-primary-loss.md
+      specRefs: ["§96"]
+      aliases: [CNPGInstanceNotReady]
+    - alertname: SCCnpgSyncReplicationDegraded
+      summary: Fewer synchronous standbys are attached than expected; commits are degrading to asynchronous.
+      category: database
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'cnpg_collector_sync_replicas{value="observed"} < cnpg_collector_sync_replicas{value="expected"}'
+        for: 15m
+      profiles: [small-ha]
+      gate: H04
+      ownerPlan: "42"
+      signalOwnerPlan: "12"
+      runbook: procedures/cnpg-replica-loss.md
+      specRefs: ["§96"]
+      aliases: [CNPGSyncReplicationDegraded]
+    - alertname: SCCnpgWalReadyBacklogHigh
+      summary: More than 256 WAL segments (about 1 GiB) wait for archiving on a CNPG instance.
+      category: backup
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: failed-backup
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'max by (namespace, pod) (cnpg_collector_pg_wal_archive_status{value="ready"}) > 256'
+        for: 10m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P10
+      ownerPlan: "42"
+      signalOwnerPlan: "12"
+      runbook: procedures/object-storage-outage.md
+      specRefs: ["§26", "§107"]
+      aliases: [CNPGWALArchiveBacklogHigh]
+    - alertname: SCCnpgWalReadyBacklogCritical
+      summary: More than 1024 WAL segments (about 4 GiB) wait for archiving. The root disk is at risk.
+      category: backup
+      severity: critical
+      notifyClass: page
+      alwaysNotify: failed-backup
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'max by (namespace, pod) (cnpg_collector_pg_wal_archive_status{value="ready"}) > 1024'
+        for: 5m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P10
+      ownerPlan: "42"
+      signalOwnerPlan: "12"
+      runbook: procedures/object-storage-outage.md
+      specRefs: ["§26", "§107"]
+      aliases: [CNPGWALArchiveBacklogCritical]
+    - alertname: SCCnpgRecoveryWindowShort
+      summary: A CNPG cluster older than 8 days has a point-in-time recovery window shorter than 7 days.
+      category: backup
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: failed-backup
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: '(time() - sc:cnpg_first_recoverability_point_timestamp_seconds < 7 * 86400) and (time() - sc:cnpg_cluster_created_timestamp_seconds > 8 * 86400)'
+        for: 1h
+        recordingRulesUsed: ["sc:cnpg_first_recoverability_point_timestamp_seconds", "sc:cnpg_cluster_created_timestamp_seconds"]
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P10
+      ownerPlan: "42"
+      signalOwnerPlan: "12"
+      runbook: procedures/restore-cnpg.md
+      specRefs: ["§26", "§108"]
+      aliases: [CNPGRecoveryWindowShort]
+    - alertname: SCCnpgDatabaseLarge
+      summary: The databases of all CNPG clusters on a node together exceed 80% of the CNPG data ceiling of plan 11 §12 for the profile (local-path does not enforce capacity; STO-3).
+      category: storage
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum by (node) (sum by (namespace, pod) (cnpg_pg_database_size_bytes) * on (namespace, pod) group_left (node) kube_pod_info) > 0.8 * scalar(sc:cnpg_data_ceiling_bytes)'
+        for: 1h
+        recordingRulesUsed: ["sc:cnpg_data_ceiling_bytes"]
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "12"
+      runbook: procedures/disk-pressure.md
+      specRefs: ["§107"]
+      aliases: [CNPGDatabaseLarge, CNPGStorageHigh]
+    - alertname: SCCnpgOperatorDown
+      summary: The CNPG operator has no available replica. Clusters are not reconciled (running databases are unaffected).
+      category: database
+      severity: critical
+      notifyClass: page
+      alwaysNotify: critical-outage
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'kube_deployment_status_replicas_available{namespace="cnpg-system",deployment=~".*cloudnative-pg.*|cnpg.*"} == 0'
+        for: 10m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "12"
+      runbook: procedures/cnpg-primary-loss.md
+      specRefs: ["§96"]
+      aliases: [CNPGOperatorDown]
+    - alertname: SCCnpgPluginDown
+      summary: The Barman Cloud plugin has no available replica. WAL archiving and base backups stop.
+      category: backup
+      severity: critical
+      notifyClass: page
+      alwaysNotify: failed-backup
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'kube_deployment_status_replicas_available{namespace="cnpg-system",deployment=~".*barman-cloud.*"} == 0'
+        for: 10m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P10
+      ownerPlan: "42"
+      signalOwnerPlan: "12"
+      runbook: procedures/cnpg-primary-loss.md
+      specRefs: ["§26", "§96"]
+      aliases: [CNPGPluginDown]
+
+    # ------------------------------------------------------------------ Longhorn
+    - alertname: SCLonghornVolumeDegraded
+      summary: A Longhorn volume has been degraded (fewer healthy replicas than configured) for 10 minutes.
+      category: storage
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source: {kind: prometheus-rule, expr: "longhorn_volume_robustness == 2", for: 10m}
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "13"
+      runbook: procedures/longhorn-replica-loss.md
+      specRefs: ["§96"]
+    - alertname: SCLonghornReplicaCountBelowProfile
+      summary: An important Longhorn volume is configured with fewer replicas than the profile requires.
+      category: storage
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'min(sc_longhorn_volume_number_of_replicas{state_id!=""}) < on() sc:longhorn_expected_replicas'
+        for: 30m
+        recordingRulesUsed: ["sc:longhorn_expected_replicas"]
+      profiles: [small-ha]
+      gate: H04
+      ownerPlan: "42"
+      signalOwnerPlan: "47"
+      runbook: procedures/longhorn-replica-loss.md
+      specRefs: ["§12", "§27"]
+    - alertname: SCLonghornVolumeFaulted
+      summary: A Longhorn volume is faulted (no healthy replica).
+      category: storage
+      severity: critical
+      notifyClass: page
+      alwaysNotify: critical-outage
+      blackStartThreat: false
+      source: {kind: prometheus-rule, expr: "longhorn_volume_robustness == 3", for: 1m}
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "13"
+      runbook: procedures/restore-longhorn.md
+      specRefs: ["§96"]
+    - alertname: SCLonghornVolumeNearlyFull
+      summary: A Longhorn volume is more than 85% full.
+      category: storage
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source: {kind: prometheus-rule, expr: "longhorn_volume_actual_size_bytes / longhorn_volume_capacity_bytes > 0.85", for: 30m}
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "13"
+      runbook: procedures/restore-longhorn.md
+      specRefs: ["§96"]
+      aliases: [LonghornVolumeUsageHigh, ForgejoPVCUsageHigh]
+    - alertname: SCLonghornNodeStorageLow
+      summary: A Longhorn node's disk is more than 80% used.
+      category: storage
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source: {kind: prometheus-rule, expr: "longhorn_node_storage_usage_bytes / longhorn_node_storage_capacity_bytes > 0.8", for: 30m}
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "13"
+      runbook: procedures/disk-pressure.md
+      specRefs: ["§96", "§107"]
+      aliases: [LonghornDiskUsageHigh]
+    - alertname: SCLonghornManagerDown
+      summary: A Longhorn DaemonSet (manager or instance manager) has unavailable pods.
+      category: storage
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'max(kube_daemonset_status_number_unavailable{namespace="longhorn-system"}) > 0'
+        for: 10m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "13"
+      runbook: procedures/longhorn-replica-loss.md
+      specRefs: ["§27", "§96"]
+    - alertname: SCLonghornVolumeAttachStuck
+      summary: A Longhorn volume has been attaching or detaching for 10 minutes (Multi-Attach, lesson L-5).
+      category: storage
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'longhorn_volume_state == 4 or longhorn_volume_state == 5'
+        for: 10m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "13"
+      runbook: procedures/longhorn-replica-loss.md
+      specRefs: ["§27"]
+    - alertname: SCLonghornVolumeAttachStuckCritical
+      summary: A Longhorn volume has been attaching or detaching for 20 minutes. Its consumer is down.
+      category: storage
+      severity: critical
+      notifyClass: page
+      alwaysNotify: critical-outage
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'longhorn_volume_state == 4 or longhorn_volume_state == 5'
+        for: 20m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "13"
+      runbook: procedures/longhorn-replica-loss.md
+      specRefs: ["§27"]
+    - alertname: SCLonghornBackupTargetUnavailable
+      summary: The Longhorn backup target has been unavailable for 15 minutes. Backups stop.
+      category: backup
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: failed-backup
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'max(sc_longhorn_backup_target_available) == 0'
+        for: 15m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P10
+      ownerPlan: "42"
+      signalOwnerPlan: "13"
+      runbook: procedures/object-storage-outage.md
+      specRefs: ["§27", "§29"]
+    - alertname: SCLonghornBackupStale
+      summary: A Longhorn volume that requires backup has had no completed backup within its window.
+      category: backup
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: failed-backup
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: "time() - sc:longhorn_last_backup_success_timestamp_seconds > on (volume) group_left sc_longhorn_backup_max_age_seconds"
+        for: 15m
+        recordingRulesUsed: ["sc:longhorn_last_backup_success_timestamp_seconds"]
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P10
+      ownerPlan: "42"
+      signalOwnerPlan: "13"
+      runbook: procedures/restore-longhorn.md
+      specRefs: ["§27", "§96", "§108"]
+
+    # ------------------------------------------------------------------ backups (cross-stream) / restore tests / DR checks
+    - alertname: SCOffsiteBackupFailing24h
+      summary: An offsite backup stream has had no success for 24 hours. Recovery after total loss would lose a day or more of data.
+      category: black-start-threat
+      severity: critical
+      notifyClass: page
+      alwaysNotify: black-start-threat
+      blackStartThreat: true
+      source:
+        kind: prometheus-rule
+        expr: "time() - sc:backup_last_success_timestamp_seconds > 86400"
+        for: 15m
+        recordingRulesUsed: ["sc:backup_last_success_timestamp_seconds"]
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P10
+      ownerPlan: "42"
+      signalOwnerPlan: "44"
+      runbook: procedures/total-cluster-loss.md
+      specRefs: ["§29", "§97", "§108"]
+    - alertname: SCRepoBundleBackupStale
+      summary: No successful repository-bundle backup within 2 hours (RPO is 1 hour).
+      category: backup
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: failed-backup
+      blackStartThreat: false
+      source: {kind: check-cronjob, cronjob: repo-bundle-backup, namespace: forgejo, maxAge: 1h, failAfter: 30m}
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P10
+      ownerPlan: "42"
+      signalOwnerPlan: "44"
+      runbook: procedures/restore-test-failure.md
+      specRefs: ["§31", "§96", "§108"]
+    - alertname: SCRestoreTestCnpgFailed
+      summary: The CNPG point-in-time restore test failed or has not succeeded within 8 days.
+      category: restore-test
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: failed-backup
+      blackStartThreat: false
+      source: {kind: check-cronjob, cronjob: restore-test-cnpg, namespace: dr-tests, maxAge: 8d, failAfter: 3h}
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P10
+      ownerPlan: "42"
+      signalOwnerPlan: "44"
+      runbook: procedures/restore-test-failure.md
+      specRefs: ["§96", "§109"]
+    - alertname: SCRestoreTestReposFailed
+      summary: The project-repository restore test failed or is overdue.
+      category: restore-test
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: failed-backup
+      blackStartThreat: false
+      source: {kind: check-cronjob, cronjob: restore-test-repos, namespace: dr-tests, maxAge: 8d, failAfter: 2h}
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P10
+      ownerPlan: "42"
+      signalOwnerPlan: "44"
+      runbook: procedures/restore-test-failure.md
+      specRefs: ["§96", "§109"]
+      aliases: [RepoBundleVerifyFailed]
+    - alertname: SCRestoreTestLonghornFailed
+      summary: The Longhorn backup restore test failed or is overdue.
+      category: restore-test
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: failed-backup
+      blackStartThreat: false
+      source: {kind: check-cronjob, cronjob: restore-test-longhorn, namespace: dr-tests, maxAge: 8d, failAfter: 2h}
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P10
+      ownerPlan: "42"
+      signalOwnerPlan: "44"
+      runbook: procedures/restore-test-failure.md
+      specRefs: ["§96", "§109"]
+    - alertname: SCRestoreTestEtcdFailed
+      summary: The etcd snapshot restore test failed or is overdue.
+      category: restore-test
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: failed-backup
+      blackStartThreat: false
+      source:
+        kind: check-cronjob
+        cronjob: restore-test-etcd
+        namespace: dr-tests
+        maxAge: 8d
+        failAfter: 1h
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P10
+      ownerPlan: "42"
+      signalOwnerPlan: "44"
+      runbook: procedures/restore-test-failure.md
+      specRefs: ["§109", "§110"]
+    - alertname: SCRestoreTestAppsFailed
+      summary: The monthly application restore test (scratch Forgejo and Authentik) failed or is overdue.
+      category: restore-test
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: failed-backup
+      blackStartThreat: false
+      source:
+        kind: check-cronjob
+        cronjob: restore-test-apps
+        namespace: dr-tests
+        maxAge: 35d
+        failAfter: 4h
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P10
+      ownerPlan: "42"
+      signalOwnerPlan: "44"
+      runbook: procedures/restore-test-failure.md
+      specRefs: ["§109"]
+    - alertname: SCDrCanaryWriterFailed
+      summary: The DR canary writer failed or is overdue.
+      category: restore-test
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: check-cronjob
+        cronjob: dr-canary-writer
+        namespace: dr-tests
+        maxAge: 26h
+        failAfter: 1h
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P10
+      ownerPlan: "42"
+      signalOwnerPlan: "44"
+      runbook: procedures/restore-test-failure.md
+      specRefs: ["§109"]
+    - alertname: SCDrMarkerHeartbeatFailed
+      summary: The dr-marker-heartbeat CronJob failed or is overdue. Without heartbeat rows the observed RPO of a recovery cannot be measured (plan 44, plan 45 §14.2).
+      category: backup
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: failed-backup
+      blackStartThreat: false
+      source:
+        kind: check-cronjob
+        cronjob: dr-marker-heartbeat
+        namespace: dr-tests
+        maxAge: 30m
+        failAfter: 15m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P10
+      ownerPlan: "42"
+      signalOwnerPlan: "44"
+      runbook: procedures/restore-test-failure.md
+      specRefs: ["§108", "§109"]
+    - alertname: SCTofuStateRestoreTestFailed
+      summary: The newest OpenTofu state restore-test result failed or is older than 35 days (plan 06 §20.1; checked by plan 44 restore-test-tofu-state).
+      category: black-start-threat
+      severity: critical
+      notifyClass: page
+      alwaysNotify: black-start-threat
+      blackStartThreat: true
+      source:
+        kind: check-cronjob
+        cronjob: restore-test-tofu-state
+        namespace: dr-tests
+        maxAge: 8d
+        failAfter: 1h
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P10
+      ownerPlan: "42"
+      signalOwnerPlan: "06"
+      runbook: procedures/recover-opentofu-state.md
+      specRefs: ["§15", "§109"]
+      aliases: [TofuStateRestoreTestFailed, TofuStateRestoreTestOverdue, SCRestoreTestTofuStateFailed, SCTofuStateRestoreTestOverdue]
+    - alertname: SCTofuStateLockStale
+      summary: An OpenTofu state lock object is older than 6 hours.
+      category: backup
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: check-cronjob
+        cronjob: check-tofu-lock-age
+        namespace: dr-tests
+        maxAge: 26h
+        failAfter: 1h
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P10
+      ownerPlan: "42"
+      signalOwnerPlan: "06"
+      runbook: procedures/recover-opentofu-state.md
+      specRefs: ["§15"]
+      aliases: [TofuStateLockStale]
+    - alertname: SCGitHubBlackStartTestFailed
+      summary: The GitHub black-start restore test (clone, render, decrypt) failed or is overdue.
+      category: black-start-threat
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: black-start-threat
+      blackStartThreat: true
+      source: {kind: check-cronjob, cronjob: restore-test-github-black-start, namespace: dr-tests, maxAge: 8d, failAfter: 1h}
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P10
+      ownerPlan: "42"
+      signalOwnerPlan: "44"
+      runbook: procedures/github-black-start.md
+      specRefs: ["§97", "§109", "§112"]
+    - alertname: SCRecoveryBundleOutdated
+      summary: The recovery bundle is older than the latest rotation of a secret it contains.
+      category: black-start-threat
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: black-start-threat
+      blackStartThreat: true
+      source: {kind: check-cronjob, cronjob: recovery-bundle-currency, namespace: dr-tests, maxAge: 26h, failAfter: 1h}
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P10
+      ownerPlan: "42"
+      signalOwnerPlan: "35"
+      runbook: procedures/rotate-secrets.md
+      specRefs: ["§97", "§111"]
+    - alertname: SCRecoveryBundleVerifyFailed
+      summary: Weekly structural recovery-bundle check failed or is overdue (in-cluster check only; decryption is proven by the quarterly operator attestation).
+      category: black-start-threat
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: black-start-threat
+      blackStartThreat: true
+      source: {kind: check-cronjob, cronjob: restore-test-recovery-bundle, namespace: dr-tests, maxAge: 8d, failAfter: 1h}
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P10
+      ownerPlan: "42"
+      signalOwnerPlan: "35"
+      runbook: procedures/rotate-secrets.md
+      specRefs: ["§97", "§98", "§111"]
+    - alertname: SCRecoveryKeyAttestationOverdue
+      summary: The operator has not attested possession of the offline recovery age key and passphrase within 90 days.
+      category: black-start-threat
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: black-start-threat
+      blackStartThreat: true
+      source: {kind: check-cronjob, cronjob: recovery-key-attestation, namespace: dr-tests, maxAge: 26h, failAfter: 1h}
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P10
+      ownerPlan: "42"
+      signalOwnerPlan: "35"
+      runbook: procedures/rotate-age-key.md
+      specRefs: ["§97", "§98", "§111"]
+    - alertname: SCSecretRotationOverdue
+      summary: A scheduled secret class is past its maximum rotation age.
+      category: security
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: check-cronjob
+        cronjob: secret-rotation-age
+        namespace: dr-tests
+        maxAge: 26h
+        failAfter: 1h
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P10
+      ownerPlan: "42"
+      signalOwnerPlan: "35"
+      runbook: procedures/rotate-secrets.md
+      specRefs: ["§99"]
+    - alertname: SCSecretRotationDue
+      summary: A scheduled secret class is due for rotation within 14 days.
+      category: security
+      severity: info
+      notifyClass: silent
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'max(sc_secret_rotation_due) > 0'
+        for: 1h
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P10
+      ownerPlan: "42"
+      signalOwnerPlan: "35"
+      runbook: procedures/rotate-secrets.md
+      specRefs: ["§99"]
+    - alertname: SCSecretScanHit
+      summary: The nightly history scan found a plaintext secret in a managed repository (mirrored to GitHub).
+      category: security
+      severity: critical
+      notifyClass: page
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: check-cronjob
+        cronjob: secret-scan-history
+        namespace: dr-tests
+        maxAge: 26h
+        failAfter: 1h
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P10
+      ownerPlan: "42"
+      signalOwnerPlan: "35"
+      runbook: procedures/credential-compromise.md
+      specRefs: ["§98"]
+    - alertname: SCSopsDecryptionFailing
+      summary: A Flux Kustomization cannot decrypt its SOPS secrets.
+      category: security
+      severity: critical
+      notifyClass: page
+      alwaysNotify: critical-outage
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'max by (exported_namespace, name) (gotk_resource_info{customresource_kind="Kustomization",ready="False",reason="DecryptionFailed"}) == 1'
+        for: 10m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "35"
+      runbook: procedures/sops-decryption-failure.md
+      specRefs: ["§98"]
+    - alertname: SCAdmissionPolicyError
+      summary: ValidatingAdmissionPolicy evaluation errors occurred (a policy may fail open or closed unexpectedly).
+      category: security
+      severity: critical
+      notifyClass: page
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum(increase(apiserver_validating_admission_policy_check_total{error_type!=""}[10m])) > 0'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "37"
+      runbook: procedures/credential-compromise.md
+      specRefs: ["§85"]
+    - alertname: SCAdmissionPolicyMissing
+      summary: Fewer sc-* ValidatingAdmissionPolicyBindings exist than expected.
+      category: security
+      severity: critical
+      notifyClass: page
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'count(kube_customresource_info{customresource_kind="ValidatingAdmissionPolicyBinding",name=~"sc-.*"}) < on() max(sc_admission_expected_bindings)'
+        for: 10m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "37"
+      runbook: procedures/credential-compromise.md
+      specRefs: ["§85"]
+    - alertname: SCAdmissionDenialSpike
+      summary: More than 5 admission denials by one policy in 15 minutes.
+      category: security
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum by (policy) (increase(apiserver_validating_admission_policy_check_total{enforcement_action="deny"}[15m])) > 5'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "37"
+      runbook: procedures/tdd-task-recovery.md
+      specRefs: ["§85", "§105"]
+    - alertname: SCAdmissionAuditHits
+      summary: An admission policy in warn/audit mode matched requests (pre-promotion signal).
+      category: security
+      severity: info
+      notifyClass: silent
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum by (policy) (increase(apiserver_validating_admission_policy_check_total{enforcement_action="warn"}[1h])) > 0'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "37"
+      runbook: procedures/credential-compromise.md
+      specRefs: ["§85"]
+    - alertname: SCPodSecurityViolation
+      summary: Pod Security Admission denied a pod in enforce mode.
+      category: security
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum by (policy_level) (increase(pod_security_evaluations_total{decision="deny",mode="enforce"}[15m])) > 0'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "37"
+      runbook: procedures/credential-compromise.md
+      specRefs: ["§84", "§85"]
+    - alertname: SCNetworkPolicyControllerDown
+      summary: The netpol canary reached a target that must be denied, or has not run. Network isolation may be lost.
+      category: security
+      severity: critical
+      notifyClass: page
+      alwaysNotify: critical-outage
+      blackStartThreat: false
+      source:
+        kind: check-cronjob
+        cronjob: netpol-canary
+        namespace: monitoring
+        maxAge: 30m
+        failAfter: 15m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "36"
+      runbook: procedures/lost-node.md
+      specRefs: ["§18", "§88"]
+    - alertname: SCEgressProxyDown
+      summary: The egress proxy is down. Workers and CI cannot fetch packages.
+      category: ci
+      severity: critical
+      notifyClass: page
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum(up{job="egress-proxy"}) == 0 and on() count(kube_deployment_created{deployment="egress-proxy"}) > 0'
+        for: 5m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "36"
+      runbook: procedures/agent-runner-failure.md
+      specRefs: ["§88"]
+    - alertname: SCEgressDeniedSpike
+      summary: More than 200 egress requests were denied in 15 minutes.
+      category: security
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum(increase(sc_egress_requests_total{decision="deny"}[15m])) > 200'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "36"
+      runbook: procedures/credential-compromise.md
+      specRefs: ["§88"]
+    - alertname: SCEgressPolicyLoadFailed
+      summary: The egress proxy failed to load its allowlist policy.
+      category: security
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum(increase(sc_egress_policy_load_errors_total[10m])) > 0'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "36"
+      runbook: procedures/agent-runner-failure.md
+      specRefs: ["§88"]
+    - alertname: SCBreakGlassTestOverdue
+      summary: No successful break-glass drill within 100 days (plan 15 §14.4.5).
+      category: security
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: black-start-threat
+      blackStartThreat: true
+      source:
+        kind: prometheus-rule
+        expr: 'time() - sc_breakglass_drill_last_success_timestamp_seconds > 8640000 or absent(sc_breakglass_drill_last_success_timestamp_seconds)'
+        for: 1h
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P10
+      ownerPlan: "42"
+      signalOwnerPlan: "15"
+      runbook: procedures/break-glass-access.md
+      specRefs: ["§22", "§97"]
+      aliases: [BreakGlassDrillOverdue]
+    - alertname: SCRecoveryDrillOverdue
+      summary: No black-start or restore drill evidence newer than 100 days (plan 45 §20.6).
+      category: black-start-threat
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: black-start-threat
+      blackStartThreat: true
+      source:
+        kind: check-cronjob
+        cronjob: rt-drill-freshness
+        namespace: dr-tests
+        maxAge: 26h
+        failAfter: 1h
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P10
+      ownerPlan: "42"
+      signalOwnerPlan: "45"
+      runbook: procedures/recovery-drill.md
+      specRefs: ["§109", "§112"]
+    - alertname: SCHADrillOverdue
+      summary: No successful HA drill within 100 days.
+      category: black-start-threat
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: black-start-threat
+      blackStartThreat: true
+      source:
+        kind: prometheus-rule
+        expr: 'time() - sc_ha_drill_last_success_timestamp_seconds > 100 * 86400'
+        for: 1h
+      profiles: [small-ha]
+      gate: H04
+      ownerPlan: "42"
+      signalOwnerPlan: "47"
+      runbook: procedures/expand-to-small-ha.md
+      specRefs: ["§109", "§12"]
+
+    # ------------------------------------------------------------------ object storage
+    - alertname: SCObjectStorageUnreachable
+      summary: The S3-compatible object storage endpoint has been unreachable for 10 minutes. Backups, WAL and state are at risk.
+      category: black-start-threat
+      severity: critical
+      notifyClass: page
+      alwaysNotify: black-start-threat
+      blackStartThreat: true
+      source: {kind: prometheus-rule, expr: 'probe_success{probe="object-storage"} == 0', for: 10m}
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "14"
+      runbook: procedures/object-storage-outage.md
+      specRefs: ["§29", "§97"]
+      aliases: [ObjectStorageDown]
+    - alertname: SCObjectStorageCanaryFailing
+      summary: The object-storage write/read canary failed (the endpoint answers but writes or reads fail).
+      category: black-start-threat
+      severity: critical
+      notifyClass: page
+      alwaysNotify: black-start-threat
+      blackStartThreat: true
+      source:
+        kind: check-cronjob
+        cronjob: objstore-canary
+        namespace: dr-tests
+        maxAge: 45m
+        failAfter: 30m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P10
+      ownerPlan: "42"
+      signalOwnerPlan: "14"
+      runbook: procedures/object-storage-outage.md
+      specRefs: ["§29", "§97"]
+    - alertname: SCObjectStorageConfigDrift
+      summary: Object-storage bucket configuration drifted (versioning, lifecycle, Object Lock or public access; objstore-audit).
+      category: black-start-threat
+      severity: critical
+      notifyClass: page
+      alwaysNotify: black-start-threat
+      blackStartThreat: true
+      source:
+        kind: check-cronjob
+        cronjob: objstore-audit
+        namespace: dr-tests
+        maxAge: 26h
+        failAfter: 1h
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P10
+      ownerPlan: "42"
+      signalOwnerPlan: "14"
+      runbook: procedures/object-storage-outage.md
+      specRefs: ["§29", "§111"]
+      aliases: [TofuStateVersioningDisabled]
+    - alertname: SCObjectStorageProtectionWeak
+      summary: Backup buckets run below the scoped/locked protection level (operator set S3_ALLOW_WEAK_PROTECTION).
+      category: object-storage
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'max(sc_objstore_protection_weak) == 1'
+        for: 1h
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P10
+      ownerPlan: "42"
+      signalOwnerPlan: "14"
+      runbook: procedures/object-storage-outage.md
+      specRefs: ["§29"]
+    - alertname: SCStorageAuditFailed
+      summary: The daily storage-audit check (StorageClass and ownership-register invariants) failed or is overdue.
+      category: storage
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: check-cronjob
+        cronjob: storage-audit
+        namespace: dr-tests
+        maxAge: 36h
+        failAfter: 2h
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P10
+      ownerPlan: "42"
+      signalOwnerPlan: "11"
+      runbook: procedures/disk-pressure.md
+      specRefs: ["§24", "§107"]
+    - alertname: SCRetentionAuditFailed
+      summary: The daily retention audit failed or is overdue.
+      category: storage
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: check-cronjob
+        cronjob: retention-audit
+        namespace: dr-tests
+        maxAge: 36h
+        failAfter: 1h
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P10
+      ownerPlan: "42"
+      signalOwnerPlan: "43"
+      runbook: procedures/disk-pressure.md
+      specRefs: ["§107"]
+    - alertname: SCCrRetentionFailed
+      summary: Custom-resource retention (CNPG Backup objects) failed or is overdue.
+      category: storage
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: check-cronjob
+        cronjob: cr-retention
+        namespace: dr-tests
+        maxAge: 36h
+        failAfter: 1h
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P10
+      ownerPlan: "42"
+      signalOwnerPlan: "43"
+      runbook: procedures/disk-pressure.md
+      specRefs: ["§107"]
+    - alertname: SCOciReferencedImageMissing
+      summary: An image digest referenced by Git is missing from the Forgejo registry. Rollback or recovery could fail.
+      category: black-start-threat
+      severity: critical
+      notifyClass: page
+      alwaysNotify: black-start-threat
+      blackStartThreat: true
+      source:
+        kind: check-cronjob
+        cronjob: oci-retention-audit
+        namespace: forgejo
+        maxAge: 36h
+        failAfter: 15m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P10
+      ownerPlan: "42"
+      signalOwnerPlan: "43"
+      runbook: procedures/restore-forgejo.md
+      specRefs: ["§37", "§107"]
+    - alertname: SCOciRetentionFailed
+      summary: OCI image retention failed or is overdue.
+      category: storage
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: check-cronjob
+        cronjob: oci-retention
+        namespace: forgejo
+        maxAge: 8d
+        failAfter: 1h
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P10
+      ownerPlan: "42"
+      signalOwnerPlan: "43"
+      runbook: procedures/disk-pressure.md
+      specRefs: ["§107"]
+    - alertname: SCRetentionHermesSessionsOverdue
+      summary: Hermes session pruning failed or is overdue.
+      category: runner
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: check-cronjob
+        cronjob: hermes-session-prune
+        namespace: hermes
+        maxAge: 36h
+        failAfter: 1h
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P10
+      ownerPlan: "42"
+      signalOwnerPlan: "43"
+      runbook: procedures/hermes-failure.md
+      specRefs: ["§107"]
+    - alertname: SCRetentionTelemetryOverdue
+      summary: Ledger usage_raw or denials rows are older than their 92-day retention.
+      category: storage
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'max(sc_ledger_usage_raw_oldest_seconds) > 92 * 86400 or max(sc_ledger_denials_oldest_seconds) > 92 * 86400 or max(sc_ledger_reservations_oldest_closed_seconds) > 32 * 86400'
+        for: 1h
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "43"
+      runbook: procedures/gateway-failure.md
+      specRefs: ["§107"]
+    - alertname: SCRetentionRunnerSweeperStalled
+      summary: Runner short-lived tables exceed their retention (sweeper stalled).
+      category: runner
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'max(sc_runner_retention_oldest_seconds{table=~"idempotency_keys|webhook_deliveries"}) > 8 * 86400 or max(sc_runner_retention_oldest_seconds{table="execution_events"}) > 401 * 86400'
+        for: 1h
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "43"
+      runbook: procedures/agent-runner-failure.md
+      specRefs: ["§107"]
+
+    # ------------------------------------------------------------------ Forgejo
+    - alertname: SCForgejoDown
+      summary: Forgejo's in-cluster health endpoint has been failing for 3 minutes.
+      category: forge
+      severity: critical
+      notifyClass: page
+      alwaysNotify: critical-outage
+      blackStartThreat: false
+      source: {kind: prometheus-rule, expr: 'probe_success{probe="forgejo-http"} == 0', for: 3m}
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "16"
+      runbook: procedures/restore-forgejo.md
+      specRefs: ["§96"]
+      aliases: [ForgejoDown]
+    - alertname: SCForgejoSSHDown
+      summary: Forgejo's in-cluster SSH service (used by Flux and workers) is not answering with an SSH banner.
+      category: forge
+      severity: critical
+      notifyClass: page
+      alwaysNotify: critical-outage
+      blackStartThreat: false
+      source: {kind: prometheus-rule, expr: 'probe_success{probe="forgejo-ssh"} == 0', for: 5m}
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "16"
+      runbook: procedures/restore-forgejo.md
+      specRefs: ["§96"]
+      aliases: [ForgejoSSHDown]
+    - alertname: SCForgejoPublicEndpointDown
+      summary: Forgejo is unreachable through the public edge but healthy in-cluster.
+      category: ingress
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source: {kind: prometheus-rule, expr: 'probe_success{probe="public-git"} == 0', for: 5m}
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "09"
+      runbook: procedures/edge-ingress-failure.md
+      specRefs: ["§96"]
+    - alertname: SCForgejoPodStuckPending
+      summary: The Forgejo pod has been Pending or ContainerCreating for 10 minutes (Longhorn Multi-Attach, lesson L-5).
+      category: forge
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'max(kube_pod_status_phase{namespace="forgejo",pod=~"forgejo-[a-z0-9]+-[a-z0-9]+",phase="Pending"}) == 1 or max(kube_pod_container_status_waiting_reason{namespace="forgejo",container="forgejo",reason="ContainerCreating"}) == 1'
+        for: 10m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "16"
+      runbook: procedures/restore-forgejo.md
+      specRefs: ["§96"]
+      aliases: [ForgejoPodStuckPending]
+    - alertname: SCForgejoPodStuckPendingCritical
+      summary: The Forgejo pod has been Pending or ContainerCreating for 20 minutes. Forgejo is down.
+      category: forge
+      severity: critical
+      notifyClass: page
+      alwaysNotify: critical-outage
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'max(kube_pod_status_phase{namespace="forgejo",pod=~"forgejo-[a-z0-9]+-[a-z0-9]+",phase="Pending"}) == 1 or max(kube_pod_container_status_waiting_reason{namespace="forgejo",container="forgejo",reason="ContainerCreating"}) == 1'
+        for: 20m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "16"
+      runbook: procedures/restore-forgejo.md
+      specRefs: ["§96"]
+    - alertname: SCForgejoObjectStorageErrors
+      summary: Forgejo returns HTTP 5xx through the edge while object storage is in use (packages, LFS, attachments).
+      category: forge
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum(rate(traefik_service_requests_total{exported_service=~"forgejo-forgejo-http.*",code=~"5.."}[10m])) > 0 and on() max(probe_success{probe="forgejo-http"}) == 1'
+        for: 10m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "16"
+      runbook: procedures/object-storage-outage.md
+      specRefs: ["§29", "§96"]
+      aliases: [ForgejoObjectStorageErrors]
+    - alertname: SCForgejoSSHHostKeyMismatch
+      summary: The SSH host key served by Forgejo differs from the committed SC-FORGEJO-SSH-HOST-KEY. Flux and workers will refuse to connect.
+      category: forge
+      severity: critical
+      notifyClass: page
+      alwaysNotify: critical-outage
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'min(sc_forgejo_ssh_hostkey_match) == 0'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "16"
+      runbook: procedures/rotate-forge-credentials.md
+      specRefs: ["§96"]
+      aliases: [ForgejoSSHHostKeyMismatch]
+    - alertname: SCForgeBranchProtectionDrift
+      summary: Forgejo branch protection differs from forge/forge.yaml. Merge policy may be weakened.
+      category: security
+      severity: critical
+      notifyClass: page
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'max(sc_forge_config_drift{object=~"branch_protection.*"}) == 1'
+        for: 10m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "16"
+      runbook: procedures/credential-compromise.md
+      specRefs: ["§102"]
+    - alertname: SCForgeConfigDrift
+      summary: Forgejo configuration (teams, webhooks, labels, deploy keys) differs from forge/forge.yaml.
+      category: forge
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'max by (object) (sc_forge_config_drift{object!~"branch_protection.*"}) == 1'
+        for: 10m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "16"
+      runbook: procedures/rotate-forge-credentials.md
+      specRefs: ["§96"]
+      aliases: [ForgeConfigDrift]
+    - alertname: SCForgeBotTokenInvalid
+      summary: A Forgejo machine-account token (sc-runner, sc-woodpecker, sc-renovate, sc-backup) no longer authenticates.
+      category: forge
+      severity: critical
+      notifyClass: page
+      alwaysNotify: critical-outage
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'min by (bot) (sc_forge_bot_token_valid) == 0'
+        for: 15m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "16"
+      runbook: procedures/rotate-forge-credentials.md
+      specRefs: ["§96"]
+      aliases: [ForgeBotTokenInvalid]
+    - alertname: SCForgeUnexpectedAdminToken
+      summary: An sc-admin access token other than the declared platform-probes token exists in Forgejo (plan 16 F18, AUTH-9).
+      category: security
+      severity: critical
+      notifyClass: page
+      alwaysNotify: security-audit
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'max(sc_forge_unexpected_admin_tokens) > 0'
+        for: 15m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "16"
+      runbook: procedures/credential-compromise.md
+      specRefs: ["§21", "§96"]
+    - alertname: SCRunnerOrphanDeployKeys
+      summary: Worker deploy keys have outlived their executions. These are standing write credentials (ADR-0007).
+      category: security
+      severity: critical
+      notifyClass: page
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'max(sc_runner_deploy_keys_orphaned) > 0'
+        for: 10m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "26"
+      runbook: procedures/quarantine-worker.md
+      specRefs: ["§86", "§87"]
+      aliases: [SCForgejoOrphanedDeployKeys]
+
+    # ------------------------------------------------------------------ Authentik / break-glass
+    - alertname: SCAuthentikDown
+      summary: Authentik's in-cluster health endpoint has been failing for 5 minutes, so human SSO is unavailable.
+      category: identity
+      severity: critical
+      notifyClass: page
+      alwaysNotify: critical-outage
+      blackStartThreat: false
+      source: {kind: prometheus-rule, expr: 'probe_success{probe="authentik"} == 0', for: 5m}
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "15"
+      runbook: procedures/authentik-outage.md
+      specRefs: ["§21", "§22", "§96"]
+      aliases: [AuthentikDown]
+    - alertname: SCAuthentikWorkerDown
+      summary: The Authentik worker has no available replica. Flows, outposts and notifications are degraded.
+      category: identity
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source: {kind: prometheus-rule, expr: 'kube_deployment_status_replicas_available{namespace="authentik",deployment=~".*worker.*"} == 0', for: 10m}
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "15"
+      runbook: procedures/authentik-outage.md
+      specRefs: ["§96"]
+      aliases: [AuthentikWorkerDown]
+    - alertname: SCAuthentikTasksFailing
+      summary: Authentik worker system tasks are in error state for 30 minutes.
+      category: identity
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum(authentik_system_tasks{status="error"}) > 0'
+        for: 30m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "15"
+      runbook: procedures/authentik-outage.md
+      specRefs: ["§96"]
+      aliases: [AuthentikTasksFailing]
+    - alertname: SCAuthentikBlueprintFailed
+      summary: An Authentik blueprint from Git failed to apply.
+      category: identity
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'max by (instance) (sc_authentik_blueprint_status{status!="successful"}) == 1'
+        for: 15m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "15"
+      runbook: procedures/restore-authentik.md
+      specRefs: ["§21"]
+      aliases: [AuthentikBlueprintFailed]
+    - alertname: SCAuthentikBootstrapAdminActive
+      summary: The Authentik bootstrap superuser (akadmin) or its bootstrap token is still active after sso-init.
+      category: security
+      severity: critical
+      notifyClass: page
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'min(sc_breakglass_account_ready{system="authentik",account="akadmin"}) == 0 or max(sc_authentik_bootstrap_token_present) == 1'
+        for: 30m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "15"
+      runbook: procedures/break-glass-access.md
+      specRefs: ["§21", "§22"]
+      aliases: [AuthentikBootstrapAdminActive]
+    - alertname: SCAuthentikUpstreamFlowOpen
+      summary: An upstream Authentik flow (default authentication, enrollment, recovery, source or initial-setup) is reachable without the deny policy (plan 15 AUTH-1).
+      category: security
+      severity: critical
+      notifyClass: page
+      alwaysNotify: security-audit
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'max(sc_authentik_upstream_flow_open) == 1'
+        for: 15m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "15"
+      runbook: procedures/credential-compromise.md
+      specRefs: ["§21"]
+    - alertname: SCAuthentikSigningCertExpiring
+      summary: The OIDC signing certificate sc-oidc-signing expires within 30 days (plan 15 §21.4).
+      category: identity
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'min(sc_authentik_signing_cert_expiry_timestamp_seconds) - time() < 30 * 86400'
+        for: 1h
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "15"
+      runbook: procedures/authentik-outage.md
+      specRefs: ["§21"]
+    - alertname: SCOIDCLoginBroken
+      summary: OIDC discovery for an application (Forgejo, Grafana, Hermes dashboard) fails. Human SSO to it is broken.
+      category: identity
+      severity: critical
+      notifyClass: page
+      alwaysNotify: critical-outage
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'min by (app) (sc_oidc_discovery_ok) == 0'
+        for: 10m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "15"
+      runbook: procedures/authentik-outage.md
+      specRefs: ["§21"]
+      aliases: [OIDCLoginBroken]
+    - alertname: SCBreakGlassAccountNotReady
+      summary: A break-glass account is missing, disabled or de-privileged, or its SSH key is absent from the nodes.
+      category: black-start-threat
+      severity: critical
+      notifyClass: page
+      alwaysNotify: black-start-threat
+      blackStartThreat: true
+      source:
+        kind: prometheus-rule
+        expr: 'min by (system, account) (sc_breakglass_account_ready) == 0 or min by (account) (sc_breakglass_ssh_key_present) == 0'
+        for: 30m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "15"
+      runbook: procedures/break-glass-access.md
+      specRefs: ["§22", "§111"]
+      aliases: [BreakGlassAccountNotReady]
+    - alertname: SCBreakGlassAuditDown
+      summary: The break-glass audit probe has been failing for 30 minutes, so break-glass use detection is degraded.
+      category: security
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'min(sc_breakglass_probe_success) == 0'
+        for: 30m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "15"
+      runbook: procedures/break-glass-access.md
+      specRefs: ["§22"]
+      aliases: [BreakGlassAuditDown]
+    - alertname: SCPlatformProbesDown
+      summary: The platform-probes Deployment is down. Break-glass, OIDC and forge drift probes are blind.
+      category: monitoring
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'absent(up{job="platform-probes"} == 1)'
+        for: 15m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "15"
+      runbook: procedures/monitoring-failure.md
+      specRefs: ["§91"]
+      aliases: [PlatformProbesDown]
+    - alertname: SCBreakGlassUsed
+      summary: A break-glass credential was used within the last 24 hours (Authentik, Forgejo or node SSH; plan 15 §14.4).
+      category: security
+      severity: critical
+      notifyClass: page
+      alwaysNotify: security-audit
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: '(time() - max by (system, account) (sc_breakglass_last_login_timestamp_seconds)) < 86400 or (time() - max by (account) (label_replace(sc_breakglass_ssh_last_login_timestamp_seconds, "system", "cluster", "", ""))) < 86400'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "15"
+      runbook: procedures/break-glass-access.md
+      specRefs: ["§22"]
+      aliases: [BreakGlassUsed]
+    - alertname: SCGrafanaLocalLogin
+      summary: Someone logged in to Grafana with the local (break-glass) admin form instead of OIDC.
+      category: security
+      severity: critical
+      notifyClass: page
+      alwaysNotify: security-audit
+      blackStartThreat: false
+      source: {kind: prometheus-rule, expr: 'sum(increase(grafana_api_login_post_total{job="grafana"}[5m])) > 0', for: 0s}
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "39"
+      runbook: procedures/break-glass-access.md
+      specRefs: ["§22"]
+    - alertname: SCK3sBreakGlassAuditSeen
+      summary: The Kubernetes audit log recorded a request by the cluster break-glass identity in the last 10 minutes.
+      category: security
+      severity: critical
+      notifyClass: page
+      alwaysNotify: security-audit
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum(increase(sc_k3s_audit_breakglass_requests_total[10m])) > 0'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "07"
+      runbook: procedures/break-glass-access.md
+      specRefs: ["§22"]
+      aliases: [SCClusterBreakGlassUsed]
+
+    # ------------------------------------------------------------------ GitHub mirror
+    - alertname: SCGitHubMirrorFailing
+      summary: The Forgejo to GitHub push mirror of strange-company has been failing for 15 minutes.
+      category: mirror
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: failed-mirror
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sc_github_mirror_last_attempt_success{repository="strange-company"} == 0 and on() sc_github_mirror_expected == 1'
+        for: 15m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "17"
+      runbook: procedures/github-mirror-failure.md
+      specRefs: ["§32", "§96", "§97"]
+    - alertname: SCGitHubMirrorRPOBreach
+      summary: GitHub has been missing Forgejo main commits for more than 1 hour, which breaches the strange-company Git RPO.
+      category: black-start-threat
+      severity: critical
+      notifyClass: page
+      alwaysNotify: black-start-threat
+      blackStartThreat: true
+      source: {kind: prometheus-rule, expr: 'sc_github_mirror_lag_seconds{repository="strange-company"} > 3600', for: 5m}
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "17"
+      runbook: procedures/github-mirror-failure.md
+      specRefs: ["§32", "§97", "§108"]
+    - alertname: SCGitHubMirrorSignalMissing
+      summary: The mirror-freshness metrics are absent, so mirror health is unknown.
+      category: mirror
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: failed-mirror
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'absent(sc_github_mirror_last_attempt_success{repository="strange-company"}) or sc_github_api_up == 0'
+        for: 30m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "17"
+      runbook: procedures/github-mirror-failure.md
+      specRefs: ["§32"]
+    - alertname: SCGitHubMirrorStale
+      summary: GitHub has been missing Forgejo main commits for more than 15 minutes.
+      category: mirror
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: failed-mirror
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sc_github_mirror_lag_seconds{repository="strange-company"} > 900'
+        for: 5m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "17"
+      runbook: procedures/github-mirror-failure.md
+      specRefs: ["§32"]
+      aliases: [GitHubMirrorStale]
+    - alertname: SCGitHubMirrorDiverged
+      summary: GitHub and Forgejo main have diverged. The mirror is stalled and GitHub keeps the newer history.
+      category: black-start-threat
+      severity: critical
+      notifyClass: page
+      alwaysNotify: black-start-threat
+      blackStartThreat: true
+      source:
+        kind: prometheus-rule
+        expr: 'sc_github_mirror_diverged{repository="strange-company"} == 1'
+        for: 5m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "17"
+      runbook: procedures/github-mirror-failure.md
+      specRefs: ["§32", "§112"]
+    - alertname: SCGitHubMirrorNotConfigured
+      summary: The Forgejo push mirror for strange-company is missing or misconfigured.
+      category: black-start-threat
+      severity: critical
+      notifyClass: page
+      alwaysNotify: black-start-threat
+      blackStartThreat: true
+      source:
+        kind: prometheus-rule
+        expr: 'sc_github_mirror_configured == 0 and on() sc_github_mirror_expected == 1'
+        for: 15m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "17"
+      runbook: procedures/github-mirror-failure.md
+      specRefs: ["§32"]
+    - alertname: SCGitHubRepoSettingsDrift
+      summary: A protective setting of the GitHub mirror repository drifted (visibility, history protection, writer set).
+      category: black-start-threat
+      severity: critical
+      notifyClass: page
+      alwaysNotify: black-start-threat
+      blackStartThreat: true
+      source:
+        kind: prometheus-rule
+        expr: 'min by (kind) (sc_github_repo_setting_ok{kind=~"visibility|history_protection|mirror_only"}) == 0'
+        for: 30m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "17"
+      runbook: procedures/github-mirror-failure.md
+      specRefs: ["§32", "§111"]
+    - alertname: SCGitHubRepoSettingsDriftMinor
+      summary: A non-critical setting of the GitHub mirror repository drifted.
+      category: mirror
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'min by (kind) (sc_github_repo_setting_ok{kind!~"visibility|history_protection|mirror_only"}) == 0'
+        for: 30m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "17"
+      runbook: procedures/github-mirror-failure.md
+      specRefs: ["§32"]
+    - alertname: SCGitHubMirrorTokenExpiring
+      summary: The GitHub mirror credential expires within 21 days.
+      category: mirror
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: failed-mirror
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'min(sc_github_mirror_token_expiry_timestamp_seconds) - time() < 21 * 86400'
+        for: 1h
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "17"
+      runbook: procedures/github-mirror-failure.md
+      specRefs: ["§32", "§99"]
+    - alertname: SCGitHubMirrorTokenExpiryImminent
+      summary: The GitHub mirror credential expires within 3 days.
+      category: mirror
+      severity: critical
+      notifyClass: page
+      alwaysNotify: failed-mirror
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'min(sc_github_mirror_token_expiry_timestamp_seconds) - time() < 3 * 86400'
+        for: 1h
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "17"
+      runbook: procedures/github-mirror-failure.md
+      specRefs: ["§32", "§99"]
+    - alertname: SCGitHubMirrorRecoveryModeTooLong
+      summary: Mirroring has been intentionally disabled (recovery mode) for 7 days.
+      category: black-start-threat
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: black-start-threat
+      blackStartThreat: true
+      source:
+        kind: prometheus-rule
+        expr: 'max(sc_github_mirror_expected) == 0'
+        for: 7d
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P12
+      ownerPlan: "42"
+      signalOwnerPlan: "17"
+      runbook: procedures/github-mirror-failure.md
+      specRefs: ["§32", "§112"]
+      aliases: [SCRecoveryModeActive]
+
+    # ------------------------------------------------------------------ Flux
+    - alertname: SCFluxReconciliationFailing
+      summary: A Flux object has been not-Ready for 15 minutes. Desired state is not being applied.
+      category: gitops
+      severity: critical
+      notifyClass: page
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'max by (customresource_kind, exported_namespace, name) (gotk_resource_info{customresource_kind=~"Kustomization|HelmRelease",ready="False",suspended="false"}) == 1'
+        for: 15m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "18"
+      runbook: procedures/flux-reconciliation-failure.md
+      specRefs: ["§33", "§96"]
+      aliases: [FluxReconciliationFailed, FluxKustomizationNotReady]
+      ruleGroup: flux-alerts
+    - alertname: SCFluxSourceFailing
+      summary: A Flux GitRepository (normally Forgejo strange-company) has been failing to fetch for 10 minutes.
+      category: gitops
+      severity: critical
+      notifyClass: page
+      alwaysNotify: critical-outage
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'max by (exported_namespace, name) (gotk_resource_info{customresource_kind="GitRepository",ready="False",suspended="false"}) == 1'
+        for: 10m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "18"
+      runbook: procedures/flux-reconciliation-failure.md
+      specRefs: ["§33", "§96"]
+      aliases: [FluxSourceNotReady]
+      ruleGroup: flux-alerts
+    - alertname: SCFluxSuspendedTooLong
+      summary: A Flux object has been suspended for more than 2 hours.
+      category: gitops
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'max by (customresource_kind, exported_namespace, name) (gotk_resource_info{suspended="true"}) == 1'
+        for: 2h
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "18"
+      runbook: procedures/flux-reconciliation-failure.md
+      specRefs: ["§4.2", "§96"]
+      aliases: [FluxResourceSuspended]
+      ruleGroup: flux-alerts
+    - alertname: SCFluxControllerDown
+      summary: A Flux controller has no available replica.
+      category: gitops
+      severity: critical
+      notifyClass: page
+      alwaysNotify: critical-outage
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'kube_deployment_status_replicas_available{namespace="flux-system"} < 1'
+        for: 5m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "18"
+      runbook: procedures/flux-reconciliation-failure.md
+      specRefs: ["§96"]
+      aliases: [FluxControllerDown]
+      ruleGroup: flux-alerts
+    - alertname: SCFluxSourceNotReady
+      summary: A non-Git Flux source (HelmRepository, OCIRepository, Bucket) has been not-Ready for 10 minutes.
+      category: gitops
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'max by (customresource_kind, exported_namespace, name) (gotk_resource_info{customresource_kind=~"OCIRepository|HelmRepository|Bucket",ready="False",suspended="false"}) == 1'
+        for: 10m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "18"
+      runbook: procedures/flux-reconciliation-failure.md
+      specRefs: ["§33", "§96"]
+      ruleGroup: flux-alerts
+    - alertname: SCFluxSeedSourcePresent
+      summary: The seed Bucket source still exists 2 hours after it should have been deleted at control transfer.
+      category: gitops
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'max(gotk_resource_info{customresource_kind="Bucket",exported_namespace="flux-system"}) == 1'
+        for: 2h
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "18"
+      runbook: procedures/failed-flux-handoff.md
+      specRefs: ["§34", "§35"]
+      aliases: [FluxSeedSourcePresent]
+      ruleGroup: flux-alerts
+    - alertname: SCFluxReconcileStalled
+      summary: A Flux Kustomization or HelmRelease has been neither Ready nor failed for 60 minutes.
+      category: gitops
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'max by (customresource_kind, exported_namespace, name) (gotk_resource_info{customresource_kind=~"Kustomization|HelmRelease",ready="Unknown",suspended="false"}) == 1'
+        for: 60m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "18"
+      runbook: procedures/flux-reconciliation-failure.md
+      specRefs: ["§33"]
+      aliases: [FluxReconcileStalled]
+      ruleGroup: flux-alerts
+
+    # ------------------------------------------------------------------ Woodpecker
+    - alertname: SCWoodpeckerDown
+      summary: The Woodpecker server is unhealthy. Trusted CI, and with it all RED/GREEN progress, is stopped.
+      category: ci
+      severity: critical
+      notifyClass: page
+      alwaysNotify: critical-outage
+      blackStartThreat: false
+      source: {kind: prometheus-rule, expr: 'probe_success{probe="woodpecker"} == 0', for: 5m}
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "20"
+      runbook: procedures/woodpecker-failure.md
+      specRefs: ["§36", "§96"]
+    - alertname: SCWoodpeckerNoAgents
+      summary: No Woodpecker agent is connected, so pipelines cannot run.
+      category: ci
+      severity: critical
+      notifyClass: page
+      alwaysNotify: critical-outage
+      blackStartThreat: false
+      source: {kind: prometheus-rule, expr: 'max(woodpecker_worker_count{job="woodpecker"}) == 0', for: 10m}
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "20"
+      runbook: procedures/woodpecker-failure.md
+      specRefs: ["§36", "§96"]
+    - alertname: SCWoodpeckerBacklog
+      summary: More than 5 pipeline steps have been pending for 30 minutes.
+      category: ci
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source: {kind: prometheus-rule, expr: 'max(woodpecker_pending_steps{job="woodpecker"}) > 5', for: 30m}
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "20"
+      runbook: procedures/woodpecker-failure.md
+      specRefs: ["§96"]
+    - alertname: SCWoodpeckerAgentUnavailable
+      summary: The Woodpecker agent Deployment has no available replica.
+      category: ci
+      severity: critical
+      notifyClass: page
+      alwaysNotify: critical-outage
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'kube_deployment_status_replicas_available{namespace="woodpecker",deployment="woodpecker-agent"} < 1'
+        for: 10m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "20"
+      runbook: procedures/woodpecker-failure.md
+      specRefs: ["§36", "§96"]
+    - alertname: SCWoodpeckerBuildAgentUnavailable
+      summary: The Woodpecker build-lane agent has no available replica (trusted builds stop).
+      category: ci
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'kube_deployment_status_replicas_available{namespace="woodpecker",deployment="woodpecker-agent-build"} < 1'
+        for: 10m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "20"
+      runbook: procedures/woodpecker-failure.md
+      specRefs: ["§36"]
+    - alertname: SCCIConfigExtensionDown
+      summary: The sc-ci-config extension is down. No pipeline runs (fail closed).
+      category: ci
+      severity: critical
+      notifyClass: page
+      alwaysNotify: critical-outage
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'up{job="sc-ci-config"} == 0 or kube_deployment_status_replicas_available{deployment="sc-ci-config"} < 1'
+        for: 5m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "20"
+      runbook: procedures/woodpecker-failure.md
+      specRefs: ["§36"]
+    - alertname: SCCIConfigSignatureFailures
+      summary: sc-ci-config request signature verification failed more than 3 times in 15 minutes.
+      category: ci
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'increase(sc_ci_config_signature_failures_total[15m]) > 3'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "20"
+      runbook: procedures/woodpecker-failure.md
+      specRefs: ["§36"]
+    - alertname: SCCIRepoPolicyViolation
+      summary: A repository has Woodpecker settings that violate policy (e.g. trusted flags). Its pipelines are refused.
+      category: security
+      severity: critical
+      notifyClass: page
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'increase(sc_ci_config_repo_policy_violations_total[15m]) > 0'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "20"
+      runbook: procedures/woodpecker-failure.md
+      specRefs: ["§36", "§38"]
+    - alertname: SCCIBuildLaneAgentMismatch
+      summary: The sc-ci-config audit loop saw a build-lane workflow run on an agent other than the build agent. Release secrets may be exposed (SEC-8).
+      category: security
+      severity: critical
+      notifyClass: page
+      alwaysNotify: security-audit
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'max(sc_ci_build_lane_agent_mismatch) == 1'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "20"
+      runbook: procedures/woodpecker-failure.md
+      specRefs: ["§37", "§38"]
+    - alertname: SCCIUntrustedConstructDropped
+      summary: Untrusted pipeline configuration contained forbidden constructs and a workflow was dropped.
+      category: ci
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'increase(sc_ci_config_dropped_workflows_total[1h]) > 0'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "20"
+      runbook: procedures/woodpecker-failure.md
+      specRefs: ["§38"]
+    - alertname: SCCIWorkspaceFilesystemHigh
+      summary: The CI workspace filesystem is more than 80% used.
+      category: ci
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: '1 - node_filesystem_avail_bytes{mountpoint="/var/lib/sc/ci-workspace"} / node_filesystem_size_bytes{mountpoint="/var/lib/sc/ci-workspace"} > 0.8'
+        for: 10m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "20"
+      runbook: procedures/woodpecker-failure.md
+      specRefs: ["§28", "§107"]
+    - alertname: SCCIWorkspaceFilesystemCritical
+      summary: The CI workspace filesystem is more than 95% used.
+      category: ci
+      severity: critical
+      notifyClass: page
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: '1 - node_filesystem_avail_bytes{mountpoint="/var/lib/sc/ci-workspace"} / node_filesystem_size_bytes{mountpoint="/var/lib/sc/ci-workspace"} > 0.95'
+        for: 10m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "20"
+      runbook: procedures/woodpecker-failure.md
+      specRefs: ["§28", "§107"]
+    - alertname: SCCIMaintFailed
+      summary: The Woodpecker maintenance job (log retention) failed or is overdue.
+      category: ci
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: check-cronjob
+        cronjob: ci-maint
+        namespace: woodpecker
+        maxAge: 3h
+        failAfter: 2h
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "20"
+      runbook: procedures/woodpecker-failure.md
+      specRefs: ["§107"]
+      aliases: [SCCIMaintStale, SCRetentionWoodpeckerPurgeFailed]
+    - alertname: SCCINightlyFailing
+      summary: The nightly CI run on main failed.
+      category: ci
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'max(sc_ci_nightly_last_conclusion{conclusion="failure"}) == 1'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "52"
+      runbook: procedures/woodpecker-failure.md
+      specRefs: ["§104"]
+    - alertname: SCCIOffclusterLaneFailing
+      summary: The off-cluster CI lane (GitHub Actions) failed on main.
+      category: ci
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'max(sc_ci_offcluster_lane_last_run_conclusion{conclusion="failure"}) == 1'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "52"
+      runbook: procedures/woodpecker-failure.md
+      specRefs: ["§36"]
+    - alertname: SCCIOffclusterLaneStale
+      summary: The off-cluster CI lane has not succeeded for 8 days.
+      category: ci
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'time() - max(sc_ci_offcluster_lane_last_success_timestamp_seconds) > 8 * 86400'
+        for: 1h
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "52"
+      runbook: procedures/woodpecker-failure.md
+      specRefs: ["§36"]
+
+    # ------------------------------------------------------------------ ingress / certificates
+    - alertname: SCEdgeDown
+      summary: Every public endpoint has been failing through the edge for 5 minutes. Humans cannot reach the platform.
+      category: ingress
+      severity: critical
+      notifyClass: page
+      alwaysNotify: critical-outage
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'count(probe_success{probe_kind="public"} == 0) == count(probe_success{probe_kind="public"})'
+        for: 5m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "09"
+      runbook: procedures/edge-ingress-failure.md
+      specRefs: ["§23", "§96"]
+    - alertname: SCTraefikDown
+      summary: No Traefik replica is being scraped. All ingress is down.
+      category: ingress
+      severity: critical
+      notifyClass: page
+      alwaysNotify: critical-outage
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum(up{job="traefik"}) == 0'
+        for: 3m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "09"
+      runbook: procedures/edge-ingress-failure.md
+      specRefs: ["§20", "§96"]
+    - alertname: SCCloudflaredTunnelDown
+      summary: The Cloudflare tunnel has no healthy connection (tunnel mode).
+      category: ingress
+      severity: critical
+      notifyClass: page
+      alwaysNotify: critical-outage
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum(cloudflared_tunnel_ha_connections{job="cloudflared"}) == 0 or (absent(up{job="cloudflared"} == 1) and on() count(kube_deployment_created{namespace="ingress",deployment="cloudflared"}) > 0)'
+        for: 5m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "09"
+      runbook: procedures/edge-ingress-failure.md
+      specRefs: ["§23"]
+    - alertname: SCCoreDNSDown
+      summary: CoreDNS is down. In-cluster name resolution fails.
+      category: node
+      severity: critical
+      notifyClass: page
+      alwaysNotify: critical-outage
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum(up{job="coredns"}) == 0'
+        for: 2m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "09"
+      runbook: procedures/lost-node.md
+      specRefs: ["§18"]
+    - alertname: SCDNSRewriteBroken
+      summary: The in-cluster DNS rewrite of public hostnames is broken.
+      category: ingress
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'probe_success{probe="dns-rewrite"} == 0'
+        for: 15m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "09"
+      runbook: procedures/edge-ingress-failure.md
+      specRefs: ["§23"]
+    - alertname: SCWireGuardPeerStale
+      summary: A WireGuard peer has had no handshake for 10 minutes. Inter-node pod traffic is broken.
+      category: node
+      severity: critical
+      notifyClass: page
+      alwaysNotify: critical-outage
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'time() - sc_flannel_wg_latest_handshake_seconds > 600'
+        for: 10m
+      profiles: [small-ha]
+      gate: H04
+      ownerPlan: "42"
+      signalOwnerPlan: "09"
+      runbook: procedures/lost-node.md
+      specRefs: ["§18"]
+    - alertname: SCCertificateExpiringSoon
+      summary: A cert-manager certificate expires within 14 days.
+      category: certificate
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source: {kind: prometheus-rule, expr: "certmanager_certificate_expiration_timestamp_seconds - time() < 14 * 86400", for: 1h}
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "10"
+      runbook: procedures/certificate-failure.md
+      specRefs: ["§23"]
+    - alertname: SCCertificateExpiryImminent
+      summary: A certificate (cert-manager or a public endpoint) expires within 3 days.
+      category: certificate
+      severity: critical
+      notifyClass: page
+      alwaysNotify: critical-outage
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: "(certmanager_certificate_expiration_timestamp_seconds - time() < 3 * 86400) or (probe_ssl_earliest_cert_expiry - time() < 3 * 86400)"
+        for: 10m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "10"
+      runbook: procedures/certificate-failure.md
+      specRefs: ["§23"]
+    - alertname: SCCertificateNotReady
+      summary: A cert-manager Certificate has been not-Ready for 30 minutes.
+      category: certificate
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source: {kind: prometheus-rule, expr: 'certmanager_certificate_ready_status{condition="False"} == 1', for: 30m}
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "10"
+      runbook: procedures/certificate-failure.md
+      specRefs: ["§23"]
+    - alertname: SCK3sCertificateExpiringSoon
+      summary: A k3s internal certificate (apiserver, kubelet, etcd) expires within 30 days.
+      category: certificate
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'min by (instance) (sc_k3s_cert_expiry_timestamp_seconds) - time() < 30 * 86400'
+        for: 1h
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "07"
+      runbook: procedures/certificate-failure.md
+      specRefs: ["§23"]
+    - alertname: SCCertManagerDown
+      summary: cert-manager is not being scraped. Certificates will not renew.
+      category: certificate
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'absent(up{job="cert-manager"} == 1)'
+        for: 15m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "10"
+      runbook: procedures/certificate-failure.md
+      specRefs: ["§23"]
+      aliases: [SCCertManagerWebhookDown]
+    - alertname: SCCnpgCertificateExpiringSoon
+      summary: A CNPG-managed certificate expires within 5 days.
+      category: certificate
+      severity: critical
+      notifyClass: page
+      alwaysNotify: critical-outage
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'min by (cluster) (sc_cnpg_certificate_expiration_timestamp_seconds) - time() < 5 * 86400'
+        for: 1h
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "10"
+      runbook: procedures/certificate-failure.md
+      specRefs: ["§23"]
+    - alertname: SCInternalCAExpiringSoon
+      summary: The internal CA root expires within 365 days. Plan its rotation.
+      category: certificate
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'min(sc_internal_ca_expiry_timestamp_seconds) - time() < 365 * 86400'
+        for: 1h
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "10"
+      runbook: procedures/certificate-failure.md
+      specRefs: ["§23"]
+
+    # ------------------------------------------------------------------ Agent Runner / Hermes
+    - alertname: SCRunnerDown
+      summary: The Agent Runner metrics endpoint has been down for 5 minutes. No task can progress.
+      category: runner
+      severity: critical
+      notifyClass: page
+      alwaysNotify: critical-outage
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'absent(up{job="agent-runner"} == 1) and on() count(kube_deployment_created{namespace="strange-company",deployment="agent-runner"}) > 0'
+        for: 5m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "26"
+      runbook: procedures/agent-runner-failure.md
+      specRefs: ["§96"]
+      aliases: [SCAgentRunnerDown]
+    - alertname: SCRunnerNotReady
+      summary: The Agent Runner readiness probe has been failing for 10 minutes.
+      category: runner
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'probe_success{probe="agent-runner"} == 0'
+        for: 10m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "26"
+      runbook: procedures/agent-runner-failure.md
+      specRefs: ["§96"]
+    - alertname: SCRunnerDatabaseDown
+      summary: The Agent Runner cannot reach sc-pg. Nothing mutates.
+      category: runner
+      severity: critical
+      notifyClass: page
+      alwaysNotify: critical-outage
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'max(sc_runner_dependency_up{dep="sc-pg"}) == 0'
+        for: 2m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "26"
+      runbook: procedures/agent-runner-failure.md
+      specRefs: ["§96"]
+    - alertname: SCRunnerDependencyDown
+      summary: A Runner dependency (Forgejo, Woodpecker, Gateway, Alertmanager, Kubernetes, object storage) has been unreachable for 10 minutes.
+      category: runner
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'max by (dep) (sc_runner_dependency_up{dep!="sc-pg"}) == 0'
+        for: 10m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "26"
+      runbook: procedures/agent-runner-failure.md
+      specRefs: ["§96"]
+    - alertname: SCRunnerOutboxStalled
+      summary: A Runner side-effect outbox entry has been pending for more than 30 minutes.
+      category: runner
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'max by (kind) (sc_runner_outbox_oldest_seconds) > 1800'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "26"
+      runbook: procedures/agent-runner-failure.md
+      specRefs: ["§96"]
+    - alertname: SCRunnerOrphanJobs
+      summary: The Runner deleted worker Jobs that had no execution record.
+      category: runner
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum(increase(sc_runner_orphan_jobs_deleted_total[1h])) > 0'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "26"
+      runbook: procedures/agent-runner-failure.md
+      specRefs: ["§4.5"]
+    - alertname: SCRunnerLogArchiveFailing
+      summary: Worker log uploads to S3 evidence have been failing for 30 minutes.
+      category: runner
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum(increase(sc_runner_log_archive_failures_total[30m])) > 0'
+        for: 30m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "26"
+      runbook: procedures/object-storage-outage.md
+      specRefs: ["§107"]
+    - alertname: SCRunnerUnexplainedRefChange
+      summary: A repository ref changed without an attributable execution or human push.
+      category: security
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum(increase(sc_runner_unexplained_ref_changes_total[1h])) > 0'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "26"
+      runbook: procedures/quarantine-worker.md
+      specRefs: ["§87"]
+    - alertname: SCRunnerQueueBacklog
+      summary: The oldest QUEUED execution has waited more than 2 hours.
+      category: runner
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'max(sc_runner_queue_oldest_seconds) > 7200'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "26"
+      runbook: procedures/stuck-task-recovery.md
+      specRefs: ["§89"]
+    - alertname: SCRunnerAdminAccess
+      summary: A human used the Runner admin API (break-glass class audit event).
+      category: security
+      severity: info
+      notifyClass: silent
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum(increase(sc_runner_admin_requests_total[10m])) > 0'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "26"
+      runbook: procedures/break-glass-access.md
+      specRefs: ["§22"]
+    - alertname: SCRunnerPolicyCommitUnknown
+      summary: The Runner cannot resolve the Git commit of the loaded policy. Dispatch is refused.
+      category: runner
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'min(sc_runner_policy_commit_resolved) == 0'
+        for: 5m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "26"
+      runbook: procedures/agent-runner-failure.md
+      specRefs: ["§4.7"]
+    - alertname: SCWorkerQuarantined
+      summary: At least one agent branch is quarantined after a policy violation.
+      category: security
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'max(sc_runner_quarantined_refs) > 0'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "26"
+      runbook: procedures/quarantine-worker.md
+      specRefs: ["§85", "§87"]
+    - alertname: SCHermesCredentialRotationFailed
+      summary: Rotation of the Hermes Runner/Gateway credential failed. The old credential stays valid until its overlap ends.
+      category: runner
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum(increase(sc_runner_hermes_credential_rotation_failures_total[2h])) > 0'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "26"
+      runbook: procedures/hermes-failure.md
+      specRefs: ["§99"]
+    - alertname: SCAgentRunnerReconcileStalled
+      summary: The Runner reconcile loop has not completed for 5 minutes.
+      category: runner
+      severity: critical
+      notifyClass: page
+      alwaysNotify: critical-outage
+      blackStartThreat: false
+      source: {kind: prometheus-rule, expr: "time() - max(sc_runner_reconcile_last_success_timestamp_seconds) > 300", for: 2m}
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "26"
+      runbook: procedures/agent-runner-failure.md
+      specRefs: ["§96"]
+    - alertname: SCRunnerPolicyInvalid
+      summary: The Runner failed to load or validate platform policy. Dispatch is stopped (fail closed).
+      category: runner
+      severity: critical
+      notifyClass: page
+      alwaysNotify: critical-outage
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'min(sc_runner_policy_valid) == 0'
+        for: 1m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "26"
+      runbook: procedures/agent-runner-failure.md
+      specRefs: ["§4.7", "§96"]
+      aliases: [SCAgentRunnerPolicyLoadFailed]
+    - alertname: SCExecutionStuck
+      summary: A worker execution has exceeded its state deadline (STARTING over 10 minutes, or RUNNING past its profile deadline).
+      category: runner
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum(sc_runner_executions_stuck) > 0'
+        for: 10m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "26"
+      runbook: procedures/stuck-task-recovery.md
+      specRefs: ["§4.5", "§96"]
+    - alertname: SCExecutionInfraFailuresHigh
+      summary: More than 3 executions failed for infrastructure reasons in the last hour.
+      category: runner
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum(increase(sc_runner_results_total{failure_class="infrastructure"}[1h])) > 3'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "26"
+      runbook: procedures/agent-runner-failure.md
+      specRefs: ["§96"]
+      aliases: [SCRunnerDispatchFailures]
+    - alertname: SCHermesDown
+      summary: Hermes has been failing its health probe for 5 minutes. Human orchestration is unavailable.
+      category: runner
+      severity: critical
+      notifyClass: page
+      alwaysNotify: critical-outage
+      blackStartThreat: false
+      source: {kind: prometheus-rule, expr: 'probe_success{probe="hermes-gateway"} == 0', for: 5m}
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "24"
+      runbook: procedures/hermes-failure.md
+      specRefs: ["§96"]
+    - alertname: SCHermesRestartLoop
+      summary: Hermes restarted more than 3 times in 30 minutes.
+      category: runner
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum(increase(kube_pod_container_status_restarts_total{namespace="hermes"}[30m])) > 3'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "24"
+      runbook: procedures/hermes-failure.md
+      specRefs: ["§96"]
+    - alertname: SCHermesMcpSilent
+      summary: Hermes is up but made no MCP request for 2 hours while non-terminal tasks exist.
+      category: runner
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum(increase(sc_runner_mcp_requests_total[2h])) == 0 and on() sum(sc_runner_tasks) > 0 and on() max(probe_success{probe="hermes-gateway"}) == 1'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "24"
+      runbook: procedures/hermes-failure.md
+      specRefs: ["§96"]
+
+    # ------------------------------------------------------------------ Model Gateway
+    - alertname: SCModelGatewayDown
+      summary: The Model Gateway is down. All autonomous model spending is stopped (fail-safe).
+      category: gateway
+      severity: critical
+      notifyClass: page
+      alwaysNotify: critical-outage
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'absent(up{job="model-gateway"} == 1) and on() count(kube_deployment_created{namespace="strange-company",deployment="model-gateway"}) > 0'
+        for: 3m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "53"
+      runbook: procedures/gateway-failure.md
+      specRefs: ["§78", "§96"]
+      aliases: [GatewayDown]
+    - alertname: SCModelProviderErrorsHigh
+      summary: More than 20% of upstream responses from a provider were non-2xx over 15 minutes (at least 20 requests).
+      category: gateway
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: '(sum by (provider) (rate(sc_gateway_upstream_responses_total{status_class!="2xx"}[15m])) / sum by (provider) (rate(sc_gateway_upstream_responses_total[15m])) > 0.20) and sum by (provider) (increase(sc_gateway_upstream_responses_total[15m])) >= 20'
+        for: 15m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "53"
+      runbook: procedures/gateway-failure.md
+      specRefs: ["§96"]
+      aliases: [GatewayUpstreamErrorRateHigh]
+    - alertname: SCModelMismatch
+      summary: A provider answered with a different model than the one policy requested (lesson L-4).
+      category: gateway
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source: {kind: prometheus-rule, expr: "sum by (provider, model) (increase(sc_gateway_model_mismatch_total[15m])) > 0", for: 0s}
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "53"
+      runbook: procedures/gateway-failure.md
+      specRefs: ["§78"]
+      aliases: [ModelMismatch]
+    - alertname: SCModelUsageUnknown
+      summary: More than 5% of a provider's requests in the last hour had unparseable usage; they are charged at worst case (ceiling), so spend is over-estimated.
+      category: gateway
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum by (provider) (increase(sc_gateway_usage_status_total{usage_status="unknown"}[1h])) / sum by (provider) (increase(sc_gateway_usage_status_total[1h])) > 0.05'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "53"
+      runbook: procedures/gateway-failure.md
+      specRefs: ["§79", "§81"]
+      aliases: [GatewayUsageUnknownHigh]
+    - alertname: SCModelUnpricedDenied
+      summary: Requests were denied because no price is defined for the model (fail closed). The pricing table needs an update.
+      category: gateway
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum(increase(sc_gateway_denials_total{code="SC_PRICE_UNKNOWN"}[1h])) > 0'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "32"
+      runbook: procedures/pricing-update.md
+      specRefs: ["§79"]
+    - alertname: SCLedgerWriteFailing
+      summary: The Gateway cannot write cost-ledger rows. Accounting integrity is at risk.
+      category: gateway
+      severity: critical
+      notifyClass: page
+      alwaysNotify: budget-stop
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum(increase(sc_gateway_settlement_failures_total[5m])) > 0'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "53"
+      runbook: procedures/gateway-failure.md
+      specRefs: ["§78", "§81"]
+      aliases: [GatewayLedgerWriteFailing]
+    - alertname: SCGatewayNotReady
+      summary: The Model Gateway readiness probe has been failing for 5 minutes (policy, keys, JWKS or sc-pg). Model spending is stopped.
+      category: gateway
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'probe_success{probe="model-gateway"} == 0'
+        for: 5m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "53"
+      runbook: procedures/gateway-failure.md
+      specRefs: ["§96"]
+      aliases: [GatewayNotReady]
+    - alertname: SCGatewayPolicyInvalid
+      summary: The Gateway failed to load routing, pricing or budget policy. The last-known-good policy is in force.
+      category: gateway
+      severity: critical
+      notifyClass: page
+      alwaysNotify: critical-outage
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum(increase(sc_gateway_policy_load_errors_total[10m])) > 0'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "53"
+      runbook: procedures/gateway-failure.md
+      specRefs: ["§4.7", "§81"]
+      aliases: [GatewayPolicyInvalid]
+    - alertname: SCModelProviderUnavailable
+      summary: A provider key is missing, empty or unusable. Routing skips that provider.
+      category: gateway
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'min by (provider) (sc_gateway_provider_available) == 0'
+        for: 10m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "53"
+      runbook: procedures/rotate-model-credentials.md
+      specRefs: ["§77"]
+      aliases: [ModelProviderUnavailable]
+    - alertname: SCModelCredentialRejected
+      summary: A provider rejected the Gateways API key (HTTP 401/403).
+      category: gateway
+      severity: critical
+      notifyClass: page
+      alwaysNotify: critical-outage
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum by (provider) (increase(sc_gateway_upstream_responses_total{code=~"401|403"}[10m])) > 0'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "53"
+      runbook: procedures/rotate-model-credentials.md
+      specRefs: ["§99"]
+      aliases: [ModelCredentialRejected]
+    - alertname: SCGatewayReservationOverrun
+      summary: Actual request cost exceeded its budget reservation. A scope may exceed its limit by the overrun.
+      category: budget
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum by (provider) (increase(sc_gateway_reservation_overrun_micro_usd_total[1h])) > 0'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "53"
+      runbook: procedures/budget-emergency-stop.md
+      specRefs: ["§81"]
+      aliases: [GatewayReservationOverrun]
+    - alertname: SCEmergencyStopSourceUnavailable
+      summary: The Gateway cannot read the Kubernetes emergency-stop source. The effective level is raised to workers.
+      category: budget
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: budget-stop
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'max(sc_emergency_stop_level{source="degraded"}) >= 1 or (time() - max(sc_emergency_stop_k8s_last_read_ok_timestamp_seconds)) > 60'
+        for: 1m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "33"
+      runbook: procedures/gateway-failure.md
+      specRefs: ["§81"]
+      aliases: [GatewayEmergencyStopSourceUnavailable, SCGatewayEmergencyStopSourceUnavailable]
+    - alertname: SCGatewayLatencyOverheadHigh
+      summary: Gateway p99 pre-upstream overhead has been above 50 ms for 15 minutes.
+      category: gateway
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'histogram_quantile(0.99, sum by (le) (rate(sc_gateway_overhead_seconds_bucket[15m]))) > 0.05'
+        for: 15m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "53"
+      runbook: procedures/gateway-failure.md
+      specRefs: ["§96"]
+      aliases: [GatewayLatencyOverheadHigh]
+    - alertname: SCPricingMissingForRoutedModel
+      summary: A routed model has no effective price. Requests to it are denied and routing skips it.
+      category: gateway
+      severity: critical
+      notifyClass: page
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'max by (tier) (sc_routing_unpriced_candidates) > 0'
+        for: 5m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "32"
+      runbook: procedures/pricing-update.md
+      specRefs: ["§79"]
+      aliases: [PricingMissingForRoutedModel]
+    - alertname: SCPricingEntryExpiringSoon
+      summary: A price entry ends within 7 days and has no successor.
+      category: gateway
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'min by (provider, model) (sc_pricing_entry_expiry_timestamp_seconds) - time() < 7 * 86400'
+        for: 1h
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "32"
+      runbook: procedures/pricing-update.md
+      specRefs: ["§79"]
+      aliases: [PricingEntryExpiringSoon]
+    - alertname: SCUsageNormalizationInconsistent
+      summary: Provider usage failed a normalization consistency check. Rows are recorded as estimated.
+      category: gateway
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum by (provider) (increase(sc_gateway_usage_inconsistent_total[1h])) > 0'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "32"
+      runbook: procedures/gateway-failure.md
+      specRefs: ["§79"]
+      aliases: [UsageNormalizationInconsistent]
+    - alertname: SCLedgerRollupStale
+      summary: The daily spend rollup is more than 15 minutes old. Dashboards are stale; exact views are correct.
+      category: gateway
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'max(sc_ledger_rollup_age_seconds) > 900'
+        for: 10m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "32"
+      runbook: procedures/gateway-failure.md
+      specRefs: ["§80"]
+      aliases: [LedgerRollupStale]
+    - alertname: SCRoutingTierEmpty
+      summary: A routing tier has no eligible candidate for an enabled production harness and role. Dispatches fail.
+      category: gateway
+      severity: critical
+      notifyClass: page
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'min by (harness, role, tier) (sc_routing_tier_eligible_candidates) == 0'
+        for: 5m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "31"
+      runbook: procedures/gateway-failure.md
+      specRefs: ["§75"]
+    - alertname: SCRoutingUnresolvable
+      summary: Dispatches could not be resolved to a model candidate in the last 15 minutes.
+      category: gateway
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum(increase(sc_routing_resolutions_total{result="unresolvable"}[15m])) > 0'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "31"
+      runbook: procedures/gateway-failure.md
+      specRefs: ["§75"]
+
+    # ------------------------------------------------------------------ tasks / TDD (organizational)
+    - alertname: SCTaskNeedsHuman
+      summary: A task entered NEEDS_HUMAN and requires a human decision.
+      category: task
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: needs-human
+      blackStartThreat: false
+      source: {kind: runner-post, posters: [runner], ttl: 6h, refreshInterval: 5m}
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C06
+      ownerPlan: "42"
+      signalOwnerPlan: "26"
+      runbook: procedures/tdd-task-recovery.md
+      specRefs: ["§4.8", "§97"]
+    - alertname: SCTaskRetriesExhausted
+      summary: A task exhausted its bounded retries and entered NEEDS_HUMAN.
+      category: task
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: needs-human
+      blackStartThreat: false
+      source: {kind: runner-post, posters: [runner], ttl: 6h, refreshInterval: 5m}
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C06
+      ownerPlan: "42"
+      signalOwnerPlan: "26"
+      runbook: procedures/tdd-task-recovery.md
+      specRefs: ["§74", "§96", "§97"]
+    - alertname: SCNeedsHumanBacklog
+      summary: Tasks have been waiting in NEEDS_HUMAN for over 72 hours (reminder).
+      category: task
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'max(sc_runner_tasks{state="NEEDS_HUMAN"}) > 0'
+        for: 72h
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "26"
+      runbook: procedures/tdd-task-recovery.md
+      specRefs: ["§97"]
+    - alertname: SCTddPipelineFailure
+      summary: RED/GREEN verification machinery failed 3 or more times in an hour (infrastructure, timeout, or rejected evidence).
+      category: tdd
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum(increase(sc_verification_runs_total{outcome=~"infra_error|timeout|evidence_rejected"}[1h])) >= 3'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "22"
+      runbook: procedures/tdd-task-recovery.md
+      specRefs: ["§50", "§54", "§96"]
+    - alertname: SCTddVerificationStalled
+      summary: A task has been in RED_VERIFYING or GREEN_VERIFYING for over an hour.
+      category: tdd
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum(sc_tasks_stuck{state=~"RED_VERIFYING|GREEN_VERIFYING|JUDGE_VALIDATING|JUDGING"}) > 0'
+        for: 10m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "26"
+      runbook: procedures/tdd-task-recovery.md
+      specRefs: ["§96"]
+    - alertname: SCTaskStuck
+      summary: A task has had no transition for 24 hours in a non-human, non-verifying state.
+      category: task
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum(sc_tasks_stuck{state!~"RED_VERIFYING|GREEN_VERIFYING|JUDGE_VALIDATING|JUDGING|NEEDS_HUMAN"}) > 0'
+        for: 10m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "29"
+      runbook: procedures/stuck-task-recovery.md
+      specRefs: ["§4.8", "§96"]
+    - alertname: SCTaskEventRejected
+      summary: A CI evidence or worker result event matched no state transition and was rejected (state unchanged).
+      category: task
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum(increase(sc_task_events_rejected_total{event=~".*_classified|.*_result_.*"}[15m])) > 0'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "29"
+      runbook: procedures/stuck-task-recovery.md
+      specRefs: ["§72"]
+    - alertname: SCTaskInvariantViolation
+      summary: A task-state invariant check failed. The state machine or its data is inconsistent.
+      category: task
+      severity: critical
+      notifyClass: page
+      alwaysNotify: needs-human
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'max(sc_task_invariant_violations) > 0'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "29"
+      runbook: procedures/stuck-task-recovery.md
+      specRefs: ["§72", "§73"]
+    - alertname: SCHumanTaskDecision
+      summary: A human recorded a task decision (audit trail, not delivered).
+      category: task
+      severity: info
+      notifyClass: silent
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum(increase(sc_runner_human_transitions_total[10m])) > 0'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "29"
+      runbook: procedures/tdd-task-recovery.md
+      specRefs: ["§73"]
+    - alertname: SCTaskCommandRejected
+      summary: A human task command was rejected (unauthorized, invalid state or payload).
+      category: security
+      severity: info
+      notifyClass: silent
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum(increase(sc_task_commands_rejected_total[10m])) > 0'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "29"
+      runbook: procedures/stuck-task-recovery.md
+      specRefs: ["§73"]
+    - alertname: SCContextSecretDetected
+      summary: A secret-shaped value was found in a context source (Git, handoff, evidence). The section was withheld.
+      category: security
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum(increase(sc_context_sections_withheld_total{reason="secret_detected"}[1h])) > 0'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "25"
+      runbook: procedures/quarantine-worker.md
+      specRefs: ["§94", "§98"]
+    - alertname: SCContextEvidenceMissing
+      summary: A context section could not be built because an evidence object is missing or its digest mismatched.
+      category: tdd
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum(increase(sc_context_sections_withheld_total{reason="source_unreadable"}[1h])) > 0'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "25"
+      runbook: procedures/tdd-task-recovery.md
+      specRefs: ["§66"]
+    - alertname: SCContextCompileFailures
+      summary: More than 3 context compilations failed in the last hour.
+      category: runner
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum(increase(sc_context_compile_failures_total[1h])) > 3'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "25"
+      runbook: procedures/agent-runner-failure.md
+      specRefs: ["§66"]
+    - alertname: SCTddProvenanceBypass
+      summary: A test-first PR was merged without complete TDD provenance. Merge enforcement was bypassed.
+      category: security
+      severity: critical
+      notifyClass: page
+      alwaysNotify: needs-human
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum(increase(sc_runner_merges_without_provenance_total[1h])) > 0'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "55"
+      runbook: procedures/merge-without-provenance.md
+      specRefs: ["§102"]
+    - alertname: SCProvenanceStatusForged
+      summary: A strange-company/* commit status was posted by an identity other than sc-runner. The Runner reposted its own state and opened a merge audit (CD-07).
+      category: security
+      severity: critical
+      notifyClass: page
+      alwaysNotify: needs-human
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum(increase(sc_forge_status_forged_total[15m])) > 0'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "55"
+      runbook: procedures/merge-without-provenance.md
+      specRefs: ["§102"]
+      aliases: [SCStatusForgeryDetected]
+    - alertname: SCProtectedBranchDirectPush
+      summary: A protected branch moved without a corresponding merged PR (direct push).
+      category: security
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum(increase(sc_merge_audits_total{outcome="direct_push"}[1h])) > 0'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "55"
+      runbook: procedures/merge-without-provenance.md
+      specRefs: ["§4.2", "§102"]
+    - alertname: SCForgeProjectionStale
+      summary: The Runner has not completed a Forgejo projection resync (labels, statuses, PR bodies) for 30 minutes.
+      category: forge
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'time() - max(sc_forge_projection_last_resync_timestamp_seconds) > 1800'
+        for: 5m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "55"
+      runbook: procedures/agent-runner-failure.md
+      specRefs: ["§101"]
+    - alertname: SCRepoPolicyRejected
+      summary: A task was refused because its repository policy tries to loosen platform policy.
+      category: tdd
+      severity: info
+      notifyClass: silent
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum(increase(sc_runner_dispatch_rejected_total{code="REPO_POLICY_LOOSENS_PLATFORM"}[1h])) > 0'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "22"
+      runbook: procedures/tdd-task-recovery.md
+      specRefs: ["§4.7"]
+    - alertname: SCUnsignedImageRunning
+      summary: A running internal image digest is unsigned or not in a Git lock (supply-chain check).
+      category: security
+      severity: critical
+      notifyClass: page
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: check-cronjob
+        cronjob: supply-chain-signatures
+        namespace: renovate
+        maxAge: 26h
+        failAfter: 1h
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P10
+      ownerPlan: "42"
+      signalOwnerPlan: "23"
+      runbook: procedures/credential-compromise.md
+      specRefs: ["§37"]
+    - alertname: SCVulnerabilityCriticalDeployed
+      summary: A deployed image has a critical vulnerability (supply-chain check).
+      category: security
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: check-cronjob
+        cronjob: supply-chain-vulns
+        namespace: renovate
+        maxAge: 26h
+        failAfter: 1h
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P10
+      ownerPlan: "42"
+      signalOwnerPlan: "23"
+      runbook: procedures/credential-compromise.md
+      specRefs: ["§37"]
+    - alertname: SCRenovateStale
+      summary: Renovate has not completed a successful run within 26 hours.
+      category: ci
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: check-cronjob
+        cronjob: renovate
+        namespace: renovate
+        maxAge: 26h
+        failAfter: 2h
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P10
+      ownerPlan: "42"
+      signalOwnerPlan: "23"
+      runbook: procedures/rotate-secrets.md
+      specRefs: ["§37"]
+    - alertname: SCWorkerPolicyViolation
+      summary: An execution was rejected for a policy violation (protected path, foreign ref, test tamper, admission denial).
+      category: security
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum by (code) (increase(sc_runner_violations_total[1h])) > 0'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "22"
+      runbook: procedures/quarantine-worker.md
+      specRefs: ["§53", "§85"]
+      aliases: [SCPolicyViolationDetected]
+
+    # ------------------------------------------------------------------ budget / spend
+    - alertname: SCBudgetThresholdReached
+      summary: A shared budget scope reached a warning threshold (50% or 80% of its limit).
+      category: budget
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'max by (scope_kind, provider, threshold) (sc_budget_threshold_reached{scope_kind!="global_hour"}) == 1 unless on (scope_kind, provider) (sc_budget_exhausted == 1)'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "33"
+      runbook: procedures/budget-emergency-stop.md
+      specRefs: ["§81", "§96"]
+    - alertname: SCBudgetExhausted
+      summary: A provider or global budget is exhausted, so new autonomous spending in its scope is stopped.
+      category: budget
+      severity: critical
+      notifyClass: page
+      alwaysNotify: budget-stop
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'max by (scope_kind, provider) (sc_budget_exhausted{scope_kind!="global_hour"}) == 1'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "33"
+      runbook: procedures/budget-emergency-stop.md
+      specRefs: ["§81", "§96", "§97"]
+    - alertname: SCBudgetCostIncomplete
+      summary: A budget period contains unpriced or unknown-usage rows, so its spend figure is not exact (estimated rows alone do not fire).
+      category: budget
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'max by (scope_kind, provider) (sc_budget_cost_incomplete) == 1 and on() sum(sc_ledger_incomplete_rows{period="month",kind=~"unknown|unpriced"}) > 0'
+        for: 15m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "33"
+      runbook: procedures/budget-emergency-stop.md
+      specRefs: ["§81"]
+    - alertname: SCEmergencyStopActive
+      summary: An emergency stop is active, so autonomous spending or dispatch in its scope is halted.
+      category: budget
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: budget-stop
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'max(sc_emergency_stop_level{source="effective"}) >= 1'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "33"
+      runbook: procedures/budget-emergency-stop.md
+      specRefs: ["§81", "§97"]
+    - alertname: SCEmergencyStopNotApplied
+      summary: The Runner and the Gateway disagree on the effective emergency-stop level for 2 minutes.
+      category: budget
+      severity: critical
+      notifyClass: page
+      alwaysNotify: budget-stop
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'max(sc_runner_emergency_stop_level{source="effective"}) != max(sc_emergency_stop_level{source="effective"})'
+        for: 2m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "33"
+      runbook: procedures/budget-emergency-stop.md
+      specRefs: ["§81"]
+    - alertname: SCBudgetHourlyCapReached
+      summary: The global hourly spend cap is reached. New autonomous spending is denied until the hour rolls over.
+      category: budget
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'max(sc_budget_exhausted{scope_kind="global_hour"}) == 1'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "33"
+      runbook: procedures/budget-emergency-stop.md
+      specRefs: ["§81"]
+    - alertname: SCBudgetDispatchRefused
+      summary: The Runner refused dispatch with BUDGET_EXCEEDED on a shared budget scope within the last 15 minutes; tasks wait for headroom (plan 33 §14.5, COST-7).
+      category: budget
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sum(increase(sc_runner_dispatch_refusals_total{code="BUDGET_EXCEEDED"}[15m])) > 0'
+        for: 15m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "33"
+      runbook: procedures/budget-emergency-stop.md
+      specRefs: ["§81", "§97"]
+    - alertname: SCBudgetMetricsStale
+      summary: Budget gauges have not been refreshed for 5 minutes. Budget dashboards and alerts are blind (enforcement is unaffected).
+      category: budget
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'time() - max(sc_budget_metrics_updated_timestamp_seconds) > 300'
+        for: 5m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "33"
+      runbook: procedures/gateway-failure.md
+      specRefs: ["§81"]
+    - alertname: SCAnomalousSpend
+      summary: Model spend in the last 15 minutes exceeds 4x the 7-day p95 window (and $0.50), or exceeds $8.00 (plan 33 §14.8; thresholds rendered from policy/budgets.yaml).
+      category: spend
+      severity: critical
+      notifyClass: page
+      alwaysNotify: budget-stop
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: '(sc:model_spend_micro_usd:increase15m > 4 * quantile_over_time(0.95, sc:model_spend_micro_usd:increase15m[7d] offset 15m) and sc:model_spend_micro_usd:increase15m > 500000) or sc:model_spend_micro_usd:increase15m > 8000000'
+        for: 0s
+        recordingRulesUsed: ["sc:model_spend_micro_usd:increase15m"]
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "33"
+      runbook: procedures/budget-emergency-stop.md
+      specRefs: ["§81", "§96"]
+      aliases: [AnomalousModelSpend]
+
+    # ------------------------------------------------------------------ notification test
+    - alertname: SCNotificationTest
+      summary: Synthetic notification test. Carries a nonce the operator confirms.
+      category: notification-test
+      severity: info
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source: {kind: external-post, posters: [bootstrap, operator], ttl: 15m, refreshInterval: 15m}
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "42"
+      runbook: procedures/notification-failure.md
+      specRefs: ["§97"]

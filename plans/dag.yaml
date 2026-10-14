@@ -1,0 +1,62 @@
+# Authoritative implementation dependency DAG (Stage 0).
+# Each node's gate (GATE-<id>) is defined in the "Acceptance criteria" section of
+# its owning plan(s). `deps` are hard dependencies: a node's gate cannot pass
+# until every dependency's gate has passed. Sequencing preferences that are not
+# hard dependencies are recorded under `after` and in PLAN.md.
+apiVersion: strange.company/v1alpha1
+kind: DependencyGraph
+metadata:
+  name: strange-company-implementation
+nodes:
+  # ---------------- PHASE 1 ----------------
+  - {id: F01, phase: 1, name: repo-skeleton, plans: ["01", "52"], deps: []}
+  - {id: F02, phase: 1, name: contract-tooling, plans: ["01", "52"], deps: [F01]}
+  - {id: F03, phase: 1, name: toolbox-image, plans: ["02"], deps: [F01]}
+  - {id: F04, phase: 1, name: policy-lib, plans: ["22", "26"], deps: [F02]}
+  - {id: F05, phase: 1, name: state-machine-lib, plans: ["21", "29"], deps: [F02]}
+  - {id: F06, phase: 1, name: verifier-lib, plans: ["22"], deps: [F02, F04]}
+  - {id: F07, phase: 1, name: worker-sdk-and-fake-harness, plans: ["27", "28"], deps: [F02]}
+  - {id: F08, phase: 1, name: bootstrap-orchestrator-core, plans: ["03", "06", "50"], deps: [F02, F03]}
+  - {id: F09, phase: 1, name: providers-and-paid-guardrails, plans: ["03", "04", "05"], deps: [F08]}
+  - {id: F10, phase: 1, name: node-baseline-and-k3s-roles, plans: ["07", "08", "48"], deps: [F03, F08, F09]}
+  - {id: F11, phase: 1, name: gitops-tree-offline, plans: ["18"], deps: [F02]}
+  - {id: F12, phase: 1, name: admission-and-netpol-bundle, plans: ["34", "36", "37", "51"], deps: [F11]}
+  - {id: F13, phase: 1, name: strange-company-chart-skeleton, plans: ["54"], deps: [F11, F12]}
+  # ---------------- PHASE 2 ----------------
+  - {id: P01, phase: 2, name: object-storage-and-remote-state, plans: ["06", "14"], deps: [F08]}
+  - {id: P02, phase: 2, name: provision, plans: ["03", "04", "05", "49"], deps: [F09, P01]}
+  - {id: P03, phase: 2, name: configure-node-and-k3s, plans: ["05", "07", "08", "09", "36"], deps: [P02, F10]}
+  - {id: P04, phase: 2, name: seed, plans: ["09", "10", "11", "12", "13", "16", "19", "36", "48", "51"], deps: [P03, F11, F12]}
+  - {id: P05, phase: 2, name: forge-init, plans: ["16", "17"], deps: [P04]}
+  - {id: P06, phase: 2, name: control-transfer-and-mirror, plans: ["16", "17", "18", "19", "45"], deps: [P05]}
+  - {id: P07, phase: 2, name: authentik-sso-break-glass, plans: ["15", "16"], deps: [P06]}
+  - {id: P08, phase: 2, name: woodpecker-trusted-ci, plans: ["20", "52"], deps: [P06]}
+  - {id: P09, phase: 2, name: observability-and-notifications, plans: ["13", "15", "17", "38", "39", "40", "41", "42"], deps: [P06, P07, P08]}
+  - {id: P10, phase: 2, name: backups-and-restore-tests, plans: ["06", "11", "12", "13", "14", "15", "16", "17", "35", "42", "43", "44", "45", "48", "50"], deps: [P06, P09, P08]}
+  - {id: P11, phase: 2, name: supply-chain, plans: ["17", "23", "43", "48", "52"], deps: [P08, P12]}
+  - {id: P12, phase: 2, name: bootstrap-verify-control-transfer-complete, plans: ["06", "11", "16", "17", "19", "20", "34", "38", "39", "42", "45", "49", "50", "51", "52"], deps: [P07, P08, P09, P10]}
+  # ---------------- PHASE 3 ----------------
+  - {id: C01, phase: 3, name: runner-core, plans: ["09", "26", "29", "54"], deps: [F04, F05, F13, P11]}
+  - {id: C02, phase: 3, name: k8s-adapter, plans: ["26", "27", "28", "29", "30", "34", "36", "37", "51"], deps: [C01, F07, F12, C03, C07]}
+  - {id: C03, phase: 3, name: forgejo-adapter, plans: ["26", "29", "55"], deps: [C01, P05]}
+  - {id: C04, phase: 3, name: woodpecker-adapter-red-green-evidence, plans: ["20", "21", "22"], deps: [C01, P08, F06, C02, C03]}
+  - {id: C05, phase: 3, name: model-gateway-ledger-pricing, plans: ["31", "32", "53"], deps: [C01]}
+  - {id: C06, phase: 3, name: budgets-emergency-stop-notifications, plans: ["33", "42"], deps: [C05, P09, C02, C04, C08]}
+  - {id: C07, phase: 3, name: context-compiler, plans: ["25"], deps: [C01, F04]}
+  - {id: C08, phase: 3, name: mcp-surface-and-hermes, plans: ["13", "15", "24", "26", "44"], deps: [C01, C05, P07]}
+  - {id: C09, phase: 3, name: merge-policy-enforcement, plans: ["22", "34", "55"], deps: [C03, C04, C02]}
+  - {id: C10, phase: 3, name: fake-end-to-end-tdd-flows, plans: ["21", "22", "30", "31", "33", "37", "46", "48", "55"], deps: [C02, C03, C04, C05, C06, C07, C08, C09]}
+  - {id: C11, phase: 3, name: sc-dashboards-and-alerts, plans: ["34", "38", "39", "40", "41", "42", "55"], deps: [C06, P09, C10]}
+  # ---------------- PHASE 4 ----------------
+  - {id: R01, phase: 4, name: real-harness, plans: ["28", "40"], deps: [C10]}
+  - {id: R02, phase: 4, name: self-hosting-threshold, plans: ["37", "43", "46", "51"], deps: [R01, C11, P12]}
+  # ---------------- PHASE 6 ----------------
+  - {id: H01, phase: 6, name: nodes-2-3-etcd-quorum, plans: ["05", "07", "47"], deps: [P12, R02]}
+  - {id: H02, phase: 6, name: cnpg-3-longhorn-2, plans: ["11", "12", "13", "44", "47"], deps: [H01, C08]}
+  - {id: H03, phase: 6, name: loki-tempo, plans: ["39", "40", "41", "42", "43"], deps: [H01, P09, R02]}
+  - {id: H04, phase: 6, name: ha-hardening-drills, plans: ["19", "38", "41", "42", "45", "47", "51"], deps: [H02, H03, R02]}
+milestones:
+  - {id: BOOTSTRAP-DOD, node: P12, spec: "§130"}
+  - {id: ORCHESTRATION-DOD, node: C10, spec: "§103, §106"}
+  - {id: SELF-HOSTING-THRESHOLD, node: R02, spec: "§117, §118"}
+  - {id: SMALL-HA, node: H04, spec: "§12, §119 PHASE 6"}

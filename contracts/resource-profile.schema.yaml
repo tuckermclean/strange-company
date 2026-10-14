@@ -1,0 +1,283 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://strange.company/contracts/resource-profile/v1alpha1
+title: ResourceProfiles
+description: |
+  Logical worker resource profiles (SPEC §83, §89). Hermes selects a profile *name*;
+  the Agent Runner resolves it to the Kubernetes resources, deadline and workspace
+  sizes of the worker Job it builds (plan 26 "Job manifest builder"). Hermes never
+  supplies raw resource values (SPEC §62).
+
+  File: `policy/resource-profiles.yaml` in the `strange-company` repository (owning
+  plan 26; the numbers are owned by plan 51 "capacity"). Two profile sets exist:
+  `standard` (the default 12 GiB node, ADR-0020) and `constrained` (8 GiB nodes).
+  The active set is selected by `spec.activeSet`, which the cluster overlay sets
+  per installation. Every profile name MUST exist in every set so that a task's
+  profile choice is portable across node sizes.
+
+  Invariants the policy loader (F04) enforces beyond this schema:
+  - memoryRequest == memoryLimit for every profile (no memory overcommit by agents);
+  - cpuRequest <= cpuLimit; deadline >= 5m; harnessReserve < deadline - 2m;
+  - every set defines exactly the same profile names;
+  - concurrency.maxWorkers x the largest memoryLimit in the active set <= the
+    `agent-jobs` ResourceQuota `limits.memory` rendered by the chart (plan 54).
+type: object
+additionalProperties: false
+required: [apiVersion, kind, metadata, spec]
+properties:
+  apiVersion:
+    const: strange.company/v1alpha1
+  kind:
+    const: ResourceProfiles
+  metadata:
+    type: object
+    additionalProperties: false
+    required: [name]
+    properties:
+      name:
+        type: string
+        pattern: "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
+      annotations:
+        type: object
+        additionalProperties:
+          type: string
+  spec:
+    type: object
+    additionalProperties: false
+    required: [activeSet, concurrency, sets]
+    properties:
+      activeSet:
+        description: Name of the profile set in force for this installation.
+        type: string
+        enum: [standard, constrained]
+      concurrency:
+        $ref: "#/$defs/Concurrency"
+      sets:
+        type: object
+        additionalProperties: false
+        required: [standard, constrained]
+        properties:
+          standard:
+            $ref: "#/$defs/ProfileSet"
+          constrained:
+            $ref: "#/$defs/ProfileSet"
+$defs:
+  Duration:
+    description: Go-style duration restricted to whole seconds, minutes or hours.
+    type: string
+    pattern: "^[1-9][0-9]*(s|m|h)$"
+  CpuQuantity:
+    type: string
+    pattern: "^([1-9][0-9]*m|[0-9]+(\\.[0-9]+)?)$"
+  MemoryQuantity:
+    type: string
+    pattern: "^[1-9][0-9]*(Mi|Gi)$"
+  Concurrency:
+    type: object
+    additionalProperties: false
+    required: [maxWorkers, queue]
+    properties:
+      maxWorkers:
+        description: |
+          Maximum concurrently STARTING+RUNNING worker executions (SPEC §89:
+          1 at self-hosting-minimum, 2 at small-ha). Enforced by the Runner
+          dispatcher; the agent-jobs ResourceQuota `pods` is the backstop.
+        type: integer
+        minimum: 1
+        maximum: 8
+      sharedHeavySlot:
+        description: |
+          When true (required for the `constrained` set, ADR-0020) workers and heavy CI
+          are mutually exclusive: the Runner dispatches only when the heavy-slot gate is
+          open, and every worker requests `strange.company/heavy-slot` units (node extended
+          resource, plan 51 §8.2, ADR-0156, CD-05).
+        type: boolean
+        default: false
+      queue:
+        type: object
+        additionalProperties: false
+        required: [maxQueued]
+        properties:
+          maxQueued:
+            description: QUEUED executions beyond this are refused with CONCURRENCY_LIMIT. The queue age limit is VerificationPolicy `spec.retry.infrastructure.queueTimeout` (plan 29, default 2h), not a profile field.
+            type: integer
+            minimum: 1
+            maximum: 200
+  ProfileSet:
+    type: object
+    minProperties: 1
+    propertyNames:
+      pattern: "^[a-z][a-z0-9-]{0,30}$"
+    additionalProperties:
+      $ref: "#/$defs/Profile"
+  Profile:
+    type: object
+    additionalProperties: false
+    required: [cpuRequest, cpuLimit, memoryRequest, memoryLimit, ephemeralStorageLimit, workspaceSize, deadline, harnessReserve]
+    properties:
+      description:
+        type: string
+        maxLength: 200
+      cpuRequest:
+        $ref: "#/$defs/CpuQuantity"
+      cpuLimit:
+        $ref: "#/$defs/CpuQuantity"
+      memoryRequest:
+        $ref: "#/$defs/MemoryQuantity"
+      memoryLimit:
+        $ref: "#/$defs/MemoryQuantity"
+      ephemeralStorageLimit:
+        description: Container ephemeral-storage limit (logs + writable layers; emptyDirs are bounded separately).
+        $ref: "#/$defs/MemoryQuantity"
+      workspaceSize:
+        description: sizeLimit of the `/workspace` emptyDir (clone, build tree, outputs).
+        $ref: "#/$defs/MemoryQuantity"
+      deadline:
+        description: |
+          Pod `activeDeadlineSeconds`. The Job-level deadline is deadline + 5m startup
+          grace; the sc-worker harness timeout is deadline - harnessReserve.
+        $ref: "#/$defs/Duration"
+      harnessReserve:
+        description: Time reserved after the harness for validation, commit, push and result posting.
+        $ref: "#/$defs/Duration"
+      maxHarnessTurns:
+        description: Upper bound on agent turns passed to harnesses that support it (e.g. Claude Code --max-turns).
+        type: integer
+        minimum: 1
+        maximum: 1000
+examples:
+  - apiVersion: strange.company/v1alpha1
+    kind: ResourceProfiles
+    metadata:
+      name: default
+    spec:
+      activeSet: standard
+      concurrency:
+        maxWorkers: 1
+        sharedHeavySlot: false
+        queue:
+          maxQueued: 20
+      sets:
+        standard:
+          tiny:
+            description: Research, planning summaries, review of small diffs.
+            cpuRequest: 250m
+            cpuLimit: "1"
+            memoryRequest: 1Gi
+            memoryLimit: 1Gi
+            ephemeralStorageLimit: 1Gi
+            workspaceSize: 2Gi
+            deadline: 10m
+            harnessReserve: 3m
+            maxHarnessTurns: 40
+          tests:
+            cpuRequest: 500m
+            cpuLimit: "2"
+            memoryRequest: 2Gi
+            memoryLimit: 2Gi
+            ephemeralStorageLimit: 2Gi
+            workspaceSize: 4Gi
+            deadline: 20m
+            harnessReserve: 4m
+            maxHarnessTurns: 80
+          implementation:
+            cpuRequest: 500m
+            cpuLimit: "2"
+            memoryRequest: 4Gi
+            memoryLimit: 4Gi
+            ephemeralStorageLimit: 2Gi
+            workspaceSize: 6Gi
+            deadline: 30m
+            harnessReserve: 5m
+            maxHarnessTurns: 120
+          reasoning:
+            cpuRequest: 500m
+            cpuLimit: "2"
+            memoryRequest: 4Gi
+            memoryLimit: 4Gi
+            ephemeralStorageLimit: 2Gi
+            workspaceSize: 6Gi
+            deadline: 45m
+            harnessReserve: 5m
+            maxHarnessTurns: 160
+        constrained:
+          tiny:
+            cpuRequest: 250m
+            cpuLimit: "1"
+            memoryRequest: 768Mi
+            memoryLimit: 768Mi
+            ephemeralStorageLimit: 1Gi
+            workspaceSize: 2Gi
+            deadline: 10m
+            harnessReserve: 3m
+          tests:
+            cpuRequest: 500m
+            cpuLimit: "2"
+            memoryRequest: 1536Mi
+            memoryLimit: 1536Mi
+            ephemeralStorageLimit: 1Gi
+            workspaceSize: 3Gi
+            deadline: 25m
+            harnessReserve: 4m
+          implementation:
+            cpuRequest: 500m
+            cpuLimit: "2"
+            memoryRequest: 2560Mi
+            memoryLimit: 2560Mi
+            ephemeralStorageLimit: 1Gi
+            workspaceSize: 4Gi
+            deadline: 40m
+            harnessReserve: 5m
+          reasoning:
+            cpuRequest: 500m
+            cpuLimit: "2"
+            memoryRequest: 2560Mi
+            memoryLimit: 2560Mi
+            ephemeralStorageLimit: 1Gi
+            workspaceSize: 4Gi
+            deadline: 50m
+            harnessReserve: 5m
+x-invalid-examples:
+  - reason: Unknown active set name.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: ResourceProfiles
+      metadata: {name: default}
+      spec:
+        activeSet: large
+        concurrency: {maxWorkers: 1, queue: {maxQueued: 20}}
+        sets:
+          standard: {tiny: {cpuRequest: 250m, cpuLimit: "1", memoryRequest: 1Gi, memoryLimit: 1Gi, ephemeralStorageLimit: 1Gi, workspaceSize: 2Gi, deadline: 10m, harnessReserve: 3m}}
+          constrained: {tiny: {cpuRequest: 250m, cpuLimit: "1", memoryRequest: 768Mi, memoryLimit: 768Mi, ephemeralStorageLimit: 1Gi, workspaceSize: 2Gi, deadline: 10m, harnessReserve: 3m}}
+  - reason: Raw Kubernetes resource block instead of profile fields (Hermes-style arbitrary resources are not a profile).
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: ResourceProfiles
+      metadata: {name: default}
+      spec:
+        activeSet: standard
+        concurrency: {maxWorkers: 1, queue: {maxQueued: 20}}
+        sets:
+          standard: {tiny: {resources: {limits: {cpu: "1", memory: 1Gi}}}}
+          constrained: {tiny: {resources: {limits: {cpu: "1", memory: 1Gi}}}}
+  - reason: Memory quantity in bytes without a binary unit, and a fractional-second deadline.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: ResourceProfiles
+      metadata: {name: default}
+      spec:
+        activeSet: standard
+        concurrency: {maxWorkers: 1, queue: {maxQueued: 20}}
+        sets:
+          standard: {tiny: {cpuRequest: 250m, cpuLimit: "1", memoryRequest: "1073741824", memoryLimit: 1Gi, ephemeralStorageLimit: 1Gi, workspaceSize: 2Gi, deadline: 0.5m, harnessReserve: 3m}}
+          constrained: {tiny: {cpuRequest: 250m, cpuLimit: "1", memoryRequest: 768Mi, memoryLimit: 768Mi, ephemeralStorageLimit: 1Gi, workspaceSize: 2Gi, deadline: 10m, harnessReserve: 3m}}
+  - reason: maxWorkers above the hard ceiling.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: ResourceProfiles
+      metadata: {name: default}
+      spec:
+        activeSet: standard
+        concurrency: {maxWorkers: 50, queue: {maxQueued: 20}}
+        sets:
+          standard: {tiny: {cpuRequest: 250m, cpuLimit: "1", memoryRequest: 1Gi, memoryLimit: 1Gi, ephemeralStorageLimit: 1Gi, workspaceSize: 2Gi, deadline: 10m, harnessReserve: 3m}}
+          constrained: {tiny: {cpuRequest: 250m, cpuLimit: "1", memoryRequest: 768Mi, memoryLimit: 768Mi, ephemeralStorageLimit: 1Gi, workspaceSize: 2Gi, deadline: 10m, harnessReserve: 3m}}

@@ -1,0 +1,561 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://strange.company/contracts/worker-input/v1alpha1
+title: WorkerTaskPacket
+description: |
+  The task packet a worker fetches from the Agent Runner with its task token
+  (`GET /v1/worker/packet`, SC-WORKER-TASK-TOKEN). Owning plan 27; SPEC §44, §66, §67, §86.
+
+  The packet is the worker's *only* source of task instructions. It is compiled by the
+  Runner from durable task state, platform policy and the base-revision repository policy.
+  It never contains secret values: credentials are referenced by file name inside the
+  per-execution Secret mounted at `/var/run/sc/secrets` (plan 26 Job builder).
+
+  Branch topology is decided by the Runner and carried in `git`:
+  - `create`: create `agent/<task-id>` at `start_commit` (== `base_commit`); the remote branch must not exist.
+  - `continue`: the remote `agent/<task-id>` must point at exactly `start_commit`; commit on top.
+  - `readonly`: detached checkout of `start_commit`; no push (read-only deploy key).
+type: object
+additionalProperties: false
+required: [schema_version, task, execution, git, credentials, gateway, context, policy, limits, harness]
+properties:
+  schema_version:
+    const: v1alpha1
+  task:
+    type: object
+    additionalProperties: false
+    required: [task_id, title, objective, repository, source, acceptance_criteria, scoped_acceptance_criteria, verification, constraints]
+    properties:
+      task_id:
+        $ref: "#/$defs/TaskId"
+      title:
+        type: string
+        maxLength: 200
+      objective:
+        type: string
+        minLength: 1
+        maxLength: 8000
+      repository:
+        $ref: "#/$defs/Repo"
+      source:
+        type: object
+        additionalProperties: false
+        required: [kind]
+        properties:
+          kind:
+            type: string
+            enum: [human, forgejo_issue, parent_task, hermes]
+          ref:
+            type: string
+            maxLength: 300
+      acceptance_criteria:
+        type: array
+        minItems: 1
+        maxItems: 50
+        items:
+          type: object
+          additionalProperties: false
+          required: [id, text]
+          properties:
+            id:
+              type: string
+              pattern: "^AC-[1-9][0-9]{0,2}$"
+            text:
+              type: string
+              minLength: 1
+              maxLength: 2000
+      scoped_acceptance_criteria:
+        description: AC ids this execution is responsible for (subset of acceptance_criteria; default all).
+        type: array
+        minItems: 1
+        items:
+          type: string
+          pattern: "^AC-[1-9][0-9]{0,2}$"
+      verification:
+        type: object
+        additionalProperties: false
+        required: [mode]
+        properties:
+          mode:
+            type: string
+            enum: [test-first, verification-first]
+          exemption:
+            description: Approved exemption class (plan 22), present only if the Runner approved it.
+            type: string
+            pattern: "^[a-z][a-z0-9-]{1,40}$"
+      constraints:
+        type: array
+        maxItems: 30
+        items:
+          type: string
+          maxLength: 1000
+  execution:
+    type: object
+    additionalProperties: false
+    required: [execution_id, attempt, role, harness, profile, model_tier, phase, policy_revision, policy_commit, dispatched_at, deadline_at]
+    properties:
+      execution_id:
+        $ref: "#/$defs/ExecutionId"
+      attempt:
+        description: Per-task attempt counter of this role (1-based), as recorded by the Runner.
+        type: integer
+        minimum: 1
+        maximum: 20
+      role:
+        type: string
+        enum: [researcher, planner, tester, implementer, reviewer]
+      harness:
+        type: string
+        pattern: "^[a-z][a-z0-9-]{1,40}$"
+      profile:
+        type: string
+        pattern: "^[a-z][a-z0-9-]{0,30}$"
+      model_tier:
+        type: string
+        enum: [clerical, bargain, standard, frontier]
+      phase:
+        description: Accounting phase (SPEC §82); identical to the gateway token `phase` claim (gateway-token.schema.yaml, plan 53).
+        type: string
+        enum: [specification, test_authoring, implementation, green_retry, review]
+      policy_revision:
+        description: Content digest of the loaded platform policy set (plan 26 policy loader).
+        $ref: "#/$defs/Sha256"
+      policy_commit:
+        description: Git commit of `strange-company` whose `policy/` tree has digest policy_revision (also the gateway token `policy_revision` claim).
+        $ref: "#/$defs/GitSha"
+      dispatched_at:
+        type: string
+        format: date-time
+      deadline_at:
+        description: Wall-clock instant at which the pod deadline (activeDeadlineSeconds) expires.
+        type: string
+        format: date-time
+      purpose:
+        description: Reviewer purpose (plans 21/29); present only for role reviewer. `adjudication` requires `role_output.conflict_decision` in the result.
+        type: string
+        enum: [final_review, test_review, investigation, adjudication]
+      traceparent:
+        description: W3C traceparent of the Runner's `sc.execution` span; sc-worker parents its spans on it (plan 40).
+        type: string
+        pattern: "^00-[a-f0-9]{32}-[a-f0-9]{16}-[a-f0-9]{2}$"
+  git:
+    type: object
+    additionalProperties: false
+    required: [clone_url, repository, fetch_ref, base_commit, start_commit, branch, branch_mode, push_allowed, commit]
+    properties:
+      clone_url:
+        description: In-cluster Forgejo SSH URL (ADR-0007). HTTPS and file URLs are rejected by sc-worker.
+        type: string
+        pattern: "^ssh://git@[a-z0-9.-]+(:[0-9]{1,5})?/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\\.git$"
+      repository:
+        $ref: "#/$defs/Repo"
+      fetch_ref:
+        description: |
+          The only remote ref sc-worker fetches (no tags, no other branches; plan 27 §14.4). It must
+          contain start_commit: the base branch for `create` and for read-only roles at base, and
+          `refs/heads/agent/<task-id>` for `continue` and for reviewers. Keeping the clone narrow
+          keeps archived implementations and other tasks' branches out of a tester's checkout (SPEC §48).
+        type: string
+        pattern: "^refs/heads/[A-Za-z0-9._/-]{1,200}$"
+      base_commit:
+        $ref: "#/$defs/GitSha"
+      start_commit:
+        $ref: "#/$defs/GitSha"
+      branch:
+        type: string
+        pattern: "^agent/sc-[0-9]+$"
+      branch_mode:
+        type: string
+        enum: [create, continue, readonly]
+      push_allowed:
+        type: boolean
+      commit:
+        type: object
+        additionalProperties: false
+        required: [subject_prefix, author_name, author_email, trailers]
+        properties:
+          subject_prefix:
+            description: "e.g. `test(sc-184): ` or `feat(sc-184): `"
+            type: string
+            pattern: "^(test|feat|fix|docs|chore)\\(sc-[0-9]+\\): $"
+          author_name:
+            type: string
+            maxLength: 100
+          author_email:
+            type: string
+            pattern: "^sc-[0-9]+-x[0-9]+@agents\\.strange-company\\.invalid$"
+          trailers:
+            type: object
+            additionalProperties: false
+            required: [SC-Task, SC-Execution, SC-Role, SC-Base]
+            properties:
+              SC-Task: {$ref: "#/$defs/TaskId"}
+              SC-Execution: {$ref: "#/$defs/ExecutionId"}
+              SC-Role: {type: string, enum: [researcher, planner, tester, implementer, reviewer]}
+              SC-Base: {$ref: "#/$defs/GitSha"}
+    allOf:
+      - if: {properties: {branch_mode: {const: readonly}}}
+        then: {properties: {push_allowed: {const: false}}}
+      - if: {properties: {branch_mode: {const: create}}}
+        then: {properties: {push_allowed: {const: true}}}
+  credentials:
+    description: |
+      File names (not values) of the per-execution Secret. Two-container worker pod (plan 26 §13,
+      ADR-0402): the `sc-worker` container mounts the full Secret at `secrets_dir`; the `harness`
+      container mounts only `gateway-token` and `egress-token` at `harness_secrets_dir`. The
+      deploy key and the Runner task token are never visible to the harness container.
+    type: object
+    additionalProperties: false
+    required: [secrets_dir, deploy_key_file, known_hosts_file, gateway_token_file, harness_secrets_dir, egress_token_file]
+    properties:
+      secrets_dir:
+        const: /var/run/sc/secrets
+      deploy_key_file:
+        const: deploy-key
+      known_hosts_file:
+        const: known_hosts
+      gateway_token_file:
+        const: gateway-token
+      harness_secrets_dir:
+        const: /var/run/sc/harness-secrets
+      egress_token_file:
+        description: "Egress-proxy token (`token_use` egress, contracts/task-token.schema.yaml)."
+        const: egress-token
+  gateway:
+    type: object
+    additionalProperties: false
+    required: [base_urls, provider, model, allowed_models]
+    properties:
+      base_urls:
+        description: Gateway route base URL per API family (plan 53). Only in-cluster http(s) URLs to model-gateway.
+        type: object
+        minProperties: 1
+        propertyNames:
+          enum: [anthropic-messages, openai-responses, openai-chat-completions, google-generative, fake]
+        additionalProperties:
+          type: string
+          pattern: "^http://model-gateway\\.strange-company\\.svc(\\.cluster\\.local)?:[0-9]{2,5}/[a-z0-9/._-]*$"
+      provider:
+        type: string
+        pattern: "^[a-z][a-z0-9-]{1,30}$"
+      model:
+        description: Concrete model resolved by routing (plan 31) for this execution.
+        type: string
+        maxLength: 120
+      api_family:
+        description: API family of the primary model (plan 31 RoutingDecision); selects the base URL entry.
+        type: string
+        enum: [anthropic-messages, openai-responses, openai-chat-completions, google-generative, fake]
+      auxiliary_model:
+        description: Optional auxiliary (background) model resolved by routing (plan 31 §14.5); null means background calls must use `model`.
+        type: [string, "null"]
+        maxLength: 120
+      auxiliary_model_env:
+        description: Harness environment variable names that select its background/small model for the pinned CLI version (`ModelRouting.harnesses.<h>.auxiliary.envHint`, plan 31 VS-R1). sc-worker sets them to `auxiliary_model` or, if null, to `model`.
+        type: array
+        maxItems: 6
+        items: {type: string, pattern: "^[A-Z][A-Z0-9_]{1,63}$"}
+      allowed_models:
+        description: Models the gateway token permits (the Gateway enforces this; listed here for harness config).
+        type: array
+        minItems: 1
+        items:
+          type: string
+          maxLength: 120
+      max_output_tokens:
+        type: integer
+        minimum: 1
+        maximum: 200000
+  context:
+    $ref: "https://strange.company/contracts/context/v1alpha1#/$defs/ContextPacket"
+  policy:
+    description: Policy excerpts the worker applies as *pre-checks*. The Runner re-checks everything on ingestion.
+    type: object
+    additionalProperties: false
+    required: [protected_paths, diff_mode, diff_allow, diff_deny, max_files_changed, max_diff_bytes, allow_deletions, validation_commands, forbidden_actions]
+    properties:
+      protected_paths:
+        $ref: "#/$defs/GlobList"
+      diff_mode:
+        type: string
+        enum: [none, allowlist, denylist]
+      diff_allow:
+        $ref: "#/$defs/GlobList"
+      diff_deny:
+        $ref: "#/$defs/GlobList"
+      max_files_changed:
+        type: integer
+        minimum: 0
+      max_diff_bytes:
+        type: integer
+        minimum: 0
+      allow_deletions:
+        type: boolean
+      validation_commands:
+        description: Allowed local validation (advisory; SPEC §36). From base-revision validation.yaml (plan 22).
+        type: array
+        maxItems: 10
+        items:
+          type: object
+          additionalProperties: false
+          required: [name, argv, timeout_seconds]
+          properties:
+            name:
+              type: string
+              pattern: "^[a-z][a-z0-9-]{0,40}$"
+            argv:
+              description: Executed without a shell.
+              type: array
+              minItems: 1
+              maxItems: 40
+              items:
+                type: string
+                maxLength: 500
+            timeout_seconds:
+              type: integer
+              minimum: 1
+              maximum: 1800
+      forbidden_actions:
+        type: array
+        items:
+          type: string
+          maxLength: 300
+  limits:
+    type: object
+    additionalProperties: false
+    required: [harness_timeout_seconds, term_grace_seconds, heartbeat_interval_seconds, max_result_bytes, max_handoff_bytes, max_log_bytes]
+    properties:
+      harness_timeout_seconds:
+        type: integer
+        minimum: 60
+        maximum: 21600
+      term_grace_seconds:
+        type: integer
+        minimum: 5
+        maximum: 120
+      heartbeat_interval_seconds:
+        type: integer
+        minimum: 10
+        maximum: 120
+      max_result_bytes:
+        type: integer
+        minimum: 4096
+        maximum: 1048576
+      max_handoff_bytes:
+        type: integer
+        minimum: 1024
+        maximum: 65536
+      max_log_bytes:
+        type: integer
+        minimum: 65536
+        maximum: 52428800
+  harness:
+    description: Resolved adapter settings (registry defaults narrowed by role/profile). Never derived from Hermes free text.
+    type: object
+    additionalProperties: false
+    required: [adapter, cli_version]
+    properties:
+      adapter:
+        type: string
+        enum: [claude-code, codex, opencode, fake]
+      cli_version:
+        type: string
+        maxLength: 40
+      max_turns:
+        type: integer
+        minimum: 1
+        maximum: 1000
+      permission_mode:
+        type: string
+        maxLength: 40
+      allowed_tools:
+        type: array
+        items: {type: string, maxLength: 120}
+      disallowed_tools:
+        type: array
+        items: {type: string, maxLength: 120}
+      extra_args:
+        type: array
+        items: {type: string, maxLength: 120}
+      environment:
+        type: object
+        propertyNames:
+          pattern: "^[A-Z][A-Z0-9_]{1,63}$"
+        additionalProperties:
+          type: string
+          maxLength: 512
+      fake_scenario:
+        type: string
+        maxLength: 40
+      disable_worker_timeout:
+        type: boolean
+$defs:
+  TaskId:
+    type: string
+    pattern: "^sc-[0-9]+$"
+  ExecutionId:
+    type: string
+    pattern: "^sc-[0-9]+-x[0-9]+$"
+  Repo:
+    type: string
+    pattern: "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+  GitSha:
+    type: string
+    pattern: "^[a-f0-9]{40}$"
+  Sha256:
+    type: string
+    pattern: "^sha256:[a-f0-9]{64}$"
+  GlobList:
+    type: array
+    maxItems: 200
+    items:
+      type: string
+      pattern: "^(?!/)[A-Za-z0-9._@+*?{},/\\[\\]-]{1,200}$"
+examples:
+  - schema_version: v1alpha1
+    task:
+      task_id: sc-184
+      title: Preserve method on HTTP 307
+      objective: Make the HTTP client preserve the request method and body on 307 redirects.
+      repository: projects/example
+      source: {kind: forgejo_issue, ref: projects/example#184}
+      acceptance_criteria:
+        - {id: AC-1, text: HTTP 307 preserves the original method.}
+        - {id: AC-2, text: HTTP 307 preserves the request body.}
+      scoped_acceptance_criteria: [AC-1, AC-2]
+      verification: {mode: test-first}
+      constraints: [Do not change the public API of package httpx.]
+    execution:
+      execution_id: sc-184-x1
+      attempt: 1
+      role: tester
+      harness: claude
+      profile: tests
+      model_tier: standard
+      phase: test_authoring
+      policy_revision: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      policy_commit: 89abcdef0123456789abcdef0123456789abcdef
+      dispatched_at: "2026-10-13T12:00:00Z"
+      deadline_at: "2026-10-13T12:20:00Z"
+      traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+    git:
+      clone_url: ssh://git@forgejo-ssh.forgejo.svc.cluster.local:22/projects/example.git
+      repository: projects/example
+      fetch_ref: refs/heads/main
+      base_commit: 0123456789abcdef0123456789abcdef01234567
+      start_commit: 0123456789abcdef0123456789abcdef01234567
+      branch: agent/sc-184
+      branch_mode: create
+      push_allowed: true
+      commit:
+        subject_prefix: "test(sc-184): "
+        author_name: Strange Company tester (sc-184-x1)
+        author_email: sc-184-x1@agents.strange-company.invalid
+        trailers:
+          SC-Task: sc-184
+          SC-Execution: sc-184-x1
+          SC-Role: tester
+          SC-Base: 0123456789abcdef0123456789abcdef01234567
+    credentials:
+      secrets_dir: /var/run/sc/secrets
+      deploy_key_file: deploy-key
+      known_hosts_file: known_hosts
+      gateway_token_file: gateway-token
+      harness_secrets_dir: /var/run/sc/harness-secrets
+      egress_token_file: egress-token
+    gateway:
+      base_urls:
+        anthropic-messages: http://model-gateway.strange-company.svc.cluster.local:8080/p/anthropic
+      provider: anthropic
+      model: claude-sonnet-5
+      allowed_models: [claude-sonnet-5]
+      max_output_tokens: 32000
+    context:
+      packet_id: ctx-sc-184-x1
+      task_id: sc-184
+      execution_id: sc-184-x1
+      role: tester
+      compiled_at: "2026-10-13T12:00:00Z"
+      compiler_version: 0.1.0
+      policy_revision: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      base_commit: 0123456789abcdef0123456789abcdef01234567
+      budget: {max_bytes: 262144, used_bytes: 59}
+      sections:
+        - id: acceptance-criteria
+          kind: acceptance_criteria
+          layer: task
+          authority: authoritative
+          title: Acceptance criteria
+          media_type: application/json
+          materialize_as: 20-acceptance-criteria.json
+          content: '[{"id":"AC-1","text":"HTTP 307 preserves the original method."}]'
+          truncated: false
+          original_bytes: 59
+          sources:
+            - {kind: task_record, ref: sc-184, digest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}
+      withheld:
+        - {kind: implementation_diff, reason: forbidden_for_role}
+      digest: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    policy:
+      protected_paths: [".woodpecker/**", ".strange-company/**", "AGENTS.md", "policy/**", "contracts/**"]
+      diff_mode: allowlist
+      diff_allow: ["**/*_test.go", "testdata/**"]
+      diff_deny: [".woodpecker/**", ".strange-company/**", "AGENTS.md", "policy/**", "contracts/**"]
+      max_files_changed: 40
+      max_diff_bytes: 262144
+      allow_deletions: false
+      validation_commands:
+        - {name: unit, argv: [go, test, ./...], timeout_seconds: 600}
+      forbidden_actions: [push to any branch other than agent/sc-184, modify protected paths]
+    limits:
+      harness_timeout_seconds: 960
+      term_grace_seconds: 30
+      heartbeat_interval_seconds: 30
+      max_result_bytes: 262144
+      max_handoff_bytes: 32768
+      max_log_bytes: 10485760
+    harness:
+      adapter: claude-code
+      cli_version: 2.1.290
+      max_turns: 80
+      permission_mode: dontAsk
+      allowed_tools: [Read, Edit, Write, Glob, Grep, "Bash(go test *)"]
+      disallowed_tools: [WebFetch, WebSearch, "mcp__*"]
+      extra_args: [--bare, --strict-mcp-config, --no-session-persistence]
+      environment: {CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"}
+x-invalid-examples:
+  - reason: Secret value embedded in the packet (credentials must be file references only).
+    value:
+      schema_version: v1alpha1
+      task: {task_id: sc-1, title: t, objective: o, repository: a/b, source: {kind: human}, acceptance_criteria: [{id: AC-1, text: t}], scoped_acceptance_criteria: [AC-1], verification: {mode: test-first}, constraints: []}
+      execution: {execution_id: sc-1-x1, attempt: 1, role: tester, harness: claude, profile: tests, model_tier: standard, phase: test_authoring, policy_revision: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", policy_commit: 89abcdef0123456789abcdef0123456789abcdef, dispatched_at: "2026-10-13T12:00:00Z", deadline_at: "2026-10-13T12:20:00Z"}
+      git: {clone_url: "ssh://git@forgejo-ssh.forgejo.svc:22/a/b.git", repository: a/b, fetch_ref: refs/heads/main, base_commit: 0123456789abcdef0123456789abcdef01234567, start_commit: 0123456789abcdef0123456789abcdef01234567, branch: agent/sc-1, branch_mode: create, push_allowed: true, commit: {subject_prefix: "test(sc-1): ", author_name: x, author_email: sc-1-x1@agents.strange-company.invalid, trailers: {SC-Task: sc-1, SC-Execution: sc-1-x1, SC-Role: tester, SC-Base: 0123456789abcdef0123456789abcdef01234567}}}
+      credentials: {secrets_dir: /var/run/sc/secrets, deploy_key_file: deploy-key, known_hosts_file: known_hosts, gateway_token_file: gateway-token, harness_secrets_dir: /var/run/sc/harness-secrets, egress_token_file: egress-token, deploy_key: "-----BEGIN OPENSSH PRIVATE KEY-----"}
+      gateway: {base_urls: {anthropic-messages: "http://model-gateway.strange-company.svc.cluster.local:8080/p/anthropic"}, provider: anthropic, model: m, allowed_models: [m]}
+      context: {packet_id: ctx-sc-1-x1, task_id: sc-1, execution_id: sc-1-x1, role: tester, compiled_at: "2026-10-13T12:00:00Z", compiler_version: "0.1.0", policy_revision: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", base_commit: 0123456789abcdef0123456789abcdef01234567, budget: {max_bytes: 4096, used_bytes: 0}, sections: [], withheld: [], digest: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"}
+      policy: {protected_paths: [], diff_mode: allowlist, diff_allow: [], diff_deny: [], max_files_changed: 1, max_diff_bytes: 1, allow_deletions: false, validation_commands: [], forbidden_actions: []}
+      limits: {harness_timeout_seconds: 600, term_grace_seconds: 30, heartbeat_interval_seconds: 30, max_result_bytes: 4096, max_handoff_bytes: 1024, max_log_bytes: 65536}
+      harness: {adapter: claude-code, cli_version: "2.1.290"}
+  - reason: Gateway base URL pointing directly at a provider instead of the Model Gateway (ADR-0004).
+    value:
+      schema_version: v1alpha1
+      task: {task_id: sc-1, title: t, objective: o, repository: a/b, source: {kind: human}, acceptance_criteria: [{id: AC-1, text: t}], scoped_acceptance_criteria: [AC-1], verification: {mode: test-first}, constraints: []}
+      execution: {execution_id: sc-1-x1, attempt: 1, role: tester, harness: claude, profile: tests, model_tier: standard, phase: test_authoring, policy_revision: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", policy_commit: 89abcdef0123456789abcdef0123456789abcdef, dispatched_at: "2026-10-13T12:00:00Z", deadline_at: "2026-10-13T12:20:00Z"}
+      git: {clone_url: "ssh://git@forgejo-ssh.forgejo.svc:22/a/b.git", repository: a/b, fetch_ref: refs/heads/main, base_commit: 0123456789abcdef0123456789abcdef01234567, start_commit: 0123456789abcdef0123456789abcdef01234567, branch: agent/sc-1, branch_mode: create, push_allowed: true, commit: {subject_prefix: "test(sc-1): ", author_name: x, author_email: sc-1-x1@agents.strange-company.invalid, trailers: {SC-Task: sc-1, SC-Execution: sc-1-x1, SC-Role: tester, SC-Base: 0123456789abcdef0123456789abcdef01234567}}}
+      credentials: {secrets_dir: /var/run/sc/secrets, deploy_key_file: deploy-key, known_hosts_file: known_hosts, gateway_token_file: gateway-token, harness_secrets_dir: /var/run/sc/harness-secrets, egress_token_file: egress-token}
+      gateway: {base_urls: {anthropic-messages: "https://api.anthropic.com"}, provider: anthropic, model: m, allowed_models: [m]}
+      context: {packet_id: ctx-sc-1-x1, task_id: sc-1, execution_id: sc-1-x1, role: tester, compiled_at: "2026-10-13T12:00:00Z", compiler_version: "0.1.0", policy_revision: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", base_commit: 0123456789abcdef0123456789abcdef01234567, budget: {max_bytes: 4096, used_bytes: 0}, sections: [], withheld: [], digest: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"}
+      policy: {protected_paths: [], diff_mode: allowlist, diff_allow: [], diff_deny: [], max_files_changed: 1, max_diff_bytes: 1, allow_deletions: false, validation_commands: [], forbidden_actions: []}
+      limits: {harness_timeout_seconds: 600, term_grace_seconds: 30, heartbeat_interval_seconds: 30, max_result_bytes: 4096, max_handoff_bytes: 1024, max_log_bytes: 65536}
+      harness: {adapter: claude-code, cli_version: "2.1.290"}
+  - reason: Read-only checkout that allows push.
+    value:
+      schema_version: v1alpha1
+      task: {task_id: sc-1, title: t, objective: o, repository: a/b, source: {kind: human}, acceptance_criteria: [{id: AC-1, text: t}], scoped_acceptance_criteria: [AC-1], verification: {mode: test-first}, constraints: []}
+      execution: {execution_id: sc-1-x2, attempt: 1, role: reviewer, harness: claude, profile: reasoning, model_tier: standard, phase: review, policy_revision: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", policy_commit: 89abcdef0123456789abcdef0123456789abcdef, dispatched_at: "2026-10-13T12:00:00Z", deadline_at: "2026-10-13T12:20:00Z"}
+      git: {clone_url: "ssh://git@forgejo-ssh.forgejo.svc:22/a/b.git", repository: a/b, fetch_ref: refs/heads/main, base_commit: 0123456789abcdef0123456789abcdef01234567, start_commit: 0123456789abcdef0123456789abcdef01234567, branch: agent/sc-1, branch_mode: readonly, push_allowed: true, commit: {subject_prefix: "docs(sc-1): ", author_name: x, author_email: sc-1-x2@agents.strange-company.invalid, trailers: {SC-Task: sc-1, SC-Execution: sc-1-x2, SC-Role: reviewer, SC-Base: 0123456789abcdef0123456789abcdef01234567}}}
+      credentials: {secrets_dir: /var/run/sc/secrets, deploy_key_file: deploy-key, known_hosts_file: known_hosts, gateway_token_file: gateway-token, harness_secrets_dir: /var/run/sc/harness-secrets, egress_token_file: egress-token}
+      gateway: {base_urls: {anthropic-messages: "http://model-gateway.strange-company.svc.cluster.local:8080/p/anthropic"}, provider: anthropic, model: m, allowed_models: [m]}
+      context: {packet_id: ctx-sc-1-x2, task_id: sc-1, execution_id: sc-1-x2, role: reviewer, compiled_at: "2026-10-13T12:00:00Z", compiler_version: "0.1.0", policy_revision: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", base_commit: 0123456789abcdef0123456789abcdef01234567, budget: {max_bytes: 4096, used_bytes: 0}, sections: [], withheld: [], digest: "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"}
+      policy: {protected_paths: [], diff_mode: none, diff_allow: [], diff_deny: [], max_files_changed: 0, max_diff_bytes: 0, allow_deletions: false, validation_commands: [], forbidden_actions: []}
+      limits: {harness_timeout_seconds: 600, term_grace_seconds: 30, heartbeat_interval_seconds: 30, max_result_bytes: 4096, max_handoff_bytes: 1024, max_log_bytes: 65536}
+      harness: {adapter: claude-code, cli_version: "2.1.290"}

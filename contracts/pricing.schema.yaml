@@ -1,0 +1,457 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://strange.company/contracts/pricing/v1alpha1
+title: PricingTable
+description: |
+  Versioned, time-windowed model price card for one provider (SPEC §79, lessons L-3).
+  Files: `policy/pricing/<provider>.yaml` in the `strange-company` repository, one
+  `PricingTable` per file (owning plan 32). Delivered to the Model Gateway and Runner as a
+  Flux-generated ConfigMap (D-17).
+
+  Money is a decimal string in USD with at most 6 fractional digits (exactly representable
+  as integer micro-USD); floats are forbidden. Prices are USD per 1,000,000 tokens.
+
+  `status: unpriced` is an explicit statement that no trustworthy rate exists. It is
+  distinct from a price of "0". The Gateway denies requests to an unpriced model
+  (SC_PRICE_UNKNOWN). A genuinely free model is expressed as `status: priced` with "0" rates.
+
+  Semantics (plan 32 §9):
+  - An entry applies to (provider, model, serviceTier) for instants in
+    [effectiveFrom, effectiveTo). effectiveTo null = open-ended.
+  - Token categories are DISJOINT after normalization (plan 32 §8): `inputPerMillion`
+    applies to uncached, non-cache-write input; `cachedInputPerMillion` to cache reads;
+    `cacheWritePerMillion` to cache writes with the provider's default TTL;
+    `cacheWrite1hPerMillion` to the 1-hour-TTL subset where a provider distinguishes it;
+    `outputPerMillion` to non-reasoning output; `reasoningPerMillion` to reasoning tokens
+    when reported separately (absent = priced at `outputPerMillion`).
+  - `timeWindows`: first matching window wins; if none match, `rates` apply. The
+    instant tested is chosen by `windowBasis`. Windows are UTC.
+  - `longContextTiers`: if the request's total prompt tokens (input + cached input +
+    cache write) exceed `aboveInputTokens`, the WHOLE request is priced with that
+    tier's rates (highest matching threshold wins).
+  - `timeWindows` and `longContextTiers` are mutually exclusive in one entry.
+
+  Load-time invariants enforced by the policy loader (F04) beyond this schema; any
+  violation rejects the whole file and the last-known-good pricing is kept:
+  - no two entries for the same (model, serviceTier) have overlapping effective intervals;
+  - `version` is unique per (model, serviceTier);
+  - effectiveTo > effectiveFrom;
+  - within an entry, windows have from < to (`to` may be "24:00"), and no two windows
+    overlap on any day;
+  - longContextTiers thresholds are strictly increasing;
+  - `spec.provider` equals `metadata.name` and names a provider in ModelRouting.
+type: object
+additionalProperties: false
+required: [apiVersion, kind, metadata, spec]
+properties:
+  apiVersion:
+    const: strange.company/v1alpha1
+  kind:
+    const: PricingTable
+  metadata:
+    type: object
+    additionalProperties: false
+    required: [name]
+    properties:
+      name:
+        type: string
+        pattern: "^[a-z][a-z0-9-]{0,31}$"
+  spec:
+    type: object
+    additionalProperties: false
+    required: [provider, currency, entries]
+    properties:
+      provider:
+        type: string
+        pattern: "^[a-z][a-z0-9-]{0,31}$"
+      currency:
+        const: USD
+      entries:
+        type: array
+        minItems: 1
+        items:
+          $ref: "#/$defs/Entry"
+$defs:
+  Money:
+    description: |
+      Non-negative USD-per-million-tokens decimal string, at most 6 fractional digits and at
+      most 9999.999999 (so tokens x micro-USD rate fits in int64 for <= 9.2e8 tokens).
+    type: string
+    pattern: "^(0|[1-9][0-9]{0,3})(\\.[0-9]{1,6})?$"
+  HHMM:
+    type: string
+    pattern: "^(([01][0-9]|2[0-3]):[0-5][0-9]|24:00)$"
+  RateSet:
+    type: object
+    additionalProperties: false
+    required: [inputPerMillion, cachedInputPerMillion, cacheWritePerMillion, outputPerMillion]
+    properties:
+      inputPerMillion:
+        $ref: "#/$defs/Money"
+      cachedInputPerMillion:
+        $ref: "#/$defs/Money"
+      cacheWritePerMillion:
+        $ref: "#/$defs/Money"
+      cacheWrite1hPerMillion:
+        $ref: "#/$defs/Money"
+      outputPerMillion:
+        $ref: "#/$defs/Money"
+      reasoningPerMillion:
+        $ref: "#/$defs/Money"
+  Source:
+    type: object
+    additionalProperties: false
+    required: [url, retrievedAt]
+    properties:
+      url:
+        type: string
+        pattern: "^https://"
+      retrievedAt:
+        type: string
+        format: date
+        pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+      note:
+        type: string
+        maxLength: 500
+  TimeWindow:
+    type: object
+    additionalProperties: false
+    required: [name, days, from, to, rates]
+    properties:
+      name:
+        type: string
+        pattern: "^[a-z][a-z0-9-]{0,31}$"
+      days:
+        type: array
+        minItems: 1
+        uniqueItems: true
+        items:
+          type: string
+          enum: [Mon, Tue, Wed, Thu, Fri, Sat, Sun]
+      from:
+        $ref: "#/$defs/HHMM"
+      to:
+        $ref: "#/$defs/HHMM"
+      rates:
+        $ref: "#/$defs/RateSet"
+  LongContextTier:
+    type: object
+    additionalProperties: false
+    required: [aboveInputTokens, rates]
+    properties:
+      aboveInputTokens:
+        type: integer
+        minimum: 1
+      rates:
+        $ref: "#/$defs/RateSet"
+  Entry:
+    type: object
+    additionalProperties: false
+    required: [model, version, effectiveFrom, effectiveTo, status, source]
+    properties:
+      model:
+        description: Provider API model string (`apiModel` in ModelRouting).
+        type: string
+        minLength: 1
+        maxLength: 128
+      serviceTier:
+        description: Provider service tier this entry prices. Absent = `standard`. Requests asking for another tier with no entry are denied (SC_PRICE_UNKNOWN).
+        type: string
+        enum: [standard, priority, flex]
+        default: standard
+      version:
+        description: Free-form version label, unique per (model, serviceTier); recorded in every cost-record as part of `pricing_version`.
+        type: string
+        pattern: "^[A-Za-z0-9._-]{1,40}$"
+      effectiveFrom:
+        type: string
+        format: date-time
+        pattern: "Z$"
+      effectiveTo:
+        type: [string, "null"]
+        format: date-time
+        pattern: "Z$"
+      status:
+        type: string
+        enum: [priced, unpriced]
+      unpricedReason:
+        type: string
+        minLength: 5
+        maxLength: 300
+      source:
+        $ref: "#/$defs/Source"
+      windowBasis:
+        description: Which instant selects a time window. Required when timeWindows is present.
+        type: string
+        enum: [request_start, request_end]
+      rates:
+        $ref: "#/$defs/RateSet"
+      timeWindows:
+        type: array
+        minItems: 1
+        maxItems: 16
+        items:
+          $ref: "#/$defs/TimeWindow"
+      longContextTiers:
+        type: array
+        minItems: 1
+        maxItems: 4
+        items:
+          $ref: "#/$defs/LongContextTier"
+    allOf:
+      - if:
+          properties:
+            status:
+              const: priced
+        then:
+          required: [rates]
+          not:
+            required: [unpricedReason]
+      - if:
+          properties:
+            status:
+              const: unpriced
+        then:
+          required: [unpricedReason]
+          allOf:
+            - not:
+                required: [rates]
+            - not:
+                required: [timeWindows]
+            - not:
+                required: [longContextTiers]
+      - not:
+          required: [timeWindows, longContextTiers]
+      - if:
+          required: [timeWindows]
+        then:
+          required: [windowBasis]
+examples:
+  - apiVersion: strange.company/v1alpha1
+    kind: PricingTable
+    metadata:
+      name: deepseek
+    spec:
+      provider: deepseek
+      currency: USD
+      entries:
+        # ILLUSTRATIVE RATES (shape taken from lessons L-3); real values are filled at
+        # implementation time from the provider pricing page (procedure pricing-update).
+        - model: deepseek-v4-flash
+          version: "2026-09-01"
+          effectiveFrom: "2026-09-01T00:00:00Z"
+          effectiveTo: null
+          status: priced
+          source:
+            url: https://api-docs.deepseek.com/quick_start/pricing
+            retrievedAt: "2026-09-01"
+            note: Off-peak is the base rate; peak windows Mon-Fri UTC.
+          windowBasis: request_start
+          rates:
+            inputPerMillion: "0.22"
+            cachedInputPerMillion: "0.007"
+            cacheWritePerMillion: "0"
+            outputPerMillion: "0.66"
+          timeWindows:
+            - name: peak-early
+              days: [Mon, Tue, Wed, Thu, Fri]
+              from: "01:00"
+              to: "04:00"
+              rates:
+                inputPerMillion: "0.44"
+                cachedInputPerMillion: "0.014"
+                cacheWritePerMillion: "0"
+                outputPerMillion: "1.32"
+            - name: peak-morning
+              days: [Mon, Tue, Wed, Thu, Fri]
+              from: "06:00"
+              to: "10:00"
+              rates:
+                inputPerMillion: "0.44"
+                cachedInputPerMillion: "0.014"
+                cacheWritePerMillion: "0"
+                outputPerMillion: "1.32"
+        - model: deepseek-v4-pro
+          version: "2026-09-01"
+          effectiveFrom: "2026-09-01T00:00:00Z"
+          effectiveTo: null
+          status: unpriced
+          unpricedReason: Rate card not yet verified against the provider pricing page; requests are denied until priced.
+          source:
+            url: https://api-docs.deepseek.com/quick_start/pricing
+            retrievedAt: "2026-09-01"
+  - apiVersion: strange.company/v1alpha1
+    kind: PricingTable
+    metadata:
+      name: anthropic
+    spec:
+      provider: anthropic
+      currency: USD
+      entries:
+        # ILLUSTRATIVE RATES.
+        - model: claude-sonnet-x
+          version: v1
+          effectiveFrom: "2026-01-01T00:00:00Z"
+          effectiveTo: "2026-10-01T00:00:00Z"
+          status: priced
+          source:
+            url: https://www.anthropic.com/pricing
+            retrievedAt: "2026-01-01"
+          rates:
+            inputPerMillion: "3"
+            cachedInputPerMillion: "0.30"
+            cacheWritePerMillion: "3.75"
+            cacheWrite1hPerMillion: "6"
+            outputPerMillion: "15"
+        - model: claude-sonnet-x
+          version: v2
+          effectiveFrom: "2026-10-01T00:00:00Z"
+          effectiveTo: null
+          status: priced
+          source:
+            url: https://www.anthropic.com/pricing
+            retrievedAt: "2026-09-25"
+          rates:
+            inputPerMillion: "3"
+            cachedInputPerMillion: "0.30"
+            cacheWritePerMillion: "3.75"
+            cacheWrite1hPerMillion: "6"
+            outputPerMillion: "15"
+          longContextTiers:
+            - aboveInputTokens: 200000
+              rates:
+                inputPerMillion: "6"
+                cachedInputPerMillion: "0.60"
+                cacheWritePerMillion: "7.50"
+                cacheWrite1hPerMillion: "12"
+                outputPerMillion: "22.50"
+  - apiVersion: strange.company/v1alpha1
+    kind: PricingTable
+    metadata:
+      name: fake
+    spec:
+      provider: fake
+      currency: USD
+      entries:
+        - model: fake-model
+          version: ci-1
+          effectiveFrom: "2020-01-01T00:00:00Z"
+          effectiveTo: null
+          status: priced
+          source:
+            url: https://strange.company/fake-provider
+            retrievedAt: "2026-10-13"
+            note: Deterministic CI rates for the fake upstream (plan 53 §22).
+          rates:
+            inputPerMillion: "1"
+            cachedInputPerMillion: "0.1"
+            cacheWritePerMillion: "1.25"
+            outputPerMillion: "2"
+            reasoningPerMillion: "4"
+        - model: fake-model-large
+          version: ci-1
+          effectiveFrom: "2020-01-01T00:00:00Z"
+          effectiveTo: null
+          status: priced
+          source:
+            url: https://strange.company/fake-provider
+            retrievedAt: "2026-10-13"
+            note: Test-only "stronger" fake model at 5x the fake-model rates (escalation-cost tests, plan 32 §9.4a).
+          rates:
+            inputPerMillion: "5"
+            cachedInputPerMillion: "0.5"
+            cacheWritePerMillion: "6.25"
+            outputPerMillion: "10"
+            reasoningPerMillion: "20"
+x-invalid-examples:
+  - reason: Float price instead of a decimal string (money must never be float).
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: PricingTable
+      metadata: {name: openai}
+      spec:
+        provider: openai
+        currency: USD
+        entries:
+          - model: gpt-x
+            version: v1
+            effectiveFrom: "2026-01-01T00:00:00Z"
+            effectiveTo: null
+            status: priced
+            source: {url: "https://openai.com/api/pricing", retrievedAt: "2026-01-01"}
+            rates: {inputPerMillion: 1.25, cachedInputPerMillion: "0.125", cacheWritePerMillion: "0", outputPerMillion: "10"}
+  - reason: Unpriced entry carrying zero rates (unpriced and 0 must stay distinct).
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: PricingTable
+      metadata: {name: openai}
+      spec:
+        provider: openai
+        currency: USD
+        entries:
+          - model: gpt-x
+            version: v1
+            effectiveFrom: "2026-01-01T00:00:00Z"
+            effectiveTo: null
+            status: unpriced
+            unpricedReason: unknown
+            source: {url: "https://openai.com/api/pricing", retrievedAt: "2026-01-01"}
+            rates: {inputPerMillion: "0", cachedInputPerMillion: "0", cacheWritePerMillion: "0", outputPerMillion: "0"}
+  - reason: Malformed time-window schedule (misspelled day, unreadable time) must be rejected at load (L-3).
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: PricingTable
+      metadata: {name: deepseek}
+      spec:
+        provider: deepseek
+        currency: USD
+        entries:
+          - model: deepseek-v4-flash
+            version: v1
+            effectiveFrom: "2026-01-01T00:00:00Z"
+            effectiveTo: null
+            status: priced
+            windowBasis: request_start
+            source: {url: "https://api-docs.deepseek.com/quick_start/pricing", retrievedAt: "2026-01-01"}
+            rates: {inputPerMillion: "0.22", cachedInputPerMillion: "0.007", cacheWritePerMillion: "0", outputPerMillion: "0.66"}
+            timeWindows:
+              - name: peak
+                days: [Mon, Tues]
+                from: "1am"
+                to: "04:00"
+                rates: {inputPerMillion: "0.44", cachedInputPerMillion: "0.014", cacheWritePerMillion: "0", outputPerMillion: "1.32"}
+  - reason: Time windows without windowBasis, combined with long-context tiers.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: PricingTable
+      metadata: {name: deepseek}
+      spec:
+        provider: deepseek
+        currency: USD
+        entries:
+          - model: deepseek-v4-flash
+            version: v1
+            effectiveFrom: "2026-01-01T00:00:00Z"
+            effectiveTo: null
+            status: priced
+            source: {url: "https://api-docs.deepseek.com/quick_start/pricing", retrievedAt: "2026-01-01"}
+            rates: {inputPerMillion: "0.22", cachedInputPerMillion: "0.007", cacheWritePerMillion: "0", outputPerMillion: "0.66"}
+            timeWindows:
+              - {name: peak, days: [Mon], from: "01:00", to: "04:00", rates: {inputPerMillion: "0.44", cachedInputPerMillion: "0.014", cacheWritePerMillion: "0", outputPerMillion: "1.32"}}
+            longContextTiers:
+              - {aboveInputTokens: 100000, rates: {inputPerMillion: "1", cachedInputPerMillion: "0.1", cacheWritePerMillion: "0", outputPerMillion: "2"}}
+  - reason: Price with more than 6 fractional digits (not representable in micro-USD).
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: PricingTable
+      metadata: {name: fake}
+      spec:
+        provider: fake
+        currency: USD
+        entries:
+          - model: fake-model
+            version: v1
+            effectiveFrom: "2026-01-01T00:00:00Z"
+            effectiveTo: null
+            status: priced
+            source: {url: "https://strange.company/fake-provider", retrievedAt: "2026-01-01"}
+            rates: {inputPerMillion: "0.0000001", cachedInputPerMillion: "0", cacheWritePerMillion: "0", outputPerMillion: "1"}

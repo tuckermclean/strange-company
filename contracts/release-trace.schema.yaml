@@ -1,0 +1,217 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://strange.company/contracts/release-trace/v1alpha1
+title: ReleaseTrace
+description: |
+  Output of `sc-release trace <image>@sha256:<digest> --json` (plans/23-supply-chain.md §7.3, §14.8):
+  the SPEC §37 trace from a running artefact digest to the trusted CI build, the source commit,
+  the pull requests it contains, their tasks and acceptance criteria, and the promotion PR that
+  deployed it. snake_case record. Contains no secret values.
+
+  Semantic checks done by `sc-release trace` itself (not expressible here):
+  - `signature.verified` is true only if the signature verifies with a non-revoked key of
+    `security/cosign/trusted-keys.yaml` at the deployed revision;
+  - `source.commit` equals the `commit` of the provenance attestation for `digest`;
+  - every `pull_requests[].merge_commit` is on the first-parent path between the previous
+    release commit and `source.commit`.
+type: object
+additionalProperties: false
+required: [schema_version, digest, image, signature, build, source, pull_requests, deployed_by]
+properties:
+  schema_version:
+    const: v1alpha1
+  digest:
+    $ref: "#/$defs/Digest"
+  image:
+    description: Image repository without tag or digest.
+    type: string
+    pattern: "^[a-z0-9.-]+(:[0-9]+)?(/[a-z0-9._-]+)+$"
+  signature:
+    type: object
+    additionalProperties: false
+    required: [key_id, verified]
+    properties:
+      key_id:
+        type: string
+        pattern: "^sc-release-[0-9]{4}[a-z]$"
+      verified:
+        type: boolean
+      key_status:
+        type: string
+        enum: [active, retired, revoked]
+  build:
+    type: object
+    additionalProperties: false
+    required: [tag, pipeline, builder, builder_image, started_at, finished_at]
+    properties:
+      tag:
+        type: string
+        pattern: "^v[0-9]+\\.[0-9]+\\.[0-9]+(-rc\\.[0-9]+|-resign\\.[0-9]+)?$"
+      pipeline:
+        description: URL of the Woodpecker release pipeline.
+        type: string
+        format: uri
+      builder:
+        type: string
+        enum: [woodpecker-agent-build]
+      builder_image:
+        type: string
+        pattern: "^[^@\\s]+@sha256:[a-f0-9]{64}$"
+      started_at:
+        type: string
+        format: date-time
+      finished_at:
+        type: string
+        format: date-time
+  source:
+    type: object
+    additionalProperties: false
+    required: [repository, commit, inputs_id]
+    properties:
+      repository:
+        type: string
+        pattern: "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$"
+      commit:
+        $ref: "#/$defs/GitSha"
+      previous_release_commit:
+        oneOf:
+          - $ref: "#/$defs/GitSha"
+          - type: "null"
+      inputs_id:
+        $ref: "#/$defs/Digest"
+  pull_requests:
+    type: array
+    items:
+      type: object
+      additionalProperties: false
+      required: [number, kind, merge_commit, tasks]
+      properties:
+        number:
+          type: integer
+          minimum: 1
+        title:
+          type: string
+        merged_by:
+          type: string
+        merge_commit:
+          $ref: "#/$defs/GitSha"
+        kind:
+          description: task = produced by a Strange Company task; human = human-authored; renovate / promotion = bot PRs.
+          type: string
+          enum: [task, human, renovate, promotion]
+        tasks:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, acceptance_criteria]
+            properties:
+              id:
+                type: string
+                pattern: "^sc-[0-9]+$"
+              acceptance_criteria:
+                type: array
+                minItems: 1
+                items:
+                  type: string
+                  pattern: "^AC-[0-9]+$"
+              red_evidence_sha256:
+                type: string
+                pattern: "^[a-f0-9]{64}$"
+              green_evidence_sha256:
+                type: string
+                pattern: "^[a-f0-9]{64}$"
+      allOf:
+        - if:
+            properties:
+              kind:
+                const: task
+          then:
+            properties:
+              tasks:
+                minItems: 1
+  deployed_by:
+    description: The promotion PR that introduced this digest into Git, or null when not (yet) promoted.
+    oneOf:
+      - type: "null"
+      - type: object
+        additionalProperties: false
+        required: [promotion_pr, merged_at]
+        properties:
+          promotion_pr:
+            type: integer
+            minimum: 1
+          merged_at:
+            type: string
+            format: date-time
+$defs:
+  Digest:
+    type: string
+    pattern: "^sha256:[a-f0-9]{64}$"
+  GitSha:
+    type: string
+    pattern: "^[a-f0-9]{40}$"
+examples:
+  - schema_version: v1alpha1
+    digest: "sha256:4f1c2b8a9d0e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a"
+    image: git.example.org/strange-company/agent-runner
+    signature: {key_id: sc-release-2026a, verified: true, key_status: active}
+    build:
+      tag: v0.4.0
+      pipeline: https://ci.example.org/repos/1/pipeline/812
+      builder: woodpecker-agent-build
+      builder_image: "quay.io/buildah/stable@sha256:9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b"
+      started_at: "2026-10-14T09:00:00Z"
+      finished_at: "2026-10-14T09:41:00Z"
+    source:
+      repository: strange-company/strange-company
+      commit: 0123456789abcdef0123456789abcdef01234567
+      previous_release_commit: 89abcdef0123456789abcdef0123456789abcdef
+      inputs_id: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    pull_requests:
+      - number: 41
+        title: Reject duplicate idempotency keys with a different body
+        merged_by: alice
+        merge_commit: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        kind: task
+        tasks:
+          - id: sc-184
+            acceptance_criteria: [AC-1, AC-2]
+            red_evidence_sha256: "2222222222222222222222222222222222222222222222222222222222222222"
+            green_evidence_sha256: "3333333333333333333333333333333333333333333333333333333333333333"
+      - number: 42
+        merge_commit: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+        kind: renovate
+        tasks: []
+    deployed_by: {promotion_pr: 43, merged_at: "2026-10-14T10:05:00Z"}
+x-invalid-examples:
+  - reason: A task PR without any task.
+    value:
+      schema_version: v1alpha1
+      digest: "sha256:4f1c2b8a9d0e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a"
+      image: git.example.org/strange-company/agent-runner
+      signature: {key_id: sc-release-2026a, verified: true}
+      build: {tag: v0.4.0, pipeline: "https://ci.example.org/repos/1/pipeline/812", builder: woodpecker-agent-build, builder_image: "quay.io/buildah/stable@sha256:9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b", started_at: "2026-10-14T09:00:00Z", finished_at: "2026-10-14T09:41:00Z"}
+      source: {repository: strange-company/strange-company, commit: 0123456789abcdef0123456789abcdef01234567, inputs_id: "sha256:1111111111111111111111111111111111111111111111111111111111111111"}
+      pull_requests:
+        - {number: 41, merge_commit: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, kind: task, tasks: []}
+      deployed_by: null
+  - reason: Tag-only image reference instead of a digest.
+    value:
+      schema_version: v1alpha1
+      digest: agent-runner:latest
+      image: git.example.org/strange-company/agent-runner
+      signature: {key_id: sc-release-2026a, verified: true}
+      build: {tag: v0.4.0, pipeline: "https://ci.example.org/repos/1/pipeline/812", builder: woodpecker-agent-build, builder_image: "quay.io/buildah/stable@sha256:9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b", started_at: "2026-10-14T09:00:00Z", finished_at: "2026-10-14T09:41:00Z"}
+      source: {repository: strange-company/strange-company, commit: 0123456789abcdef0123456789abcdef01234567, inputs_id: "sha256:1111111111111111111111111111111111111111111111111111111111111111"}
+      pull_requests: []
+      deployed_by: null
+  - reason: Built by an agent other than the build lane.
+    value:
+      schema_version: v1alpha1
+      digest: "sha256:4f1c2b8a9d0e7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a"
+      image: git.example.org/strange-company/agent-runner
+      signature: {key_id: sc-release-2026a, verified: true}
+      build: {tag: v0.4.0, pipeline: "https://ci.example.org/repos/1/pipeline/812", builder: woodpecker-agent, builder_image: "quay.io/buildah/stable@sha256:9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c2d1e0f9a8b", started_at: "2026-10-14T09:00:00Z", finished_at: "2026-10-14T09:41:00Z"}
+      source: {repository: strange-company/strange-company, commit: 0123456789abcdef0123456789abcdef01234567, inputs_id: "sha256:1111111111111111111111111111111111111111111111111111111111111111"}
+      pull_requests: []
+      deployed_by: null

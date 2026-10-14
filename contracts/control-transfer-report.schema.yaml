@@ -1,0 +1,511 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://strange.company/contracts/control-transfer-report/v1alpha1
+title: ControlTransferReport
+description: |
+  Evidence of seed-to-Forgejo control transfer (plan 19 §8.5–§8.7, SPEC §34–§35).
+
+  Phase `source-switch` is written at the end of the `flux-bootstrap` phase (P06; steps T0–T7). It
+  carries the UID and Helm-revision comparison and the G1–G7 GitOps-representation checks.
+
+  Phase `final` is written by `./bootstrap verify` / `control-transfer` (P12). It carries the eight
+  SPEC §35 conditions C1–C8. `./bootstrap` prints `CONTROL TRANSFER COMPLETE` only after a `final`
+  report with `result: pass`.
+
+  Stored in the bootstrap journal and at
+  `s3://<prefix>-bootstrap-seed/<cluster>/reports/control-transfer-<phase>-<UTC timestamp>.json`.
+  It contains no secret values.
+type: object
+additionalProperties: false
+required: [schema_version, phase, cluster, result, seed_commit, transfer_commit, started_at, finished_at, checks, errors, tool]
+properties:
+  schema_version:
+    const: v1alpha1
+  phase:
+    enum: [source-switch, final]
+  cluster:
+    type: string
+    pattern: "^[a-z][a-z0-9-]{1,40}$"
+  mode:
+    enum: [install, recovery, emergency]
+    default: install
+  result:
+    description: "`rolled_back` only for `source-switch` (automatic rollback ran once; TRANSFER_ROLLED_BACK)."
+    enum: [pass, fail, rolled_back]
+  seed_commit:
+    description: The seeded commit `S`.
+    type: string
+    pattern: "^[0-9a-f]{40}$"
+  transfer_commit:
+    description: Forgejo `main` at transfer (`F`, equal to `S` or a forge-init outputs descendant).
+    type: string
+    pattern: "^[0-9a-f]{40}$"
+  bucket_revision:
+    description: Bucket artifact revision `R` (Flux format `sha256:<64hex>`); absent in `final`.
+    type: string
+    pattern: "^sha256:[0-9a-f]{64}$"
+  git_revision:
+    description: GitRepository artifact revision after the switch.
+    type: string
+    pattern: "^main@sha1:[0-9a-f]{40}$"
+  started_at: {type: string, format: date-time}
+  finished_at: {type: string, format: date-time}
+  uid_comparison:
+    type: object
+    additionalProperties: false
+    required: [compared, changed]
+    properties:
+      compared:
+        description: Number of entries compared (T1 vs T5) - seed-layer inventories, the root Kustomization inventory, every CRD, and PVCs and PVs in seed namespaces (SEED-6). Pods are reported in `pods_changed`, not compared.
+        type: integer
+        minimum: 0
+      changed:
+        type: array
+        items:
+          type: object
+          additionalProperties: false
+          required: [id, uid_before, uid_after]
+          properties:
+            id:
+              description: Flux inventory id `<namespace>_<name>_<group>_<kind>`.
+              type: string
+              maxLength: 400
+            uid_before: {type: string, maxLength: 64}
+            uid_after:
+              description: Empty string when the object no longer exists.
+              type: string
+              maxLength: 64
+  helm_releases:
+    type: array
+    items:
+      type: object
+      additionalProperties: false
+      required: [namespace, name, revision_before, revision_after, secret_count_before, secret_count_after]
+      properties:
+        namespace: {type: string, pattern: "^[a-z0-9-]{1,63}$"}
+        name: {type: string, pattern: "^[a-z0-9-]{1,53}$"}
+        revision_before: {type: integer, minimum: 1}
+        revision_after: {type: integer, minimum: 1}
+        secret_count_before: {type: integer, minimum: 0}
+        secret_count_after: {type: integer, minimum: 0}
+  installation:
+    description: |
+      Fields plan 50 adds when it writes the bootstrap `report.json` (plan 50 §14.11), which embeds this plan's `final` report (SEED-10). Present only in phase `final` reports written by `./bootstrap`. No secret values.
+    type: object
+    additionalProperties: false
+    required: [install_uid, run_id, phases, sc_bootstrap, toolbox, commit_installed, profile, provider, nodes, forgejo, github_mirror, flux, ingress, verify]
+    properties:
+      install_uid: {type: string, format: uuid}
+      run_id: {type: string, maxLength: 80}
+      phases:
+        description: Duration in seconds per phase (preflight, plan, provision, configure, seed, forge-init, flux-bootstrap, verify).
+        type: object
+        propertyNames: {enum: [preflight, plan, provision, configure, seed, forge-init, flux-bootstrap, verify, control-transfer]}
+        additionalProperties: {type: integer, minimum: 0}
+      sc_bootstrap:
+        type: object
+        additionalProperties: false
+        required: [version, commit]
+        properties:
+          version: {type: string, maxLength: 64}
+          commit: {type: string, pattern: "^[0-9a-f]{40}$"}
+      toolbox:
+        type: object
+        additionalProperties: false
+        required: [digest, source]
+        properties:
+          digest: {type: string, pattern: "^sha256:[0-9a-f]{64}$"}
+          source: {enum: [pulled, built]}
+      commit_installed: {type: string, pattern: "^[0-9a-f]{40}$"}
+      tag: {type: string, maxLength: 100}
+      profile: {enum: [self-hosting-minimum, small-ha]}
+      substrate: {type: string, maxLength: 64}
+      provider:
+        type: object
+        additionalProperties: false
+        required: [name]
+        properties:
+          name: {type: string, maxLength: 40}
+          product_line: {type: string, maxLength: 80}
+          region: {type: string, maxLength: 80}
+      nodes:
+        type: array
+        minItems: 1
+        items:
+          type: object
+          additionalProperties: false
+          required: [name, cpu, memory_gib, disk_gib]
+          properties:
+            name: {type: string, maxLength: 63}
+            public_ipv4: {type: string, format: ipv4}
+            public_ipv6: {type: string, format: ipv6}
+            machine_class: {type: string, maxLength: 80}
+            cpu: {type: integer, minimum: 1}
+            memory_gib: {type: number, minimum: 1}
+            disk_gib: {type: number, minimum: 1}
+            disk_class: {type: string, maxLength: 20}
+            os: {type: string, maxLength: 80}
+            kernel: {type: string, maxLength: 80}
+      paid_footprint:
+        type: object
+        additionalProperties: false
+        properties:
+          monthly_total: {type: number, minimum: 0}
+          currency: {type: string, pattern: "^[A-Z]{3}$"}
+          committed_minimum: {type: number, minimum: 0}
+          catalogue_version: {type: string, maxLength: 64}
+          limit: {type: number, minimum: 0}
+      tofu_state: {type: string, maxLength: 500}
+      forgejo:
+        type: object
+        additionalProperties: false
+        required: [url, main_sha]
+        properties:
+          url: {type: string, format: uri}
+          main_sha: {type: string, pattern: "^[0-9a-f]{40}$"}
+      github_mirror:
+        type: object
+        additionalProperties: false
+        required: [url, main_sha, lag_seconds]
+        properties:
+          url: {type: string, format: uri}
+          main_sha: {type: string, pattern: "^[0-9a-f]{40}$"}
+          lag_seconds: {type: integer, minimum: 0}
+      flux:
+        type: object
+        additionalProperties: false
+        required: [kustomizations_ready, kustomizations_total, helmreleases_ready, helmreleases_total]
+        properties:
+          kustomizations_ready: {type: integer, minimum: 0}
+          kustomizations_total: {type: integer, minimum: 0}
+          helmreleases_ready: {type: integer, minimum: 0}
+          helmreleases_total: {type: integer, minimum: 0}
+      ingress:
+        type: object
+        additionalProperties: false
+        required: [mode, public_hostnames]
+        properties:
+          mode: {enum: [tunnel, direct]}
+          public_hostnames:
+            type: array
+            items: {type: string, format: hostname}
+      verify:
+        type: object
+        additionalProperties: false
+        required: [passed, total]
+        properties:
+          passed: {type: integer, minimum: 0}
+          total: {type: integer, minimum: 0}
+          warnings:
+            type: array
+            items: {type: string, pattern: "^V-[0-9]{2}$"}
+      memory_budget:
+        type: object
+        additionalProperties: false
+        properties:
+          node: {type: string, maxLength: 63}
+          platform_ws_gib: {type: number, minimum: 0}
+          budget_gib: {type: number, minimum: 0}
+          result: {enum: [pass, fail]}
+      notifications:
+        type: object
+        additionalProperties: false
+        properties:
+          transport: {type: string, maxLength: 40}
+          test_delivered_at: {type: string, format: date-time}
+          heartbeat: {enum: [configured, absent]}
+          heartbeat_last_ping: {type: string, format: date-time}
+      recovery_bundle:
+        type: object
+        additionalProperties: false
+        properties:
+          uri: {type: string, maxLength: 500}
+          version: {type: string, maxLength: 200}
+          sha256_prefix: {type: string, pattern: "^[0-9a-f]{8}$"}
+          confirmed_at: {type: string, format: date-time}
+  transfer_pre:
+    description: The pre-switch snapshot uploaded before T2 (SEED-7).
+    type: object
+    additionalProperties: false
+    required: [uri, sha256]
+    properties:
+      uri: {type: string, pattern: "^s3://[a-z0-9.-]+/.+/reports/transfer-pre-[0-9a-f]{40}\\.json$"}
+      sha256: {type: string, pattern: "^[0-9a-f]{64}$"}
+  pods_changed:
+    description: Pods in seed namespaces whose UID or restartCount changed between T1 and T5 (informational; asserted only by the e2e A9).
+    type: array
+    items: {type: string, maxLength: 300}
+  suspended_kustomizations:
+    description: Non-seed Kustomizations suspended by a rollback or an emergency source (label strange.company/suspended-by), plan 19 §14.3.
+    type: array
+    items: {type: string, pattern: "^[a-z0-9-]{1,63}/[a-z0-9-]{1,63}$"}
+  post_transfer_objects_left:
+    description: "Objects created during a failed attempt and kept by the rollback (prune disabled), plan 19 §14.3."
+    type: array
+    items: {type: string, maxLength: 400}
+  checks:
+    type: array
+    items:
+      type: object
+      additionalProperties: false
+      required: [id, result]
+      properties:
+        id:
+          type: string
+          pattern: "^(T[0-8]|G[1-7]|C[1-8])$"
+        result:
+          enum: [pass, fail, skip]
+        evidence:
+          description: Short human-readable evidence (command output digest, SHA, count). Never secret values.
+          type: string
+          maxLength: 2000
+  errors:
+    type: array
+    items:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          pattern: "^(TRANSFER_[A-Z_]+(:[a-z0-9-]+)?|SEED_[A-Z_]+(:[a-z0-9-]+)?|VERIFY_[A-Z_]+)$"
+        message: {type: string, maxLength: 2000}
+  tool:
+    type: object
+    additionalProperties: false
+    required: [sc_bootstrap_version, sc_bootstrap_digest]
+    properties:
+      sc_bootstrap_version: {type: string, maxLength: 64}
+      sc_bootstrap_digest: {type: string, pattern: "^sha256:[0-9a-f]{64}$"}
+allOf:
+  - if:
+      properties: {phase: {const: source-switch}}
+    then:
+      required: [bucket_revision, uid_comparison, helm_releases, transfer_pre]
+      not: {required: [installation]}
+  - if:
+      properties: {phase: {const: final}}
+    then:
+      properties:
+        result: {enum: [pass, fail]}
+  - if:
+      properties: {result: {const: pass}}
+    then:
+      properties:
+        errors: {maxItems: 0}
+        checks:
+          items:
+            properties:
+              result: {const: pass}
+        uid_comparison:
+          properties:
+            changed: {maxItems: 0}
+  - description: "A final pass needs exactly C1-C8, each pass (SEED-11)."
+    if:
+      properties: {phase: {const: final}, result: {const: pass}}
+      required: [phase, result]
+    then:
+      properties:
+        checks:
+          minItems: 8
+          maxItems: 8
+          items:
+            properties:
+              id: {pattern: "^C[1-8]$"}
+          allOf:
+          - contains: {properties: {id: {const: C1}, result: {const: pass}}, required: [id, result]}
+          - contains: {properties: {id: {const: C2}, result: {const: pass}}, required: [id, result]}
+          - contains: {properties: {id: {const: C3}, result: {const: pass}}, required: [id, result]}
+          - contains: {properties: {id: {const: C4}, result: {const: pass}}, required: [id, result]}
+          - contains: {properties: {id: {const: C5}, result: {const: pass}}, required: [id, result]}
+          - contains: {properties: {id: {const: C6}, result: {const: pass}}, required: [id, result]}
+          - contains: {properties: {id: {const: C7}, result: {const: pass}}, required: [id, result]}
+          - contains: {properties: {id: {const: C8}, result: {const: pass}}, required: [id, result]}
+  - description: "A source-switch pass needs T0-T7 and G1-G7, each pass (SEED-11)."
+    if:
+      properties: {phase: {const: source-switch}, result: {const: pass}}
+      required: [phase, result]
+    then:
+      properties:
+        checks:
+          allOf:
+          - contains: {properties: {id: {const: T0}, result: {const: pass}}, required: [id, result]}
+          - contains: {properties: {id: {const: T1}, result: {const: pass}}, required: [id, result]}
+          - contains: {properties: {id: {const: T2}, result: {const: pass}}, required: [id, result]}
+          - contains: {properties: {id: {const: T3}, result: {const: pass}}, required: [id, result]}
+          - contains: {properties: {id: {const: T4}, result: {const: pass}}, required: [id, result]}
+          - contains: {properties: {id: {const: T5}, result: {const: pass}}, required: [id, result]}
+          - contains: {properties: {id: {const: T6}, result: {const: pass}}, required: [id, result]}
+          - contains: {properties: {id: {const: T7}, result: {const: pass}}, required: [id, result]}
+          - contains: {properties: {id: {const: G1}, result: {const: pass}}, required: [id, result]}
+          - contains: {properties: {id: {const: G2}, result: {const: pass}}, required: [id, result]}
+          - contains: {properties: {id: {const: G3}, result: {const: pass}}, required: [id, result]}
+          - contains: {properties: {id: {const: G4}, result: {const: pass}}, required: [id, result]}
+          - contains: {properties: {id: {const: G5}, result: {const: pass}}, required: [id, result]}
+          - contains: {properties: {id: {const: G6}, result: {const: pass}}, required: [id, result]}
+          - contains: {properties: {id: {const: G7}, result: {const: pass}}, required: [id, result]}
+examples:
+  - schema_version: v1alpha1
+    phase: source-switch
+    cluster: prod
+    result: pass
+    seed_commit: "4f1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c"
+    transfer_commit: "5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b"
+    bucket_revision: "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+    git_revision: "main@sha1:5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b"
+    started_at: "2026-10-13T22:30:00Z"
+    finished_at: "2026-10-13T22:41:12Z"
+    uid_comparison: {compared: 214, changed: []}
+    helm_releases:
+      - {namespace: forgejo, name: forgejo, revision_before: 1, revision_after: 1, secret_count_before: 1, secret_count_after: 1}
+    transfer_pre: {uri: "s3://sc-bootstrap-seed/prod/reports/transfer-pre-4f1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c.json", sha256: "7777777777777777777777777777777777777777777777777777777777777777"}
+    checks:
+      - {id: T0, result: pass}
+      - {id: T1, result: pass}
+      - {id: T2, result: pass}
+      - {id: T3, result: pass}
+      - {id: T4, result: pass}
+      - {id: T5, result: pass, evidence: "214 UIDs unchanged"}
+      - {id: T6, result: pass}
+      - {id: T7, result: pass}
+      - {id: G1, result: pass}
+      - {id: G2, result: pass}
+      - {id: G3, result: pass}
+      - {id: G4, result: pass}
+      - {id: G5, result: pass}
+      - {id: G6, result: pass}
+      - {id: G7, result: pass, evidence: "out-of-band: flux-system/sops-age"}
+    errors: []
+    tool: {sc_bootstrap_version: "0.1.0", sc_bootstrap_digest: "sha256:3333333333333333333333333333333333333333333333333333333333333333"}
+  - schema_version: v1alpha1
+    phase: final
+    cluster: prod
+    result: pass
+    seed_commit: "4f1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c"
+    transfer_commit: "5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b"
+    git_revision: "main@sha1:6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c"
+    started_at: "2026-10-14T00:10:00Z"
+    installation:
+      install_uid: "2f1d7c3a-1b2c-4d5e-8f90-123456789abc"
+      run_id: "run-20261014T001000Z"
+      phases: {preflight: 40, plan: 120, provision: 900, configure: 1200, seed: 1500, forge-init: 300, flux-bootstrap: 600, verify: 3600}
+      sc_bootstrap: {version: "0.1.0", commit: "1111111111111111111111111111111111111111"}
+      toolbox: {digest: "sha256:2222222222222222222222222222222222222222222222222222222222222222", source: pulled}
+      commit_installed: "4f1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c"
+      profile: self-hosting-minimum
+      provider: {name: existing}
+      nodes: [{name: node-01, public_ipv4: "203.0.113.10", cpu: 4, memory_gib: 12, disk_gib: 100, disk_class: nvme}]
+      forgejo: {url: "https://git.example.org/strange-company/strange-company", main_sha: "6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c"}
+      github_mirror: {url: "https://github.com/example/strange-company", main_sha: "6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c", lag_seconds: 12}
+      flux: {kustomizations_ready: 40, kustomizations_total: 40, helmreleases_ready: 18, helmreleases_total: 18}
+      ingress: {mode: tunnel, public_hostnames: [auth.example.org, git.example.org, ci.example.org]}
+      verify: {passed: 36, total: 36, warnings: []}
+    finished_at: "2026-10-14T00:12:00Z"
+    checks:
+      - {id: C1, result: pass}
+      - {id: C2, result: pass}
+      - {id: C3, result: pass}
+      - {id: C4, result: pass}
+      - {id: C5, result: pass}
+      - {id: C6, result: pass}
+      - {id: C7, result: pass}
+      - {id: C8, result: pass, evidence: "probe tag latency 41s"}
+    errors: []
+    tool: {sc_bootstrap_version: "0.1.0", sc_bootstrap_digest: "sha256:3333333333333333333333333333333333333333333333333333333333333333"}
+x-invalid-examples:
+  - reason: A pass result while a seeded object's UID changed.
+    value:
+      schema_version: v1alpha1
+      phase: source-switch
+      cluster: prod
+      result: pass
+      seed_commit: "4f1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c"
+      transfer_commit: "4f1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c"
+      bucket_revision: "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+      started_at: "2026-10-13T22:30:00Z"
+      finished_at: "2026-10-13T22:41:12Z"
+      uid_comparison: {compared: 3, changed: [{id: "forgejo_forgejo-data__PersistentVolumeClaim", uid_before: "a", uid_after: "b"}]}
+      helm_releases: []
+      checks: []
+      errors: []
+      tool: {sc_bootstrap_version: "0.1.0", sc_bootstrap_digest: "sha256:3333333333333333333333333333333333333333333333333333333333333333"}
+  - reason: A source-switch report without the UID comparison.
+    value:
+      schema_version: v1alpha1
+      phase: source-switch
+      cluster: prod
+      result: fail
+      seed_commit: "4f1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c"
+      transfer_commit: "4f1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c"
+      started_at: "2026-10-13T22:30:00Z"
+      finished_at: "2026-10-13T22:41:12Z"
+      checks: []
+      errors: [{code: TRANSFER_NOT_READY, message: "root not ready"}]
+      tool: {sc_bootstrap_version: "0.1.0", sc_bootstrap_digest: "sha256:3333333333333333333333333333333333333333333333333333333333333333"}
+  - reason: A final report cannot be rolled_back.
+    value:
+      schema_version: v1alpha1
+      phase: final
+      cluster: prod
+      result: rolled_back
+      seed_commit: "4f1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c"
+      transfer_commit: "4f1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c"
+      started_at: "2026-10-13T22:30:00Z"
+      finished_at: "2026-10-13T22:41:12Z"
+      checks: []
+      errors: []
+      tool: {sc_bootstrap_version: "0.1.0", sc_bootstrap_digest: "sha256:3333333333333333333333333333333333333333333333333333333333333333"}
+  - reason: A pass result with a failing C8 check.
+    value:
+      schema_version: v1alpha1
+      phase: final
+      cluster: prod
+      result: pass
+      seed_commit: "4f1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c"
+      transfer_commit: "4f1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c"
+      started_at: "2026-10-13T22:30:00Z"
+      finished_at: "2026-10-13T22:41:12Z"
+      checks: [{id: C8, result: fail}]
+      errors: []
+      tool: {sc_bootstrap_version: "0.1.0", sc_bootstrap_digest: "sha256:3333333333333333333333333333333333333333333333333333333333333333"}
+  - reason: A final pass without C8 (SEED-11).
+    value:
+      schema_version: v1alpha1
+      phase: final
+      cluster: prod
+      result: pass
+      seed_commit: "4f1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c"
+      transfer_commit: "4f1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c"
+      started_at: "2026-10-13T22:30:00Z"
+      finished_at: "2026-10-13T22:41:12Z"
+      checks: [{id: C1, result: pass}, {id: C2, result: pass}, {id: C3, result: pass}, {id: C4, result: pass}, {id: C5, result: pass}, {id: C6, result: pass}, {id: C7, result: pass}]
+      errors: []
+      tool: {sc_bootstrap_version: "0.1.0", sc_bootstrap_digest: "sha256:3333333333333333333333333333333333333333333333333333333333333333"}
+  - reason: A final pass with an empty check list (SEED-11).
+    value:
+      schema_version: v1alpha1
+      phase: final
+      cluster: prod
+      result: pass
+      seed_commit: "4f1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c"
+      transfer_commit: "4f1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c"
+      started_at: "2026-10-13T22:30:00Z"
+      finished_at: "2026-10-13T22:41:12Z"
+      checks: []
+      errors: []
+      tool: {sc_bootstrap_version: "0.1.0", sc_bootstrap_digest: "sha256:3333333333333333333333333333333333333333333333333333333333333333"}
+  - reason: A source-switch pass with G-checks missing and no transfer_pre (SEED-7, SEED-11).
+    value:
+      schema_version: v1alpha1
+      phase: source-switch
+      cluster: prod
+      result: pass
+      seed_commit: "4f1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c"
+      transfer_commit: "4f1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c"
+      bucket_revision: "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+      started_at: "2026-10-13T22:30:00Z"
+      finished_at: "2026-10-13T22:41:12Z"
+      uid_comparison: {compared: 3, changed: []}
+      helm_releases: []
+      checks: [{id: T5, result: pass}]
+      errors: []
+      tool: {sc_bootstrap_version: "0.1.0", sc_bootstrap_digest: "sha256:3333333333333333333333333333333333333333333333333333333333333333"}

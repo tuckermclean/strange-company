@@ -1,0 +1,388 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://strange.company/contracts/egress-policy/v1alpha1
+title: EgressPolicy
+description: |
+  Platform egress policy enforced by the Strange Company egress proxy (ADR-0150,
+  owning plan 36). File: `policy/egress.yaml` in the `strange-company` repository
+  (protected path; delivered to the proxy as a Flux-generated ConfigMap, ADR-0017).
+
+  The proxy is default-deny. A host is reachable through a listener only if it
+  matches the listener's base profile or, for the authenticated agent listener,
+  a task-token `egress_allow` entry that lies inside `delegation.repositoryAllowed`.
+  `forbiddenHosts` always wins (model provider APIs, so workers cannot bypass the
+  Model Gateway). IP literals are never allowed, and a hostname whose DNS answer
+  contains a private, cluster, metadata, multicast or node address is denied.
+
+  Host patterns: `example.org` matches exactly that name; `*.example.org` matches
+  one or more labels to the left of `example.org` but not `example.org` itself.
+  An optional `:<port>` suffix restricts the port; without it the port is 443.
+
+  Invariants the loader (plan 36 §9.9.4) enforces beyond this schema:
+  - every listener's `baseProfile` exists in `profiles`;
+  - no profile or delegation entry equals an exact `forbiddenHosts` entry;
+  - listener ports are pairwise distinct and not 9090 (the `metrics` port, CD-02);
+  - every model provider upstream host in `policy/model-routing.yaml` is matched by
+    `forbiddenHosts` (cross-file check, COST-18).
+type: object
+additionalProperties: false
+required: [apiVersion, kind, metadata, spec]
+properties:
+  apiVersion:
+    const: strange.company/v1alpha1
+  kind:
+    const: EgressPolicy
+  metadata:
+    type: object
+    additionalProperties: false
+    required: [name]
+    properties:
+      name:
+        type: string
+        pattern: "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
+      annotations:
+        type: object
+        additionalProperties:
+          type: string
+  spec:
+    type: object
+    additionalProperties: false
+    required: [defaultAction, forbiddenHosts, profiles, listeners, delegation, timeouts]
+    properties:
+      defaultAction:
+        description: Always deny. Present so the intent is explicit in the file.
+        const: deny
+      denyNetworks:
+        description: |
+          IPv4 CIDRs denied in addition to the built-in list (RFC 1918, CGNAT,
+          loopback, link-local/metadata, benchmarking, multicast, reserved, the pod
+          and service CIDRs and the node IPs).
+        type: array
+        maxItems: 64
+        uniqueItems: true
+        items:
+          $ref: "#/$defs/Ipv4Cidr"
+      forbiddenHosts:
+        description: Host patterns that are never reachable through the proxy.
+        type: array
+        maxItems: 256
+        uniqueItems: true
+        items:
+          $ref: "#/$defs/HostPattern"
+      profiles:
+        type: object
+        minProperties: 1
+        maxProperties: 16
+        propertyNames:
+          pattern: "^[a-z][a-z0-9-]{0,31}$"
+        additionalProperties:
+          $ref: "#/$defs/Profile"
+      listeners:
+        type: object
+        additionalProperties: false
+        required: [agent, ci]
+        properties:
+          agent:
+            $ref: "#/$defs/AgentListener"
+          ci:
+            $ref: "#/$defs/CiListener"
+          build:
+            description: |
+              Optional release-lane listener (`:3130`), reachable only from `ci-build`
+              by NetworkPolicy, bound to its own profile (SEC-7, GC-04).
+            $ref: "#/$defs/CiListener"
+          dr:
+            description: |
+              Optional restore-test listener (`:3131`), reachable only from `dr-tests`
+              by NetworkPolicy, bound to its own profile (SEC-23).
+            $ref: "#/$defs/CiListener"
+      delegation:
+        type: object
+        additionalProperties: false
+        required: [repositoryAllowed, maxHostsPerRepository]
+        properties:
+          repositoryAllowed:
+            description: |
+              Bounds for `RepositoryPolicy.spec.network.egressHosts` (plan 22). A
+              repository may request only hosts matched by one of these patterns.
+              The Runner copies accepted entries into the task token claim
+              `egress_allow`; the proxy re-checks them against these bounds.
+            type: array
+            maxItems: 256
+            uniqueItems: true
+            items:
+              $ref: "#/$defs/HostPatternWithPort"
+          maxHostsPerRepository:
+            type: integer
+            minimum: 0
+            maximum: 64
+      timeouts:
+        type: object
+        additionalProperties: false
+        required: [connect, idle, maxTunnelLifetime]
+        properties:
+          connect:
+            $ref: "#/$defs/Duration"
+          idle:
+            $ref: "#/$defs/Duration"
+          maxTunnelLifetime:
+            $ref: "#/$defs/Duration"
+      logging:
+        type: object
+        additionalProperties: false
+        properties:
+          logAllowed:
+            description: Log allowed decisions (deny decisions are always logged).
+            type: boolean
+            default: true
+$defs:
+  Duration:
+    type: string
+    pattern: "^[1-9][0-9]*(s|m|h)$"
+  Ipv4Cidr:
+    type: string
+    pattern: "^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])/([0-9]|[12][0-9]|3[0-2])$"
+  HostPattern:
+    description: |
+      Lowercase DNS name (punycode for IDNs) with an optional leading `*.` wildcard.
+      The final label must be alphabetic, which excludes IPv4 literals; colons are
+      not allowed, which excludes IPv6 literals.
+    type: string
+    maxLength: 253
+    pattern: "^(\\*\\.)?([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+(xn--[a-z0-9-]{1,59}|[a-z]{2,63})$"
+  HostPatternWithPort:
+    description: A HostPattern with an optional `:<port>` suffix (1-65535). No suffix means 443.
+    type: string
+    maxLength: 259
+    pattern: "^(\\*\\.)?([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+(xn--[a-z0-9-]{1,59}|[a-z]{2,63})(:([1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?$"
+  Profile:
+    type: object
+    additionalProperties: false
+    required: [hosts]
+    properties:
+      description:
+        type: string
+        maxLength: 300
+      includeObjectStorageEndpoint:
+        description: |
+          Add the installation's S3 endpoint host and port (proxy configuration
+          `SC_S3_ENDPOINT`). If it resolves inside `SC_S3_CIDR` (private object
+          storage), that range is exempt from the deny list for this host only.
+        type: boolean
+        default: false
+      hosts:
+        type: array
+        minItems: 1
+        maxItems: 256
+        uniqueItems: true
+        items:
+          $ref: "#/$defs/HostPatternWithPort"
+  AgentListener:
+    type: object
+    additionalProperties: false
+    required: [port, auth, baseProfile]
+    properties:
+      port:
+        type: integer
+        minimum: 1024
+        maximum: 65535
+      auth:
+        description: Basic auth `sc:<worker task token>` (SC-WORKER-TASK-TOKEN, audience sc-egress-proxy).
+        const: task-token
+      baseProfile:
+        type: string
+        pattern: "^[a-z][a-z0-9-]{0,31}$"
+      maxConcurrentTunnelsPerClient:
+        type: integer
+        minimum: 1
+        maximum: 512
+        default: 32
+  CiListener:
+    type: object
+    additionalProperties: false
+    required: [port, auth, baseProfile]
+    properties:
+      port:
+        type: integer
+        minimum: 1024
+        maximum: 65535
+      auth:
+        description: The CI listener is unauthenticated and limited to its base profile.
+        const: none
+      baseProfile:
+        type: string
+        pattern: "^[a-z][a-z0-9-]{0,31}$"
+      maxConcurrentTunnelsPerClient:
+        type: integer
+        minimum: 1
+        maximum: 512
+        default: 64
+  EgressAllowClaim:
+    description: |
+      Shape of the `egress_allow` claim in SC-WORKER-TASK-TOKEN (minted by the Agent
+      Runner, plan 26). Referenced, not validated as a root document.
+    type: array
+    maxItems: 64
+    uniqueItems: true
+    items:
+      $ref: "#/$defs/HostPatternWithPort"
+examples:
+  - apiVersion: strange.company/v1alpha1
+    kind: EgressPolicy
+    metadata:
+      name: platform
+    spec:
+      defaultAction: deny
+      denyNetworks: []
+      forbiddenHosts:
+        - api.anthropic.com
+        - api.openai.com
+        - api.deepseek.com
+        - "*.googleapis.com"
+        - api.z.ai
+        - open.bigmodel.cn
+        - "*.openai.azure.com"
+      profiles:
+        agent-base:
+          description: Language package registries and checksum databases needed for builds and tests.
+          hosts: [proxy.golang.org, sum.golang.org, storage.googleapis.com, registry.npmjs.org, pypi.org, files.pythonhosted.org, index.crates.io, static.crates.io, crates.io]
+        ci-base:
+          description: Same registries plus upstream base-image registries for trusted builds.
+          hosts: [proxy.golang.org, sum.golang.org, storage.googleapis.com, registry.npmjs.org, pypi.org, files.pythonhosted.org, index.crates.io, static.crates.io, crates.io, registry-1.docker.io, auth.docker.io, production.cloudflare.docker.com, ghcr.io, pkg-containers.githubusercontent.com, quay.io, "*.quay.io", registry.k8s.io, "*.pkg.dev"]
+        ci-build:
+          description: Release lane (protected refs only). ci-base plus release, SBOM/scan and attestation hosts.
+          hosts: [proxy.golang.org, sum.golang.org, storage.googleapis.com, registry-1.docker.io, auth.docker.io, production.cloudflare.docker.com, ghcr.io, pkg-containers.githubusercontent.com, quay.io, "*.quay.io", registry.k8s.io, "*.pkg.dev", github.com, api.github.com, objects.githubusercontent.com, snapshot.debian.org, deb.debian.org, mirror.gcr.io, rekor.sigstore.dev, fulcio.sigstore.dev, tuf-repo-cdn.sigstore.dev]
+        dr-tests:
+          description: Restore tests (SEC-23). Object-storage endpoint plus GitHub for the black-start check only.
+          includeObjectStorageEndpoint: true
+          hosts: [github.com, api.github.com, codeload.github.com]
+      listeners:
+        agent: {port: 3128, auth: task-token, baseProfile: agent-base, maxConcurrentTunnelsPerClient: 32}
+        ci: {port: 3129, auth: none, baseProfile: ci-base, maxConcurrentTunnelsPerClient: 64}
+        build: {port: 3130, auth: none, baseProfile: ci-build, maxConcurrentTunnelsPerClient: 64}
+        dr: {port: 3131, auth: none, baseProfile: dr-tests, maxConcurrentTunnelsPerClient: 32}
+      delegation:
+        repositoryAllowed: ["*.npmjs.org", "*.pythonhosted.org", "*.crates.io", repo.maven.apache.org, repo1.maven.org, plugins.gradle.org, services.gradle.org, rubygems.org, "*.rubygems.org", api.nuget.org, packagist.org, repo.packagist.org, github.com, codeload.github.com, objects.githubusercontent.com]
+        maxHostsPerRepository: 20
+      timeouts: {connect: 10s, idle: 300s, maxTunnelLifetime: 2h}
+  - apiVersion: strange.company/v1alpha1
+    kind: EgressPolicy
+    metadata:
+      name: lab
+      annotations:
+        strange.company/purpose: lab fixture with a plain-HTTP mirror on port 80 and an extra denied range
+    spec:
+      defaultAction: deny
+      denyNetworks: ["203.0.113.0/24"]
+      forbiddenHosts: [api.anthropic.com]
+      profiles:
+        agent-base:
+          hosts: ["mirror.lab.example:80", proxy.golang.org]
+        ci-base:
+          hosts: ["mirror.lab.example:80", "*.pkg.dev:443"]
+      listeners:
+        agent: {port: 3128, auth: task-token, baseProfile: agent-base}
+        ci: {port: 3129, auth: none, baseProfile: ci-base}
+      delegation:
+        repositoryAllowed: []
+        maxHostsPerRepository: 0
+      timeouts: {connect: 5s, idle: 120s, maxTunnelLifetime: 1h}
+      logging: {logAllowed: false}
+x-invalid-examples:
+  - reason: IPv4 literal used as an allowed host (IP literals are never allowed).
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: EgressPolicy
+      metadata: {name: platform}
+      spec:
+        defaultAction: deny
+        forbiddenHosts: []
+        profiles: {agent-base: {hosts: ["10.0.0.5"]}, ci-base: {hosts: [proxy.golang.org]}}
+        listeners: {agent: {port: 3128, auth: task-token, baseProfile: agent-base}, ci: {port: 3129, auth: none, baseProfile: ci-base}}
+        delegation: {repositoryAllowed: [], maxHostsPerRepository: 0}
+        timeouts: {connect: 10s, idle: 300s, maxTunnelLifetime: 2h}
+  - reason: Bare wildcard would allow every host.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: EgressPolicy
+      metadata: {name: platform}
+      spec:
+        defaultAction: deny
+        forbiddenHosts: []
+        profiles: {agent-base: {hosts: ["*"]}, ci-base: {hosts: [proxy.golang.org]}}
+        listeners: {agent: {port: 3128, auth: task-token, baseProfile: agent-base}, ci: {port: 3129, auth: none, baseProfile: ci-base}}
+        delegation: {repositoryAllowed: [], maxHostsPerRepository: 0}
+        timeouts: {connect: 10s, idle: 300s, maxTunnelLifetime: 2h}
+  - reason: Default action allow is not permitted.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: EgressPolicy
+      metadata: {name: platform}
+      spec:
+        defaultAction: allow
+        forbiddenHosts: []
+        profiles: {agent-base: {hosts: [proxy.golang.org]}, ci-base: {hosts: [proxy.golang.org]}}
+        listeners: {agent: {port: 3128, auth: task-token, baseProfile: agent-base}, ci: {port: 3129, auth: none, baseProfile: ci-base}}
+        delegation: {repositoryAllowed: [], maxHostsPerRepository: 0}
+        timeouts: {connect: 10s, idle: 300s, maxTunnelLifetime: 2h}
+  - reason: Agent listener without task-token authentication.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: EgressPolicy
+      metadata: {name: platform}
+      spec:
+        defaultAction: deny
+        forbiddenHosts: []
+        profiles: {agent-base: {hosts: [proxy.golang.org]}, ci-base: {hosts: [proxy.golang.org]}}
+        listeners: {agent: {port: 3128, auth: none, baseProfile: agent-base}, ci: {port: 3129, auth: none, baseProfile: ci-base}}
+        delegation: {repositoryAllowed: [], maxHostsPerRepository: 0}
+        timeouts: {connect: 10s, idle: 300s, maxTunnelLifetime: 2h}
+  - reason: Port suffix out of range and uppercase host.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: EgressPolicy
+      metadata: {name: platform}
+      spec:
+        defaultAction: deny
+        forbiddenHosts: []
+        profiles: {agent-base: {hosts: ["Proxy.golang.org:70000"]}, ci-base: {hosts: [proxy.golang.org]}}
+        listeners: {agent: {port: 3128, auth: task-token, baseProfile: agent-base}, ci: {port: 3129, auth: none, baseProfile: ci-base}}
+        delegation: {repositoryAllowed: [], maxHostsPerRepository: 0}
+        timeouts: {connect: 10s, idle: 300s, maxTunnelLifetime: 2h}
+  - reason: Unknown top-level spec field (closed object).
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: EgressPolicy
+      metadata: {name: platform}
+      spec:
+        defaultAction: deny
+        allowAll: true
+        forbiddenHosts: []
+        profiles: {agent-base: {hosts: [proxy.golang.org]}, ci-base: {hosts: [proxy.golang.org]}}
+        listeners: {agent: {port: 3128, auth: task-token, baseProfile: agent-base}, ci: {port: 3129, auth: none, baseProfile: ci-base}}
+        delegation: {repositoryAllowed: [], maxHostsPerRepository: 0}
+        timeouts: {connect: 10s, idle: 300s, maxTunnelLifetime: 2h}
+  - reason: IPv6 literal in denyNetworks (the cluster is IPv4-only; only IPv4 CIDRs are accepted).
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: EgressPolicy
+      metadata: {name: platform}
+      spec:
+        defaultAction: deny
+        denyNetworks: ["fd00::/8"]
+        forbiddenHosts: []
+        profiles: {agent-base: {hosts: [proxy.golang.org]}, ci-base: {hosts: [proxy.golang.org]}}
+        listeners: {agent: {port: 3128, auth: task-token, baseProfile: agent-base}, ci: {port: 3129, auth: none, baseProfile: ci-base}}
+        delegation: {repositoryAllowed: [], maxHostsPerRepository: 0}
+        timeouts: {connect: 10s, idle: 300s, maxTunnelLifetime: 2h}
+  - reason: Build listener requiring task-token auth (the build lane has no task token; only `none` is valid for CI-style listeners).
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: EgressPolicy
+      metadata: {name: platform}
+      spec:
+        defaultAction: deny
+        forbiddenHosts: []
+        profiles: {agent-base: {hosts: [proxy.golang.org]}, ci-base: {hosts: [proxy.golang.org]}, ci-build: {hosts: [github.com]}}
+        listeners: {agent: {port: 3128, auth: task-token, baseProfile: agent-base}, ci: {port: 3129, auth: none, baseProfile: ci-base}, build: {port: 3130, auth: task-token, baseProfile: ci-build}}
+        delegation: {repositoryAllowed: [], maxHostsPerRepository: 0}
+        timeouts: {connect: 10s, idle: 300s, maxTunnelLifetime: 2h}

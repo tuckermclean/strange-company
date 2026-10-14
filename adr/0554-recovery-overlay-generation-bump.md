@@ -1,0 +1,36 @@
+# ADR-0554: The recovery overlay is a Git commit that bumps the backup generation; push mirrors stay disabled until refs are reconciled; the old installation is fenced
+
+**Status:** Accepted (Stage 0) · **Date:** 2026-10-13 · **Owning plan:** 45 · **Revised:** 2026-10-13 (G9 consolidation: aligned with plans 12 §9.4–9.5, 19 §18.3, 26 §14.7 and 50 §13/§14.9); 2026-10-14 (review fix round: DR-1, DR-2, DR-4, DR-5, DR-6, DR-7, DR-10)
+
+## Context
+Black start (SPEC §111, §112) re-seeds through ADR-0005 but must create the four CNPG clusters from backups (`bootstrap.recovery`) and the Forgejo and Hermes Longhorn volumes from backups. Three hazards exist:
+- CNPG refuses to archive WAL into an object-store path that already holds another cluster's archive (verify). The recovered clusters therefore need a new backup path.
+- A restored Forgejo still holds its push-mirror configuration and token. Its repository PVC may be older than GitHub, so an immediate push mirror would **overwrite newer GitHub refs with older ones** and destroy the recovery seed.
+- If the old installation is merely unreachable rather than gone, two installations would write the same backups, mirror to the same GitHub repository and claim the same tunnel.
+
+## Decision
+1. `./bootstrap recover` creates a local **recovery commit** on top of the GitHub clone's `main` (or of the restored Forgejo `main` when that is newer). It touches only `gitops/clusters/<cluster>/**` plus the `spec.emergencyStop` line of `policy/budgets.yaml` (plan 50 commit-scope rule and its recovery exception):
+   - `vars/cluster-vars.yaml`: for every CNPG cluster `<ID>` ∈ {FORGEJO, AUTHENTIK, WOODPECKER, SC}, `CNPG_<ID>_SOURCE_GEN = N` and `CNPG_<ID>_GEN = N+1` (plan 12 §9.4 generations; archive path `…/<cluster>/<cluster>-g<N+1>/`), `CNPG_<ID>_TARGET_TIME` for a PITR target, and `LONGHORN_<VOLUME>_BACKUP_URL` for each important volume with a usable backup. Flux reads only these variables.
+   - `secrets/**/*.sops.yaml`: every credential minted by fencing (decision 3), so the seeded cluster uses the new keys.
+   - `config/recovery.yaml` (`kind: RecoveryRecord`, `contracts/recovery-record.schema.yaml`): audit record of generations, targets, backup URLs, fencing outcome and GitHub trust check. Flux does not read it.
+   - `kustomization.yaml` and `seed/kustomization.yaml` add shared kustomize Components from `gitops/components/`: per CNPG cluster `cnpg-recovery-latest-<id>` or `cnpg-recovery-target-<id>` (Flux `spec.patches` on the cluster's db layer that replace `spec.bootstrap` with plan 12's `recovery` stanza and add `externalClusters`; the variant decides whether `recoveryTarget` exists, because substitution cannot add or remove keys); per important volume with a backup `longhorn-volume-recovery-forgejo` / `-hermes` (plan 13 §9.7 `spec.fromBackup`); and `recovery-mode` (Forgejo `[mirror] ENABLED=false` (verify), plan 17 `expectMirror: false`, the marker ConfigMap `flux-system/sc-recovery-mode`, and suspension of the restore-test CronJobs).
+   Both kustomizations reference the same components, so the seed and the steady root render identical objects (plan 19 §18.3). This commit is what gets seeded and pushed to Forgejo, so the recovering cluster is fully explained by Git.
+2. In recovery mode, Forgejo starts with **push mirrors disabled**. Mirrors are re-enabled only after ref reconciliation (fast-forward only; newest wins; divergence halts), the operator's explicit `./bootstrap recover --step forge-reconnect`, and the merged finalize PR.
+3. Unless the operator attests that the old installation is destroyed, recovery **fences** it: after `state-recover` (never in `--scope state-only`) and after a liveness probe that refuses to fence an installation that looks alive unless the operator types `fence-live <cluster>`, it rotates the object-storage write credentials, the GitHub mirror credential and the tunnel credential (plus the instances listed in plan 45 §10) and writes the new values as SOPS files into the recovery commit. Fencing never opens a PR.
+4. Workers stay paused: the recovery commit sets the Git emergency-stop source `policy/budgets.yaml` `spec.emergencyStop.level: workers` (`all` in drill mode; plan 33 §20).
+5. **Two-stage completion.** The recovery `verify` uses a recovery profile (mirror compare-refs instead of mirror verify; new-generation backups and observed RPO instead of restore-test freshness) and reports `RECOVERY VERIFIED — MIRROR PENDING`. A **finalize PR** (authored by `sc-admin`, approved and merged by a human) removes `recovery-mode` and the `longhorn-volume-recovery-*` components (safe: Longhorn `Volume`s are applied `ssa: IfNotPresent`), sets `expectMirror: true` and resets the emergency stop to `none`. After it reconciles, `--step finalize` verifies the mirror, forces one run of each restore test, and only then prints `CONTROL TRANSFER COMPLETE` / `CONTROL TRANSFER COMPLETE (RECOVERY)`. `BLOCKED` tasks are then resumed by humans (plan 33 §14.5).
+6. The `cnpg-recovery-*` components and the new generations stay committed until the next recovery commit replaces them. That is **not** a safety mechanism: an accidental deletion of a production `Cluster` would be re-created from the stale `SOURCE_GEN` and archive into the live path. A ValidatingAdmissionPolicy (plan 37, `sc-cnpg-cluster-create-guard`) therefore denies re-creation of a production `Cluster` outside an active recovery run: creation is admitted only while `flux-system/sc-cnpg-create-window` (rendered by plan 50 for the run) exists and the `Cluster` carries the matching `strange.company/recovery-run` annotation (plan 12; ADM-63).
+
+## Consequences
+- The recovery commit reaches protected `main` through plan 16's `bootstrap` protection stage (`sc-admin` push allowlist), exactly as at install. `sc-bootstrap forge finalize` restores the `steady` stage. The stage changes are recorded in the recovery evidence.
+- Old generations remain in object storage under plan 43 lifecycle rules and can serve as PITR sources.
+- After finalize, an accidental `Cluster` deletion stalls visibly (`SCCnpgClusterDown`) and is repaired by `restore-cnpg.md` §Replace with fresh generations.
+
+## Alternatives rejected
+- Toggling recovery through cluster-local objects (ConfigMaps or a patched root Kustomization): not Git-explainable, and Flux would revert a patched committed root.
+- Reusing the same backup path: CNPG rejects it (verify), and it would interleave timelines.
+- Relying on the committed recovery stanza to protect against accidental deletion: wrong, see decision 6.
+- Fencing before `state-recover` or in a state-only run: a drill or a mistaken recovery would cut a live production installation off its backups, mirror and tunnel (review finding DR-2).
+
+## Verification
+Plan 45 GATE-P10 k3d ACs (45-AC-3, -4, -7, -12, -13, -15) and the H04 RD3 drill: every recovered cluster writes its first base backup under `<cluster>-g<N+1>/`; no push to GitHub occurs before finalize (GitHub ref log unchanged); the report reads `RECOVERY VERIFIED — MIRROR PENDING` before finalize and `CONTROL TRANSFER COMPLETE` after; after the finalize PR, `kubectl get cm -n flux-system sc-recovery-mode` returns NotFound, every CNPG `Cluster` keeps its UID and `status.timelineID`, and no `Cluster` re-bootstraps.

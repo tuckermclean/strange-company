@@ -1,0 +1,561 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://strange.company/contracts/forge-configuration/v1alpha1
+title: ForgeConfiguration
+description: >-
+  Desired state of the Forgejo forge (`forge/forge.yaml`, plan 16 §7.4, ADR-0252):
+  organizations and teams, machine accounts and their token scopes, admin read tokens,
+  repositories with deploy keys, staged branch protection, protected tags, push mirrors
+  (plan 17 §7.2) and pull mirrors, package cleanup rules (plan 43 R-10) and webhooks.
+  Applied by forge-init (P05) and `sc-bootstrap forge apply`; drift is reported by the
+  `platform-probes` forge module. Placeholders `${BASE_DOMAIN}`, `${GITHUB_MIRROR_REPO}`
+  are substituted from the cluster configuration before application. No secret values
+  appear in this file: credentials are referenced by Secret name or secret class.
+type: object
+additionalProperties: false
+required: [apiVersion, kind, metadata, spec]
+properties:
+  apiVersion: {const: strange.company/v1alpha1}
+  kind: {const: ForgeConfiguration}
+  metadata:
+    type: object
+    additionalProperties: false
+    required: [name]
+    properties:
+      name: {$ref: "#/$defs/name"}
+  spec:
+    type: object
+    additionalProperties: false
+    required: [orgs, bots, repositories, webhooks]
+    properties:
+      orgs:
+        type: array
+        minItems: 1
+        items: {$ref: "#/$defs/org"}
+      bots:
+        type: array
+        items: {$ref: "#/$defs/bot"}
+      adminTokens:
+        type: array
+        items: {$ref: "#/$defs/adminToken"}
+      repositories:
+        type: array
+        minItems: 1
+        items: {$ref: "#/$defs/repository"}
+      packageCleanupRules:
+        type: array
+        items: {$ref: "#/$defs/packageCleanupRule"}
+      webhooks:
+        type: array
+        items: {$ref: "#/$defs/webhook"}
+$defs:
+  name:
+    type: string
+    pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$"
+  secretRef:
+    description: >-
+      Where the generated credential is written: `<namespace>/<secret-name>` (SOPS file per plan 35
+      conventions, delivered by Flux) or `woodpecker-secret:<name>` (SOPS file under `secrets/ci/<cluster>/`,
+      applied to Woodpecker by `sc-bootstrap ci-secrets apply`, plan 23).
+    type: string
+    pattern: "^([a-z0-9-]{1,63}/[a-z0-9.-]{1,253}|woodpecker-secret:[a-z0-9_]{1,64})$"
+  tokenScope:
+    type: string
+    enum:
+      - read:activitypub
+      - write:activitypub
+      - read:admin
+      - write:admin
+      - read:issue
+      - write:issue
+      - read:misc
+      - write:misc
+      - read:notification
+      - write:notification
+      - read:organization
+      - write:organization
+      - read:package
+      - write:package
+      - read:repository
+      - write:repository
+      - read:user
+      - write:user
+  org:
+    type: object
+    additionalProperties: false
+    required: [name, visibility, teams]
+    properties:
+      name: {$ref: "#/$defs/name"}
+      visibility: {enum: [private, limited]}
+      labelsRef:
+        description: Named org label set whose content is owned by plan 55 (e.g. plan55-status-labels).
+        type: string
+      teams:
+        type: array
+        minItems: 1
+        items:
+          type: object
+          additionalProperties: false
+          required: [name, permission]
+          properties:
+            name: {$ref: "#/$defs/name"}
+            permission: {enum: [read, write, admin]}
+            includesAllRepositories: {type: boolean, default: false}
+            repositories:
+              type: array
+              items: {type: string}
+            units:
+              type: array
+              items:
+                enum: [repo.code, repo.issues, repo.pulls, repo.releases, repo.packages, repo.wiki, repo.projects, repo.ext_issues, repo.ext_wiki, repo.actions]
+            members:
+              type: array
+              items: {$ref: "#/$defs/name"}
+  bot:
+    type: object
+    additionalProperties: false
+    required: [username, tokenScopes, createdAt]
+    properties:
+      username:
+        type: string
+        pattern: "^sc-[a-z0-9-]{1,40}$"
+      purpose: {type: string}
+      createdAt:
+        description: DAG node at which the bot and its token are created (forge-init = P05; supply-chain init = P11).
+        enum: [P05, P08, P11, C03]
+      tokenScopes:
+        type: array
+        uniqueItems: true
+        items: {$ref: "#/$defs/tokenScope"}
+      repositoryScope:
+        description: Optional restriction of the token to listed repositories (enforced by team membership; Forgejo tokens are not repository-scoped).
+        type: array
+        items: {type: string, pattern: "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$"}
+      secretRef: {$ref: "#/$defs/secretRef"}
+      oauthApps:
+        type: array
+        items:
+          type: object
+          additionalProperties: false
+          required: [name, redirectUris, confidential, secretRef]
+          properties:
+            name: {$ref: "#/$defs/name"}
+            redirectUris:
+              type: array
+              minItems: 1
+              items: {type: string, pattern: "^https://"}
+            confidential: {type: boolean}
+            secretRef: {$ref: "#/$defs/secretRef"}
+    allOf:
+      - if:
+          properties: {tokenScopes: {minItems: 1}}
+        then:
+          required: [secretRef]
+  adminToken:
+    type: object
+    additionalProperties: false
+    required: [name, scopes, secretRef]
+    properties:
+      name: {$ref: "#/$defs/name"}
+      scopes:
+        type: array
+        minItems: 1
+        items:
+          $ref: "#/$defs/tokenScope"
+          not: {pattern: "^write:"}
+      secretRef: {$ref: "#/$defs/secretRef"}
+  protectionStage:
+    type: object
+    additionalProperties: false
+    required: [pushWhitelistUsers, statusChecks]
+    properties:
+      pushWhitelistUsers:
+        type: array
+        items: {$ref: "#/$defs/name"}
+      statusChecks:
+        type: array
+        uniqueItems: true
+        items: {type: string, minLength: 1}
+      requiredApprovals:
+        description: Overrides the rule's requiredApprovals while this stage is applied.
+        type: integer
+        minimum: 1
+  branchProtection:
+    type: object
+    additionalProperties: false
+    required: [branchPattern, stages, pushWhitelistDeployKeys, requiredApprovals, applyToAdmins]
+    if:
+      properties: {branchPattern: {enum: [main, "release/*"]}}
+    then:
+      properties:
+        stages:
+          properties:
+            steady:
+              properties:
+                pushWhitelistUsers: {maxItems: 0}
+    properties:
+      branchPattern: {type: string, minLength: 1}
+      priority:
+        description: Rule priority where Forgejo supports ordered glob rules (verify; plan 16 16-AC-34).
+        type: integer
+        minimum: 0
+      stages:
+        type: object
+        additionalProperties: false
+        required: [bootstrap, steady]
+        properties:
+          bootstrap: {$ref: "#/$defs/protectionStage"}
+          steady:
+            description: Steady stage. The bootstrap automation identity sc-admin is never a whitelisted pusher; protected branches (main, release/*) whitelist nobody, bot namespaces (renovate/*) whitelist only their bot.
+            allOf:
+              - $ref: "#/$defs/protectionStage"
+              - properties:
+                  pushWhitelistUsers:
+                    items:
+                      not: {const: sc-admin}
+          recovery:
+            description: >-
+              Emergency stage for a broken merge-gate component (plan 16 §14.4, plan 55 emergency-merge.md).
+              Applied only by `sc-bootstrap forge apply --stage recovery`; never whitelists pushers and needs ≥ 2 approvals.
+            allOf:
+              - $ref: "#/$defs/protectionStage"
+              - required: [requiredApprovals]
+                properties:
+                  pushWhitelistUsers: {maxItems: 0}
+                  requiredApprovals: {minimum: 2}
+      enablePush: {type: boolean, default: true}
+      enablePushWhitelist: {type: boolean, default: true}
+      pushWhitelistDeployKeys: {const: false}
+      requiredApprovals: {type: integer, minimum: 1}
+      dismissStaleApprovals: {type: boolean, default: true}
+      blockOnRejectedReviews: {type: boolean, default: true}
+      blockOnOfficialReviewRequests: {type: boolean, default: true}
+      blockOnOutdatedBranch: {type: boolean, default: false}
+      applyToAdmins: {const: true}
+      enableMergeWhitelist: {type: boolean, default: false}
+  protectedTag:
+    type: object
+    additionalProperties: false
+    required: [namePattern, whitelistUsernames]
+    properties:
+      namePattern: {type: string, minLength: 1}
+      whitelistUsernames:
+        type: array
+        items: {$ref: "#/$defs/name"}
+      whitelistTeams:
+        type: array
+        items: {$ref: "#/$defs/name"}
+  pushMirror:
+    type: object
+    additionalProperties: false
+    required: [name, remoteAddress, branchFilter, interval, syncOnCommit, credential]
+    properties:
+      name: {$ref: "#/$defs/name"}
+      remoteAddress: {type: string, pattern: "^https://"}
+      branchFilter:
+        description: Comma-separated branch names/globs. Must be non-empty (an empty filter mirrors every branch, plan 17 17-R-1).
+        type: string
+        minLength: 1
+        not: {pattern: "(^|,)\\s*(\\*|agent/|renovate/|sc-verify/)"}
+      interval: {type: string, pattern: "^([0-9]+h)?([0-9]+m)?([0-9]+s)?$", minLength: 2}
+      syncOnCommit: {type: boolean}
+      useSSH: {const: false}
+      credential:
+        type: object
+        additionalProperties: false
+        required: [class, source]
+        properties:
+          class: {const: SC-GITHUB-MIRROR}
+          source: {const: operator}
+  pullMirror:
+    type: object
+    additionalProperties: false
+    required: [name, remoteAddress, interval, enabled]
+    properties:
+      name: {$ref: "#/$defs/name"}
+      remoteAddress: {type: string, pattern: "^https://"}
+      interval: {type: string, pattern: "^([0-9]+h)?([0-9]+m)?([0-9]+s)?$", minLength: 2}
+      enabled: {type: boolean}
+  repository:
+    type: object
+    additionalProperties: false
+    required: [name, defaultBranch, private]
+    properties:
+      name: {type: string, pattern: "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$"}
+      defaultBranch: {type: string, minLength: 1}
+      private: {type: boolean}
+      hasWiki: {type: boolean, default: false}
+      hasProjects: {type: boolean, default: true}
+      hasActions: {const: false}
+      deployKeys:
+        type: array
+        items:
+          type: object
+          additionalProperties: false
+          required: [name, readOnly, secretRef]
+          properties:
+            name: {$ref: "#/$defs/name"}
+            readOnly: {const: true}
+            secretRef: {$ref: "#/$defs/secretRef"}
+      branchProtection:
+        type: array
+        items: {$ref: "#/$defs/branchProtection"}
+      protectedTags:
+        type: array
+        items: {$ref: "#/$defs/protectedTag"}
+      pushMirrors:
+        type: array
+        maxItems: 1
+        items: {$ref: "#/$defs/pushMirror"}
+      pullMirror: {$ref: "#/$defs/pullMirror"}
+  packageCleanupRule:
+    type: object
+    additionalProperties: false
+    required: [owner, type, keepCount, removeDays, enabled]
+    properties:
+      owner: {$ref: "#/$defs/name"}
+      type:
+        description: Package type. Container images are excluded (plan 43 R-09 owns them via oci-retention).
+        enum: [generic, helm, go, npm, pypi, maven, debian, alpine, cargo, composer, conan, conda, cran, nuget, pub, rpm, rubygems, swift, vagrant]
+      keepCount: {type: integer, minimum: 1}
+      keepPattern: {type: string}
+      removeDays: {type: integer, minimum: 1}
+      removePattern: {type: string}
+      matchFullName: {type: boolean, default: false}
+      enabled: {type: boolean}
+  webhook:
+    type: object
+    additionalProperties: false
+    required: [scope, name, url, events, contentType, secretRef, active]
+    properties:
+      scope: {type: string, pattern: "^(org|repo)/[A-Za-z0-9._/-]+$"}
+      name: {$ref: "#/$defs/name"}
+      url: {type: string, pattern: "^https?://[a-z0-9.-]+\\.svc(\\.cluster\\.local)?:[0-9]+/"}
+      events:
+        type: array
+        minItems: 1
+        items:
+          enum: [push, create, delete, pull_request, pull_request_review, pull_request_comment, pull_request_sync, issues, issue_comment, status, release]
+      contentType: {const: json}
+      branchFilter: {type: string}
+      secretRef: {$ref: "#/$defs/secretRef"}
+      active: {type: boolean}
+examples:
+  - apiVersion: strange.company/v1alpha1
+    kind: ForgeConfiguration
+    metadata: {name: strange-company}
+    spec:
+      orgs:
+        - name: strange-company
+          visibility: private
+          labelsRef: plan55-status-labels
+          teams:
+            - {name: Owners, permission: admin, includesAllRepositories: true}
+            - {name: engineers, permission: write, includesAllRepositories: true, units: [repo.code, repo.issues, repo.pulls, repo.releases, repo.packages]}
+            - {name: viewers, permission: read, includesAllRepositories: true}
+            - {name: sc-automation, permission: admin, includesAllRepositories: true, members: [sc-runner, sc-woodpecker]}
+            - {name: sc-bots-write, permission: write, includesAllRepositories: true, members: [sc-renovate]}
+            - {name: sc-bots-read, permission: read, includesAllRepositories: true, members: [sc-backup, sc-ci-config]}
+            - {name: sc-release, permission: write, repositories: [strange-company], units: [repo.code, repo.pulls, repo.packages], members: [sc-release]}
+            - {name: sc-registry-readers, permission: read, includesAllRepositories: true, units: [repo.packages], members: [sc-registry-reader]}
+            - {name: sc-gc, permission: write, includesAllRepositories: true, units: [repo.packages], members: [sc-gc]}
+        - name: projects
+          visibility: private
+          teams:
+            - {name: Owners, permission: admin, includesAllRepositories: true}
+            - {name: engineers, permission: write, includesAllRepositories: true}
+            - {name: sc-automation, permission: admin, includesAllRepositories: true, members: [sc-runner, sc-woodpecker]}
+            - {name: sc-bots-read, permission: read, includesAllRepositories: true, members: [sc-backup, sc-ci-config]}
+      bots:
+        - {username: sc-runner, createdAt: P05, tokenScopes: [write:repository, write:issue, read:organization, read:user], secretRef: strange-company/agent-runner-forgejo}
+        - {username: sc-renovate, createdAt: P05, tokenScopes: [write:repository, write:issue, read:organization, read:user], secretRef: renovate/forgejo-sc-renovate}
+        - {username: sc-backup, createdAt: P05, tokenScopes: [read:repository, read:organization, read:user, read:package], secretRef: forgejo/forgejo-sc-backup}
+        - {username: sc-gc, createdAt: P05, tokenScopes: [write:package], secretRef: forgejo/forgejo-sc-gc}
+        - {username: sc-ci-config, createdAt: P05, tokenScopes: [read:repository], secretRef: woodpecker/forgejo-sc-ci-config}
+        - {username: sc-release, createdAt: P11, tokenScopes: [write:repository, write:issue], repositoryScope: [strange-company/strange-company], secretRef: "woodpecker-secret:sc_release_pr_token"}
+        - {username: sc-registry-reader, createdAt: P11, tokenScopes: [read:package], secretRef: strange-company/sc-registry-pull}
+        - username: sc-woodpecker
+          createdAt: P05
+          tokenScopes: []
+          oauthApps:
+            - {name: woodpecker, redirectUris: ["https://ci.${BASE_DOMAIN}/authorize"], confidential: true, secretRef: woodpecker/woodpecker-forgejo-oauth}
+      adminTokens:
+        - {name: platform-probes, scopes: [read:admin, read:repository, read:user], secretRef: monitoring/platform-probes-forgejo}
+      repositories:
+        - name: strange-company/strange-company
+          defaultBranch: main
+          private: true
+          hasWiki: false
+          hasProjects: true
+          hasActions: false
+          deployKeys:
+            - {name: flux-readonly, readOnly: true, secretRef: flux-system/flux-system}
+          branchProtection:
+            - branchPattern: main
+              stages:
+                bootstrap: {pushWhitelistUsers: [sc-admin], statusChecks: []}
+                steady: {pushWhitelistUsers: [], statusChecks: [ci/woodpecker/pr/ci, strange-company/tdd-provenance, strange-company/review, strange-company/release-provenance]}
+                recovery: {pushWhitelistUsers: [], statusChecks: [ci/woodpecker/pr/ci], requiredApprovals: 2}
+              pushWhitelistDeployKeys: false
+              requiredApprovals: 1
+              applyToAdmins: true
+            - branchPattern: "release/*"
+              stages:
+                bootstrap: {pushWhitelistUsers: [sc-admin], statusChecks: []}
+                steady: {pushWhitelistUsers: [], statusChecks: [ci/woodpecker/pr/ci]}
+              pushWhitelistDeployKeys: false
+              requiredApprovals: 1
+              applyToAdmins: true
+            - branchPattern: "renovate/*"
+              stages:
+                bootstrap: {pushWhitelistUsers: [sc-renovate], statusChecks: []}
+                steady: {pushWhitelistUsers: [sc-renovate], statusChecks: []}
+              enablePushWhitelist: true
+              pushWhitelistDeployKeys: false
+              requiredApprovals: 1
+              applyToAdmins: true
+          protectedTags:
+            - {namePattern: "*", whitelistUsernames: [sc-admin, sc-runner, sc-release], whitelistTeams: [Owners, engineers]}
+            - {namePattern: "v*", whitelistUsernames: [sc-admin, sc-release], whitelistTeams: [engineers]}
+            - {namePattern: "sc-archive/*", whitelistUsernames: [sc-runner]}
+            - {namePattern: "sc-quarantine/*", whitelistUsernames: [sc-runner]}
+          pushMirrors:
+            - name: github
+              remoteAddress: "https://github.com/${GITHUB_MIRROR_REPO}.git"
+              branchFilter: "main,release/*"
+              interval: 10m0s
+              syncOnCommit: true
+              useSSH: false
+              credential: {class: SC-GITHUB-MIRROR, source: operator}
+      packageCleanupRules:
+        - {owner: strange-company, type: generic, keepCount: 10, keepPattern: "^v?[0-9]+\\.[0-9]+\\.[0-9]+$", removeDays: 30, enabled: true}
+        - {owner: strange-company, type: helm, keepCount: 10, keepPattern: "^v?[0-9]+\\.[0-9]+\\.[0-9]+$", removeDays: 30, enabled: true}
+      webhooks:
+        - {scope: org/strange-company, name: agent-runner, url: "http://agent-runner.strange-company.svc.cluster.local:8083/v1/hooks/forgejo", events: [push, pull_request, pull_request_review, pull_request_comment, issues, issue_comment, status], contentType: json, secretRef: strange-company/agent-runner-webhook, active: false}
+        - {scope: org/projects, name: agent-runner, url: "http://agent-runner.strange-company.svc.cluster.local:8083/v1/hooks/forgejo", events: [push, pull_request, pull_request_review, pull_request_comment, issues, issue_comment, status], contentType: json, secretRef: strange-company/agent-runner-webhook, active: false}
+x-invalid-examples:
+  - reason: Push mirror without a branch filter would publish every agent branch to GitHub (plan 17 17-R-1).
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: ForgeConfiguration
+      metadata: {name: strange-company}
+      spec:
+        orgs: [{name: strange-company, visibility: private, teams: [{name: Owners, permission: admin}]}]
+        bots: []
+        webhooks: []
+        repositories:
+          - name: strange-company/strange-company
+            defaultBranch: main
+            private: true
+            pushMirrors:
+              - {name: github, remoteAddress: "https://github.com/o/r.git", branchFilter: "", interval: 10m0s, syncOnCommit: true, credential: {class: SC-GITHUB-MIRROR, source: operator}}
+  - reason: Branch filter that matches agent branches.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: ForgeConfiguration
+      metadata: {name: strange-company}
+      spec:
+        orgs: [{name: strange-company, visibility: private, teams: [{name: Owners, permission: admin}]}]
+        bots: []
+        webhooks: []
+        repositories:
+          - name: strange-company/strange-company
+            defaultBranch: main
+            private: true
+            pushMirrors:
+              - {name: github, remoteAddress: "https://github.com/o/r.git", branchFilter: "main,agent/*", interval: 10m0s, syncOnCommit: true, credential: {class: SC-GITHUB-MIRROR, source: operator}}
+  - reason: Steady protection stage may not whitelist the bootstrap identity sc-admin.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: ForgeConfiguration
+      metadata: {name: strange-company}
+      spec:
+        orgs: [{name: strange-company, visibility: private, teams: [{name: Owners, permission: admin}]}]
+        bots: []
+        webhooks: []
+        repositories:
+          - name: strange-company/strange-company
+            defaultBranch: main
+            private: true
+            branchProtection:
+              - branchPattern: main
+                stages:
+                  bootstrap: {pushWhitelistUsers: [sc-admin], statusChecks: []}
+                  steady: {pushWhitelistUsers: [sc-admin], statusChecks: []}
+                pushWhitelistDeployKeys: false
+                requiredApprovals: 1
+                applyToAdmins: true
+  - reason: A recovery stage must require at least two approvals.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: ForgeConfiguration
+      metadata: {name: strange-company}
+      spec:
+        orgs: [{name: strange-company, visibility: private, teams: [{name: Owners, permission: admin}]}]
+        bots: []
+        webhooks: []
+        repositories:
+          - name: strange-company/strange-company
+            defaultBranch: main
+            private: true
+            branchProtection:
+              - branchPattern: main
+                stages:
+                  bootstrap: {pushWhitelistUsers: [], statusChecks: []}
+                  steady: {pushWhitelistUsers: [], statusChecks: []}
+                  recovery: {pushWhitelistUsers: [], statusChecks: [], requiredApprovals: 1}
+                pushWhitelistDeployKeys: false
+                requiredApprovals: 1
+                applyToAdmins: true
+  - reason: Deploy keys may never be allowed to push protected branches (ADR-0007).
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: ForgeConfiguration
+      metadata: {name: strange-company}
+      spec:
+        orgs: [{name: strange-company, visibility: private, teams: [{name: Owners, permission: admin}]}]
+        bots: []
+        webhooks: []
+        repositories:
+          - name: strange-company/strange-company
+            defaultBranch: main
+            private: true
+            branchProtection:
+              - branchPattern: main
+                stages:
+                  bootstrap: {pushWhitelistUsers: [], statusChecks: []}
+                  steady: {pushWhitelistUsers: [], statusChecks: []}
+                pushWhitelistDeployKeys: true
+                requiredApprovals: 1
+                applyToAdmins: true
+  - reason: A bot with token scopes must name the Secret that receives the token.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: ForgeConfiguration
+      metadata: {name: strange-company}
+      spec:
+        orgs: [{name: strange-company, visibility: private, teams: [{name: Owners, permission: admin}]}]
+        bots: [{username: sc-gc, createdAt: P05, tokenScopes: [write:package]}]
+        webhooks: []
+        repositories: [{name: strange-company/strange-company, defaultBranch: main, private: true}]
+  - reason: Admin read tokens may not carry write scopes.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: ForgeConfiguration
+      metadata: {name: strange-company}
+      spec:
+        orgs: [{name: strange-company, visibility: private, teams: [{name: Owners, permission: admin}]}]
+        bots: []
+        adminTokens: [{name: platform-probes, scopes: [write:admin], secretRef: monitoring/platform-probes-forgejo}]
+        webhooks: []
+        repositories: [{name: strange-company/strange-company, defaultBranch: main, private: true}]
+  - reason: Webhooks must target in-cluster Services only.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: ForgeConfiguration
+      metadata: {name: strange-company}
+      spec:
+        orgs: [{name: strange-company, visibility: private, teams: [{name: Owners, permission: admin}]}]
+        bots: []
+        repositories: [{name: strange-company/strange-company, defaultBranch: main, private: true}]
+        webhooks:
+          - {scope: org/strange-company, name: ext, url: "https://example.com/hook", events: [push], contentType: json, secretRef: strange-company/agent-runner-webhook, active: true}

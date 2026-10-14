@@ -1,0 +1,803 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://strange.company/contracts/model-routing/v1alpha1
+title: ModelRouting
+description: |
+  Model routing policy (SPEC §75–§77; owning plan 31). File `policy/model-routing.yaml`
+  in the `strange-company` repository, delivered to the Runner and the Model Gateway
+  as a Flux-generated ConfigMap (D-17).
+
+  Defines: providers the Gateway may forward to (upstream base URL, credential key in
+  `SC-MODEL-API-KEYS`, wire families and usage dialects); routable models; the four
+  logical capability tiers as ordered candidate lists; per-harness constraints (harness
+  API-family compatibility itself comes from `policy/harnesses.yaml`, plan 28); role
+  default tiers; escalation ladders; and the optional same-tier infrastructure fallback.
+  Model names are data, never architectural constants (SPEC §75).
+
+  `$defs/RepositoryRoutingOverride` is the tighten-only per-repository section that
+  plan 22's `RepositoryPolicy` embeds as `spec.modelRouting`. `$defs/RoutingDecision` is
+  the snake_case record of one resolution stored on each execution (plans 26/29 `$ref` it).
+
+  Load-time invariants enforced by the policy loader (F04) beyond this schema; any
+  violation rejects the file (last-known-good is kept, alert GatewayPolicyInvalid):
+  - every model's `provider` exists and lists the model's `apiFamily`;
+  - model ids are `<provider>/<apiModel>`;
+  - every tier candidate, ladder tier, role tier and auxiliary tier exists;
+  - `roles.<r>.defaultTier` is in `roles.<r>.allowedTiers`; every ladder rung tier is in
+    the role's `allowedTiers`; ladder tiers are strictly ascending
+    (clerical < bargain < standard < frontier);
+  - providers with `stage: test-only` appear only in candidates of models used by
+    harnesses whose registry `adapter` is `fake`, and production harnesses can never
+    resolve to them (and vice versa: `fake` family only on test-only providers);
+  - `credential.secretKey` values are unique;
+  - `upstream.baseUrl` host is not a cluster-internal name unless `stage: test-only`.
+type: object
+additionalProperties: false
+required: [apiVersion, kind, metadata, spec]
+properties:
+  apiVersion:
+    const: strange.company/v1alpha1
+  kind:
+    const: ModelRouting
+  metadata:
+    type: object
+    additionalProperties: false
+    required: [name]
+    properties:
+      name:
+        type: string
+        pattern: "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
+  spec:
+    type: object
+    additionalProperties: false
+    required: [providers, models, tiers, roles, escalationLadders, orchestrator, infrastructureFallback]
+    properties:
+      providers:
+        type: object
+        minProperties: 1
+        propertyNames:
+          $ref: "#/$defs/Id"
+        additionalProperties:
+          $ref: "#/$defs/Provider"
+      models:
+        type: object
+        minProperties: 1
+        propertyNames:
+          type: string
+          pattern: "^[a-z][a-z0-9-]{0,31}/[A-Za-z0-9._:-]{1,128}$"
+        additionalProperties:
+          $ref: "#/$defs/Model"
+      tiers:
+        type: object
+        additionalProperties: false
+        required: [clerical, bargain, standard, frontier]
+        properties:
+          clerical:
+            $ref: "#/$defs/TierCandidates"
+          bargain:
+            $ref: "#/$defs/TierCandidates"
+          standard:
+            $ref: "#/$defs/TierCandidates"
+          frontier:
+            $ref: "#/$defs/TierCandidates"
+      harnesses:
+        description: Optional per-harness constraints keyed by harness registry id (plan 28).
+        type: object
+        propertyNames:
+          $ref: "#/$defs/Id"
+        additionalProperties:
+          $ref: "#/$defs/HarnessConstraint"
+      roles:
+        type: object
+        additionalProperties: false
+        required: [researcher, planner, tester, implementer, reviewer]
+        properties:
+          researcher:
+            $ref: "#/$defs/RoleRouting"
+          planner:
+            $ref: "#/$defs/RoleRouting"
+          tester:
+            $ref: "#/$defs/RoleRouting"
+          implementer:
+            $ref: "#/$defs/RoleRouting"
+          reviewer:
+            $ref: "#/$defs/RoleRouting"
+      escalationLadders:
+        type: object
+        minProperties: 1
+        propertyNames:
+          $ref: "#/$defs/Id"
+        additionalProperties:
+          type: array
+          minItems: 1
+          maxItems: 4
+          items:
+            type: object
+            additionalProperties: false
+            required: [tier, meritFailuresBeforeEscalation]
+            properties:
+              tier:
+                $ref: "#/$defs/Tier"
+              meritFailuresBeforeEscalation:
+                description: Merit-class failures (plan 29) of this role on this task at this rung before the next rung applies.
+                type: integer
+                minimum: 1
+                maximum: 5
+      orchestrator:
+        description: Routing for Hermes (pseudo-harness `hermes`, role `orchestrator`, plan 24).
+        type: object
+        additionalProperties: false
+        required: [tier, apiFamilies, maxConcurrentRequests]
+        properties:
+          tier:
+            $ref: "#/$defs/Tier"
+          apiFamilies:
+            type: array
+            minItems: 1
+            uniqueItems: true
+            items:
+              $ref: "#/$defs/ApiFamily"
+          providers:
+            type: array
+            uniqueItems: true
+            items:
+              $ref: "#/$defs/Id"
+          maxConcurrentRequests:
+            type: integer
+            minimum: 1
+            maximum: 64
+          auxiliaryTier:
+            description: Tier of the model used by Hermes' auxiliary slots (compression, summarization, the task watcher), resolved on the same provider and family as the primary and minted with purpose `auxiliary` (plan 31 §14.6, review COST-6).
+            $ref: "#/$defs/Tier"
+      infrastructureFallback:
+        description: Same-tier fallback to a candidate on a different provider after an infrastructure-class failure attributable to the provider (plan 31 §14.4).
+        type: object
+        additionalProperties: false
+        required: [enabled, maxFallbacksPerTask]
+        properties:
+          enabled:
+            type: boolean
+          maxFallbacksPerTask:
+            type: integer
+            minimum: 0
+            maximum: 3
+$defs:
+  Id:
+    type: string
+    pattern: "^[a-z][a-z0-9-]{0,31}$"
+  Tier:
+    type: string
+    enum: [clerical, bargain, standard, frontier]
+  ApiFamily:
+    description: Same identifiers as contracts/harness.schema.yaml. `google-generative` is reserved (post-MVP; rejected by the MVP loader).
+    type: string
+    enum: [anthropic-messages, openai-responses, openai-chat-completions, google-generative, fake]
+  UsageDialect:
+    description: Compiled-in usage normalizer (plan 32 §8). A (provider, family) pair without a dialect cannot be routed.
+    type: string
+    enum: [anthropic, openai-chat, openai-responses, deepseek-chat, zai-chat]
+  Provider:
+    type: object
+    additionalProperties: false
+    required: [displayName, enabled, stage, upstream, credential, apiFamilies]
+    properties:
+      displayName:
+        type: string
+        maxLength: 64
+      enabled:
+        type: boolean
+      stage:
+        type: string
+        enum: [production, test-only]
+      upstream:
+        type: object
+        additionalProperties: false
+        required: [baseUrl]
+        properties:
+          baseUrl:
+            description: |
+              Upstream URL that replaces the Gateway path prefix `/p/<provider>/v1`
+              (e.g. `https://api.anthropic.com/v1`, `https://api.z.ai/api/paas/v4`).
+              Must be https except for `stage: test-only` providers.
+            type: string
+            pattern: "^(https://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._~/-]*)?|http://[a-z0-9.-]+\\.svc(\\.cluster\\.local)?(:[0-9]+)?(/[A-Za-z0-9._~/-]*)?)$"
+      credential:
+        type: object
+        additionalProperties: false
+        required: [kind, secretKey, authScheme]
+        properties:
+          kind:
+            description: Only automatable API credentials are allowed (SPEC §77). Consumer-subscription/OAuth modes do not exist in this schema.
+            const: api-key
+          secretKey:
+            description: Key name inside the Kubernetes Secret `model-api-keys` (SC-MODEL-API-KEYS).
+            type: string
+            pattern: "^[a-z][a-z0-9-]{0,31}$"
+          authScheme:
+            type: string
+            enum: [x-api-key, bearer, x-goog-api-key]
+          forbiddenKeyPrefixes:
+            description: Key prefixes the Gateway refuses to load for this provider (e.g. Anthropic OAuth tokens), making the provider unavailable instead.
+            type: array
+            uniqueItems: true
+            items:
+              type: string
+              minLength: 3
+              maxLength: 32
+      apiFamilies:
+        type: object
+        minProperties: 1
+        propertyNames:
+          $ref: "#/$defs/ApiFamily"
+        additionalProperties:
+          type: object
+          additionalProperties: false
+          required: [usageDialect, outputCapField, requestPolicy]
+          properties:
+            requestPolicy:
+              $ref: "#/$defs/RequestPolicy"
+            usageDialect:
+              $ref: "#/$defs/UsageDialect"
+            outputCapField:
+              description: Body field carrying the output cap; injected by the Gateway when absent (plan 53 §14.3).
+              type: string
+              enum: [max_tokens, max_completion_tokens, max_output_tokens]
+            injectStreamUsage:
+              description: openai-chat-completions only. Inject `stream_options.include_usage=true` on streaming requests that lack it.
+              type: boolean
+              default: true
+      headerPolicy:
+        type: object
+        additionalProperties: false
+        properties:
+          anthropicBetaDenyPrefixes:
+            description: anthropic-beta values starting with these prefixes are denied (SC_REQUEST_FEATURE_DENIED). Default ["oauth-"].
+            type: array
+            uniqueItems: true
+            items:
+              type: string
+              minLength: 2
+              maxLength: 64
+  RequestPolicy:
+    description: |
+      ALLOWLIST of request features the Gateway forwards for this (provider, family) (plan 53
+      §7.3, review COST-1). Anything not listed is denied with SC_REQUEST_FEATURE_DENIED before any upstream contact. Independently of this
+      policy the Gateway always denies non-inline content sources (URL, file id, file URL,
+      non-`data:` image URLs), provider-side conversation state (`previous_response_id`,
+      `conversation`, `prompt`) and `background` (plan 53 §7.3). Lists are verified against
+      captured requests of every pinned harness (53-AC-29).
+    type: object
+    additionalProperties: false
+    required: [bodyMembers, toolTypes]
+    properties:
+      bodyMembers:
+        description: Allowed top-level JSON members of the request body (must include `model`).
+        type: array
+        minItems: 2
+        uniqueItems: true
+        items:
+          type: string
+          pattern: "^[a-z_]{1,64}$"
+      toolTypes:
+        description: Allowed `tools[].type` values. `custom` also covers Anthropic tools without a `type` (client tools). Empty = no tools allowed.
+        type: array
+        uniqueItems: true
+        items:
+          type: string
+          pattern: "^[a-z0-9_]{1,64}$"
+      anthropicBeta:
+        description: Allowed `anthropic-beta` items (exact value, or prefix ending in `*`). Absent = no beta header allowed.
+        type: array
+        uniqueItems: true
+        items:
+          type: string
+          pattern: "^[a-z0-9-]{2,64}\\*?$"
+      pinnedParameters:
+        description: Price-affecting members pinned to a priced value (plan 53 §14.3 mutation 3). Absent in the request → injected; present with another value → denied.
+        type: object
+        propertyNames:
+          pattern: "^[a-z_]{1,64}$"
+        additionalProperties:
+          type: [string, boolean, integer]
+  Model:
+    type: object
+    additionalProperties: false
+    required: [provider, apiModel, apiFamily, maxOutputTokens, contextWindowTokens, outputCapCoversReasoning, responseModelMatch, enabled]
+    if:
+      properties:
+        outputCapCoversReasoning:
+          const: false
+    then:
+      required: [maxReasoningTokens]
+    properties:
+      provider:
+        $ref: "#/$defs/Id"
+      apiModel:
+        description: The literal model string sent to the provider (matches PricingTable entry `model`).
+        type: string
+        minLength: 1
+        maxLength: 128
+      apiFamily:
+        $ref: "#/$defs/ApiFamily"
+      maxOutputTokens:
+        type: integer
+        minimum: 1
+        maximum: 1000000
+      contextWindowTokens:
+        description: Effective context window as routed. The Gateway caps its input estimate here and denies beta headers that would enlarge it (plan 53 §14.1). A larger-window mode is modelled as a separate model id.
+        type: integer
+        minimum: 1024
+        maximum: 10000000
+      outputCapCoversReasoning:
+        description: True iff the provider's output cap also bounds reasoning/thinking tokens (VS-8, verified per model by fixture and smoke, 53-AC-17).
+        type: boolean
+      maxReasoningTokens:
+        description: Required when outputCapCoversReasoning is false; reserved on top of the output cap.
+        type: integer
+        minimum: 0
+        maximum: 1000000
+      responseModelMatch:
+        description: Provider-reported model strings accepted as this model (dated snapshots, aliases). Anything else is a model mismatch (L-4).
+        type: object
+        additionalProperties: false
+        required: [exact]
+        properties:
+          exact:
+            type: array
+            minItems: 1
+            uniqueItems: true
+            items:
+              type: string
+              maxLength: 128
+          prefixes:
+            type: array
+            uniqueItems: true
+            items:
+              type: string
+              minLength: 3
+              maxLength: 128
+      enabled:
+        type: boolean
+  TierCandidates:
+    type: object
+    additionalProperties: false
+    required: [candidates]
+    properties:
+      candidates:
+        description: Ordered model ids; the first compatible, enabled, priced, allowed candidate wins (plan 31 §14).
+        type: array
+        uniqueItems: true
+        maxItems: 8
+        items:
+          type: string
+          pattern: "^[a-z][a-z0-9-]{0,31}/[A-Za-z0-9._:-]{1,128}$"
+  HarnessConstraint:
+    type: object
+    additionalProperties: false
+    properties:
+      providers:
+        description: If present, this harness may only resolve to these providers.
+        type: array
+        minItems: 1
+        uniqueItems: true
+        items:
+          $ref: "#/$defs/Id"
+      auxiliary:
+        description: An extra allowlisted model for harness background calls (e.g. Claude Code small fast model), resolved from `tier` on the same provider and family as the primary.
+        type: object
+        additionalProperties: false
+        required: [tier]
+        properties:
+          tier:
+            $ref: "#/$defs/Tier"
+          envHint:
+            description: Environment variable the harness adapter sets to the auxiliary model string (plan 28).
+            type: string
+            pattern: "^[A-Z][A-Z0-9_]{1,63}$"
+  RoleRouting:
+    type: object
+    additionalProperties: false
+    required: [defaultTier, allowedTiers, ladder]
+    properties:
+      defaultTier:
+        $ref: "#/$defs/Tier"
+      allowedTiers:
+        type: array
+        minItems: 1
+        uniqueItems: true
+        items:
+          $ref: "#/$defs/Tier"
+      ladder:
+        description: Escalation ladder name, or null for no escalation.
+        oneOf:
+          - $ref: "#/$defs/Id"
+          - type: "null"
+  RepositoryRoutingOverride:
+    description: |
+      Tighten-only per-repository routing section (embedded by plan 22's RepositoryPolicy as
+      `spec.modelRouting`, read from the task's base revision per ADR-0017). It can only
+      remove options or lower ceilings; it cannot add providers, models or tiers. The
+      Runner rejects (at task creation) an override that names unknown providers/models
+      or leaves a role with no resolvable candidate (ROUTING_UNRESOLVABLE).
+    type: object
+    additionalProperties: false
+    properties:
+      allowedProviders:
+        type: array
+        uniqueItems: true
+        items:
+          $ref: "#/$defs/Id"
+      deniedProviders:
+        type: array
+        uniqueItems: true
+        items:
+          $ref: "#/$defs/Id"
+      deniedModels:
+        type: array
+        uniqueItems: true
+        items:
+          type: string
+          pattern: "^[a-z][a-z0-9-]{0,31}/[A-Za-z0-9._:-]{1,128}$"
+      maxTier:
+        $ref: "#/$defs/Tier"
+      roleMaxTier:
+        type: object
+        propertyNames:
+          enum: [researcher, planner, tester, implementer, reviewer]
+        additionalProperties:
+          $ref: "#/$defs/Tier"
+  RoutingDecision:
+    description: Snake_case record of one routing resolution, stored on the execution (plans 26, 29) and echoed into the gateway token.
+    type: object
+    additionalProperties: false
+    required: [role, harness, tier_requested, tier_effective, tier_source, escalation_rung, merit_failures_at_resolution, provider, api_family, model_id, api_model, auxiliary, candidate_index, fallback_applied, routing_revision, pricing_version_at_dispatch]
+    properties:
+      role:
+        type: string
+        enum: [researcher, planner, tester, implementer, reviewer]
+      harness:
+        $ref: "#/$defs/Id"
+      tier_requested:
+        description: Tier Hermes asked for, or the role default if none.
+        $ref: "#/$defs/Tier"
+      tier_effective:
+        $ref: "#/$defs/Tier"
+      tier_source:
+        type: string
+        enum: [role_default, requested, escalated, repository_capped]
+      escalation_rung:
+        description: Ladder rung index k (0 = no escalation) recorded independently of tier_source, so a capped or explicitly requested escalation is still visible (review COST-20).
+        type: integer
+        minimum: 0
+        maximum: 3
+      merit_failures_at_resolution:
+        type: integer
+        minimum: 0
+      provider:
+        $ref: "#/$defs/Id"
+      api_family:
+        $ref: "#/$defs/ApiFamily"
+      model_id:
+        type: string
+      api_model:
+        type: string
+      auxiliary:
+        oneOf:
+          - type: "null"
+          - type: object
+            additionalProperties: false
+            required: [model_id, api_model]
+            properties:
+              model_id:
+                type: string
+              api_model:
+                type: string
+      candidate_index:
+        type: integer
+        minimum: 0
+      fallback_applied:
+        type: boolean
+      routing_revision:
+        type: string
+        pattern: "^[0-9a-f]{40}$"
+      pricing_version_at_dispatch:
+        type: string
+examples:
+  - apiVersion: strange.company/v1alpha1
+    kind: ModelRouting
+    metadata:
+      name: default
+    spec:
+      providers:
+        anthropic:
+          displayName: Anthropic
+          enabled: true
+          stage: production
+          upstream: {baseUrl: "https://api.anthropic.com/v1"}
+          credential: {kind: api-key, secretKey: anthropic, authScheme: x-api-key, forbiddenKeyPrefixes: [sk-ant-oat]}
+          apiFamilies:
+            anthropic-messages: {usageDialect: anthropic, outputCapField: max_tokens, requestPolicy: {bodyMembers: [model, messages, system, max_tokens, metadata, stop_sequences, stream, temperature, top_p, top_k, tools, tool_choice, thinking, service_tier], toolTypes: [custom], anthropicBeta: [claude-code-*, interleaved-thinking-*, fine-grained-tool-streaming-*, token-efficient-tools-*], pinnedParameters: {service_tier: standard_only}}}
+          headerPolicy: {anthropicBetaDenyPrefixes: [oauth-]}
+        openai:
+          displayName: OpenAI
+          enabled: false
+          stage: production
+          upstream: {baseUrl: "https://api.openai.com/v1"}
+          credential: {kind: api-key, secretKey: openai, authScheme: bearer}
+          apiFamilies:
+            openai-responses: {usageDialect: openai-responses, outputCapField: max_output_tokens, requestPolicy: {bodyMembers: [model, input, instructions, max_output_tokens, tools, tool_choice, parallel_tool_calls, reasoning, stream, temperature, top_p, text, include, store, service_tier, metadata, prompt_cache_key], toolTypes: [function, custom, local_shell], pinnedParameters: {store: false, service_tier: default}}}
+            openai-chat-completions: {usageDialect: openai-chat, outputCapField: max_completion_tokens, injectStreamUsage: true, requestPolicy: {bodyMembers: [model, messages, max_tokens, max_completion_tokens, stream, stream_options, temperature, top_p, stop, tools, tool_choice, parallel_tool_calls, response_format, seed, presence_penalty, frequency_penalty, user, reasoning_effort], toolTypes: [function]}}
+        deepseek:
+          displayName: DeepSeek
+          enabled: true
+          stage: production
+          upstream: {baseUrl: "https://api.deepseek.com/v1"}
+          credential: {kind: api-key, secretKey: deepseek, authScheme: bearer}
+          apiFamilies:
+            openai-chat-completions: {usageDialect: deepseek-chat, outputCapField: max_tokens, injectStreamUsage: true, requestPolicy: {bodyMembers: [model, messages, max_tokens, max_completion_tokens, stream, stream_options, temperature, top_p, stop, tools, tool_choice, parallel_tool_calls, response_format, seed, presence_penalty, frequency_penalty, user, reasoning_effort], toolTypes: [function]}}
+        fake:
+          displayName: Fake upstream (CI and live fake flows)
+          enabled: true
+          stage: test-only
+          upstream: {baseUrl: "http://fake-model-upstream.strange-company.svc.cluster.local:8080/v1"}
+          credential: {kind: api-key, secretKey: fake, authScheme: bearer}
+          apiFamilies:
+            fake: {usageDialect: openai-chat, outputCapField: max_tokens, injectStreamUsage: true, requestPolicy: {bodyMembers: [model, messages, max_tokens, max_completion_tokens, stream, stream_options, temperature, top_p, stop, tools, tool_choice, parallel_tool_calls, response_format, seed, presence_penalty, frequency_penalty, user, reasoning_effort], toolTypes: [function]}}
+      models:
+        anthropic/claude-haiku-x:
+          provider: anthropic
+          apiModel: claude-haiku-x
+          apiFamily: anthropic-messages
+          maxOutputTokens: 32000
+          contextWindowTokens: 200000
+          outputCapCoversReasoning: true
+          responseModelMatch: {exact: [claude-haiku-x], prefixes: [claude-haiku-x-]}
+          enabled: true
+        anthropic/claude-sonnet-x:
+          provider: anthropic
+          apiModel: claude-sonnet-x
+          apiFamily: anthropic-messages
+          maxOutputTokens: 64000
+          contextWindowTokens: 200000
+          outputCapCoversReasoning: true
+          responseModelMatch: {exact: [claude-sonnet-x], prefixes: [claude-sonnet-x-]}
+          enabled: true
+        anthropic/claude-opus-x:
+          provider: anthropic
+          apiModel: claude-opus-x
+          apiFamily: anthropic-messages
+          maxOutputTokens: 32000
+          contextWindowTokens: 200000
+          outputCapCoversReasoning: true
+          responseModelMatch: {exact: [claude-opus-x], prefixes: [claude-opus-x-]}
+          enabled: true
+        deepseek/deepseek-v4-flash:
+          provider: deepseek
+          apiModel: deepseek-v4-flash
+          apiFamily: openai-chat-completions
+          maxOutputTokens: 8192
+          contextWindowTokens: 128000
+          outputCapCoversReasoning: false
+          maxReasoningTokens: 32000
+          responseModelMatch: {exact: [deepseek-v4-flash]}
+          enabled: true
+        fake/fake-model:
+          provider: fake
+          apiModel: fake-model
+          apiFamily: fake
+          maxOutputTokens: 4096
+          contextWindowTokens: 32000
+          outputCapCoversReasoning: true
+          responseModelMatch: {exact: [fake-model]}
+          enabled: true
+      tiers:
+        clerical: {candidates: [anthropic/claude-haiku-x, deepseek/deepseek-v4-flash, fake/fake-model]}
+        bargain: {candidates: [anthropic/claude-haiku-x, deepseek/deepseek-v4-flash, fake/fake-model]}
+        standard: {candidates: [anthropic/claude-sonnet-x, fake/fake-model]}
+        frontier: {candidates: [anthropic/claude-opus-x, fake/fake-model]}
+      harnesses:
+        claude:
+          providers: [anthropic]
+          auxiliary: {tier: clerical, envHint: ANTHROPIC_SMALL_FAST_MODEL}
+      roles:
+        researcher: {defaultTier: standard, allowedTiers: [bargain, standard, frontier], ladder: null}
+        planner: {defaultTier: frontier, allowedTiers: [standard, frontier], ladder: null}
+        tester: {defaultTier: standard, allowedTiers: [bargain, standard, frontier], ladder: tests}
+        implementer: {defaultTier: bargain, allowedTiers: [bargain, standard, frontier], ladder: implementation}
+        reviewer: {defaultTier: standard, allowedTiers: [standard, frontier], ladder: null}
+      escalationLadders:
+        implementation:
+          - {tier: bargain, meritFailuresBeforeEscalation: 2}
+          - {tier: standard, meritFailuresBeforeEscalation: 2}
+          - {tier: frontier, meritFailuresBeforeEscalation: 1}
+        tests:
+          - {tier: standard, meritFailuresBeforeEscalation: 2}
+          - {tier: frontier, meritFailuresBeforeEscalation: 1}
+      orchestrator:
+        tier: standard
+        apiFamilies: [openai-chat-completions, anthropic-messages]
+        maxConcurrentRequests: 16
+        auxiliaryTier: clerical
+      infrastructureFallback: {enabled: false, maxFallbacksPerTask: 1}
+  # Test policy used by C05/C10 (plan 31 §22): two test-only providers so that same-tier
+  # fallback (plan 31 §14.4) and the escalation ladder can be exercised without paid calls.
+  - apiVersion: strange.company/v1alpha1
+    kind: ModelRouting
+    metadata:
+      name: e2e-test
+    spec:
+      providers:
+        fake:
+          displayName: Fake upstream A
+          enabled: true
+          stage: test-only
+          upstream: {baseUrl: "http://fake-model-upstream.strange-company.svc.cluster.local:8080/v1"}
+          credential: {kind: api-key, secretKey: fake, authScheme: bearer}
+          apiFamilies:
+            fake: {usageDialect: openai-chat, outputCapField: max_tokens, injectStreamUsage: true, requestPolicy: {bodyMembers: [model, messages, max_tokens, max_completion_tokens, stream, stream_options, temperature, top_p, stop, tools, tool_choice, parallel_tool_calls, response_format, seed, presence_penalty, frequency_penalty, user, reasoning_effort], toolTypes: [function]}}
+        fake-b:
+          displayName: Fake upstream B
+          enabled: true
+          stage: test-only
+          upstream: {baseUrl: "http://fake-model-upstream.strange-company.svc.cluster.local:8080/b/v1"}
+          credential: {kind: api-key, secretKey: fake-b, authScheme: bearer}
+          apiFamilies:
+            fake: {usageDialect: openai-chat, outputCapField: max_tokens, injectStreamUsage: true, requestPolicy: {bodyMembers: [model, messages, max_tokens, max_completion_tokens, stream, stream_options, temperature, top_p, stop, tools, tool_choice, parallel_tool_calls, response_format, seed, presence_penalty, frequency_penalty, user, reasoning_effort], toolTypes: [function]}}
+      models:
+        fake/fake-model: {provider: fake, apiModel: fake-model, apiFamily: fake, maxOutputTokens: 4096, contextWindowTokens: 32000, outputCapCoversReasoning: true, responseModelMatch: {exact: [fake-model]}, enabled: true}
+        fake/fake-model-large: {provider: fake, apiModel: fake-model-large, apiFamily: fake, maxOutputTokens: 4096, contextWindowTokens: 32000, outputCapCoversReasoning: true, responseModelMatch: {exact: [fake-model-large]}, enabled: true}
+        fake-b/fake-model-b: {provider: fake-b, apiModel: fake-model-b, apiFamily: fake, maxOutputTokens: 4096, contextWindowTokens: 32000, outputCapCoversReasoning: true, responseModelMatch: {exact: [fake-model-b]}, enabled: true}
+      tiers:
+        clerical: {candidates: [fake/fake-model, fake-b/fake-model-b]}
+        bargain: {candidates: [fake/fake-model, fake-b/fake-model-b]}
+        standard: {candidates: [fake/fake-model-large, fake-b/fake-model-b]}
+        frontier: {candidates: [fake/fake-model-large, fake-b/fake-model-b]}
+      roles:
+        researcher: {defaultTier: standard, allowedTiers: [bargain, standard, frontier], ladder: null}
+        planner: {defaultTier: frontier, allowedTiers: [standard, frontier], ladder: null}
+        tester: {defaultTier: standard, allowedTiers: [bargain, standard, frontier], ladder: tests}
+        implementer: {defaultTier: bargain, allowedTiers: [bargain, standard, frontier], ladder: implementation}
+        reviewer: {defaultTier: standard, allowedTiers: [standard, frontier], ladder: null}
+      escalationLadders:
+        implementation:
+          - {tier: bargain, meritFailuresBeforeEscalation: 2}
+          - {tier: standard, meritFailuresBeforeEscalation: 2}
+          - {tier: frontier, meritFailuresBeforeEscalation: 1}
+        tests:
+          - {tier: standard, meritFailuresBeforeEscalation: 2}
+          - {tier: frontier, meritFailuresBeforeEscalation: 1}
+      orchestrator:
+        tier: standard
+        apiFamilies: [fake]
+        maxConcurrentRequests: 4
+      infrastructureFallback: {enabled: true, maxFallbacksPerTask: 1}
+x-invalid-examples:
+  - reason: Subscription/OAuth credential kind (SPEC §77 forbids consumer-subscription dependencies).
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: ModelRouting
+      metadata: {name: default}
+      spec:
+        providers:
+          anthropic:
+            displayName: Anthropic
+            enabled: true
+            stage: production
+            upstream: {baseUrl: "https://api.anthropic.com/v1"}
+            credential: {kind: oauth-subscription, secretKey: anthropic, authScheme: bearer}
+            apiFamilies: {anthropic-messages: {usageDialect: anthropic, outputCapField: max_tokens}}
+        models:
+          anthropic/claude-sonnet-x: {provider: anthropic, apiModel: claude-sonnet-x, apiFamily: anthropic-messages, maxOutputTokens: 64000, contextWindowTokens: 200000, responseModelMatch: {exact: [claude-sonnet-x]}, enabled: true}
+        tiers: {clerical: {candidates: []}, bargain: {candidates: []}, standard: {candidates: [anthropic/claude-sonnet-x]}, frontier: {candidates: []}}
+        roles:
+          researcher: {defaultTier: standard, allowedTiers: [standard], ladder: null}
+          planner: {defaultTier: standard, allowedTiers: [standard], ladder: null}
+          tester: {defaultTier: standard, allowedTiers: [standard], ladder: null}
+          implementer: {defaultTier: standard, allowedTiers: [standard], ladder: null}
+          reviewer: {defaultTier: standard, allowedTiers: [standard], ladder: null}
+        escalationLadders: {none: [{tier: standard, meritFailuresBeforeEscalation: 1}]}
+        orchestrator: {tier: standard, apiFamilies: [anthropic-messages], maxConcurrentRequests: 4}
+        infrastructureFallback: {enabled: false, maxFallbacksPerTask: 0}
+  - reason: Missing tier `frontier` and plaintext http upstream to a public host.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: ModelRouting
+      metadata: {name: default}
+      spec:
+        providers:
+          deepseek:
+            displayName: DeepSeek
+            enabled: true
+            stage: production
+            upstream: {baseUrl: "http://api.deepseek.com/v1"}
+            credential: {kind: api-key, secretKey: deepseek, authScheme: bearer}
+            apiFamilies: {openai-chat-completions: {usageDialect: deepseek-chat, outputCapField: max_tokens}}
+        models:
+          deepseek/deepseek-v4-flash: {provider: deepseek, apiModel: deepseek-v4-flash, apiFamily: openai-chat-completions, maxOutputTokens: 8192, contextWindowTokens: 128000, responseModelMatch: {exact: [deepseek-v4-flash]}, enabled: true}
+        tiers: {clerical: {candidates: []}, bargain: {candidates: [deepseek/deepseek-v4-flash]}, standard: {candidates: []}}
+        roles:
+          researcher: {defaultTier: bargain, allowedTiers: [bargain], ladder: null}
+          planner: {defaultTier: bargain, allowedTiers: [bargain], ladder: null}
+          tester: {defaultTier: bargain, allowedTiers: [bargain], ladder: null}
+          implementer: {defaultTier: bargain, allowedTiers: [bargain], ladder: null}
+          reviewer: {defaultTier: bargain, allowedTiers: [bargain], ladder: null}
+        escalationLadders: {none: [{tier: bargain, meritFailuresBeforeEscalation: 1}]}
+        orchestrator: {tier: bargain, apiFamilies: [openai-chat-completions], maxConcurrentRequests: 4}
+        infrastructureFallback: {enabled: false, maxFallbacksPerTask: 0}
+  - reason: Model entry missing responseModelMatch (mismatch detection would be impossible).
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: ModelRouting
+      metadata: {name: default}
+      spec:
+        providers:
+          deepseek:
+            displayName: DeepSeek
+            enabled: true
+            stage: production
+            upstream: {baseUrl: "https://api.deepseek.com/v1"}
+            credential: {kind: api-key, secretKey: deepseek, authScheme: bearer}
+            apiFamilies: {openai-chat-completions: {usageDialect: deepseek-chat, outputCapField: max_tokens}}
+        models:
+          deepseek/deepseek-v4-flash: {provider: deepseek, apiModel: deepseek-v4-flash, apiFamily: openai-chat-completions, maxOutputTokens: 8192, contextWindowTokens: 128000, enabled: true}
+        tiers: {clerical: {candidates: []}, bargain: {candidates: [deepseek/deepseek-v4-flash]}, standard: {candidates: []}, frontier: {candidates: []}}
+        roles:
+          researcher: {defaultTier: bargain, allowedTiers: [bargain], ladder: null}
+          planner: {defaultTier: bargain, allowedTiers: [bargain], ladder: null}
+          tester: {defaultTier: bargain, allowedTiers: [bargain], ladder: null}
+          implementer: {defaultTier: bargain, allowedTiers: [bargain], ladder: null}
+          reviewer: {defaultTier: bargain, allowedTiers: [bargain], ladder: null}
+        escalationLadders: {none: [{tier: bargain, meritFailuresBeforeEscalation: 1}]}
+        orchestrator: {tier: bargain, apiFamilies: [openai-chat-completions], maxConcurrentRequests: 4}
+        infrastructureFallback: {enabled: false, maxFallbacksPerTask: 0}
+  - reason: API family without a request allowlist (a denylist-only Gateway would forward provider-hosted tools and URL sources; review COST-1).
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: ModelRouting
+      metadata: {name: default}
+      spec:
+        providers:
+          deepseek:
+            displayName: DeepSeek
+            enabled: true
+            stage: production
+            upstream: {baseUrl: "https://api.deepseek.com/v1"}
+            credential: {kind: api-key, secretKey: deepseek, authScheme: bearer}
+            apiFamilies: {openai-chat-completions: {usageDialect: deepseek-chat, outputCapField: max_tokens}}
+        models:
+          deepseek/deepseek-v4-flash: {provider: deepseek, apiModel: deepseek-v4-flash, apiFamily: openai-chat-completions, maxOutputTokens: 8192, contextWindowTokens: 128000, outputCapCoversReasoning: true, responseModelMatch: {exact: [deepseek-v4-flash]}, enabled: true}
+        tiers: {clerical: {candidates: []}, bargain: {candidates: [deepseek/deepseek-v4-flash]}, standard: {candidates: []}, frontier: {candidates: []}}
+        roles:
+          researcher: {defaultTier: bargain, allowedTiers: [bargain], ladder: null}
+          planner: {defaultTier: bargain, allowedTiers: [bargain], ladder: null}
+          tester: {defaultTier: bargain, allowedTiers: [bargain], ladder: null}
+          implementer: {defaultTier: bargain, allowedTiers: [bargain], ladder: null}
+          reviewer: {defaultTier: bargain, allowedTiers: [bargain], ladder: null}
+        escalationLadders: {none: [{tier: bargain, meritFailuresBeforeEscalation: 1}]}
+        orchestrator: {tier: bargain, apiFamilies: [openai-chat-completions], maxConcurrentRequests: 4}
+        infrastructureFallback: {enabled: false, maxFallbacksPerTask: 0}
+  - reason: Model whose output cap does not cover reasoning but declares no maxReasoningTokens (worst case would be unbounded; COST-5).
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: ModelRouting
+      metadata: {name: default}
+      spec:
+        providers:
+          deepseek:
+            displayName: DeepSeek
+            enabled: true
+            stage: production
+            upstream: {baseUrl: "https://api.deepseek.com/v1"}
+            credential: {kind: api-key, secretKey: deepseek, authScheme: bearer}
+            apiFamilies: {openai-chat-completions: {usageDialect: deepseek-chat, outputCapField: max_tokens, requestPolicy: {bodyMembers: [model, messages, max_tokens, stream, tools], toolTypes: [function]}}}
+        models:
+          deepseek/deepseek-v4-flash: {provider: deepseek, apiModel: deepseek-v4-flash, apiFamily: openai-chat-completions, maxOutputTokens: 8192, contextWindowTokens: 128000, outputCapCoversReasoning: false, responseModelMatch: {exact: [deepseek-v4-flash]}, enabled: true}
+        tiers: {clerical: {candidates: []}, bargain: {candidates: [deepseek/deepseek-v4-flash]}, standard: {candidates: []}, frontier: {candidates: []}}
+        roles:
+          researcher: {defaultTier: bargain, allowedTiers: [bargain], ladder: null}
+          planner: {defaultTier: bargain, allowedTiers: [bargain], ladder: null}
+          tester: {defaultTier: bargain, allowedTiers: [bargain], ladder: null}
+          implementer: {defaultTier: bargain, allowedTiers: [bargain], ladder: null}
+          reviewer: {defaultTier: bargain, allowedTiers: [bargain], ladder: null}
+        escalationLadders: {none: [{tier: bargain, meritFailuresBeforeEscalation: 1}]}
+        orchestrator: {tier: bargain, apiFamilies: [openai-chat-completions], maxConcurrentRequests: 4}
+        infrastructureFallback: {enabled: false, maxFallbacksPerTask: 0}
