@@ -29,6 +29,7 @@ You are the **reviewer** for a Strange Company DAG node. You did not write the t
 
 ## Verdict (your final message, ≤ 40 lines)
 - `verdict`: `approve` | `request_changes` | `test_spec_conflict`
+- `reviewed`: the head SHA you reviewed
 - findings, most severe first, each with file:line, the criterion ID, the problem and the concrete fix
 - a table of criterion → test(s) → status
 - the commands you ran, each with its exit code
