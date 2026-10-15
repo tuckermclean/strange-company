@@ -4,13 +4,7 @@ metadata:
   name: seed-ci
   description: F01 seed lock (plan 02 section 14.9); later nodes add a tool in the PR of the target that first calls it.
 spec:
-  baseImages:
-    debian: {ref: docker.io/library/debian:trixie-slim, digest: "sha256:918311b7b6c4c6f68b232ba516584925f6c78ad82b6fd534b98979df6438e483"}
-    golang: {ref: docker.io/library/golang:1.27.2-trixie, digest: "sha256:2d658507a011f1eadc0114d7a421b312b2e77d9042a24036a26e267cc9231677"}
-  debianSnapshot: 20261001T000000Z
-  aptPackages:
-    runtime: [ca-certificates, curl, git, python3, python3-venv, tini, libnss-wrapper]
-    ci: [make, shellcheck]
+  # tools first: the first sha256 in this file is a tool checksum (02-AC-15 mutates it)
   tools:
     - name: shfmt
       set: ci
@@ -24,5 +18,12 @@ spec:
       versionCommand: [shfmt, --version]
       versionRegex: '^v{version}$'
       verifiedAt: 2026-10-15
+  baseImages:
+    debian: {ref: docker.io/library/debian:trixie-slim, digest: "sha256:918311b7b6c4c6f68b232ba516584925f6c78ad82b6fd534b98979df6438e483"}
+    golang: {ref: docker.io/library/golang:1.27.2-trixie, digest: "sha256:2d658507a011f1eadc0114d7a421b312b2e77d9042a24036a26e267cc9231677"}
+  debianSnapshot: 20261001T000000Z
+  aptPackages:
+    runtime: [ca-certificates, curl, git, python3, python3-venv, tini, libnss-wrapper]
+    ci: [make, shellcheck]
   pythonRequirements: toolbox/requirements.txt
   ansibleCollections: []

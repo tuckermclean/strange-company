@@ -161,7 +161,8 @@ docker-rootless)
 	tmpfs_run="$tmpfs_run,uid=0,gid=0"
 	;;
 podman-rootless)
-	user_flags='--userns=keep-id'
+	# --user=... (not "--user ..."): the image USER (10001) otherwise wins over keep-id and files get a subuid owner.
+	user_flags="--userns=keep-id --user=$(id -u):$(id -g)"
 	tmpfs_run="$tmpfs_run,U"
 	;;
 *)
