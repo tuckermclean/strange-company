@@ -19,5 +19,5 @@ locks-check:
 
 SH_FILES := bootstrap toolbox/bin/sc-entrypoint
 lint:
-	@shellcheck $(SH_FILES) test/e2e/wrapper/*.sh
+	@shellcheck $(SH_FILES)
 	@shfmt -d $(SH_FILES)

@@ -98,7 +98,9 @@ if [ -z "$engine" ]; then
 	fi
 fi
 case $engine in docker | podman) ;; *) usage "engine must be docker or podman" ;; esac
-command -v "$engine" >/dev/null 2>&1 && works "$engine" || die WRAPPER_ENGINE_MISSING "$engine is not usable" 3
+if ! { command -v "$engine" >/dev/null 2>&1 && works "$engine"; }; then
+	die WRAPPER_ENGINE_MISSING "$engine is not usable" 3
+fi
 if [ "$engine" = docker ]; then
 	case $(docker info --format '{{.SecurityOptions}}' 2>/dev/null) in
 	*rootless*) mode=docker-rootless ;;
@@ -181,12 +183,9 @@ common=$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir 2>/dev
 tty=
 if [ -t 0 ] && [ -t 1 ]; then tty=-t; fi
 
-# Build the argument list in "$@": the command is saved first, then restored after the image.
-cmd_file=$(mktemp)
-trap 'rm -f "$cmd_file"' EXIT INT TERM
-for a in "$@"; do printf '%s\0' "$a" >>"$cmd_file"; done
+# Build the engine arguments after the command words in "$@", then rotate the command words to the end.
 n=$#
-set -- run --rm -i
+set -- "$@" run --rm -i
 [ -z "$tty" ] || set -- "$@" "$tty"
 # shellcheck disable=SC2086 # user_flags is a fixed, space-separated flag list
 set -- "$@" $user_flags --cap-drop ALL --security-opt no-new-privileges --security-opt label=disable \
@@ -205,13 +204,11 @@ for v in HTTP_PROXY HTTPS_PROXY NO_PROXY; do
 	[ -z "$val" ] || set -- "$@" -e "$v=$val"
 done
 set -- "$@" "$tag"
-
-# Append the saved command words (NUL-separated, so spaces and newlines survive).
-i=0
-while [ "$i" -lt "$n" ]; do
-	i=$((i + 1))
-	word=$(awk -v RS='\0' -v k="$i" 'NR == k { printf "%s", $0 }' "$cmd_file"; echo x)
-	set -- "$@" "${word%x}"
+while [ "$n" -gt 0 ]; do
+	a=$1
+	shift
+	set -- "$@" "$a"
+	n=$((n - 1))
 done
 
 rc=0

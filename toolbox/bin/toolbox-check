@@ -7,6 +7,7 @@
    version equals the src/go.mod toolchain directive.
 Exit 0 when all hold; otherwise prints one rule line per violation and exits 1.
 """
+import json
 import os
 import re
 import sys
@@ -23,7 +24,8 @@ def rd(p):
         return f.read()
 
 
-lock = yaml.safe_load(rd("toolbox/tools.lock.yaml"))
+# YAML dates become ISO strings, as in JSON (the schema types verifiedAt as a string).
+lock = json.loads(json.dumps(yaml.safe_load(rd("toolbox/tools.lock.yaml")), default=str))
 schema = yaml.safe_load(rd("contracts/version-locks.schema.yaml"))
 wrapper = {"$schema": schema.get("$schema"), "$defs": schema["$defs"], "$ref": "#/$defs/ToolboxLock"}
 for e in sorted(jsonschema.Draft202012Validator(wrapper).iter_errors(lock), key=lambda e: list(e.path)):
