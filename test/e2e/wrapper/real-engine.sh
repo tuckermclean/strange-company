@@ -32,6 +32,12 @@ RC=0
 OUT=$($B exec --image ci -- /opt/sc/bin/fetch-pinned --check 2>&1) || RC=$?
 expect_eq "02-AC-14 fetch-pinned --check exits 0 after the --no-cache build" 0 "$RC"
 expect_nomatch "02-AC-14 the wrapper reused the --no-cache image (no rebuild)" "toolbox: building" "$OUT x"
+expect_nomatch "02-AC-14 reuse run printed no bootstrap: toolbox: building either" "^bootstrap: toolbox: building " "$OUT x"
+# The criterion's literal command: the wrapper itself builds (--toolbox-build), then fetch-pinned --check exits 0.
+RC=0
+OUT=$($B --toolbox-build exec --image ci -- /opt/sc/bin/fetch-pinned --check 2>&1) || RC=$?
+expect_eq "02-AC-14 ./bootstrap --toolbox-build exec --image ci -- /opt/sc/bin/fetch-pinned --check exits 0" 0 "$RC"
+expect_match "02-AC-14 stderr shows the wrapper built (bootstrap: toolbox: building)" "bootstrap: toolbox: building " "$OUT"
 want=$(sed -n 's/^toolchain[[:space:]]*\(go[0-9][0-9.]*\).*/\1/p' src/go.mod | head -n 1)
 [ -n "$want" ] || bad "src/go.mod has a toolchain directive"
 RC=0
