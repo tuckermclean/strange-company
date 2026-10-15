@@ -1,0 +1,2 @@
+# Fixture for 02-AC-15: a FROM without a digest must be rejected by make toolbox-check.
+FROM golang:1.27 AS ci
