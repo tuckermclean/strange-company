@@ -15,7 +15,7 @@ import sys
 import jsonschema
 import yaml
 
-root = os.environ.get("SC_REPO_ROOT") or os.getcwd()
+root = os.getcwd()  # make runs recipes at the repository root (a copied tree must check itself)
 errors = []
 
 
