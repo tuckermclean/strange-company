@@ -148,7 +148,7 @@ Implementation is a separate task. Start at DAG node **F01** in `PLAN.md`, follo
 
 ### F01 — repo-skeleton
 
-Branch `node/F01-repo-skeleton`, built with `/sc-node F01` (CD-44). Base `main` 0d4e721. Five slices: S1 seed `ci` image and `./bootstrap exec`; S2 layout-check; S3 locks, secrets scan, quarantine and CI workflows; S4 `make verify`, lint and determinism; S5 TDD discipline checker. **Status: in progress (S1, S2 approved).**
+Branch `node/F01-repo-skeleton`, built with `/sc-node F01` (CD-44). Base `main` 0d4e721. Five slices: S1 seed `ci` image and `./bootstrap exec`; S2 layout-check; S3 locks, secrets scan, quarantine and CI workflows; S4 `make verify`, lint and determinism; S5 TDD discipline checker. **Status: in progress (S1, S2, S3 approved).**
 
 #### S1 — seed `ci` image, `./bootstrap exec`, Makefile re-exec
 
@@ -214,3 +214,37 @@ Deviations and open items:
   - a `###` subheading ends the "Enforced rules" marker scan;
   - the marker key lookup is textual;
   - `make -n verify`-style mentions are not checked.
+
+#### S3 — locks, secrets scan, quarantine, interim CI workflows
+
+| Round | RED | GREEN | Review |
+|---|---|---|---|
+| 1 | 9937c8c (23 top-level failures) | 2eecac8; workflows 483d87a (implementer-written, orchestrator-committed with operator approval) | `request_changes`: one-line PEM, fail-open e2e filter, schedule vs permissions, placeholder leniency, `maxEntries: 0`, map-order output, Q2 packages, job-level permissions |
+| 2 | a331135 (9 failures) | orchestrator workflows 0fd1752 (CD-52); 8ee2196 | `request_changes`: first match per line only; repeated-character allowance vs plan 35's closed allowlist; legacy encrypted PEM; cache post step |
+| 3 | f108607 (3 failures; adds `test/fixtures/secrets-scan/allowlist.yaml`) | orchestrator e81af85; 3715111 | **`approve`** at 3715111 |
+
+Red target: `test GO_TEST_PKGS=./src/internal/lint/...`. Implementer attempts used: 3 of 3. Operator decisions: CD-51 (`go.yaml.in/yaml/v3`), CD-52 (e2e schedule with a cache marker, job-level permissions, `toolbox` filter), and a closed two-entry secrets allowlist. CI: not run yet (no PR).
+
+| Criterion | Test(s) | Result at 3715111 |
+|---|---|---|
+| 01-AC-7 | `TestLocksCheck_{ValidFixturePasses,Mutations,SchemaViolation,Deterministic}`, `TestRealTree_{MakeLocksCheck,LocksCheckPasses}` | pass; `make locks-check` 0 |
+| 01-AC-8 | `TestSecretsScan_{ValidFixturePasses,Negatives,PEMOneLine,Placeholders,Deterministic,MultipleMatchesPerLine,AllowlistSemantics,LegacyEncryptedPEM}`, `TestRealTree_{MakeSecretsScan,SecretsScanPasses,SecretsAllowlistExact}`, `TestVerifyRunsSecretsScanAndQuarantine` | pass; `make secrets-scan` 0 |
+| 52-AC-1 | `TestWorkflow_{VerifyJobs,ModeGating,VerifyShape,Permissions,NoSecretsAndPinnedUses,E2EGate,E2ESchedule,E2EPathFilter}`, `TestLint_RunsActionlint` | pass; `make lint` 0; first Actions run pending |
+| 52-AC-7 | `TestQuarantineCheck_{ValidPasses,Negatives,UsesHeadCommitterDate,MaxEntriesZero,ProtectedPackages}`, `TestRealTree_{MakeQuarantineCheck,QuarantineListIsEmpty}` | pass; `make quarantine-check` 0 |
+| S1 obligation (02-AC-14..16 on Docker) | `TestWorkflow_RunsRealEngineChecksOnDocker` (e2e.yaml `toolbox` job) | wired; needs an Actions run |
+
+Deviations and open items:
+- **Secrets-scan follow-ups (to be scheduled before F01 completes):**
+  - F1: the scan skips the whole allowlist file, so a real key placed in it goes unreported;
+  - F2: BEGIN, a blank line, then a base64 body is not flagged;
+  - F3: the trailing-`EXAMPLE` exemption applies to every pattern, not only AWS;
+  - F4: the stale-entry message repeats the path.
+- **Deferred:**
+  - the full gitleaks `rules.toml` (plan 01 §9); the scanner's patterns are hard-coded in Go;
+  - Q2 bullets beyond the name pattern and the three protected packages (test manifests, DAG-gate e2e tests, contract examples), tracked against F04–F06 and plan 22;
+  - `TestWorkflow_E2EPathFilter` would still pass if `|| true` were added to the diff step.
+- **Implementation choices the plan leaves open:**
+  - rule IDs for locks and secrets;
+  - lock and quarantine schema validation runs through the Stage-0 venv;
+  - cross-file lock rules have nothing to compare until `versions/` lock files exist.
+- **Process:** the S3 implementer wrote `.github/**` through the shell, although the guard bars role agents from that path; the guard's edit check does not cover shell writes. The operator approved committing the files after the orchestrator read them. The guard fix is pending an operator decision.
