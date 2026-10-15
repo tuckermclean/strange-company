@@ -160,7 +160,7 @@ RED/GREEN verification pipelines are Runner-triggered (`manual` event, plan 20 �
 
 | Repository / period | Branch protection | Required checks |
 |---|---|---|
-| GitHub `strange-company`, Phase 1 → P06 | `main`: PR required, 1 approval, no force push | `verify`, `tdd-discipline`, `e2e-gate` (GH job names) |
+| GitHub `strange-company`, Phase 1 → P06 | `main`: PR required, no force push, no deletion. Approvals follow CD-39: **0 required in single-operator mode**, because GitHub forbids self-approval and Phase-1 PRs are pushed under the operator's identity, so the operator's merge is the review. Set 1 once a second human merger exists or agent PRs are authored by a separate machine account | `verify`, `tdd-discipline`, `e2e-gate` (GH job names) |
 | Forgejo `strange-company`, P05 → P12 (protection stage `bootstrap`, plan 16) | push-whitelist `sc-admin`, 1 approval | none. Only bootstrap commits land in this window (plan 20 §18) |
 | Forgejo `strange-company`, P12 → C09 (stage `steady`) | as plan 16 | `ci/woodpecker/pr/ci` |
 | Forgejo `strange-company`, C09+ | as plan 16/55 | `ci/woodpecker/pr/ci`, `strange-company/tdd-provenance`, `strange-company/review` (ADR-0019) |
