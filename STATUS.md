@@ -140,3 +140,33 @@ See plan 34's residual-risk register. Highlights:
 
 ## Next step
 Implementation is a separate task. Start at DAG node **F01** in `PLAN.md`, following its "How to execute a node" rules: verification first, RED before GREEN, gate evidence recorded here.
+
+## Implementation progress
+
+### F01 — repo-skeleton
+
+Branch `node/F01-repo-skeleton`, built with `/sc-node F01` (CD-44). Base `main` 0d4e721. Five slices: S1 seed `ci` image and `./bootstrap exec`; S2 layout-check; S3 locks, secrets scan, quarantine and CI workflows; S4 `make verify`, lint and determinism; S5 TDD discipline checker. **Status: in progress (S1 approved).**
+
+#### S1 — seed `ci` image, `./bootstrap exec`, Makefile re-exec
+
+| Round | RED | GREEN | Review |
+|---|---|---|---|
+| 1 | 76836b4 (55 checks failing, assertion-class) | 3b3169c, a3b7c27, cd3e356, f6bce80 | `test_spec_conflict`: plan 02 §14.4 podman-rootless row (resolved by CD-49, af2a52c); also CD-48 (dbe178d), `toolbox-check` as a red target |
+| 2 | 9a10846 (2 SIGTERM checks failing) | aefc4c0 | `request_changes`: 02-AC-14 literal command untested; unpinned-FROM guard used an unplanned code |
+| 3 | 45b2fea (25 checks failing) | 15ab3b3 | **`approve`** at 15ab3b3 |
+
+Red target: `sh test/e2e/wrapper/run.sh` (`TDD-Red-Target: toolbox-check`). Implementer attempts used: 3 of 3. CI: none for S1. No workflow ran on branch pushes before `verify.yaml` (S3).
+
+| Criterion | Test(s) | Result at 15ab3b3 |
+|---|---|---|
+| 02-AC-14 | `test/e2e/wrapper/real-engine.sh` (engine `build --no-cache`, then literal `--toolbox-build … fetch-pinned --check`, GOVERSION, `SC_IN_CONTAINER`); `stub-unpinned-from.sh` | pass, rootless Podman 5.4.2; Docker rootful open (S3 CI) |
+| 02-AC-15 | `real-engine.sh` (`TOOLBOX_CHECKSUM_MISMATCH:shfmt`, no tag left); `check-pins.sh` (`FROM golang:1.27`); `stub-exec-contract.sh` | pass on host and in `ci` image; Docker open (S3 CI) |
+| 02-AC-16 | `real-engine.sh`; `stub-exec-contract.sh` (per-mode flags, TTY, `--network none`, SIGTERM) | pass, rootless Podman; Docker rootful open (S3 CI) |
+| 02-AC-17 | `stub-image-reuse.sh` (17 checks) | pass |
+| 01-AC-5 | `makefile-reexec.sh` (9 checks) | pass; full tier-V order asserted in S4 |
+
+Deviations and open items:
+- Docker-rootful runs of `real-engine.sh` and `check-pins.sh` must run in S3's `verify.yaml`. 02-AC-14..16 stay open until they pass.
+- The wrapper passes `build --cgroup-manager=cgroupfs` when `$XDG_RUNTIME_DIR/bus` is absent (hosts without a user session bus). This is not in plan 02.
+- Reviewer low findings, not fixed in S1 (retry budget spent; carry into a later slice that touches `bootstrap`): L1, a missing or unreadable `toolbox/Containerfile` makes the build path exit 2 with no message; L2, stage names are compared case-sensitively, and BuildKit is case-insensitive.
+- Accepted residual risk: an image built from an unpinned Containerfile by older wrapper code can still be reused, because the 02-R-1 guard runs only before a build.
