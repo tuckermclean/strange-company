@@ -133,21 +133,29 @@ label_key=strange.company/toolbox-inputs-id
 have_image() {
 	[ "$("$engine" image inspect --format "{{index .Config.Labels \"$label_key\"}}" "$tag" 2>/dev/null)" = "$inputs_id" ]
 }
-# Every FROM in the Containerfile must be pinned by digest (plan 02 section 14.9); refuse to run an image built from one that is not.
-unpinned=$(awk 'toupper($1) == "FROM" {
-	i = 2
-	while ($i ~ /^--/) i++
-	ref = $i
-	if (ref in stage || ref == "scratch" || ref ~ /@sha256:[0-9a-f]+$/) { if (toupper($(i + 1)) == "AS") stage[$(i + 2)] = 1; next }
-	print FNR ": FROM " ref " has no @sha256 digest"
-	if (toupper($(i + 1)) == "AS") stage[$(i + 2)] = 1
-}' "$REPO/toolbox/Containerfile" 2>/dev/null | head -n 1)
-[ -z "$unpinned" ] || die WRAPPER_TOOLBOX_UNPINNED "toolbox/Containerfile:$unpinned" 3
 build_image() {
+	# Every FROM in the Containerfile must be pinned by digest (plan 02 section 14.9); refuse before building from one that is not.
+	unpinned=$(awk 'function pinned(r, p) {
+		p = index(r, "@sha256:")
+		if (p == 0) return 0
+		r = substr(r, p + 8)
+		return length(r) == 64 && r ~ /^[0-9a-f]+$/
+	}
+	toupper($1) == "FROM" {
+		i = 2
+		while ($i ~ /^--/) i++
+		ref = $i
+		if (!(ref in stage) && ref != "scratch" && !pinned(ref)) {
+			print FNR ": FROM " ref " has no valid @sha256 digest (64 hex characters)"
+			exit
+		}
+		if (toupper($(i + 1)) == "AS") stage[$(i + 2)] = 1
+	}' "$REPO/toolbox/Containerfile" 2>/dev/null)
+	[ -z "$unpinned" ] || die WRAPPER_TOOLBOX_BUILD_FAILED "toolbox/Containerfile:$unpinned" 3
 	logdir=$REPO/.bootstrap/toolbox
 	log=$logdir/build-$inputs12.log
 	mkdir -p "$logdir"
-	echo "toolbox: building $tag (log: $log)" >&2
+	echo "bootstrap: toolbox: building $tag (log: $log)" >&2
 	# Rootless Podman without a systemd user session cannot reach the session bus from buildah's runtime.
 	cg=
 	if [ "$mode" = podman-rootless ] && [ ! -S "${XDG_RUNTIME_DIR:-/nonexistent}/bus" ]; then cg=--cgroup-manager=cgroupfs; fi
