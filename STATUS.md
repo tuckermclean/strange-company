@@ -19,7 +19,7 @@
 | Operator procedures | 63 | `procedures/` |
 | ADRs (22 global + subsystem ADRs) | 79 | `adr/` |
 | SPEC issues register (59 entries, none blocking) | 1 | `plans/spec-issues.md` |
-| Consolidation decisions (CD-01..CD-45) | 1 | `plans/reviews/consolidation-decisions.md` |
+| Consolidation decisions (CD-01..CD-46) | 1 | `plans/reviews/consolidation-decisions.md` |
 | Independent fresh-context reviews (SPEC §132 items 43–47), plus closure verification | 10 + 3 | `plans/reviews/review-*.md`, `plans/reviews/closure-*.md` |
 | External adversarial reviews of PR #138 (two passes) and their disposition | 1 | `plans/reviews/external-review-pr138.md` |
 | Blind reviews (no access to earlier review conclusions; CD-34) | 5 | `plans/reviews/blind-*.md` |
@@ -74,6 +74,7 @@
    - CD-43: existing GitHub repositories (mostly Python, Rust, TypeScript/JavaScript) migrate into the Forgejo org `projects`, with optional per-repository push mirroring back to GitHub. Import goes through `forge.yaml` and `forge apply`. There are onboarding templates per language, a separate mirror credential (`SC-GITHUB-PROJECT-MIRROR`), the procedure `onboard-project-repository.md`, three C10 acceptance criteria, and a new Phase-5 node **S01** (first real project repository). The Self-Hosting Threshold is not widened.
    - CD-44: Phase-1 agent scaffolding in `.claude/` (`/sc-node` skill, tester/implementer/reviewer role agents, guard hook), so the build follows RED → GREEN → REVIEW from the first commit. Plan 52 now allows declared stubs in Phase-1 RED commits, which fixes a gap that made RED impossible for new Go symbols.
    - CD-45: F01 builds the seed `ci` image and the `./bootstrap exec` subset (plan 02 §14.9, 02-AC-14..17), so every Make target runs in one pinned container from the first commit. This fixes an ordering defect: GATE-F01 needed the image that F03 owned.
+   - CD-46: agent PRs are opened by the machine account `sc-agent-bot`; `main` requires 1 approval, so only the operator can approve and merge; a session-wide guard hook blocks merge, approve and settings changes through `gh`.
 
 ## SPEC §125 Stage-0 Definition of Done
 

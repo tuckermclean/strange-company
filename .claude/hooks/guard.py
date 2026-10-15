@@ -4,6 +4,10 @@ Invoked as a PreToolUse hook from the role subagents in .claude/agents/:
 
     python3 -I "$CLAUDE_PROJECT_DIR/.claude/hooks/guard.py" <tester|implementer|reviewer>
 
+and, for every session in this repository, from .claude/settings.json with the
+role `session`: agents never merge, approve or change repository settings on
+GitHub (CD-46). Only the operator merges.
+
 It reads the hook JSON on stdin and exits 2 (with the reason on stderr) to block
 a call. It is a guardrail for cooperative agents, not enforcement: the
 enforcement is interim CI (`tdd-discipline`, plan 52 §8.3) and human review.
@@ -29,6 +33,11 @@ STUB_MARK = "SC-STUB("
 HISTORY_REWRITE = re.compile(r"\bgit\s+(push|rebase|filter-branch|filter-repo)\b|"
                              r"\bgit\s+reset\s+--hard\b|\bgit\s+commit\b[^|;&]*--amend\b|"
                              r"--no-verify\b")
+# CD-46: the agent bot opens PRs; only the operator approves and merges.
+GH_FORBIDDEN = re.compile(r"\bgh\s+(pr\s+(merge|review)|repo\s+(edit|delete|rename|archive)|"
+                          r"release\s+(create|delete|edit)|secret|variable|ruleset)\b|"
+                          r"\bgh\s+api\b[^|;&]*(/merge\b|/reviews\b|/protection\b|/rulesets\b|"
+                          r"mergePullRequest|addPullRequestReview|enablePullRequestAutoMerge)")
 
 
 def match(path: str, patterns: list[str]) -> bool:
@@ -95,11 +104,17 @@ def check_commit(role: str, root: str) -> None:
 
 def main() -> None:
     role = sys.argv[1] if len(sys.argv) > 1 else ""
-    if role not in ("tester", "implementer", "reviewer"):
+    if role not in ("tester", "implementer", "reviewer", "session"):
         deny(f"unknown role {role!r}")
     ev = json.load(sys.stdin)
     root = os.environ.get("CLAUDE_PROJECT_DIR") or ev.get("cwd") or os.getcwd()
     tool, ti = ev.get("tool_name", ""), ev.get("tool_input") or {}
+
+    if role == "session":
+        if tool == "Bash" and GH_FORBIDDEN.search(ti.get("command", "")):
+            deny("agents never merge, approve or change repository settings on GitHub; "
+                 "the operator does (CD-46, plan 52 §8.2)")
+        return
 
     if tool in ("Edit", "Write", "NotebookEdit"):
         if role == "reviewer":
@@ -119,6 +134,8 @@ def main() -> None:
 
     if tool == "Bash":
         cmd = ti.get("command", "")
+        if re.search(r"(^|[\s;&|(])gh\s", cmd):
+            deny("role agents do not use gh; the orchestrator opens PRs")
         if HISTORY_REWRITE.search(cmd):
             deny("role agents do not push or rewrite history; the orchestrator pushes (RED evidence must stay addressable)")
         if role == "reviewer" and re.search(r"\bgit\s+(commit|add|checkout\s+-b|switch\s+-c|stash)\b", cmd):
