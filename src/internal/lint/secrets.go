@@ -39,8 +39,53 @@ var secretPatterns = []struct {
 	{"google-api-key", regexp.MustCompile(`\bAIza[0-9A-Za-z_-]{35}\b`)},
 }
 
+// secretsAllowlistRel is the closed allowlist of `make secrets-scan` (plan 35 section 14.8.1, plan 01
+// section 9). The file is a protected path; it is not scanned itself.
+const secretsAllowlistRel = "test/fixtures/secrets-scan/allowlist.yaml"
+
 // secretAllowlist holds the exact files `make secrets-scan` whitelists (plan 01 section 6.5).
 var secretAllowlist = map[string]bool{"test/fixtures/age/ci-test.agekey": true}
+
+type allowEntry struct {
+	Path   string `yaml:"path"`
+	Rule   string `yaml:"rule"`
+	Value  string `yaml:"value"`
+	Reason string `yaml:"reason"`
+	used   bool
+}
+
+// allowlist exempts exactly one value, matched by one rule, in one path per entry.
+type allowlist struct{ entries []*allowEntry }
+
+// loadAllowlist reads the closed allowlist; a missing file means no exemptions.
+func loadAllowlist(root string) (*allowlist, error) {
+	b, err := os.ReadFile(filepath.Join(root, secretsAllowlistRel))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return &allowlist{}, nil
+		}
+		return nil, fmt.Errorf("%s: %v", secretsAllowlistRel, err)
+	}
+	var doc struct {
+		Entries []*allowEntry `yaml:"entries"`
+	}
+	if err := yaml.Unmarshal(b, &doc); err != nil {
+		return nil, fmt.Errorf("%s: %v", secretsAllowlistRel, err)
+	}
+	return &allowlist{entries: doc.Entries}, nil
+}
+
+// allows reports whether an entry exempts the value matched by the rule in the path, and marks it used.
+func (a *allowlist) allows(rel, rule, value string) bool {
+	ok := false
+	for _, e := range a.entries {
+		if e != nil && e.Path == rel && e.Rule == rule && e.Value == value {
+			e.used = true
+			ok = true
+		}
+	}
+	return ok
+}
 
 // SecretsScan evaluates the plaintext-secret and SOPS rules of plan 01 section 7.1 on the tree under root.
 func SecretsScan(root string) (Result, error) {
@@ -52,20 +97,29 @@ func SecretsScan(root string) (Result, error) {
 	if err != nil {
 		return r, err
 	}
+	allow, err := loadAllowlist(root)
+	if err != nil {
+		return r, err
+	}
 	rules, rulesErr := loadSopsRules(root)
 	var sopsFiles []string
 	for _, rel := range files {
 		if (strings.HasSuffix(rel, ".sops.yaml") || strings.HasSuffix(rel, ".sops.yml")) && path.Base(rel) != ".sops.yaml" {
 			sopsFiles = append(sopsFiles, rel)
 		}
-		if secretAllowlist[rel] {
+		if secretAllowlist[rel] || rel == secretsAllowlistRel {
 			continue
 		}
 		b, err := os.ReadFile(filepath.Join(root, rel))
 		if err != nil || len(b) > maxScanBytes || bytes.IndexByte(b, 0) >= 0 {
 			continue
 		}
-		scanSecrets(rel, b, &r)
+		scanSecrets(rel, b, allow, &r)
+	}
+	for _, e := range allow.entries {
+		if e != nil && !e.used {
+			r.add(ruleSecretPattern, secretsAllowlistRel, "stale allowlist entry: %s %s matches nothing in %s", e.Rule, e.Path, e.Path)
+		}
 	}
 	for _, rel := range sopsFiles {
 		b, err := os.ReadFile(filepath.Join(root, rel))
@@ -81,46 +135,50 @@ var pemOneLineRe = regexp.MustCompile(`PRIVATE KEY(?: BLOCK)?-----\\n[A-Za-z0-9+
 
 var pemBodyRe = regexp.MustCompile(`^\s*[A-Za-z0-9+/=]{40,}\s*$`)
 
+var pemHeaderRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9-]*:\s.*$`)
+
 // placeholder reports whether a match is a vendor documentation value: it ends in EXAMPLE (the AWS
-// documentation access key id) or EXAMPLEKEY (the AWS documentation secret access key).
-//
-// Contract and plan examples of the age, Anthropic and OpenAI key formats use a body of one repeated
-// character (AGE-SECRET-KEY-1QQQ..., sk-ant-AAA...); that is also a placeholder for those rules. The AWS
-// rules have no such allowance: only the documentation values pass.
-func placeholder(name, m string) bool {
-	if strings.HasSuffix(m, "EXAMPLE") || strings.HasSuffix(m, "EXAMPLEKEY") {
-		return true
-	}
-	switch name {
-	case "age-secret-key", "anthropic-api-key", "openai-api-key":
-		body := m[strings.LastIndexByte(m, '-')+1:]
-		if name == "age-secret-key" {
-			body = strings.TrimPrefix(m, "AGE-SECRET-KEY-1")
-		}
-		return len(body) >= 20 && strings.Count(body, body[:1]) == len(body)
-	}
-	return false
+// documentation access key id) or EXAMPLEKEY (the AWS documentation secret access key). Every other
+// documentation-looking value is an entry of the closed allowlist.
+func placeholder(m string) bool {
+	return strings.HasSuffix(m, "EXAMPLE") || strings.HasSuffix(m, "EXAMPLEKEY")
 }
 
-func scanSecrets(rel string, b []byte, r *Result) {
+// pemBodyFollows reports whether the base64 body of a PEM block starts after line n: directly, or after
+// RFC 1421 header lines (Proc-Type, DEK-Info, other Name: value lines) and one blank line.
+func pemBodyFollows(lines []string, n int) bool {
+	i := n + 1
+	headers := 0
+	for i < len(lines) && pemHeaderRe.MatchString(strings.TrimRight(lines[i], "\r")) {
+		i++
+		headers++
+	}
+	if headers > 0 && i < len(lines) && strings.TrimSpace(lines[i]) == "" {
+		i++
+	}
+	return i < len(lines) && pemBodyRe.MatchString(lines[i])
+}
+
+func scanSecrets(rel string, b []byte, allow *allowlist, r *Result) {
 	lines := strings.Split(string(b), "\n")
 	for n, line := range lines {
 		for _, p := range secretPatterns {
-			m := p.re.FindString(line)
-			if m == "" {
-				continue
-			}
-			if p.name == "private-key-block" {
-				// A header alone is prose or a schema example; a key has its base64 body on the next line.
-				// The same holds for a key escaped onto one line (a JSON string with literal backslash-n).
-				if !pemOneLineRe.MatchString(line) && (n+1 >= len(lines) || !pemBodyRe.MatchString(lines[n+1])) {
+			for _, m := range p.re.FindAllString(line, -1) {
+				if p.name == "private-key-block" {
+					// A header alone is prose or a schema example; a key has its base64 body on the next line
+					// (after any legacy encrypted-PEM headers) or escaped onto one line (literal backslash-n).
+					if !pemOneLineRe.MatchString(line) && !pemBodyFollows(lines, n) {
+						break
+					}
+				} else if placeholder(m) {
 					continue
 				}
-			} else if placeholder(p.name, m) {
-				continue
+				if allow.allows(rel, p.name, m) {
+					continue
+				}
+				// The value is never printed.
+				r.add(ruleSecretPattern, fmt.Sprintf("%s:%d", rel, n+1), "matches %s", p.name)
 			}
-			// The value is never printed.
-			r.add(ruleSecretPattern, fmt.Sprintf("%s:%d", rel, n+1), "matches %s", p.name)
 		}
 	}
 }
