@@ -232,7 +232,7 @@ spec:
 ```
 
 **§8.3a Declared stubs in RED commits (CD-44; same shape as ADR-0352).** A RED test for a symbol that does not exist yet cannot compile, and a build failure is never valid RED (T6). So R may also change Go files under `src/**` outside `testPaths`, but only with **declared stubs**:
-- additions only (no deleted or modified lines), in existing files or in new files that contain only a package clause, imports and stubs;
+- additions only (no deleted or modified lines), in existing files or in new files that contain only a package clause, imports, stubs and type declarations (CD-50: struct, interface or named types with no methods other than declared stubs, and no `var`, `const` or `init`);
 - each stub directly preceded by `// SC-STUB(<node-or-task-id> <AC-id>…)`;
 - a body of at most 12 lines that returns zero values only (`return "", nil`, `return nil`, `return false`, an empty struct), checked by Go AST.
 
