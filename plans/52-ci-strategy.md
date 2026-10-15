@@ -266,12 +266,12 @@ The check **re-executes** RED instead of looking up a recorded CI run on the tes
   | `e2e-woodpecker` | `gitops/platform/woodpecker/**`, `src/cmd/sc-ci-config/**`, `.woodpecker/**`, `policy/ci.yaml` |
   | `e2e-bootstrap-fake` | `src/internal/bootstrap/**`, `infra/**` |
   | `test-integration` | `src/**` |
-  | `toolbox` | `toolbox/**` |
+  | `toolbox` | `toolbox/**`, `bootstrap`, `test/e2e/wrapper/**` (CD-52) |
   | `e2e-c10` | not run on PRs (C10 exists only after Phase 1); on `main` pushes touching `src/**`, `charts/strange-company/**`, `policy/harnesses.yaml`, `images/**`, `harnesses/**`, and on tags |
   | `e2e-lab` | as in §8.1 |
 
   On push, schedule and tags every job runs.
-- **Schedule:** daily `17 3 * * *`. The first step compares `main`'s SHA with the head SHA of the last successful scheduled run (`gh run list --workflow e2e --status success --limit 1`, using the `GITHUB_TOKEN` read scope). If equal, the run exits successfully without running the jobs (`skipped: unchanged`). `e2e-lab` runs only on Sundays and on tags.
+- **Schedule:** daily `17 3 * * *`. The first job looks up a cache marker keyed by `main`'s SHA (`actions/cache`, key `e2e-scheduled-ok-<sha>`), which a scheduled run saves only after `e2e-gate` succeeds. On a hit the run exits successfully without running the jobs (`skipped: unchanged`). This needs no permission beyond `contents: read` (CD-52; `gh run list` would need `actions: read`). `e2e-lab` runs only on Sundays and on tags.
 
 - **Lab runners (plan 05):**
   - `e2e-lab LAB_SUBSTRATE=lab-seed` (plan 05 `lab-seed` substrate) runs the plan 19 seed with real Longhorn, CNPG and Forgejo: the positive A-series (19-AC-19, required for P04) and the fault cases `LAB_SCENARIO=handoff-faults` N4-lab, N5-lab and N6-lab (19-AC-21, required for P06; CD-31). **Runner (CD-36, SEEDFLUX-B7):** only a runner that meets plan 05's `lab-seed` host requirement (≥ 8 vCPU, ≥ 16 GiB, KVM, ≥ 60 GiB free disk), stated once in plan 05. Either (a) a **GitHub larger Linux runner** (8-core class, label from repository variable `SC_LAB_SEED_RUNNER`; paid per minute, roughly US$ 0.03/min, so ≈ US$ 2–3 per lab-seed run of 60–90 min and ≈ US$ 20–40/month at weekly runs plus tags and seed-path changes, recorded in the cost table of §12), or (b) an **off-cluster self-hosted runner on operator hardware** registered for this lane only (ADR-0303 item 5). Only the CI run result of this lane counts as evidence; operator-committed evidence is **not** accepted for `lab-seed`. If neither runner exists, GATE-P04 (19-AC-19) and GATE-P06 (19-AC-21) cannot pass; the requirement is explicit rather than weakened. It runs on `main` pushes touching the plan 19 §19 paths, weekly, and on release tags, never on the production node.

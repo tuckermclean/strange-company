@@ -1,12 +1,17 @@
 # Tier-E jobs (plan 52 section 8.4). On pull requests a path filter selects the jobs whose inputs changed;
 # `e2e-gate` always runs and succeeds iff every selected job succeeded (no required check stuck in "expected").
 # At F01 the only tier-E job is `toolbox`: the real-engine checks of the seed ci image on Docker rootful.
+# Scheduled runs skip a commit that already passed a scheduled run, using a cache marker keyed by the
+# commit SHA rather than a query of earlier runs, so no permission beyond `contents: read` is needed (CD-52).
 name: e2e
 
 on:
   pull_request:
   push:
     branches: [main]
+    tags: ['v*']
+  schedule:
+    - cron: '17 3 * * *'
   workflow_dispatch:
 
 permissions:
@@ -24,6 +29,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       toolbox: ${{ steps.select.outputs.toolbox }}
+      unchanged: ${{ steps.marker.outputs.cache-hit == 'true' }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -31,18 +37,34 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # A hit means this commit already passed a scheduled run (`skipped: unchanged`).
+      - name: Look up the scheduled-run marker
+        id: marker
+        if: github.event_name == 'schedule'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cache/e2e-scheduled
+          key: e2e-scheduled-ok-${{ github.sha }}
+          lookup-only: true
+
+      # Fails closed: if `git diff` fails, the step (and so e2e-gate) fails instead of selecting nothing.
       - name: Select the tier-E jobs
         id: select
         env:
           EVENT: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          UNCHANGED: ${{ steps.marker.outputs.cache-hit }}
         run: |
           toolbox=true
           if [ "$EVENT" = pull_request ]; then
+            changed=$(git diff --name-only "$BASE_SHA" HEAD)
             toolbox=false
-            if git diff --name-only "$BASE_SHA" HEAD | grep -q '^toolbox/'; then
+            if grep -q -e '^toolbox/' -e '^bootstrap$' -e '^test/e2e/wrapper/' <<<"$changed"; then
               toolbox=true
             fi
+          elif [ "$EVENT" = schedule ] && [ "$UNCHANGED" = true ]; then
+            toolbox=false
+            echo "skipped: unchanged" >> "$GITHUB_STEP_SUMMARY"
           fi
           echo "toolbox=$toolbox" >> "$GITHUB_OUTPUT"
 
@@ -89,3 +111,15 @@ jobs:
             success | skipped) ;;
             *) exit 1 ;;
           esac
+
+      - name: Write the scheduled-run marker
+        if: github.event_name == 'schedule'
+        run: mkdir -p .cache/e2e-scheduled && echo "${GITHUB_SHA}" > .cache/e2e-scheduled/ok
+
+      # Saved by the post step only when this job succeeds, so only a passing scheduled run marks the commit.
+      - name: Record that this commit passed a scheduled run
+        if: github.event_name == 'schedule'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cache/e2e-scheduled
+          key: e2e-scheduled-ok-${{ github.sha }}
