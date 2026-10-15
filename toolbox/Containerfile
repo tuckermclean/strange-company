@@ -1,0 +1,66 @@
+# Seed `ci` image (plan 02 section 14.9, CD-45). One stage; F03 rebases it onto the toolbox stages.
+# Build context is the repository root, restricted by .dockerignore. Every FROM is pinned by digest.
+FROM docker.io/library/golang@sha256:2d658507a011f1eadc0114d7a421b312b2e77d9042a24036a26e267cc9231677 AS ci
+
+ARG SC_INPUTS_ID=unknown
+LABEL strange.company/toolbox-inputs-id=$SC_INPUTS_ID
+
+COPY toolbox/tools.lock.yaml /usr/share/strange-company/tools.lock.yaml
+COPY toolbox/bin/ /opt/sc/bin/
+COPY tools/stage0/requirements.txt /tmp/stage0-requirements.txt
+COPY src/go.mod /tmp/go.mod
+
+# Debian snapshot (lock debianSnapshot) and the apt package sets (lock aptPackages) are read from the lock.
+RUN set -eu; \
+    lock=/usr/share/strange-company/tools.lock.yaml; \
+    snap=$(sed -n 's/^  debianSnapshot: *\([0-9TZ]*\).*/\1/p' "$lock"); \
+    pkgs=$(sed -n 's/^    \(runtime\|ci\): *\[\(.*\)\].*/\2/p' "$lock" | tr -d ','); \
+    test -n "$snap" && test -n "$pkgs"; \
+    printf '%s\n' \
+      'Types: deb' \
+      "URIs: http://snapshot.debian.org/archive/debian/$snap/" \
+      'Suites: trixie trixie-updates' \
+      'Components: main' \
+      'Check-Valid-Until: no' \
+      'Signed-By: /usr/share/keyrings/debian-archive-keyring.pgp' \
+      '' \
+      'Types: deb' \
+      "URIs: http://snapshot.debian.org/archive/debian-security/$snap/" \
+      'Suites: trixie-security' \
+      'Components: main' \
+      'Check-Valid-Until: no' \
+      'Signed-By: /usr/share/keyrings/debian-archive-keyring.pgp' \
+      >/etc/apt/sources.list.d/debian.sources; \
+    apt-get -o Acquire::Retries=5 update; \
+    DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --no-install-recommends $pkgs; \
+    rm -rf /var/lib/apt/lists/*
+
+# Stage-0 validator venv (hash-checked); also runs fetch-pinned and toolbox-check.
+RUN set -eu; \
+    python3 -m venv /opt/sc/stage0-venv; \
+    /opt/sc/stage0-venv/bin/pip install --no-cache-dir --require-hashes -r /tmp/stage0-requirements.txt; \
+    rm /tmp/stage0-requirements.txt
+
+# set: ci tools, checksum-verified; a mismatch fails the build with TOOLBOX_CHECKSUM_MISMATCH:<tool>.
+RUN /opt/sc/bin/fetch-pinned --set ci
+
+# The Go toolchain must equal the src/go.mod toolchain directive.
+RUN set -eu; \
+    want=$(sed -n 's/^toolchain[[:space:]]*\(go[0-9][0-9.]*\).*/\1/p' /tmp/go.mod | head -n 1); \
+    have=$(go env GOVERSION); \
+    test -n "$want" && test "$want" = "$have" || { echo "TOOLBOX_VERSION_MISMATCH:go ($want != $have)" >&2; exit 1; }; \
+    rm /tmp/go.mod
+
+RUN set -eu; \
+    groupadd --gid 10001 sc; \
+    useradd --uid 10001 --gid 10001 --home-dir /run/sc/home --no-create-home --shell /bin/bash sc; \
+    chmod 0755 /opt/sc/bin/*; \
+    mkdir -p /go/pkg && chmod -R a+rwX /go; \
+    /opt/sc/bin/fetch-pinned --check
+
+ENV SC_IN_CONTAINER=1 TZ=UTC LC_ALL=C.UTF-8 \
+    PATH=/opt/sc/bin:/go/bin:/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin \
+    GOTOOLCHAIN=local GOFLAGS=-buildvcs=false
+USER 10001:10001
+ENTRYPOINT ["/usr/bin/tini", "--", "/opt/sc/bin/sc-entrypoint"]
+CMD ["bash"]

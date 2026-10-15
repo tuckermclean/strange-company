@@ -1,0 +1,113 @@
+#!/opt/sc/stage0-venv/bin/python
+"""Seed replacement for `sc-bootstrap toolbox fetch/selfcheck` (plan 02 section 14.9, CD-45).
+
+fetch-pinned [--lock FILE] [--set ci|runtime] [--check]
+
+Without --check: download every entry of the set, verify its sha256, install it, then
+run the version checks. With --check: only the version checks.
+Failures: TOOLBOX_CHECKSUM_MISMATCH:<tool>, TOOLBOX_VERSION_MISMATCH:<tool>.
+"""
+import argparse
+import hashlib
+import os
+import platform
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tarfile
+import tempfile
+import urllib.request
+import zipfile
+
+import yaml
+
+DEFAULT_LOCK = "/usr/share/strange-company/tools.lock.yaml"
+
+
+def fail(code, tool, detail=""):
+    print("%s:%s %s" % (code, tool, detail), file=sys.stderr)
+    sys.exit(1)
+
+
+def arch():
+    m = platform.machine()
+    return {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64"}[m]
+
+
+def install(tool, data_path, url):
+    dest = tool["install"]["to"]
+    member = tool["install"].get("extract")
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    if member:
+        with tempfile.TemporaryDirectory() as tmp:
+            if url.endswith(".zip"):
+                with zipfile.ZipFile(data_path) as z:
+                    z.extract(member, tmp)
+            else:
+                with tarfile.open(data_path) as t:
+                    t.extract(member, tmp, filter="data")
+            shutil.copyfile(os.path.join(tmp, member), dest)
+    else:
+        shutil.copyfile(data_path, dest)
+    os.chmod(dest, os.stat(dest).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+
+def fetch(tool):
+    name = tool["name"]
+    if "goInstall" in tool:
+        env = dict(os.environ, GOFLAGS="-mod=mod", GOBIN=os.path.dirname(tool.get("install", {}).get("to", "/usr/local/bin/x")))
+        subprocess.run(["go", "install", "%s@v%s" % (tool["goInstall"], tool["version"])], check=True, env=env)
+        return
+    a = arch()
+    url = tool["url"].replace("{version}", tool["version"]).replace("{arch}", a)
+    want = tool["sha256"].get(a)
+    if not want:
+        fail("TOOLBOX_CHECKSUM_MISMATCH", name, "no sha256 for " + a)
+    with tempfile.NamedTemporaryFile() as f:
+        h = hashlib.sha256()
+        with urllib.request.urlopen(url, timeout=120) as r:
+            while True:
+                b = r.read(1 << 20)
+                if not b:
+                    break
+                h.update(b)
+                f.write(b)
+        f.flush()
+        if h.hexdigest() != want:
+            fail("TOOLBOX_CHECKSUM_MISMATCH", name, "%s: got %s want %s" % (url, h.hexdigest(), want))
+        install(tool, f.name, url)
+
+
+def check(tool):
+    name = tool["name"]
+    try:
+        out = subprocess.run(tool["versionCommand"], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        fail("TOOLBOX_VERSION_MISMATCH", name, "cannot run %s: %s" % (tool["versionCommand"], e))
+    text = out.stdout + out.stderr
+    rx = tool["versionRegex"].replace("{version}", re.escape(tool["version"]))
+    if out.returncode != 0 or not re.search(rx, text, re.M):
+        fail("TOOLBOX_VERSION_MISMATCH", name, "expected /%s/ in: %s" % (rx, text.strip()))
+    print("ok %s %s" % (name, tool["version"]))
+
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("--lock", default=DEFAULT_LOCK)
+    p.add_argument("--set", default="ci", choices=["ci", "runtime"])
+    p.add_argument("--check", action="store_true")
+    a = p.parse_args()
+    with open(a.lock, encoding="utf-8") as f:
+        lock = yaml.safe_load(f)
+    tools = [t for t in lock["spec"]["tools"] if t["set"] == a.set]
+    if not a.check:
+        for t in tools:
+            fetch(t)
+    for t in tools:
+        check(t)
+
+
+if __name__ == "__main__":
+    main()

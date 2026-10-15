@@ -1,0 +1,19 @@
+#!/bin/sh
+# Seed entrypoint (plan 02 section 14.4, 14.9): nss_wrapper files and git safe.directory, then exec.
+set -eu
+if [ -n "${SC_REPO_ROOT:-}" ] && [ -d /run/sc ]; then
+	uid=$(id -u)
+	gid=$(id -g)
+	mkdir -p /run/sc/home /run/sc/tmp
+	printf 'sc-operator:x:%s:%s:Strange Company operator:/run/sc/home:/bin/bash\n' "$uid" "$gid" >/run/sc/passwd
+	printf 'sc-operator:x:%s:\n' "$gid" >/run/sc/group
+	LD_PRELOAD=libnss_wrapper.so
+	NSS_WRAPPER_PASSWD=/run/sc/passwd
+	NSS_WRAPPER_GROUP=/run/sc/group
+	HOME=/run/sc/home
+	GIT_CONFIG_COUNT=1
+	GIT_CONFIG_KEY_0=safe.directory
+	GIT_CONFIG_VALUE_0=$SC_REPO_ROOT
+	export LD_PRELOAD NSS_WRAPPER_PASSWD NSS_WRAPPER_GROUP HOME GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
+fi
+exec "$@"
