@@ -221,3 +221,9 @@ This repository is simultaneously the bootstrap repository, the infrastructure a
 | [`contracts/`](contracts/) | Schemas, the Runner OpenAPI definition, the state machine, the alert catalogue and the secret-class register. |
 | [`procedures/`](procedures/) | Operator runbooks: bootstrap, recovery, rotation, break-glass, destruction and more. |
 | [`tools/stage0/`](tools/stage0/) | The Stage-0 validator. |
+
+---
+
+## License
+
+Strange Company is free software, licensed under the [GNU Affero General Public License v3.0 or later](LICENSE) (`AGPL-3.0-or-later`). You may use, study, modify and share it. If you distribute it, or run a modified version as a network service that other people use, you must offer those users the complete corresponding source under the same license.

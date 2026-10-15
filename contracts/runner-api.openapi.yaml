@@ -29,7 +29,8 @@ info:
     Error bodies are `ToolError` from the MCP contract. HTTP status mapping is listed beside each
     code in `mcp-surface.schema.yaml#/$defs/ErrorCode`.
   license:
-    name: Proprietary (Strange Company)
+    name: GNU Affero General Public License v3.0 or later
+    identifier: AGPL-3.0-or-later
 servers:
   - url: http://127.0.0.1:18080
     description: "`api` listener through `kubectl -n strange-company port-forward deploy/agent-runner 18080:8080`"
