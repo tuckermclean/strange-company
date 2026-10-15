@@ -284,7 +284,7 @@ Mounting the repository at its host path keeps Git worktrees, absolute paths in 
 | `docker` (rootful, Linux) | `--user $(id -u):$(id -g)` | host uid | host user |
 | `docker` (Docker Desktop macOS/Windows-WSL2) | `--user $(id -u):$(id -g)` | host uid | host user (file sharing maps ownership) |
 | `docker-rootless` | `--user 0:0` | 0 in the user namespace | host user (userns root = host user) |
-| `podman-rootless` | `--userns=keep-id` | host uid | host user |
+| `podman-rootless` | `--userns=keep-id --user $(id -u):$(id -g)` (CD-49: `keep-id` alone runs the image `USER 10001`, whose files land on a subordinate host uid) | host uid | host user |
 | `podman-rootful` | `--user $(id -u):$(id -g)` | host uid | host user |
 
 - Arbitrary uids have no `/etc/passwd` entry, and OpenSSH refuses to run without one ("No user exists for uid"). The entrypoint therefore writes `/run/sc/passwd` and `/run/sc/group` (user `sc-operator`, home `/run/sc/home`) and exports `LD_PRELOAD=libnss_wrapper.so NSS_WRAPPER_PASSWD=/run/sc/passwd NSS_WRAPPER_GROUP=/run/sc/group` for itself and all children. Podman `keep-id` already adds an entry; the wrapper output is harmless there.

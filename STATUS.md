@@ -19,7 +19,7 @@
 | Operator procedures | 63 | `procedures/` |
 | ADRs (22 global + subsystem ADRs) | 79 | `adr/` |
 | SPEC issues register (59 entries, none blocking) | 1 | `plans/spec-issues.md` |
-| Consolidation decisions (CD-01..CD-48) | 1 | `plans/reviews/consolidation-decisions.md` |
+| Consolidation decisions (CD-01..CD-49) | 1 | `plans/reviews/consolidation-decisions.md` |
 | Independent fresh-context reviews (SPEC §132 items 43–47), plus closure verification | 10 + 3 | `plans/reviews/review-*.md`, `plans/reviews/closure-*.md` |
 | External adversarial reviews of PR #138 (two passes) and their disposition | 1 | `plans/reviews/external-review-pr138.md` |
 | Blind reviews (no access to earlier review conclusions; CD-34) | 5 | `plans/reviews/blind-*.md` |
@@ -77,6 +77,7 @@
    - CD-46: agent PRs are opened by the machine account `sc-agent-bot`; `main` requires 1 approval, so only the operator can approve and merge; a session-wide guard hook blocks merge, approve and settings changes through `gh`.
    - CD-47: an automated review check replaces the manual approval: after the reviewer agent approves, `sc-agent-bot` posts the commit status `sc-review` on the PR head. `main` needs 0 approvals, and a "Restrict updates" ruleset lets only the operator merge (plan 52 §8.2a).
    - CD-48: `toolbox-check` is a plan 52 red target, so RED commits for `./bootstrap` and `toolbox/**` can name the wrapper tests (found during F01 slice S1).
+   - CD-49: rootless Podman runs with `--userns=keep-id --user $(id -u):$(id -g)`, because the image `USER` overrides keep-id (plan 02 §14.4; found in the F01 slice S1 review).
 
 ## SPEC §125 Stage-0 Definition of Done
 
