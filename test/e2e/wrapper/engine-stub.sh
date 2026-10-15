@@ -2,7 +2,7 @@
 # Stub container engine. Installed as both "docker" and "podman" on PATH by the tests.
 # Records every invocation (arguments joined by single spaces) to $STUB_LOG.
 # Image state lives in $STUB_STATE as "<tag>\t<inputs-id label>".
-# Knobs: STUB_ROOTLESS=1, STUB_RUN_EXIT=<n>, STUB_BUILD_FAIL=1.
+# Knobs: STUB_RUN_SLEEP=1 (+STUB_SIG_PID/GOT/CHILD), STUB_ROOTLESS=1, STUB_RUN_EXIT=<n>, STUB_BUILD_FAIL=1.
 printf '%s\n' "$*" >>"$STUB_LOG"
 
 sub=$1
@@ -48,6 +48,16 @@ build | "image build" | "buildx build")
 	exit 0
 	;;
 run | "container run")
+	if [ "${STUB_RUN_SLEEP:-0}" = 1 ]; then
+		# Signal probe: record pid, record a received TERM, then exit.
+		echo $$ >"$STUB_SIG_PID"
+		trap 'echo TERM >"$STUB_SIG_GOT"; kill "$cpid" 2>/dev/null; exit 143' TERM
+		sleep 60 &
+		cpid=$!
+		echo "$cpid" >"$STUB_SIG_CHILD"
+		wait "$cpid"
+		exit 0
+	fi
 	exit "${STUB_RUN_EXIT:-0}"
 	;;
 inspect | "image inspect" | "image exists" | "image ls" | "image list" | images)

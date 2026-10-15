@@ -9,6 +9,9 @@ fx=$TMP/tree
 mkdir -p "$fx"
 cd "$SC_ROOT" || exit 1
 git ls-files -z | tar --null -T - -cf - | tar -xf - -C "$fx"
+# A git repository, so the Makefile re-exec (./bootstrap exec) works from the host.
+git -C "$fx" init -q . && git -C "$fx" checkout -q -b main 2>/dev/null
+git -C "$fx" add -A && git_ -C "$fx" commit -q -m fixture
 
 RC=0
 (cd "$fx" && make toolbox-check) >"$TMP/clean.out" 2>&1 || RC=$?

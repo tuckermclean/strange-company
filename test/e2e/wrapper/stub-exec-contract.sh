@@ -14,7 +14,7 @@ reset_log
 STUB_RUN_EXIT=7 ENGINE=docker wrap "$fx" exec --image ci -- sh -c 'exit 7'
 expect_eq "02-AC-16 exit code of the command is returned (7)" 7 "$RC"
 L=$(run_line)
-expect_match "02-AC-16 docker rootful: --user uid:gid" "--user $uid:$gid( |\$)" "$L"
+expect_match "02-AC-16 docker rootful: --user uid:gid" "--user[ =]$uid:$gid( |\$)" "$L"
 expect_match "02-AC-16 common flag --rm" " --rm( |\$)" "$L"
 expect_match "02-AC-16 common flag -i" " -i( |\$)|-[a-z]*i[a-z]* " "$L"
 expect_nomatch "02-AC-16 no TTY allocated when stdin is not a TTY" " (-t|-it|-ti|--tty)( |\$)" "$L"
@@ -46,15 +46,71 @@ expect_match "02-AC-16 workdir is a subdirectory when invoked there" "(-w|--work
 # Docker rootless.
 reset_log
 STUB_ROOTLESS=1 ENGINE=docker wrap "$fx" exec --image ci -- true
-expect_match "02-AC-16 docker-rootless: --user 0:0" "--user 0:0( |\$)" "$(run_line)"
+expect_match "02-AC-16 docker-rootless: --user 0:0" "--user[ =]0:0( |\$)" "$(run_line)"
 
 # Podman rootless, selected by the --engine flag.
 reset_log
 STUB_ROOTLESS=1 wrap "$fx" --engine podman exec --image ci -- true
 L=$(run_line)
-expect_match "02-AC-16 podman-rootless: --userns=keep-id" "--userns[ =]keep-id" "$L"
-expect_nomatch "02-AC-16 podman-rootless: no --user uid:gid" "--user $uid:$gid" "$L"
+expect_match "02-AC-16 podman-rootless: --userns=keep-id (CD-49)" "--userns[ =]keep-id( |\$)" "$L"
+expect_match "02-AC-16 podman-rootless: --user uid:gid as well (CD-49)" "--user[ =]$uid:$gid( |\$)" "$L"
 expect_match "02-AC-16 podman-rootless: /run/sc tmpfs owned by the container user (U)" "--tmpfs[ =]/run/sc:[^ ]*(U|uid=)" "$L"
+
+# Podman rootful: --user uid:gid, no keep-id (plan 02 14.4).
+reset_log
+STUB_ROOTLESS=0 wrap "$fx" --engine podman exec --image ci -- true
+L=$(run_line)
+expect_match "02-AC-16 podman-rootful: --user uid:gid" "--user[ =]$uid:$gid( |\$)" "$L"
+expect_nomatch "02-AC-16 podman-rootful: no --userns keep-id" "--userns" "$L"
+
+# TTY allocation: -t only when stdin and stdout are both TTYs (plan 02 7.1), via script(1).
+if command -v script >/dev/null 2>&1 && script -qec true /dev/null >/dev/null 2>&1 </dev/null; then
+	reset_log
+	cat >"$TMP/tty-run.sh" <<EOT
+#!/bin/sh
+cd "$fx" || exit 99
+unset SC_IN_CONTAINER SC_TOOLBOX_BUILD SC_TOOLBOX_REQUIRE_PULL SC_ALLOW_ROOT
+PATH="$STUBBIN:\$PATH" HOME="$TMP/home" SC_CONTAINER_ENGINE=docker exec "$fx/bootstrap" exec --image ci -- true
+EOT
+	chmod +x "$TMP/tty-run.sh"
+	script -qec "$TMP/tty-run.sh" /dev/null >/dev/null 2>&1 </dev/null
+	expect_match "02-AC-16 -t allocated when stdin and stdout are TTYs" " (-t|-it|-ti|--tty)( |\$)" "$(run_line)"
+else
+	echo "  SKIP 02-AC-16 -t allocated when stdin and stdout are TTYs (script(1) unavailable or unusable)"
+fi
+
+# Signals (plan 02 14.6: exit code and signals propagate): SIGTERM to the wrapper reaches the engine; nothing is orphaned.
+reset_log
+rm -f "$TMP/sig.pid" "$TMP/sig.got" "$TMP/wrap.pid" "$TMP/sig.child"
+(
+	cd "$fx" || exit 99
+	unset SC_IN_CONTAINER SC_TOOLBOX_BUILD SC_TOOLBOX_REQUIRE_PULL SC_ALLOW_ROOT
+	export PATH="$STUBBIN:$PATH" HOME="$TMP/home" SC_CONTAINER_ENGINE=docker
+	export STUB_RUN_SLEEP=1 STUB_SIG_PID="$TMP/sig.pid" STUB_SIG_GOT="$TMP/sig.got" STUB_SIG_CHILD="$TMP/sig.child"
+	sh -c 'echo $$ >"$1"; shift; exec "$@"' sh "$TMP/wrap.pid" "$fx/bootstrap" exec --image ci -- sleep 60
+) >/dev/null 2>&1 </dev/null &
+bg=$!
+i=0
+while [ ! -s "$TMP/sig.pid" ] && [ "$i" -lt 100 ]; do
+	sleep 0.1
+	i=$((i + 1))
+done
+if [ -s "$TMP/sig.pid" ] && [ -s "$TMP/wrap.pid" ]; then
+	kill -TERM "$(cat "$TMP/wrap.pid")" 2>/dev/null
+	i=0
+	while [ ! -s "$TMP/sig.got" ] && [ "$i" -lt 50 ]; do
+		sleep 0.1
+		i=$((i + 1))
+	done
+	expect_eq "02-AC-16 SIGTERM to the wrapper reaches the engine client" TERM "$(cat "$TMP/sig.got" 2>/dev/null)"
+	sleep 0.3
+	if kill -0 "$(cat "$TMP/sig.pid")" 2>/dev/null; then bad "02-AC-16 no engine process is left running after SIGTERM" "engine pid $(cat "$TMP/sig.pid") alive"; else ok "02-AC-16 no engine process is left running after SIGTERM"; fi
+else
+	bad "02-AC-16 SIGTERM to the wrapper reaches the engine client" "stub engine run never started"
+fi
+kill -KILL "$(cat "$TMP/sig.pid" 2>/dev/null)" "$(cat "$TMP/sig.child" 2>/dev/null)" 2>/dev/null
+kill -KILL "$(cat "$TMP/wrap.pid" 2>/dev/null)" "$bg" 2>/dev/null
+wait "$bg" 2>/dev/null
 
 # Usage and repository errors (plan 02 7.1).
 reset_log
