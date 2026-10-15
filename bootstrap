@@ -5,7 +5,7 @@
 set -eu
 
 die() { # code message exit-code
-	printf '%s: %s\n' "$1" "$2" >&2
+	printf 'bootstrap: %s: %s\n' "$1" "$2" >&2
 	exit "$3"
 }
 
@@ -133,6 +133,16 @@ label_key=strange.company/toolbox-inputs-id
 have_image() {
 	[ "$("$engine" image inspect --format "{{index .Config.Labels \"$label_key\"}}" "$tag" 2>/dev/null)" = "$inputs_id" ]
 }
+# Every FROM in the Containerfile must be pinned by digest (plan 02 section 14.9); refuse to run an image built from one that is not.
+unpinned=$(awk 'toupper($1) == "FROM" {
+	i = 2
+	while ($i ~ /^--/) i++
+	ref = $i
+	if (ref in stage || ref == "scratch" || ref ~ /@sha256:[0-9a-f]+$/) { if (toupper($(i + 1)) == "AS") stage[$(i + 2)] = 1; next }
+	print FNR ": FROM " ref " has no @sha256 digest"
+	if (toupper($(i + 1)) == "AS") stage[$(i + 2)] = 1
+}' "$REPO/toolbox/Containerfile" 2>/dev/null | head -n 1)
+[ -z "$unpinned" ] || die WRAPPER_TOOLBOX_UNPINNED "toolbox/Containerfile:$unpinned" 3
 build_image() {
 	logdir=$REPO/.bootstrap/toolbox
 	log=$logdir/build-$inputs12.log
@@ -163,8 +173,7 @@ docker-rootless)
 	tmpfs_run="$tmpfs_run,uid=0,gid=0"
 	;;
 podman-rootless)
-	# --user=... (not "--user ..."): the image USER (10001) otherwise wins over keep-id and files get a subuid owner.
-	user_flags="--userns=keep-id --user=$(id -u):$(id -g)"
+	user_flags="--userns=keep-id --user $(id -u):$(id -g)"
 	tmpfs_run="$tmpfs_run,U"
 	;;
 *)
@@ -211,6 +220,4 @@ while [ "$n" -gt 0 ]; do
 	n=$((n - 1))
 done
 
-rc=0
-"$engine" "$@" || rc=$?
-exit "$rc"
+exec "$engine" "$@"

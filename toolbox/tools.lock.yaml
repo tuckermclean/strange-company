@@ -4,7 +4,6 @@ metadata:
   name: seed-ci
   description: F01 seed lock (plan 02 section 14.9); later nodes add a tool in the PR of the target that first calls it.
 spec:
-  # tools first: the first sha256 in this file is a tool checksum (02-AC-15 mutates it)
   tools:
     - name: shfmt
       set: ci

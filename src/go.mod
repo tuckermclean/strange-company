@@ -1,4 +1,4 @@
-module github.com/strange-company/strange-company
+module strange.company/sc
 
 go 1.27
 
