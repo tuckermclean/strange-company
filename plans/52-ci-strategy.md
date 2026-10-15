@@ -219,7 +219,8 @@ spec:
                     "toolbox/**", "images/**", "harnesses/**", "policy/**", "contracts/**", "Makefile", "mk/**", "bootstrap"]
     testPaths: ["**/*_test.go", "**/testdata/**", "test/**", "charts/*/tests/**", "src/internal/contracts/testdata/**"]
     redTargets: [test, contracts, policy-check, gitops-validate, chart-test, test-ansible-k3s, tofu-validate,
-                 lint-alerts, lint-metrics, profiles-check, locks-check, secrets-lint, layout-check]
+                 lint-alerts, lint-metrics, profiles-check, locks-check, secrets-lint, layout-check,
+                 toolbox-check]
     exemptionClasses:
       docs-only:                {paths: ["**/*.md", "adr/**", "plans/**", "procedures/**"]}
       ci-config:                {paths: [".github/**", ".woodpecker/**", "policy/ci.yaml"]}
