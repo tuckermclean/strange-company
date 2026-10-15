@@ -61,7 +61,7 @@ Append to `STATUS.md` under `## Implementation progress` → `### <id> — <name
 A node is complete only when **every** gate criterion has passing evidence (SPEC §124). Commit this as a human-owned docs change: `docs(<id>): gate evidence`.
 
 ## 6. Pull request
-When all slices are done, push and give the user a ready-to-paste PR title and body: summary, criteria table, RED → GREEN → review evidence, and deviations. End the body with the attribution line. The user opens the PR and merges it; you never merge.
+When all slices are done, push and give the user a ready-to-paste PR title and body: summary, criteria table, RED → GREEN → review evidence, and deviations. End the body with the attribution line. Open it with `gh pr create` (it runs as `sc-agent-bot`, CD-46) and give the user the URL. If `gh` is unavailable, give the user the title and body to paste instead. The user approves and merges; you never approve or merge.
 
 ## 7. Stop and ask the user
 Stop for:
