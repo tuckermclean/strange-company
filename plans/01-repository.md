@@ -82,6 +82,7 @@ strange-company/
 ├── mk/                          Makefile fragments, one per area: go.mk, contracts.mk, gitops.mk, tofu.mk, e2e.mk … (protected)
 ├── .gitignore  .gitattributes  .editorconfig
 ├── .sops.yaml                   SOPS creation rules (content: plan 35; layout rule §6.5) (protected)
+├── .claude/                     Phase-1 agent scaffolding (CD-44): role subagents `agents/sc-{tester,implementer,reviewer}.md`, skill `skills/sc-node/`, the role guard hook `hooks/guard.py` (Python by the ADR-0021 exception, like `tools/stage0`; ships in no image; mode 100644, run as `python3 -I`). Advisory process aids for coding agents building the DAG before the platform exists; enforcement remains interim CI (ADR-0018, plan 52 §8.3). Retired or kept for human convenience after R02 (protected)
 ├── .strange-company/            repository context of THIS repository (SPEC §42; §7.3) (protected)
 │   ├── repo.yaml                kind RepositoryContext (contracts/context.schema.yaml, plan 25)
 │   ├── architecture.md          short architecture map → SPEC.md, plans/00-master-plan.md
@@ -123,6 +124,8 @@ strange-company/
 │   ├── strange-company/         repository-level SOPS registers changed only by PR, e.g. `runner-admin-credentials.sops.yaml` (hash entries of per-operator Runner admin credentials, CD-30; plans 26, 35, 50)
 │   └── ci/<cluster>/            CI-side SOPS secrets for trusted build pipelines (`ci-secrets apply`, `supply-chain init`; plans 17, 20, 23, 35)
 ├── security/                    supply-chain trust and policy files: cosign/ keys, attestations/, release-pushers.yaml, vuln-waivers.yaml, upstream-signatures.yaml, license-policy.yaml (plan 23 §9) (protected)
+├── templates/
+│   └── project-onboarding/{python,rust,typescript}/   starting `.strange-company/*`, `.woodpecker/ci.yaml` and `run-tests.sh` for onboarded project repositories (plan 22 §9.7; introduced at C10, 22-AC-35)
 ├── evidence/                    small, non-secret, committed evidence records that policy requires in Git (e.g. provider-smoke, plan 53). Never logs.
 ├── tools/
 │   └── stage0/                  Stage-0 validator `validate.py`, `PLAN.md` generator `genplan.py`, pinned `requirements.txt` (ADR-0021; Python by exception to ADR-0002; ships in no image) (protected)
@@ -283,7 +286,7 @@ Rules:
 
 ### 6.6 Repository hygiene files
 
-- `.gitignore` (exact entries): `/bootstrap.env`, `/bootstrap.env.*` except `!/bootstrap.env.example`, `/.bootstrap/`, `/.cache/`, `/out/`, `*.tfstate`, `*.tfstate.*`, `*.tfplan`, `.terraform/`, `*.agekey` except `!/test/fixtures/age/ci-test.agekey`, `*.tar.age`, `kubeconfig`, `.DS_Store`.
+- `.gitignore` (exact entries): `/bootstrap.env`, `/bootstrap.env.*` except `!/bootstrap.env.example`, `/.bootstrap/`, `/.cache/`, `/out/`, `*.tfstate`, `*.tfstate.*`, `*.tfplan`, `.terraform/`, `*.agekey` except `!/test/fixtures/age/ci-test.agekey`, `*.tar.age`, `kubeconfig`, `.DS_Store`, `/.claude/settings.local.json`, `/.claude/scheduled_tasks.lock`.
 - `.gitattributes`: `* text=auto eol=lf`; `*.sops.yaml -diff linguist-generated`; `gitops/clusters/*/flux-system/gotk-components.yaml linguist-generated -diff`; `*.png binary`.
 - `.editorconfig`: LF, final newline, 2-space YAML, tabs in `Makefile`/`mk/*.mk` and Go.
 - `make layout-check` enforces §6.1 rules, file modes and the `.gitignore` entries (a missing entry fails).
@@ -324,7 +327,7 @@ Execution model (§8.1): every target runs inside the pinned `ci` image (plan 02
 | `render-check` | V | alias of the PVC/StorageClass and other render checks inside `gitops-validate` (plan 11) | 18 |
 | `gitops-flux-regen` / `gitops-flux-regen-check` | — / V | regenerate committed Flux manifests / fail on diff (ADR-0016) | 18 |
 | `gitops-diff` | V (PR only, needs merge base) | destructive-diff check (plan 18 §8.6) | 18 |
-| `policy-check` | V | every `policy/**` file validates by kind; invariant fixtures (plan 26) | 26 |
+| `policy-check` | V | every `policy/**` file validates by kind; invariant fixtures (plan 26); every `forgejo.managedRepositories` entry except `sc-e2e/*` exists in `forge/forge.yaml` `spec.repositories`, else `MANAGED_REPOSITORY_NOT_IN_FORGE` (plan 26, CD-43, 22-AC-36) | 26 |
 | `check-pricing` / `test-pricing-vectors` / `test-ledger-queries` | V | plan 32 checks | 32 |
 | `lint-alerts` / `lint-metrics` | V | alert catalogue and metric catalogue invariants (plans 42, 38) | 42/38 |
 | `chart-test` | V | `helm lint`, values-schema validation, `helm template` + kubeconform, `helm unittest` for `charts/strange-company` (SPEC §116 first four items) | 54 |
@@ -477,7 +480,7 @@ The repository is trusted input for bootstrap (plan 50 executes Ansible/OpenTofu
 An agent branch whose diff `base_commit..head` touches any of these is rejected (`PROTECTED_PATH_VIOLATION`, plan 22). Changes arrive only through human-reviewed PRs. The list is the value of `protectedPaths` in `.strange-company/policy.yaml`; the platform minimum (`.woodpecker/**`, `.strange-company/**`, `AGENTS.md`, `policy/**`, `contracts/**`) is additionally enforced by `policy/verification.yaml` (plan 22) and cannot be loosened by the repository file (ADR-0017).
 
 ```text
-SPEC.md  PLAN.md  STATUS.md
+SPEC.md  PLAN.md  STATUS.md  LICENSE
 AGENTS.md  **/AGENTS.md  CLAUDE.md  **/CLAUDE.md  .claude/**  **/.claude/**  .codex/**  **/.codex/**  .opencode/**  **/.opencode/**
 CODEOWNERS  **/CODEOWNERS  .forgejo/**  .gitea/**  .gitmodules  **/*.sops.yaml
 .strange-company/**  .woodpecker/**  .github/**  .sops.yaml  .gitattributes  .gitignore
@@ -487,7 +490,7 @@ versions/**  toolbox/**  harnesses/**  forge/**  tools/stage0/**
 infra/tofu/**  infra/catalog/**  infra/profiles/**  infra/bootstrap/**  infra/objstore/**
 gitops/clusters/**  gitops/layers/**  gitops/components/**  gitops/profiles/**
 gitops/platform/strange-company/generated/**  gitops/platform/admission/**  gitops/clusters/*/flux-system/**
-secrets/**
+secrets/**  security/**
 src/.golangci.yaml  test/fixtures/secrets-scan/**  test/fixtures/age/**  test/contracts/**
 ```
 

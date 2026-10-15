@@ -50,6 +50,9 @@ nodes:
   # ---------------- PHASE 4 ----------------
   - {id: R01, phase: 4, name: real-harness, plans: ["28", "40"], deps: [C10]}
   - {id: R02, phase: 4, name: self-hosting-threshold, plans: ["37", "43", "44", "45", "46", "51"], deps: [R01, C11, P12]}
+  # ---------------- PHASE 5 ----------------
+  # Post-threshold work (CD-43). Deliberately a separate node: R02 and the Self-Hosting Threshold (SPEC §117-118) are not widened.
+  - {id: S01, phase: 5, name: first-project-repository, plans: ["16", "17", "22", "44"], deps: [R02]}
   # ---------------- PHASE 6 ----------------
   - {id: H01, phase: 6, name: nodes-2-3-etcd-quorum, plans: ["05", "07", "47"], deps: [P12, R02]}
   - {id: H02, phase: 6, name: cnpg-3-longhorn-2, plans: ["11", "12", "13", "44", "47"], deps: [H01, C08]}

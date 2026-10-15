@@ -160,7 +160,7 @@ RED/GREEN verification pipelines are Runner-triggered (`manual` event, plan 20 �
 
 | Repository / period | Branch protection | Required checks |
 |---|---|---|
-| GitHub `strange-company`, Phase 1 → P06 | `main`: PR required, 1 approval, no force push | `verify`, `tdd-discipline`, `e2e-gate` (GH job names) |
+| GitHub `strange-company`, Phase 1 → P06 | `main`: PR required, no force push, no deletion. Approvals follow CD-39: **0 required in single-operator mode**, because GitHub forbids self-approval and Phase-1 PRs are pushed under the operator's identity, so the operator's merge is the review. Set 1 once a second human merger exists or agent PRs are authored by a separate machine account | `verify`, `tdd-discipline`, `e2e-gate` (GH job names) |
 | Forgejo `strange-company`, P05 → P12 (protection stage `bootstrap`, plan 16) | push-whitelist `sc-admin`, 1 approval | none. Only bootstrap commits land in this window (plan 20 §18) |
 | Forgejo `strange-company`, P12 → C09 (stage `steady`) | as plan 16 | `ci/woodpecker/pr/ci` |
 | Forgejo `strange-company`, C09+ | as plan 16/55 | `ci/woodpecker/pr/ci`, `strange-company/tdd-provenance`, `strange-company/review` (ADR-0019) |
@@ -181,7 +181,7 @@ A merge commit in `B..HEAD` fails with `TDD_MERGE_COMMIT`. PRs are linear; rebas
 | T0 | The source branch matches `tddDiscipline.excludedBranches` → `not-applicable`, under these conditions only: `agent/*` (covered by the Runner's provenance; plan 55 posts `tdd-provenance = failure` for an unbound agent branch); `renovate/*` **only if** the PR author is `sc-renovate` **and** every changed file matches the `dependency-update` class paths (TDD-16). Any other `renovate/*` PR goes through T1–T8 | `TDD_EXCLUSION_INVALID` (a `renovate/*` PR not meeting both conditions is evaluated normally, and the report records the refused exclusion) |
 | T1 | Classification: if no file changed in `B..HEAD` matches `behaviorPaths`, or every changed behavior-path file also matches `testPaths` → `not-applicable` | — |
 | T2 | Exemption: the PR head commit has trailer `TDD-Exempt: <class>: <reason ≥ 20 chars>` with `<class>` in `exemptionClasses`, and the class's path constraint holds (below) → `exempt` (recorded in the report; the human merger sees it) | `TDD_EXEMPTION_INVALID` |
-| T3 | There is ≥ 1 RED commit R: subject matches `^test(\([^)]+\))?: ` and every changed file matches `testPaths`. No commit before the first R changes a behavior-path file outside `testPaths` | `TDD_NO_RED_COMMIT`, `TDD_IMPLEMENTATION_BEFORE_RED` |
+| T3 | There is ≥ 1 RED commit R: subject matches `^test(\([^)]+\))?: ` and every changed file matches `testPaths` or carries only **declared stubs** (§8.3a). No commit before the first R changes a behavior-path file outside `testPaths` | `TDD_NO_RED_COMMIT`, `TDD_IMPLEMENTATION_BEFORE_RED` |
 | T4 | Red target: R's trailer `TDD-Red-Target: <target> [GO_TEST_PKGS=… ] [GO_TEST_RUN=…]`, with `<target>` in `redTargets`. Default `test` with `GO_TEST_PKGS` = the packages containing `_test.go` files changed in R | `TDD_RED_TARGET_INVALID` |
 | T5 | Baseline: run the red target at B in a clean `git worktree` and collect the set of JUnit testcase IDs `S_B` (`classname.name`). A package absent at B contributes nothing | `TDD_BASELINE_FAILED` (the target fails at B: the PR is based on a broken `main`) |
 | T6 | RED run at R (clean worktree):
@@ -213,6 +213,13 @@ spec:
       contract-definition:      {paths: ["contracts/**"], requires: "x-invalid-examples added or changed"}
       policy-tuning:            {paths: ["policy/**"], requires: "policy-check passes; values only"}
 ```
+
+**§8.3a Declared stubs in RED commits (CD-44; same shape as ADR-0352).** A RED test for a symbol that does not exist yet cannot compile, and a build failure is never valid RED (T6). So R may also change Go files under `src/**` outside `testPaths`, but only with **declared stubs**:
+- additions only (no deleted or modified lines), in existing files or in new files that contain only a package clause, imports and stubs;
+- each stub directly preceded by `// SC-STUB(<node-or-task-id> <AC-id>…)`;
+- a body of at most 12 lines that returns zero values only (`return "", nil`, `return nil`, `return false`, an empty struct), checked by Go AST.
+
+A violation fails with `TDD_STUB_INVALID`. At HEAD no `SC-STUB(` marker may remain in any file the PR changed (`TDD_STUB_NOT_REPLACED`, checked with T7). Non-Go behavior paths have no stub form: their RED targets (`layout-check`, `contracts`, `policy-check`, …) fail on fixtures without one.
 
 Budget: T5 and T6 run only the selected target with scoped packages. The added CI time is ≤ 2 × the scoped `go test` time, typically < 3 min.
 
@@ -528,6 +535,9 @@ This fallback applies to `lab-small` and `lab-ha` only, **never to `lab-seed`** 
   - merge commit (`TDD_MERGE_COMMIT`);
   - `renovate/feature` branch authored by a human that changes `src/` without a RED commit (`TDD_NO_RED_COMMIT`, with `TDD_EXCLUSION_INVALID` recorded);
   - `renovate/go-x` authored by `sc-renovate` changing a file outside `dependency-update` paths (evaluated normally);
+  - RED with a valid declared stub that HEAD replaces (valid);
+  - RED whose stub returns a non-zero value or modifies an existing line (`TDD_STUB_INVALID`);
+  - a stub marker still present at HEAD (`TDD_STUB_NOT_REPLACED`);
   - valid case.
   Each prints its exact failure code.
 - [ ] **52-AC-5** Repeatability: two consecutive `./bootstrap exec --image ci -- make verify` runs on the same clean checkout produce `out/verify/summary.json` files that are identical after deleting `duration_ms` and timestamps (`jq 'del(..|.duration_ms?, .started_at?)'` + `diff`).

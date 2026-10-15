@@ -287,8 +287,45 @@ $defs:
         additionalProperties: false
         required: [class, source]
         properties:
-          class: {const: SC-GITHUB-MIRROR}
+          class:
+            description: SC-GITHUB-MIRROR for strange-company/* repositories, SC-GITHUB-PROJECT-MIRROR for projects/* repositories (CD-43; enforced in `$defs/repository`). The classes are separate so a project-mirror token can never write the recovery seed.
+            enum: [SC-GITHUB-MIRROR, SC-GITHUB-PROJECT-MIRROR]
           source: {const: operator}
+  repoImport:
+    description: >-
+      One-time import of an existing GitHub repository into a new Forgejo repository
+      (CD-43, plan 16 §14.5). `forge apply` calls the Forgejo migrate API only when the
+      repository does not exist yet; an existing repository is skipped and verified.
+      The GitHub credential is never in this file: the operator passes a read-only token
+      at invocation (class SC-GITHUB-IMPORT) and it is not persisted.
+    type: object
+    additionalProperties: false
+    required: [source, items, credential]
+    properties:
+      source:
+        type: string
+        pattern: "^https://github\\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(\\.git)?$"
+      items:
+        description: What to migrate. Git refs are always migrated; every other item defaults to false.
+        type: object
+        additionalProperties: false
+        required: [git]
+        properties:
+          git: {const: true}
+          issues: {type: boolean, default: false}
+          pullRequests: {type: boolean, default: false}
+          labels: {type: boolean, default: false}
+          milestones: {type: boolean, default: false}
+          releases: {type: boolean, default: false}
+          wiki: {type: boolean, default: false}
+          lfs: {type: boolean, default: false}
+      credential:
+        type: object
+        additionalProperties: false
+        required: [class, source]
+        properties:
+          class: {const: SC-GITHUB-IMPORT}
+          source: {const: operator-invocation}
   pullMirror:
     type: object
     additionalProperties: false
@@ -330,6 +367,18 @@ $defs:
         maxItems: 1
         items: {$ref: "#/$defs/pushMirror"}
       pullMirror: {$ref: "#/$defs/pullMirror"}
+      import: {$ref: "#/$defs/repoImport"}
+    allOf:
+      - if: {properties: {name: {pattern: "^projects/"}}}
+        then:
+          properties:
+            pushMirrors:
+              items: {properties: {credential: {properties: {class: {const: SC-GITHUB-PROJECT-MIRROR}}}}}
+        else:
+          not: {required: [import]}
+          properties:
+            pushMirrors:
+              items: {properties: {credential: {properties: {class: {const: SC-GITHUB-MIRROR}}}}}
   packageCleanupRule:
     type: object
     additionalProperties: false
@@ -692,6 +741,35 @@ examples:
       contentType: json
       secretRef: strange-company/agent-runner-webhook
       active: false
+- apiVersion: strange.company/v1alpha1
+  kind: ForgeConfiguration
+  metadata:
+    name: strange-company
+  spec:
+    orgs:
+    - name: projects
+      visibility: private
+      teams:
+      - name: Owners
+        permission: admin
+    bots: []
+    webhooks: []
+    repositories:
+    - name: projects/acme-tool
+      defaultBranch: main
+      private: true
+      import:
+        source: https://github.com/example-owner/acme-tool
+        items: {git: true, issues: true, pullRequests: true, labels: true, milestones: true, releases: true, wiki: false, lfs: false}
+        credential: {class: SC-GITHUB-IMPORT, source: operator-invocation}
+      pushMirrors:
+      - name: github
+        remoteAddress: https://github.com/example-owner/acme-tool.git
+        branchFilter: main,release/*
+        interval: 10m0s
+        syncOnCommit: true
+        useSSH: false
+        credential: {class: SC-GITHUB-PROJECT-MIRROR, source: operator}
 x-invalid-examples:
 - reason: Push mirror without a branch filter would publish every agent branch to GitHub (plan 17 17-R-1).
   value:
@@ -1052,3 +1130,102 @@ x-invalid-examples:
           enableMergeWhitelist: true
           mergeWhitelistTeams: *id002
           blockAdminMergeOverride: true
+- reason: A projects/* push mirror must use SC-GITHUB-PROJECT-MIRROR, never the recovery-seed credential SC-GITHUB-MIRROR (CD-43).
+  value:
+      apiVersion: strange.company/v1alpha1
+      kind: ForgeConfiguration
+      metadata:
+        name: strange-company
+      spec:
+        orgs:
+        - name: projects
+          visibility: private
+          teams:
+          - name: Owners
+            permission: admin
+        bots: []
+        webhooks: []
+        repositories:
+        - name: projects/acme-tool
+          defaultBranch: main
+          private: true
+          pushMirrors:
+          - name: github
+            remoteAddress: https://github.com/example-owner/acme-tool.git
+            branchFilter: main,release/*
+            interval: 10m0s
+            syncOnCommit: true
+            credential: {class: SC-GITHUB-MIRROR, source: operator}
+  
+- reason: The import credential is supplied at invocation and never persisted; any other source is rejected (CD-43).
+  value:
+      apiVersion: strange.company/v1alpha1
+      kind: ForgeConfiguration
+      metadata:
+        name: strange-company
+      spec:
+        orgs:
+        - name: projects
+          visibility: private
+          teams:
+          - name: Owners
+            permission: admin
+        bots: []
+        webhooks: []
+        repositories:
+        - name: projects/acme-tool
+          defaultBranch: main
+          private: true
+          import:
+            source: https://github.com/example-owner/acme-tool
+            items: {git: true}
+            credential: {class: SC-GITHUB-IMPORT, source: operator}
+  
+- reason: An import always migrates git refs (items.git must be true).
+  value:
+      apiVersion: strange.company/v1alpha1
+      kind: ForgeConfiguration
+      metadata:
+        name: strange-company
+      spec:
+        orgs:
+        - name: projects
+          visibility: private
+          teams:
+          - name: Owners
+            permission: admin
+        bots: []
+        webhooks: []
+        repositories:
+        - name: projects/acme-tool
+          defaultBranch: main
+          private: true
+          import:
+            source: https://github.com/example-owner/acme-tool
+            items: {git: false, issues: true}
+            credential: {class: SC-GITHUB-IMPORT, source: operator-invocation}
+  
+- reason: Import is allowed only for projects/* repositories, not the platform repository.
+  value:
+      apiVersion: strange.company/v1alpha1
+      kind: ForgeConfiguration
+      metadata:
+        name: strange-company
+      spec:
+        orgs:
+        - name: projects
+          visibility: private
+          teams:
+          - name: Owners
+            permission: admin
+        bots: []
+        webhooks: []
+        repositories:
+        - name: strange-company/strange-company
+          defaultBranch: main
+          private: true
+          import:
+            source: https://github.com/example-owner/acme-tool
+            items: {git: true}
+            credential: {class: SC-GITHUB-IMPORT, source: operator-invocation}
+  

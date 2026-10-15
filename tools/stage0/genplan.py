@@ -13,7 +13,7 @@ def gates(node):
             if ids: out.append((f,ids))
     return out
 d=yaml.safe_load(open(f'{repo}/plans/dag.yaml'))
-phase_names={1:'Phase 1 — Foundations (no paid infrastructure; interim CI on GitHub Actions, ADR-0018)',2:'Phase 2 — Platform on one node (ends at the Bootstrap Definition of Done, SPEC §130)',3:'Phase 3 — Control plane (ends at the orchestration DoD: all fake TDD flows on the live cluster)',4:'Phase 4 — Real harness and the Self-Hosting Threshold (SPEC §117–§118)',6:'Phase 6 — Small-HA (sequenced after the threshold; hard dependency only on P12)'}
+phase_names={1:'Phase 1 — Foundations (no paid infrastructure; interim CI on GitHub Actions, ADR-0018)',2:'Phase 2 — Platform on one node (ends at the Bootstrap Definition of Done, SPEC §130)',3:'Phase 3 — Control plane (ends at the orchestration DoD: all fake TDD flows on the live cluster)',4:'Phase 4 — Real harness and the Self-Hosting Threshold (SPEC §117–§118)',5:'Phase 5 — Strange Company works on other repositories (CD-43; after the threshold, does not widen it)',6:'Phase 6 — Small-HA (sequenced after the threshold; hard dependency only on P12)'}
 L=[]
 L.append("# PLAN — Implementation sequence\n")
 L.append("**Status:** Stage-0 output. Implementation has not started.\n**Generated from:** `plans/dag.yaml` plus the `### GATE-<node>` sections of every subsystem plan. Regenerate after any gate changes; do not hand-edit the per-node tables.\n**Authority:** subordinate to `SPEC.md` and `plans/00-master-plan.md`.\n")

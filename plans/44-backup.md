@@ -122,6 +122,8 @@ Not backed up (reconstructible, plan 11 §6.7): Prometheus TSDB, Alertmanager st
 
 ### 9.2 Repository bundles (BK-09, BK-10; ADR-0202)
 
+**Migrated project repositories (CD-43).** A `projects/*` repository imported from GitHub (plan 16 §14.5) is covered by BK-09/BK-10 from its first run, including LFS and metadata (BK-17). Imported issues, PRs and releases are in the Forgejo DB, so they are protected by the CNPG backup (BK-01) and the weekly metadata export. The optional GitHub push mirror (plan 17 §14.8) is a convenience copy and is **not** a recovery source; recovery is `procedures/restore-project-repository.md`. `procedures/onboard-project-repository.md` confirms the first bundle manifest.
+
 **9.2.1 Runtime.** CronJob `repo-bundle-backup` in namespace `forgejo` (label `strange.company/check: repo-bundle-backup`), schedule `7,37 * * * *`, image `restore-tester` (binary `sc-restore-test bundle-backup`), ServiceAccount `repo-bundle-backup` with **no** RBAC rights, PVC `repo-backup-cache` (local-path; its real size is ≈ 1.1 × the Git data in `forgejo-data`, budgeted in plan 11 §12) mounted at `/cache`, `activeDeadlineSeconds: 1500`, requests 100m/256Mi, limit 1Gi, `ephemeral-storage` limit 1Gi (no bundle is written to local disk: step 7 streams), PriorityClass `platform`. Secrets: `forgejo/forgejo-sc-backup` (token), `forgejo/s3-repo-backups`, ConfigMap `forgejo/backup-age-recipients` (public key only).
 
 **9.2.2 Algorithm per run.**
@@ -444,6 +446,9 @@ The R02 black-start drill (CD-35; the drill gate itself is plan 45's) restores t
 
 ### GATE-H04
 - **44-AC-24** Bootstrap capsule (CD-33): `kubectl -n dr-tests get cronjob restore-test-bootstrap-capsule-light restore-test-bootstrap-capsule-full` exist; the newest `rt-bootstrap-capsule` documents (light and full) have `outcome: passed`; the light document names the capsule that `capsule/LATEST.json` points to, and the full document's checks include every image of `versions/images.lock.yaml` (one `skopeo-inspect` check each). In the k3d e2e (`make e2e-dr`), a capsule with one object removed fails the light check with `RT_CAPSULE_MISSING_OBJECT`, and a lock-file change on `main` older than 24 h without a new capsule fails it with `RT_CAPSULE_STALE`; `SCBootstrapCapsuleCheckFailed` reaches the test receiver within `failAfter + 5m`.
+
+### GATE-S01 (contributed; first project repository)
+- **44-AC-29** First project backup (CD-43): within 90 minutes after the first migrated repository exists in Forgejo, `aws s3 ls s3://${S3_BUCKET_PREFIX}-repo-backups/git/weekly/projects/<repo>/` lists a chain with `manifest-0000.json`, its `refs` map equals `git for-each-ref` of the Forgejo repository (modulo `refs/pull/*`), `SCRepoBundleBackupStale` is not firing, and a `restore-project-repository.md` dry run (steps 1-6 into a scratch directory) passes `git fsck --full --strict`.
 
 ## 24. Explicit non-goals
 

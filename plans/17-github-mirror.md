@@ -42,6 +42,7 @@ Derived requirements:
 - **17-R-5** `strange-company` does not use Git LFS and contains no file ≥ 50 MiB. A clone from GitHub is therefore complete without any Strange Company–operated service (black start).
 - **17-R-6** The mirror credential can write to exactly one GitHub repository and has no administrative permission on it.
 - **17-R-7** The in-cluster freshness probe holds no GitHub write credential. It uses a separate read-only token (`SC-GITHUB-PROBE`).
+- **17-R-8** (CD-43) Optional mirrors of `projects/*` repositories to their former GitHub repositories use a **separate** credential class `SC-GITHUB-PROJECT-MIRROR`, so that no project-mirror token can write the `strange-company` recovery seed, and no `SC-GITHUB-MIRROR` token can write a project repository. Project mirrors are a convenience copy; bundles (plan 44) are the recovery path, so their alerting is lower severity (§14.8, §21.3).
 
 ## 3. Inputs
 
@@ -221,6 +222,7 @@ The probe treats an unknown `kind` or a schema-invalid file as `sc_github_mirror
 | `SC-GITHUB-MIRROR` (fine-grained PAT; repository access: only `<GITHUB_MIRROR_REPO>`; permissions: Contents read/write, Workflows read/write, Metadata read (mandatory); nothing else) | master §9; registered in `secret-classes.yaml` (owner 17) | operator in GitHub settings, before bootstrap, on the mirror identity (§14.1) | Forgejo push mirror; `sc-bootstrap` (preflight, mirror create/verify/recreate, plan 49 freshness) | `bootstrap.env` (authoritative), recovery bundle, Forgejo DB (encrypted with `SECRET_KEY`), possibly the bare repo `config` on the PVC (§13.2). **Never** in Git, never in a Kubernetes Secret | every ≤ 180 days and on suspicion: `rotate-forge-credentials.md` §G. Expiry set ≤ 180 days at creation | bundle; else the operator issues a new token in GitHub |
 | `SC-GITHUB-PROBE` (fine-grained PAT on the same repository; permissions: Contents read, Metadata read, Administration read, **Actions read**; nothing else) | registered (owner 17) | operator, before bootstrap | `monitoring/platform-probes` (`github-mirror`, `ci-signals` modules), `sc-bootstrap mirror check-github`, the `sc-release gate --offcluster` step (plan 23/52, polls GitHub Actions run of workflow `e2e`) | SOPS `gitops/clusters/<c>/secrets/github/platform-probes-github.sops.yaml` (authoritative, both recipients) → Secret `monitoring/platform-probes-github`; Woodpecker secret `sc_github_probe_token` (events `[tag]`, image filter `sc-release`) applied by `sc-bootstrap ci-secrets apply` from `secrets/ci/<c>/github-probe.sops.yaml`; `bootstrap.env` | ≤ 365 days; `rotate-forge-credentials.md` §G.4 | re-issue in GitHub; non-critical (observability and the release gate wait) |
 | `SC-GITHUB-MIRROR-READ` (fine-grained PAT, Contents read + Metadata read on the mirror repository only) | registered (owner 17) | operator, **before bootstrap** (CD-19: collected via `bootstrap.env` `GITHUB_MIRROR_READ_TOKEN` and written to its SOPS file by plan 50 at install-identity, so RT-6 can run inside `verify`) | plan 44 RT-6 `restore-test-github-black-start` (`dr-tests`) | SOPS `gitops/clusters/<c>/secrets/dr-tests/github-mirror-read.sops.yaml` → Secret `dr-tests/github-mirror-read` | ≤ 365 days; `rotate-forge-credentials.md` §G.7 | re-issue; not needed when the mirror is public |
+| `SC-GITHUB-PROJECT-MIRROR` (fine-grained PAT, selected mirrored repositories only; Contents read/write, Metadata read; Workflows read/write only when needed) | registered (owner 17; CD-43) | operator, when a project declares a push mirror | Forgejo push mirrors of `projects/*`; `sc-bootstrap forge apply` | operator offline copy (authoritative), Forgejo DB (encrypted with `SECRET_KEY`), possibly the bare repository `config` (as §13.2). **Not** in the recovery bundle, never in Git or a Kubernetes Secret | <= 180 days; `rotate-forge-credentials.md` §G.8 | operator re-issues; project data is unaffected |
 
 Why the mirror credential is a **PAT** (ADR-0253):
 - GitHub App installation tokens expire after one hour. A Forgejo push mirror stores one static credential and has no hook to refresh it, so an App token would break the mirror within an hour of each refresh. Running an in-cluster token refresher that calls delete+create every 50 minutes would add a component with an App private key (a more powerful, non-expiring credential) inside the cluster. L-6 prefers App tokens "where automation needs GitHub write access"; the push mirror is the documented exception.
@@ -390,6 +392,21 @@ No Strange Company component pulls from GitHub automatically.
 | BG-7 | Destroying compute leaves GitHub untouched; destroy refuses when GitHub is behind unless explicitly accepted | plan 49 guard via `mirror freshness` | 49-AC-10 |
 | BG-8 | The GitHub copy is independent of Strange Company accounts: the operator's own GitHub account administers it | §14.1 | — |
 
+### 14.8 Optional project repository mirrors (CD-43)
+
+A `projects/*` repository in `forge/forge.yaml` may declare one `pushMirrors` entry to its former GitHub repository (the schema enforces `credential.class: SC-GITHUB-PROJECT-MIRROR` for `projects/*` and `SC-GITHUB-MIRROR` for `strange-company/*`).
+
+| Aspect | Rule |
+|---|---|
+| Ref filter | `branchFilter` = the repository's default branch plus `release/*` (e.g. `main,release/*`); tags are pushed by Forgejo. `agent/*`, `renovate/*`, `sc-verify/*` and `refs/pull/*` never leave Forgejo (the schema rejects those filters; 17-R-1 applies unchanged). The `sc-archive/*` and `sc-quarantine/*` tag exception of 17-R-1 applies as well (accepted: the repositories are the operator's own private GitHub repositories) |
+| Credential | fine-grained PAT, repository access limited to the mirrored GitHub repositories, Contents read/write and Metadata read, expiry <= 180 days; Workflows read/write only if the repository has `.github/workflows/**` (verify GitHub's rejection text per 17-AC-10). Never the `SC-GITHUB-MIRROR` token |
+| GitHub-side settings | as 17-R-3 / §14.1.2 for each mirrored repository: pushes only by the mirror identity (ruleset `sc-mirror-only` or the tier available), issues and wiki disabled when the repository was imported with them, Actions disabled or advisory. The settings are applied by the operator (`onboard-project-repository.md`); `sc-bootstrap mirror check-github --repository <owner/repo>` (probe token or operator token) reports them but they are **not** continuously probed in MVP |
+| Direction | GitHub is downstream after onboarding. Anything pushed on GitHub is overwritten or rejected; there is no GitHub to Forgejo flow |
+| Health | the `github-mirror` probe module exports, for every repository with a push mirror in Forgejo, `sc_github_mirror_last_attempt_success` and `_last_attempt_timestamp_seconds` with `repository="projects/<name>"` (Forgejo's own status only; no GitHub-side SHA comparison, no lag, no `diverged`, no `configured`/`expected`, so the `strange-company` alerts never see project repositories). A missing or changed project mirror is `SCForgeConfigDrift{object="push_mirror"}` (plan 16) |
+| Alerting | `SCProjectMirrorFailing`: warning, notify, no always-notify class, `for: 1h`. Not a black-start threat |
+| Archive alternative | the operator may instead archive the GitHub repository (no mirror, no credential). Bundles (plan 44 BK-09) protect the project either way |
+
+
 ## 15. Failure modes
 
 | # | Failure | Detection | Effect | Automated response | Procedure |
@@ -465,7 +482,7 @@ Evidence: `restore-test-result` with `test_id: rt-github-mirror`. Failure raises
 
 ## 21. Observability
 
-### 21.1 Metrics (`platform-probes`, job `platform-probes`; label `repository="strange-company"` only; plan 38 §21.1 vocabulary)
+### 21.1 Metrics (`platform-probes`, job `platform-probes`; label `repository="strange-company"`, and `repository="projects/<name>"` for the two Forgejo-status metrics of project mirrors only, §14.8; plan 38 §21.1 vocabulary)
 
 | Metric | Type | Labels | Meaning | In plan 38 catalogue |
 |---|---|---|---|---|
@@ -499,6 +516,7 @@ Evidence: `restore-test-result` with `test_id: rt-github-mirror`. Failure raises
 | alertname | Expr (sketch) | for | severity / class | alwaysNotify | Catalogue |
 |---|---|---|---|---|---|
 | `SCGitHubMirrorFailing` | `sc_github_mirror_last_attempt_success{repository="strange-company"} == 0 and sc_github_mirror_expected == 1` | 15m | warning / notify | failed-mirror | catalogue |
+| `SCProjectMirrorFailing` (CD-43) | `sc_github_mirror_last_attempt_success{repository=~"projects/.+"} == 0` | 1h | warning / notify | none | catalogue |
 | `SCGitHubMirrorStale` | `sc_github_mirror_lag_seconds{repository="strange-company"} > 900` | 5m | warning / notify | failed-mirror | catalogue |
 | `SCGitHubMirrorRPOBreach` | `sc_github_mirror_lag_seconds{repository="strange-company"} > 3600` | 5m | critical / page | black-start-threat | catalogue |
 | `SCGitHubMirrorSignalMissing` | `absent(sc_github_mirror_last_attempt_success{repository="strange-company"}) or sc_github_api_up == 0` | 30m | warning / notify | failed-mirror | catalogue |
@@ -555,9 +573,13 @@ All CI lanes are deterministic and need no paid model API (SPEC §104).
 ### GATE-P12 (contributed)
 - **17-AC-17** V-08 passes in the `./bootstrap verify` run that prints `CONTROL TRANSFER COMPLETE`, and at that time `ALERTS{alertname=~"SCGitHub.*",alertstate="firing"}` returns no series.
 
+### GATE-S01 (contributed; first project repository)
+
+- **17-AC-18** Project mirror (CD-43, if the operator keeps one for the first project; otherwise the repository is archived on GitHub and this criterion is recorded as `not-applicable: archived`): `$FJ GET /repos/projects/<repo>/push_mirrors` shows exactly one entry with `branch_filter` equal to the default branch plus `release/*` and `last_error == ""`; pushing a test commit to the Forgejo default branch appears on GitHub within 120 s; an `agent/*` branch and a `renovate/*` branch pushed to Forgejo are absent on GitHub after a mirror sync (404); `GET /user/repos` with the `SC-GITHUB-PROJECT-MIRROR` token returns only the mirrored repositories and does not include `<GITHUB_MIRROR_REPO>`; a `git push` to `<GITHUB_MIRROR_REPO>` with that token is rejected; `sc_github_mirror_last_attempt_success{repository="projects/<repo>"}` = 1 and no `SCGitHub*` or `SCProjectMirror*` alert fires.
+
 ## 24. Explicit non-goals
 
-- Mirroring any repository other than `strange-company` to GitHub (project repositories are protected by bundles, plan 44).
+- Mirroring any repository other than `strange-company` to GitHub **as the recovery path**: project repositories are protected by bundles (plan 44); optional convenience mirrors of `projects/*` follow §14.8 (CD-43). GitHub-side probing of project mirrors (SHA comparison, lag, settings) is post-MVP.
 - Mirroring agent, Renovate, PR or other non-release branches.
 - Bidirectional sync or any automatic GitHub → Forgejo merge.
 - Flux, the Runner or workers ever reading GitHub.
@@ -582,3 +604,4 @@ All CI lanes are deterministic and need no paid model API (SPEC §104).
 | Q-17-10 | Plan 44 RT-6 should add the `github_pat_`/`ghp_`/LFS check (§20.2 item 5) and drop its `dr-tests/blackstart-age` decryption step (CD-10). | no | Plan 44 aligns RT-6. | 44 |
 
 | Q-17-11 | A GitHub **platform** outage (not just repository loss) blocks black start: toolbox, k3s, Flux/CNPG images and charts are fetched from GitHub-hosted locations (DR-14). | no | Spec issue proposed; plan 45 S19b decides between waiting and an object-storage black-start artifact cache. This plan's PF-16/M0 skip with `seed-without-github`. | 45 / 50 |
+| Q-17-12 | Whether project mirrors need a GitHub-side SHA comparison and settings probe (needs a per-repository read token). | no | MVP: Forgejo-status signal only (§14.8). Post-MVP: extend `SC-GITHUB-PROBE`-style read access per repository. | 17 / 42 |
