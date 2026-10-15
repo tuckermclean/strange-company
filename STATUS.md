@@ -2,7 +2,7 @@
 
 **Current stage:** Stage 0 (Complete Engineering Definition) is **complete**. Stage 1 implementation can begin at DAG node F01 (`PLAN.md`).
 **Last updated:** 2026-10-15 (after the external review of PR #138 and the blind-review round)
-**SPEC version:** 1.2. The operator amended node disk sizing during Stage 0; see the Amendments note in `SPEC.md`.
+**SPEC version:** 1.3. During Stage 0 the operator amended node disk sizing (v1.2). v1.3 is a terminology cleanup: the 12Gi supported minimum and the 8Gi constrained lower bound are now separate fields, and CI concurrency is counted in pipelines. See the Amendments note in `SPEC.md`.
 **Implementation status:** not started, by design (SPEC §2, §125).
 
 ## What Stage 0 produced
@@ -19,14 +19,14 @@
 | Operator procedures | 62 | `procedures/` |
 | ADRs (22 global + subsystem ADRs) | 79 | `adr/` |
 | SPEC issues register (59 entries, none blocking) | 1 | `plans/spec-issues.md` |
-| Consolidation decisions (CD-01..CD-40) | 1 | `plans/reviews/consolidation-decisions.md` |
+| Consolidation decisions (CD-01..CD-41) | 1 | `plans/reviews/consolidation-decisions.md` |
 | Independent fresh-context reviews (SPEC §132 items 43–47), plus closure verification | 10 + 3 | `plans/reviews/review-*.md`, `plans/reviews/closure-*.md` |
-| External adversarial review of PR #138 and its disposition | 1 | `plans/reviews/external-review-pr138.md` |
+| External adversarial reviews of PR #138 (two passes) and their disposition | 1 | `plans/reviews/external-review-pr138.md` |
 | Blind reviews (no access to earlier review conclusions; CD-34) | 5 | `plans/reviews/blind-*.md` |
 | Verified third-party lessons from the wiped implementation | 1 | `plans/reference/prior-implementation-lessons.md` |
 
 ## How Stage 0 was verified
-1. **Deterministic validator, run in CI.** `python3 -I tools/stage0/validate.py` performs every structural check this file claims. The GitHub Actions workflow `stage0-validate` runs it on every push, installing hash-locked dependencies, and also checks that `PLAN.md` regenerates byte-identically. Result on the committed tree: **PASS on all 15 checks**:
+1. **Deterministic validator, run in CI.** `python3 -I tools/stage0/validate.py` performs every structural check this file claims. The GitHub Actions workflow `stage0-validate` runs it on every push, installing hash-locked dependencies, and also checks that `PLAN.md` regenerates byte-identically. Result on the committed tree: **PASS on all 17 checks**:
    - C01 contracts, C02 openapi and C03 data-files: every schema is meta-valid, every `examples` entry validates, every `x-invalid-examples` entry fails, and each data file validates against its schema.
    - C04 state machine: 24 states and 94 transitions; every state is reachable and every non-terminal state can terminate in both modes.
    - C05 plan sections: all 25 template sections in each of the 55 plans.
@@ -36,6 +36,8 @@
    - C09 alerts: every alert name used resolves in the 277-alert catalogue.
    - C10 secrets: every secret-class token resolves in the 69-class register.
    - C11 inventories, C12 `PLAN.md` freshness, C13 no blocking open questions, C14 spec-issues register, C15 compatibility baseline.
+   - C16 privileges: `plans/machine-accounts.yaml` agrees with the forge-configuration contract. Only `sc-keys` holds standing repository admin, and no machine account is in `sc-mergers`. No plan, ADR or procedure claims admin for any other account.
+   - C17 residue: no question marked resolved still says "conflict recorded", "lead decides", "plans disagree", or anything similar.
 2. **Independent reviews.** Ten fresh-context reviewers covered bootstrap, storage, security, Authentik/break-glass, TDD enforcement, Agent Runner, cost accounting, disaster recovery, seed→Flux handoff, and global consistency/DAG. They found 13 blockers and about 130 majors.
 3. **Fix rounds.** Owners fixed their own files. Cross-group items were routed to their owners. Lead decisions are recorded as CD-xx.
 4. **Closure verification.** Three further fresh-context verifiers checked every blocker and major against the current files: **all 13 blockers closed, 0 open**. The partially-closed items and new contradictions they found were fixed in a final targeted round.
@@ -56,7 +58,13 @@
    - CD-39: approval rules that scale with the number of human mergers, plus a single-operator cooling-off.
    - CD-40: the one admin bot, `sc-keys`, kept for deploy keys, with compensating controls.
    **Caveat:** the blind reviewers were Anthropic models (Sonnet), a different model from the authors but the same vendor. Vendor-independent scrutiny comes from the external review.
-7. **Operator decisions** (2026-10-14):
+7. **Second external review pass (2026-10-15).** It confirmed that the first eight findings were genuinely addressed and found five consistency defects, all fixed under CD-41:
+   - Plan 55 (and plans 34, ADR-0007, and a procedure) contradicted plan 16 about the Runner bot's privileges. Now `sc-runner` is write-only, and `sc-keys` is the only admin. The new privilege matrix and check C16 prevent a recurrence; C16 also caught a stale `sc-woodpecker` admin claim.
+   - Q-51-09 carried stale conflict text. It now states the settled rule, and check C17 prevents a recurrence.
+   - 8 GiB was called a "minimum". SPEC v1.3 now separates the 12Gi supported minimum from the 8Gi constrained lower bound.
+   - `maximumConcurrentCIJobs` is renamed `maximumConcurrentCIPipelines`.
+   - GitHub Actions are pinned to Node 24 releases.
+8. **Operator decisions** (2026-10-14):
    - CD-23: 8 GiB nodes stay allowed as `constrained`.
    - CD-24: the OVH default stays VPS-2.
    - CD-25: SPEC v1.2 disk sizing, 100 GiB minimum and 200 GiB preferred.

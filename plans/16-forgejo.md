@@ -184,11 +184,12 @@ spec:
       teams: [Owners(admin; humans only), engineers(write), viewers(read),
               sc-mergers(write; humans only, from OIDC groups sc-admins + sc-engineers; CD-38),
               sc-automation(write: sc-runner, sc-woodpecker),            # CD-38: no bot holds admin
-              sc-deploy-keys(admin: sc-keys),                            # Q-16-10: the one admin exception, deploy keys only
+              sc-deploy-keys(admin: sc-keys),                            # Q-16-10/CD-40: the one standing admin exception, deploy keys only
+              sc-ci-activation(admin; empty in steady state: sc-woodpecker only transiently during ci-init W03, plan 20 R-20-1),
               sc-bots-write(write, repositories it manages only: sc-renovate),
               sc-bots-read(read: sc-backup, sc-ci-config), sc-release(write, strange-company repo only: sc-release),
               sc-registry-readers(read, packages: sc-registry-reader), sc-gc(write, packages: sc-gc)]
-    - name: projects               # Owners, engineers, viewers, sc-mergers, sc-automation, sc-deploy-keys, sc-bots-read
+    - name: projects               # Owners, engineers, viewers, sc-mergers, sc-automation, sc-deploy-keys, sc-ci-activation, sc-bots-read
   bots:                            # createdAt: P05 = forge-init S09/S10; P11 = plan 23 supply-chain init
     - {username: sc-runner,          createdAt: P05, tokenScopes: [write:repository, write:issue, read:organization, read:user], secretRef: strange-company/agent-runner-forgejo}
     - {username: sc-keys,            createdAt: P05, tokenScopes: [write:repository], secretRef: strange-company/agent-runner-deploy-keys}   # deploy-key create/delete only (Q-16-10)

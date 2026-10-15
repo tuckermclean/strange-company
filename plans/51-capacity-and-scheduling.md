@@ -19,7 +19,7 @@ Guarantee that infrastructure always outranks autonomous labor for CPU, memory a
 5. Hermes selects logical resource profiles; exact values are tunable policy; the Runner owns the Job manifest. [SPEC §83, §62]
 6. Workers cannot exceed resource profiles (CI-verified). [SPEC §105]
 7. Root disks must not fill because cleanup was omitted. [SPEC §107]
-8. Minimum node 4 vCPU / 8 GiB / 100 GiB; preferred 4 vCPU / 12 GiB / 200 GiB NVMe, for both profiles (SPEC v1.2, CD-25); providers may choose larger, never silently smaller. [SPEC §11, §12]
+8. Node shapes for both profiles (SPEC v1.3, CD-23, CD-25): **supported minimum** 4 vCPU / 12 GiB / 100 GiB; **constrained lower bound** 4 vCPU / 8 GiB / 100 GiB (the `constrained` resource profile, with a warning and no capacity guarantee: expected to fail V-30 on self-hosting-minimum, and not budgeted for small-ha, §12.2–§12.3); preferred 4 vCPU / 12 GiB / 200 GiB NVMe. Providers may choose larger, never silently smaller. The measured V-30 gate is authoritative. [SPEC §11, §12]
 
 Derived requirements:
 
@@ -126,7 +126,7 @@ Plan 20 proposed a separate `strange.company/ci-slot` with capacity `CI_MAX_CONC
 
 The Runner additionally gates dispatch (§9.7) so that, in exclusive mode, a worker is not created while CI or batch pods hold units; the scheduler is the enforcement, the gate only avoids long Pending periods.
 
-**Priority classes of batch work:** restore tests and Renovate use `ci` (`preemptionPolicy: Never`), not `platform`. With `platform` they would preempt a running worker whenever they wait for units, turning every nightly restore test into a killed task. Plan 44 states `platform`; this plan is authoritative (Q-51-09), and the `dr-tests` zero-pod quota (§9.1) denies `platform`.
+**Priority classes of batch work:** restore tests and Renovate use `ci` (`preemptionPolicy: Never`), not `platform`. With `platform` they would preempt a running worker whenever they wait for units, turning every nightly restore test into a killed task. Plan 44 uses `ci` (Q-51-09), and the `dr-tests` zero-pod quota (§9.1) denies `platform`.
 
 ## 9. Configuration
 
@@ -503,5 +503,5 @@ Covered in §14.1. Black start: identical (objects from Git). V-30 is part of ev
 - **Q-51-06** (blocking: no) Woodpecker's Kubernetes backend options for priority class and default resources are version-sensitive. Plan 20 §9.4 already sets `…_PRIORITY_CLASS=ci` (verified against 3.19 docs). *Proposed:* plan 20 also verifies how default resources/extended resources can be set; fallbacks are in §9.4. *Owner:* 20.
 - **Q-51-10** (blocking: no; false assumption, SPEC §12; proposed SI-32) A small-ha cluster of 8 GiB nodes is not budgeted (§12.3 assumes 12 GiB) and probably fails like §12.2. *Proposed:* declare 8 GiB small-ha nodes unsupported until H04 measures one; plan 03 preflight warns. *Owner:* master plan / 03.
 - **Q-51-07** (resolved, CD-05) Plan 20's `ci-slot` is withdrawn in favor of the heavy-slot units of §8.2; plan 20's 20-AC-22 counts running workflows across both lanes. *Owner:* 20.
-- **Q-51-09** (resolved, CD-05/CD-16, refined by STO-23) The Lease `strange-company/heavy-execution` is withdrawn; heavy restore tests request `workerUnits` (8) explicitly (plan 44 §9.3 must change from 1 to 8), light checks request none, and both use PriorityClass `ci`, as does Renovate. Plan 44 keeps only `dr-tests/restore-slot`. *Owner:* 44/12/43. **Conflict recorded:** plan 44 Q-44-10 reads CD-16 ("request units like a CI job") as 1 unit plus a 2Gi `dr-tests` memory quota. This plan keeps CD-16 as written with the build-lane reading (8 units) **and** adds the 2Gi quota: with 1 unit a restore test could run beside a full CI workflow, and V-30's heavy term would become `ci + dr` (5 GiB), which fails the 12 GiB budget (§12.1). The lead decides; until then plan 44 and this plan disagree on the unit count only.
+- **Q-51-09** (resolved, CD-05/CD-16, refined by STO-23) The Lease `strange-company/heavy-execution` is withdrawn; heavy restore tests request `workerUnits` (8) explicitly and light checks request none. Both use PriorityClass `ci`, as does Renovate. Plan 44 keeps only `dr-tests/restore-slot` and has adopted this rule (plan 44 §9.3 and Q-44-10, STO-23). **Settled rule:** heavy restore tests request 8 heavy-slot units, light checks request 0, PriorityClass `ci`, plus the 2Gi `dr-tests` memory quota. With 8 units a restore test is mutually exclusive with a full CI workflow, which keeps V-30's heavy term at max(ci, dr) and not ci + dr. *Owner:* 44/12/43.
 - **Q-51-08** (resolved at consolidation) The `ci-workspace` filesystem is 12 GiB on self-hosting-minimum and 24 GiB on small-ha (ADR-0305 amended; plan 11 §12 budgets 12 GiB on both disk sizes). No further action. *Owner:* 11/20.

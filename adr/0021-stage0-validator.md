@@ -6,7 +6,7 @@
 `STATUS.md` claimed that the structural checks passed: valid schemas and examples, a sound state machine, a complete DAG with gates, no dangling references, consistent alert and secret names. The checks had been run ad hoc and were not committed, and the PR showed no CI result. That contradicts the project's own rule that models propose and deterministic systems decide (SPEC §4.3). Stage 0 must not certify its own acceptance criteria in prose.
 
 ## Decision
-- `tools/stage0/validate.py` performs every structural check `STATUS.md` claims (checks C01–C14 in its docstring) and exits non-zero on any violation. It is deterministic: no network, no clock, no randomness.
+- `tools/stage0/validate.py` performs every structural check `STATUS.md` claims (checks C01–C17 in its docstring; C15 compatibility baseline, C16 machine-account privileges, C17 residue in settled questions) and exits non-zero on any violation. It is deterministic: no network, no clock, no randomness.
 - `tools/stage0/genplan.py` generates `PLAN.md` from `plans/dag.yaml` and the `GATE-<node>` sections. The validator fails if the committed `PLAN.md` differs from a fresh generation, and CI regenerates it under several hash seeds to prove the output is deterministic.
 - Dependencies are pinned in `tools/stage0/requirements.txt`.
 - `.github/workflows/stage0-validate.yaml` runs the validator on every PR and every push to `main`, with read-only permissions, no secrets, and actions pinned by commit SHA. Until Woodpecker exists, this is the interim trusted CI of ADR-0018 for Stage-0 artifacts. After P08 the same command runs in Woodpecker (`make stage0-validate`, plan 01).

@@ -438,6 +438,9 @@ examples:
         includesAllRepositories: true
         members:
         - sc-keys
+      - name: sc-ci-activation
+        permission: admin
+        includesAllRepositories: true
     - name: projects
       visibility: private
       teams:
@@ -467,6 +470,9 @@ examples:
         includesAllRepositories: true
         members:
         - sc-keys
+      - name: sc-ci-activation
+        permission: admin
+        includesAllRepositories: true
     bots:
     - username: sc-runner
       createdAt: P05

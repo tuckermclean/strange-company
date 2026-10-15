@@ -64,7 +64,7 @@ Derived requirements:
 ## 7. External interfaces
 
 - **`ProviderOutput`** (`contracts/provider.schema.yaml`), consumed by configure (07/08), verify (50), expand (47), destroy (49) and recover (45).
-- **Profiles** (`substrate.schema.yaml`, `cluster-profile.schema.yaml`), consumed by plans 07, 12, 13 and 51 through `cluster-vars` (plan 18), which receive the *effective profile* values: `servers`, `cnpg.instances`, `longhorn.replicas`, `maximumConcurrentAgents`, `maximumConcurrentCIJobs`.
+- **Profiles** (`substrate.schema.yaml`, `cluster-profile.schema.yaml`), consumed by plans 07, 12, 13 and 51 through `cluster-vars` (plan 18), which receive the *effective profile* values: `servers`, `cnpg.instances`, `longhorn.replicas`, `maximumConcurrentAgents`, `maximumConcurrentCIPipelines`.
 - **Footprint and confirmation UX** (§14.7), seen by operators.
 
 ## 8. Internal interfaces
@@ -101,9 +101,9 @@ Adding a provider means adding one Go package, one compute root module with guar
 
 ### 9.2 Substrate floor rules (enforced by PF-03, beyond the schema)
 
-- A substrate without the lab label must have `minimumPerNode ≥ {cpu: 4, memory: 8Gi, storage: 100Gi ssd}` (the SPEC §11 minimum, SPEC v1.2 / CD-25). A node whose measured root disk is below 0.92 × 100 GiB is rejected by preflight and substrate validation (`NODE_BELOW_MINIMUM`); 75 GiB-class machines are therefore rejected.
+- A substrate without the lab label must have `minimumSupportedPerNode ≥ {cpu: 4, memory: 12Gi, storage: 100Gi ssd}` and `constrainedLowerBoundPerNode ≥ {cpu: 4, memory: 8Gi, storage: 100Gi ssd}` (SPEC §11 v1.3; disk per v1.2 / CD-25; CD-23, CD-41). When `constrainedLowerBoundPerNode` is absent (lab substrates), the lower bound equals `minimumSupportedPerNode`. A node whose measured root disk is below 0.92 × 100 GiB is rejected by preflight and substrate validation (`NODE_BELOW_MINIMUM`); 75 GiB-class machines are therefore rejected.
 - A lab-labeled substrate is refused when `Capabilities().paid` is true.
-- `servers ≤ count`, `cnpg.instances ≤ count`, `longhorn.replicas ≤ count`, and `preferredPerNode ≥ minimumPerNode` field-wise.
+- `servers ≤ count`, `cnpg.instances ≤ count`, `longhorn.replicas ≤ count`, and `preferredPerNode ≥ minimumSupportedPerNode` field-wise.
 
 ### 9.3 Effective profile
 
@@ -116,7 +116,7 @@ Adding a provider means adding one Go package, one compute root module with guar
 | `cnpg.instances` | 3 | ClusterProfile |
 | `longhorn.replicas` | 2 | ClusterProfile |
 | `maximumConcurrentAgents` | 2 | ClusterProfile |
-| `maximumConcurrentCIJobs` | 1 | inherited |
+| `maximumConcurrentCIPipelines` | 1 | inherited |
 | `preferredPerNode` | 4 / 12Gi (inherited) / 200Gi nvme (ClusterProfile, SPEC v1.2) | merged field-wise |
 | `cnpg.storageClass` | `local` | inherited |
 | `distribution` | k3s | inherited |
@@ -180,8 +180,8 @@ Off-cluster only. A guard evaluation takes < 1 s for plans under 1000 resource c
 
 ### 14.3 Substrate validation of real nodes
 
-After `Inventory`, each node's discovered facts are compared with the effective profile:
-- `cpu_count ≥ minimumPerNode.cpu`;
+After `Inventory`, each node's discovered facts are compared with the effective profile, first against `constrainedLowerBoundPerNode` and then against `minimumSupportedPerNode` (SPEC v1.3):
+- `cpu_count ≥ <shape>.cpu`;
 - `memory_bytes ≥ 0.92 × memory`, where `memory_bytes` is MemTotal and Gi is binary;
 - root disk `size_bytes ≥ 0.92 × storage.size`;
 - `class` rank ≥ required rank (nvme 3 > ssd 2 > hdd 1 > unknown 0).
@@ -190,9 +190,9 @@ The 0.92 factor exists because:
 - OVH and others market decimal GB (100 GB = 93.1 GiB = 0.931 × 100 Gi, so an OVH VPS-2 meets the 100Gi minimum within tolerance but not the 200Gi preferred size);
 - the kernel reserves memory (an 8 GiB guest typically reports 7.6–7.8 GiB MemTotal).
 
-This is recorded as an interpretation of SPEC §11 (open question OQ-03-1). The result is reported per node as `meets_minimum` and `meets_preferred`. A node below the minimum fails the phase with `NODE_BELOW_MINIMUM`, and that is never waivable. For paid providers that means stopping before configure. The operator decides whether to destroy the node (plan 49), and the report points out the committed spend.
+This is recorded as an interpretation of SPEC §11 (open question OQ-03-1). The result is reported per node as `meets_lower_bound`, `meets_minimum` (the supported minimum) and `meets_preferred`. A node below the constrained lower bound fails the phase with `NODE_BELOW_MINIMUM`, and that is never waivable. For paid providers that means stopping before configure. The operator decides whether to destroy the node (plan 49), and the report points out the committed spend.
 
-Below-preferred but at-minimum nodes produce a `warn` and the ADR-0020 `constrained` notice. Plan 51 then selects the constrained resource-profile set via `cluster-vars` (`SC_CAPACITY_CLASS=constrained`; the key name is plan 51's).
+Nodes at or above the lower bound but below the supported minimum (8–12 GiB memory) produce a `warn` and the ADR-0020 `constrained` notice: no capacity guarantee, expected to fail V-30 (plan 51). Nodes at the supported minimum but below preferred produce only a `warn`. Plan 51 then selects the constrained resource-profile set via `cluster-vars` (`SC_CAPACITY_CLASS=constrained`; the key name is plan 51's).
 
 ### 14.4 Plan-JSON allowlist guard (ADR-0102)
 

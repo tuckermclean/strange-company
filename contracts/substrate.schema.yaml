@@ -17,9 +17,9 @@ description: |
 
   Rules this schema cannot express and that sc-bootstrap enforces (plan 03):
   `kubernetes.servers <= nodes.count`; `storage.cnpg.instances <= nodes.count`;
-  `storage.longhorn.replicas <= nodes.count`; preferredPerNode >= minimumPerNode;
+  `storage.longhorn.replicas <= nodes.count`; preferredPerNode >= minimumSupportedPerNode >= constrainedLowerBoundPerNode;
   a substrate without the label `strange.company/lab: "true"` must be at least the
-  SPEC §11 minimum (SPEC v1.2: 4 CPU, 8Gi, 100Gi ssd); lab substrates are refused for any
+  SPEC §11 constrained lower bound (SPEC v1.3: 4 CPU, 8Gi, 100Gi ssd; nodes below the 12Gi supported minimum get the `constrained` profile); lab substrates are refused for any
   provider whose capabilities declare `paid: true`.
 type: object
 additionalProperties: false
@@ -39,13 +39,23 @@ properties:
       nodes:
         type: object
         additionalProperties: false
-        required: [count, minimumPerNode]
+        required: [count, minimumSupportedPerNode]
         properties:
           count:
             type: integer
             minimum: 1
             maximum: 9
-          minimumPerNode:
+          minimumSupportedPerNode:
+            description: >-
+              Smallest node shape the engineering plans support and budget for (SPEC v1.3:
+              4 CPU, 12Gi, 100Gi ssd). The measured V-30 capacity gate (plan 51) is authoritative.
+            $ref: '#/$defs/nodeShape'
+          constrainedLowerBoundPerNode:
+            description: >-
+              Absolute floor (SPEC v1.3: 4 CPU, 8Gi, 100Gi ssd). Nodes between this bound and
+              minimumSupportedPerNode are accepted only with the `constrained` resource profile
+              (CD-23, ADR-0020), with a warning and no capacity guarantee; they are expected to
+              fail the V-30 gate. Below this bound bootstrap refuses the node.
             $ref: '#/$defs/nodeShape'
           preferredPerNode:
             $ref: '#/$defs/nodeShape'
@@ -150,13 +160,13 @@ $defs:
   execution:
     type: object
     additionalProperties: false
-    required: [maximumConcurrentAgents, maximumConcurrentCIJobs]
+    required: [maximumConcurrentAgents, maximumConcurrentCIPipelines]
     properties:
       maximumConcurrentAgents:
         type: integer
         minimum: 0
         maximum: 64
-      maximumConcurrentCIJobs:
+      maximumConcurrentCIPipelines:
         type: integer
         minimum: 0
         maximum: 64
@@ -169,7 +179,13 @@ examples:
     spec:
       nodes:
         count: 1
-        minimumPerNode:
+        minimumSupportedPerNode:
+          cpu: 4
+          memory: 12Gi
+          storage:
+            size: 100Gi
+            class: ssd
+        constrainedLowerBoundPerNode:
           cpu: 4
           memory: 8Gi
           storage:
@@ -187,7 +203,7 @@ examples:
         datastore: embedded-etcd
       execution:
         maximumConcurrentAgents: 1
-        maximumConcurrentCIJobs: 1
+        maximumConcurrentCIPipelines: 1
       storage:
         cnpg:
           instances: 1
@@ -207,7 +223,7 @@ examples:
     spec:
       nodes:
         count: 1
-        minimumPerNode:
+        minimumSupportedPerNode:
           cpu: 2
           memory: 4Gi
           storage:
@@ -219,7 +235,7 @@ examples:
         datastore: embedded-etcd
       execution:
         maximumConcurrentAgents: 0
-        maximumConcurrentCIJobs: 0
+        maximumConcurrentCIPipelines: 0
       storage:
         cnpg:
           instances: 1
@@ -236,9 +252,9 @@ x-invalid-examples:
       kind: ClusterProfile
       metadata: {name: self-hosting-minimum}
       spec:
-        nodes: {count: 1, minimumPerNode: {cpu: 4, memory: 8Gi, storage: {size: 100Gi, class: ssd}}}
+        nodes: {count: 1, minimumSupportedPerNode: {cpu: 4, memory: 12Gi, storage: {size: 100Gi, class: ssd}}, constrainedLowerBoundPerNode: {cpu: 4, memory: 8Gi, storage: {size: 100Gi, class: ssd}}}
         kubernetes: {distribution: k3s, servers: 1, datastore: embedded-etcd}
-        execution: {maximumConcurrentAgents: 1, maximumConcurrentCIJobs: 1}
+        execution: {maximumConcurrentAgents: 1, maximumConcurrentCIPipelines: 1}
         storage: {cnpg: {instances: 1, storageClass: local}, longhorn: {enabled: true, replicas: 1}, objectStorage: {required: true}}
   - reason: decimal unit "8GB" is not a Kubernetes binary quantity
     value:
@@ -246,9 +262,9 @@ x-invalid-examples:
       kind: BootstrapSubstrate
       metadata: {name: self-hosting-minimum}
       spec:
-        nodes: {count: 1, minimumPerNode: {cpu: 4, memory: 8GB, storage: {size: 100Gi, class: ssd}}}
+        nodes: {count: 1, minimumSupportedPerNode: {cpu: 4, memory: 8GB, storage: {size: 100Gi, class: ssd}}}
         kubernetes: {distribution: k3s, servers: 1, datastore: embedded-etcd}
-        execution: {maximumConcurrentAgents: 1, maximumConcurrentCIJobs: 1}
+        execution: {maximumConcurrentAgents: 1, maximumConcurrentCIPipelines: 1}
         storage: {cnpg: {instances: 1, storageClass: local}, longhorn: {enabled: true, replicas: 1}, objectStorage: {required: true}}
   - reason: SPEC §16 requires embedded etcd from the first node; sqlite is forbidden
     value:
@@ -256,9 +272,9 @@ x-invalid-examples:
       kind: BootstrapSubstrate
       metadata: {name: self-hosting-minimum}
       spec:
-        nodes: {count: 1, minimumPerNode: {cpu: 4, memory: 8Gi, storage: {size: 100Gi, class: ssd}}}
+        nodes: {count: 1, minimumSupportedPerNode: {cpu: 4, memory: 12Gi, storage: {size: 100Gi, class: ssd}}, constrainedLowerBoundPerNode: {cpu: 4, memory: 8Gi, storage: {size: 100Gi, class: ssd}}}
         kubernetes: {distribution: k3s, servers: 1, datastore: sqlite}
-        execution: {maximumConcurrentAgents: 1, maximumConcurrentCIJobs: 1}
+        execution: {maximumConcurrentAgents: 1, maximumConcurrentCIPipelines: 1}
         storage: {cnpg: {instances: 1, storageClass: local}, longhorn: {enabled: true, replicas: 1}, objectStorage: {required: true}}
   - reason: two etcd servers cannot form a fault-tolerant quorum
     value:
@@ -266,9 +282,9 @@ x-invalid-examples:
       kind: BootstrapSubstrate
       metadata: {name: two-node}
       spec:
-        nodes: {count: 2, minimumPerNode: {cpu: 4, memory: 8Gi, storage: {size: 100Gi, class: ssd}}}
+        nodes: {count: 2, minimumSupportedPerNode: {cpu: 4, memory: 12Gi, storage: {size: 100Gi, class: ssd}}, constrainedLowerBoundPerNode: {cpu: 4, memory: 8Gi, storage: {size: 100Gi, class: ssd}}}
         kubernetes: {distribution: k3s, servers: 2, datastore: embedded-etcd}
-        execution: {maximumConcurrentAgents: 1, maximumConcurrentCIJobs: 1}
+        execution: {maximumConcurrentAgents: 1, maximumConcurrentCIPipelines: 1}
         storage: {cnpg: {instances: 1, storageClass: local}, longhorn: {enabled: true, replicas: 1}, objectStorage: {required: true}}
   - reason: object storage cannot be optional (SPEC §29)
     value:
@@ -276,9 +292,9 @@ x-invalid-examples:
       kind: BootstrapSubstrate
       metadata: {name: self-hosting-minimum}
       spec:
-        nodes: {count: 1, minimumPerNode: {cpu: 4, memory: 8Gi, storage: {size: 100Gi, class: ssd}}}
+        nodes: {count: 1, minimumSupportedPerNode: {cpu: 4, memory: 12Gi, storage: {size: 100Gi, class: ssd}}, constrainedLowerBoundPerNode: {cpu: 4, memory: 8Gi, storage: {size: 100Gi, class: ssd}}}
         kubernetes: {distribution: k3s, servers: 1, datastore: embedded-etcd}
-        execution: {maximumConcurrentAgents: 1, maximumConcurrentCIJobs: 1}
+        execution: {maximumConcurrentAgents: 1, maximumConcurrentCIPipelines: 1}
         storage: {cnpg: {instances: 1, storageClass: local}, longhorn: {enabled: true, replicas: 1}, objectStorage: {required: false}}
   - reason: hdd storage class is never acceptable
     value:
@@ -286,9 +302,9 @@ x-invalid-examples:
       kind: BootstrapSubstrate
       metadata: {name: slow}
       spec:
-        nodes: {count: 1, minimumPerNode: {cpu: 4, memory: 8Gi, storage: {size: 100Gi, class: hdd}}}
+        nodes: {count: 1, minimumSupportedPerNode: {cpu: 4, memory: 8Gi, storage: {size: 100Gi, class: hdd}}}
         kubernetes: {distribution: k3s, servers: 1, datastore: embedded-etcd}
-        execution: {maximumConcurrentAgents: 1, maximumConcurrentCIJobs: 1}
+        execution: {maximumConcurrentAgents: 1, maximumConcurrentCIPipelines: 1}
         storage: {cnpg: {instances: 1, storageClass: local}, longhorn: {enabled: true, replicas: 1}, objectStorage: {required: true}}
   - reason: unknown field (closed object)
     value:
@@ -296,8 +312,8 @@ x-invalid-examples:
       kind: BootstrapSubstrate
       metadata: {name: self-hosting-minimum}
       spec:
-        nodes: {count: 1, minimumPerNode: {cpu: 4, memory: 8Gi, storage: {size: 100Gi, class: ssd}}}
+        nodes: {count: 1, minimumSupportedPerNode: {cpu: 4, memory: 12Gi, storage: {size: 100Gi, class: ssd}}, constrainedLowerBoundPerNode: {cpu: 4, memory: 8Gi, storage: {size: 100Gi, class: ssd}}}
         kubernetes: {distribution: k3s, servers: 1, datastore: embedded-etcd}
-        execution: {maximumConcurrentAgents: 1, maximumConcurrentCIJobs: 1}
+        execution: {maximumConcurrentAgents: 1, maximumConcurrentCIPipelines: 1}
         storage: {cnpg: {instances: 1, storageClass: local}, longhorn: {enabled: true, replicas: 1}, objectStorage: {required: true}}
         gpu: true

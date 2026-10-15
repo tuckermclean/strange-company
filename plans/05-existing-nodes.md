@@ -93,7 +93,7 @@ None durable. The node list is configuration (`bootstrap.env` → committed `boo
 | SSH connect timeout | 10 s | constant | `ConnectTimeout=10`, `BatchMode=yes` |
 | Discovery timeout per node | 60 s | `infra/bootstrap/settings.yaml` `existing.discoveryTimeout` | |
 | Parallelism | all nodes concurrently (≤ 9) | constant | |
-| Required free space on the rancher filesystem | 60 GiB (self-hosting-minimum), 15 GiB (lab) | substrate-derived: `0.8 × minimumPerNode.storage.size` | warns below `storage.size` |
+| Required free space on the rancher filesystem | 60 GiB (self-hosting-minimum), 15 GiB (lab) | substrate-derived: `0.8 × minimumSupportedPerNode.storage.size` | warns below `storage.size` |
 | Lab VM shapes, images, network | `infra/lab/lab.yaml` | §14.6 | PR |
 | Lab image pins | `versions/lab-images.lock.yaml` (plan 01 §6.3) | Renovate | |
 

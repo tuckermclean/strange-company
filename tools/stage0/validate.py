@@ -39,6 +39,14 @@ Checks (each prints PASS/FAIL with details):
   C15 baseline        plans/compatibility-baseline.yaml (ADR-0022): component
                       names unique, every planRefs file exists, every evidence
                       entry is present.
+  C16 privileges      plans/machine-accounts.yaml: every Forgejo bot of the
+                      forge-configuration contract's canonical example is listed
+                      with its highest team role; only adminExceptions hold admin;
+                      no machine account is in a human-only team; no plan, ADR or
+                      procedure claims repository admin for a non-admin account.
+  C17 residue         no open question or SPEC issue marked resolved/decided still
+                      carries unresolved-dispute wording ("conflict recorded",
+                      "lead decides", "plans disagree", "must change from", ...).
 """
 from __future__ import annotations
 
@@ -549,6 +557,91 @@ def check_baseline(repo: str, r: Result) -> None:
     r.stats["baseline_components"] = len(comps)
 
 
+ROLE_RANK = {"none": 0, "read": 1, "write": 2, "admin": 3}
+ADMIN_PHRASE = re.compile(r"\b(?:repo[- ]admin|repository[- ]admin)\b", re.I)
+NEGATION = re.compile(r"\b(?:not|no|never|non|without|cannot|isn't|nor)\b", re.I)
+
+
+def check_privileges(repo: str, r: Result) -> None:
+    r.add("C16 privileges")
+    path = os.path.join(repo, "plans", "machine-accounts.yaml")
+    if not os.path.exists(path):
+        r.add("C16 privileges", "plans/machine-accounts.yaml missing (CD-38, CD-40)")
+        return
+    spec = load_yaml(path)["spec"]
+    accounts = {a["name"]: a for a in spec["accounts"]}
+    exceptions = {e["name"] for e in spec.get("adminExceptions") or []}
+    human_only = set(spec.get("humanOnlyTeams") or [])
+    transient = {t["team"] for t in spec.get("transientAdminTeams") or []}
+    for name, a in sorted(accounts.items()):
+        if a.get("repoRole") not in ROLE_RANK:
+            r.add("C16 privileges", f"{name}: unknown repoRole {a.get('repoRole')!r}")
+        if a.get("repoRole") == "admin" and name not in exceptions:
+            r.add("C16 privileges", f"{name}: repoRole admin without an adminExceptions entry")
+        if a.get("canApprove") or a.get("canMerge"):
+            r.add("C16 privileges", f"{name}: machine accounts may not approve or merge (CD-38)")
+    for name in sorted(exceptions - {n for n, a in accounts.items() if a.get("repoRole") == "admin"}):
+        r.add("C16 privileges", f"adminExceptions lists {name}, which is not an admin account")
+    # Cross-check against the canonical forge.yaml example of the forge-configuration contract.
+    forge = load_yaml(os.path.join(repo, "contracts", "forge-configuration.schema.yaml"))["examples"][0]["spec"]
+    highest: dict[str, str] = {}
+    for org in forge.get("orgs") or []:
+        for team in org.get("teams") or []:
+            for member in team.get("members") or []:
+                if team["name"] in transient:
+                    r.add("C16 privileges", f"transient admin team {team['name']} ({org['name']}) has standing member {member}")
+                if team["name"] in human_only:
+                    r.add("C16 privileges", f"machine account {member} is a member of human-only team {team['name']} ({org['name']})")
+                if ROLE_RANK[team["permission"]] > ROLE_RANK.get(highest.get(member, "none"), 0):
+                    highest[member] = team["permission"]
+    bots = {b["username"] for b in forge.get("bots") or []}
+    for name in sorted(bots - set(accounts)):
+        r.add("C16 privileges", f"forge bot {name} is missing from plans/machine-accounts.yaml")
+    for name in sorted(set(accounts) - bots):
+        r.add("C16 privileges", f"{name} is not a bot in the forge-configuration example")
+    for name in sorted(bots & set(accounts)):
+        if highest.get(name, "none") != accounts[name]["repoRole"]:
+            r.add("C16 privileges", f"{name}: forge-configuration grants {highest.get(name, 'none')}, matrix says {accounts[name]['repoRole']}")
+    # Prose: "<account> ... repo admin" without a negation in between claims admin.
+    non_admin = sorted(n for n, a in accounts.items() if a.get("repoRole") != "admin")
+    acct = re.compile(r"`?\b(" + "|".join(re.escape(n) for n in non_admin) + r")\b`?")
+    for f in definition_docs(repo):
+        rel = os.path.relpath(f, repo)
+        for lineno, line in enumerate(read(f).splitlines(), 1):
+            if not ADMIN_PHRASE.search(line):
+                continue
+            for m in acct.finditer(line):
+                tail = line[m.end():m.end() + 60]
+                pm = ADMIN_PHRASE.search(tail)
+                if not pm or re.search(r"[.;|]", tail[:pm.start()]):
+                    continue
+                between = tail[:pm.start()]
+                before = line[max(0, m.start() - 12):m.start()]
+                if NEGATION.search(between) or NEGATION.search(before):
+                    continue
+                r.add("C16 privileges", f"{rel}:{lineno}: claims repository admin for {m.group(1)}: {line.strip()[:140]}")
+    r.stats["machine_accounts"] = len(accounts)
+
+
+RESIDUE = re.compile(
+    r"conflict recorded|lead decides|the lead (?:must|will|should) decide|plans? disagree|"
+    r"disagree on|still disagree|must change from|until then (?:plan|the plans|this plan)|\bTBD\b|to be decided",
+    re.I,
+)
+SETTLED = re.compile(r"resolved|decided|closed|superseded|adopted|withdrawn", re.I)
+
+
+def check_residue(repo: str, r: Result) -> None:
+    r.add("C17 residue")
+    for f in plan_files(repo):
+        for line in section(read(f), 25).splitlines():
+            if SETTLED.search(line) and (m := RESIDUE.search(line)):
+                r.add("C17 residue", f"{os.path.basename(f)}: settled question still says '{m.group(0)}': {line.strip()[:140]}")
+    for line in read(os.path.join(repo, "plans", "spec-issues.md")).splitlines():
+        if line.startswith("| SI-") and (m := RESIDUE.search(line)):
+            r.add("C17 residue", f"spec-issues: {line[:12].strip()} still says '{m.group(0)}'")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--repo", default=os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..")))
@@ -569,6 +662,8 @@ def main() -> int:
     check_blocking(repo, r)
     check_spec_issues(repo, r)
     check_baseline(repo, r)
+    check_privileges(repo, r)
+    check_residue(repo, r)
     if args.json:
         print(json.dumps({"ok": r.ok, "stats": r.stats, "failures": r.checks}, indent=2, sort_keys=True))
     else:

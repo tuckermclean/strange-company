@@ -2,7 +2,7 @@
 
 ## Canonical System Specification
 
-**Specification version:** 1.2  
+**Specification version:** 1.3  
 **Status:** Frozen architecture baseline  
 **Repository:** `strange-company`  
 **System type:** Self-hosted autonomous software factory  
@@ -10,6 +10,7 @@
 **Production baseline:** Three-node resilient k3s cluster
 
 **Amendments:**
+- **1.3 (2026-10-15, Stage-0 review cleanup; terminology only, no change to the CD-23 operator decision).** In §11 and §12, `minimumPerNode` (4 CPU, 8Gi) is split into `minimumSupportedPerNode` (4 CPU, 12Gi), the smallest shape the plans budget for, and `constrainedLowerBoundPerNode` (4 CPU, 8Gi), the absolute floor. Nodes between the two run the `constrained` resource profile with a warning and no capacity guarantee, and are expected to fail the V-30 capacity gate (plan 51). The measured V-30 gate stays authoritative. `execution.maximumConcurrentCIJobs` is renamed `maximumConcurrentCIPipelines` (and §89 "maximum heavy CI jobs" reads "maximum concurrent CI pipelines"), because the bounded unit is a Woodpecker pipeline (workflow), not a Kubernetes Job. Reason: the second external review of PR #138 found that calling 8Gi a "minimum" contradicted the capacity plan, and that "CI jobs" named the wrong execution primitive.
 - **1.2 (2026-10-14, operator decision during Stage 0).** Node disk sizing in §11 and §12 changed to minimum 100Gi and preferred 200Gi NVMe per node for both profiles. The previous values were 75Gi minimum and 100Gi preferred. Reason: the Stage-0 storage budget (plans 11 §12 and 51, spec issue SI-32) showed 75–100 GiB cannot hold the platform's images, snapshots, CI workspace and restore scratch with a useful growth horizon. Memory minimums are unchanged: 8Gi stays allowed as a constrained configuration (SI-12, ADR-0020).
 
 ---
@@ -621,7 +622,15 @@ spec:
   nodes:
     count: 1
 
-    minimumPerNode:
+    minimumSupportedPerNode:
+      cpu: 4
+      memory: 12Gi
+
+      storage:
+        size: 100Gi
+        class: ssd
+
+    constrainedLowerBoundPerNode:
       cpu: 4
       memory: 8Gi
 
@@ -644,7 +653,7 @@ spec:
 
   execution:
     maximumConcurrentAgents: 1
-    maximumConcurrentCIJobs: 1
+    maximumConcurrentCIPipelines: 1
 
   storage:
     cnpg:
@@ -680,7 +689,15 @@ spec:
   nodes:
     count: 3
 
-    minimumPerNode:
+    minimumSupportedPerNode:
+      cpu: 4
+      memory: 12Gi
+
+      storage:
+        size: 100Gi
+        class: ssd
+
+    constrainedLowerBoundPerNode:
       cpu: 4
       memory: 8Gi
 
@@ -2630,7 +2647,7 @@ Bootstrap default:
 
 ```text
 maximum agent workers: 1
-maximum heavy CI jobs: 1
+maximum concurrent CI pipelines: 1
 ```
 
 Small-HA initial default:

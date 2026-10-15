@@ -455,7 +455,7 @@ This runs inside the toolbox, through `make gitops-flux-regen`, which calls `sc-
 | `CNPG_<ID>_GEN`, `<ID>` ∈ {`FORGEJO`, `AUTHENTIK`, `WOODPECKER`, `SC`} | integer ≥ 1 (backup generation) | 12, ADR-0554 |
 | `CNPG_<ID>_SOURCE_GEN`, `CNPG_<ID>_TARGET_TIME` | recovery only (RFC 3339 time; absent for "latest") | 12, 45 |
 | `LONGHORN_FORGEJO_DATA_BACKUP_URL`, `LONGHORN_HERMES_DATA_BACKUP_URL` | recovery only; the resolved backup per important volume, written into `vars/cluster-vars.yaml` by the recovery commit (`RecoveryRecord` is a record, not a substitution source; DR-5). A volume without a backup gets no variable and its per-volume recovery component is not selected | 13, 45 |
-| `CI_MAX_CONCURRENT` | profile `maximumConcurrentCIJobs` (1 / 2) | 20, 51 |
+| `CI_MAX_CONCURRENT` | profile `maximumConcurrentCIPipelines` (1 / 2) | 20, 51 |
 | `SC_MAINTENANCE_WINDOW` | copy of plan 08 `node.maintenanceWindow` (default `Sun 04:00-06:00` UTC), written by plan 50 from `bootstrap.env` `NODE_MAINTENANCE_WINDOW`; plan 08 reads it as `node_maintenance_window` | 42 (mute interval), 26 (dispatch blackout) |
 | `CNPG_DATA_CEILING_BYTES` | per-profile value from plan 11 §12 (integer bytes); rewritten by `sc-gitops set-profile` | 11, 38/42 (recording rule `sc:cnpg_data_ceiling_bytes`) |
 

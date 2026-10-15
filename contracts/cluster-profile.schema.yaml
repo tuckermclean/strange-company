@@ -16,7 +16,7 @@ description: |
   cnpg.instances <= nodes.count; longhorn.replicas <= nodes.count; the profile must
   not reduce nodes.count, servers, cnpg.instances or longhorn.replicas below the
   installation's current values (shrinking is a remove-node procedure, plan 47);
-  minimumPerNode must be >= the substrate minimum (SPEC v1.2 floor: 4 CPU, 8Gi, 100Gi ssd).
+  minimumSupportedPerNode must be >= the substrate supported minimum (SPEC v1.3: 4 CPU, 12Gi, 100Gi ssd); constrainedLowerBoundPerNode >= 4 CPU, 8Gi, 100Gi ssd.
 type: object
 additionalProperties: false
 required: [apiVersion, kind, metadata, spec]
@@ -50,16 +50,26 @@ properties:
       nodes:
         type: object
         additionalProperties: false
-        required: [count, minimumPerNode]
+        required: [count, minimumSupportedPerNode]
         properties:
           count:
             type: integer
             minimum: 1
             maximum: 9
-          minimumPerNode:
+          minimumSupportedPerNode:
+            description: >-
+              Smallest node shape the engineering plans support and budget for (SPEC v1.3:
+              4 CPU, 12Gi, 100Gi ssd). The measured V-30 capacity gate (plan 51) is authoritative.
+            $ref: '#/$defs/nodeShape'
+          constrainedLowerBoundPerNode:
+            description: >-
+              Absolute floor (SPEC v1.3: 4 CPU, 8Gi, 100Gi ssd). Nodes between this bound and
+              minimumSupportedPerNode are accepted only with the `constrained` resource profile
+              (CD-23, ADR-0020), with a warning and no capacity guarantee; they are expected to
+              fail the V-30 gate. Below this bound bootstrap refuses the node.
             $ref: '#/$defs/nodeShape'
           preferredPerNode:
-            description: May be partial (SPEC §12 v1.2 states only the preferred storage); omitted fields are inherited from the substrate.
+            description: May be partial (SPEC §12 v1.3 states only the preferred storage); omitted fields are inherited from the substrate.
             $ref: '#/$defs/partialNodeShape'
       kubernetes:
         type: object
@@ -115,7 +125,7 @@ properties:
             type: integer
             minimum: 0
             maximum: 64
-          maximumConcurrentCIJobs:
+          maximumConcurrentCIPipelines:
             description: Inherited from the substrate when omitted (SPEC §12 does not state it).
             type: integer
             minimum: 0
@@ -165,7 +175,7 @@ $defs:
           class:
             enum: [ssd, nvme]
 examples:
-  # SPEC §12 canonical manifest (SPEC v1.2), verbatim.
+  # SPEC §12 canonical manifest (SPEC v1.3), verbatim.
   - apiVersion: strange.company/v1alpha1
     kind: ClusterProfile
     metadata:
@@ -173,7 +183,13 @@ examples:
     spec:
       nodes:
         count: 3
-        minimumPerNode:
+        minimumSupportedPerNode:
+          cpu: 4
+          memory: 12Gi
+          storage:
+            size: 100Gi
+            class: ssd
+        constrainedLowerBoundPerNode:
           cpu: 4
           memory: 8Gi
           storage:
@@ -200,7 +216,7 @@ x-invalid-examples:
       kind: ClusterProfile
       metadata: {name: small-ha}
       spec:
-        nodes: {count: 3, minimumPerNode: {cpu: 4, memory: 8Gi, storage: {size: 100Gi, class: ssd}}}
+        nodes: {count: 3, minimumSupportedPerNode: {cpu: 4, memory: 12Gi, storage: {size: 100Gi, class: ssd}}, constrainedLowerBoundPerNode: {cpu: 4, memory: 8Gi, storage: {size: 100Gi, class: ssd}}}
         kubernetes: {servers: 3, datastore: external-postgres}
         storage: {cnpg: {instances: 3}, longhorn: {replicas: 2}}
         execution: {maximumConcurrentAgents: 2}
@@ -210,7 +226,7 @@ x-invalid-examples:
       kind: ClusterProfile
       metadata: {name: small-ha}
       spec:
-        nodes: {count: 3, minimumPerNode: {cpu: 4, memory: 8Gi, storage: {size: 100Gi, class: ssd}}}
+        nodes: {count: 3, minimumSupportedPerNode: {cpu: 4, memory: 12Gi, storage: {size: 100Gi, class: ssd}}, constrainedLowerBoundPerNode: {cpu: 4, memory: 8Gi, storage: {size: 100Gi, class: ssd}}}
         kubernetes: {servers: 3, datastore: embedded-etcd}
         storage: {cnpg: {instances: 3}, longhorn: {enabled: false, replicas: 2}}
         execution: {maximumConcurrentAgents: 2}
@@ -220,7 +236,7 @@ x-invalid-examples:
       kind: ClusterProfile
       metadata: {name: small-ha}
       spec:
-        nodes: {count: 3, minimumPerNode: {cpu: 4, memory: 8Gi, storage: {size: 100Gi, class: ssd}}}
+        nodes: {count: 3, minimumSupportedPerNode: {cpu: 4, memory: 12Gi, storage: {size: 100Gi, class: ssd}}, constrainedLowerBoundPerNode: {cpu: 4, memory: 8Gi, storage: {size: 100Gi, class: ssd}}}
         kubernetes: {servers: 3, datastore: embedded-etcd}
         storage: {cnpg: {instances: 3}, longhorn: {replicas: 2}}
   - reason: even server count
@@ -229,7 +245,7 @@ x-invalid-examples:
       kind: ClusterProfile
       metadata: {name: four}
       spec:
-        nodes: {count: 4, minimumPerNode: {cpu: 4, memory: 8Gi, storage: {size: 100Gi, class: ssd}}}
+        nodes: {count: 4, minimumSupportedPerNode: {cpu: 4, memory: 12Gi, storage: {size: 100Gi, class: ssd}}, constrainedLowerBoundPerNode: {cpu: 4, memory: 8Gi, storage: {size: 100Gi, class: ssd}}}
         kubernetes: {servers: 4, datastore: embedded-etcd}
         storage: {cnpg: {instances: 3}, longhorn: {replicas: 2}}
         execution: {maximumConcurrentAgents: 2}
@@ -239,7 +255,7 @@ x-invalid-examples:
       kind: ClusterProfile
       metadata: {name: small-ha}
       spec:
-        nodes: {count: 3, minimumPerNode: {cpu: 4, memory: 8Gi, storage: {size: 100Gi, class: ssd}}, preferredPerNode: {}}
+        nodes: {count: 3, minimumSupportedPerNode: {cpu: 4, memory: 12Gi, storage: {size: 100Gi, class: ssd}}, constrainedLowerBoundPerNode: {cpu: 4, memory: 8Gi, storage: {size: 100Gi, class: ssd}}, preferredPerNode: {}}
         kubernetes: {servers: 3, datastore: embedded-etcd}
         storage: {cnpg: {instances: 3}, longhorn: {replicas: 2}}
         execution: {maximumConcurrentAgents: 2}

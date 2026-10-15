@@ -67,7 +67,7 @@
 If `runner.merge_audits` shows `emergency_merge` for the commits in question, protection was weakened on purpose through `procedures/emergency-merge.md`: verify the incident record and that `--stage steady` was re-applied, then stop here.
 
 1. Restore protection from Git: `./bootstrap exec -- sc-bootstrap forge apply --only branch-protection` (plan 16; idempotent). Expected: `forge verify` exits 0 and `SCForgeBranchProtectionDrift` resolves.
-2. Identify who changed it (Forgejo admin audit/logs). If unexplained, `credential-compromise.md` (the `sc-runner` bot holds repo-admin, R-16-1).
+2. Identify who changed it (Forgejo admin audit/logs). If unexplained, `credential-compromise.md`: the `sc-keys` deploy-key bot is the only machine account with repository admin (CD-40, R-16-1); `sc-runner` is write-only.
 
 ### E. Close the task
 

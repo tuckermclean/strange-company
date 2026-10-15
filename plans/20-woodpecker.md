@@ -28,7 +28,7 @@ Plan 52 owns *which* Make targets run on which event. Plan 22 owns the semantics
 4. Woodpecker is a Prometheus target and dashboard subject, with a Woodpecker failure alert [SPEC §91, §92, §96].
 5. Workers never receive CI, registry-push, signing or deployment credentials [SPEC §37, §38, §86]. CI does not deploy production [SPEC §33].
 6. CI uses disposable workspaces where practical [SPEC §28]. Longhorn does not hold CI scratch [SPEC §27]. Root disks do not fill [SPEC §107].
-7. CI is protected and bounded: CI has lower scheduling priority than the platform [SPEC §89], and `maximumConcurrentCIJobs` is 1 at self-hosting-minimum [SPEC §11, §89].
+7. CI is protected and bounded: CI has lower scheduling priority than the platform [SPEC §89], and `maximumConcurrentCIPipelines` is 1 at self-hosting-minimum [SPEC §11, §89].
 8. Human identity comes from Authentik, and machine identity uses scoped credentials [SPEC §21].
 9. Default CI does not need paid model APIs [SPEC §104].
 10. A procedure exists for Woodpecker failure [SPEC §113].
@@ -47,7 +47,7 @@ Plan 52 owns *which* Make targets run on which event. Plan 22 owns the semantics
 | Agent credentials (`SC-WOODPECKER-AGENT`, one instance per agent) | per-agent tokens minted by `ci-init` W07 (`POST /api/agents`, verify), SOPS `gitops/clusters/<c>/secrets/woodpecker/agent-token-{ci,build}.sops.yaml`; the pre-seed shared value (`woodpecker-agent-secret.sops.yaml`) is mounted only by the server, never by an agent (§9.3) | |
 | `woodpecker-pg` app Secret `woodpecker-pg-app` | plan 12 | `uri` key |
 | Forgejo read token for `sc-ci-config` (bot `sc-ci-config`, class `SC-FORGEJO-BOT-TOKENS`) | plan 16 `forge.yaml` bot + forge-init S10 | Secret `woodpecker/forgejo-sc-ci-config` (assumed, §5) |
-| Cluster variables `BASE_DOMAIN`, `SC_SERVICE_CIDR`, `SC_OPERATOR_FORGEJO_USER`, `CI_MAX_CONCURRENT` | `cluster-vars` (plans 18, 50) | `CI_MAX_CONCURRENT` = profile `maximumConcurrentCIJobs` (plan 51) |
+| Cluster variables `BASE_DOMAIN`, `SC_SERVICE_CIDR`, `SC_OPERATOR_FORGEJO_USER`, `CI_MAX_CONCURRENT` | `cluster-vars` (plans 18, 50) | `CI_MAX_CONCURRENT` = profile `maximumConcurrentCIPipelines` (plan 51) |
 | CI policy `policy/ci.yaml` (`CIPolicy`) | Git, protected path | §9.2 |
 | `ci-workspace` StorageClass and filesystem | plans 08, 11 (ADR-0305) | |
 | PriorityClass `ci`, ResourceQuota and LimitRange for `ci-jobs` | plan 51 | |
@@ -437,7 +437,7 @@ It is delivered to `sc-ci-config` and `sc-ci-maint` as ConfigMap `woodpecker/sc-
 | `SC-PG-APP` (`woodpecker-pg`) | `woodpecker/woodpecker-pg-app` | server | CNPG-generated |
 | `SC-WOODPECKER-RUNNER` | `strange-company/agent-runner-woodpecker` (SOPS at `gitops/clusters/<c>/secrets/strange-company/woodpecker-runner-token.sops.yaml`) | Runner | minted by `ci-init` W05 at P08, before its consumer exists (C01) |
 | `SC-WOODPECKER-ADMIN` | process memory only | `ci-init`, `sc-bootstrap ci verify|recover`, plan 23 `ci-secrets apply` | ephemeral, the token of Woodpecker admin `sc-admin` |
-| **`SC-WOODPECKER-MAINT` (new)** | `woodpecker/sc-ci-maint-token` (SOPS at `gitops/clusters/<c>/secrets/woodpecker/sc-ci-maint-token.sops.yaml`) | `sc-ci-maint`; `sc-ci-config` (agent audit only, §8.7 step 5) | the Woodpecker personal token of `sc-woodpecker` (repository-admin rights through Forgejo permissions; **not** a Woodpecker instance admin) |
+| **`SC-WOODPECKER-MAINT` (new)** | `woodpecker/sc-ci-maint-token` (SOPS at `gitops/clusters/<c>/secrets/woodpecker/sc-ci-maint-token.sops.yaml`) | `sc-ci-maint`; `sc-ci-config` (agent audit only, §8.7 step 5) | the Woodpecker personal token of `sc-woodpecker` (its Forgejo rights are write only, team `sc-automation`, CD-38; it is **not** a Woodpecker instance admin) |
 | **`SC-CI-INTENTS` (new)** | `woodpecker/sc-ci-config-intents` and `strange-company/agent-runner-ci-intents` (same value, two SOPS files) | `sc-ci-config` (client), Runner (server) | 32 random bytes, base64url |
 | `SC-FORGEJO-BOT-TOKENS` (bot `sc-ci-config`, new instance) | `woodpecker/forgejo-sc-ci-config` | `sc-ci-config` | `read:repository` only |
 | Woodpecker secrets for release (`SC-RELEASE-SIGNING`, `SC-REGISTRY-PUSH`, …) | `woodpecker-pg` | build lane | owned by plan 23; publishing secrets use events `[tag]` only, image filter `sc-release`; maintenance secrets (`sc_ci_ovh_readonly`) use `[cron]` |
@@ -533,7 +533,7 @@ Workers (`agent-jobs`) and Hermes have no path to `woodpecker` or `ci-jobs` [SPE
 `ci-build` rules are plan 23's.
 
 ### 13.5 Residual risks
-- **R-20-1** `sc-woodpecker`'s forge OAuth token (stored in `woodpecker-pg`, used for clone netrc and statuses) carries the user's Forgejo rights. Per **CD-38**, `sc-woodpecker` is a member of a **write-only** team (plan 16 `sc-ci-write`), never admin, and is not in `sc-mergers`, so the clone token is not a repo-admin token and cannot approve or merge. Repository activation needs repo admin once (Woodpecker creates the repository webhook): `ci-init` W03 adds `sc-woodpecker` to the admin team `sc-ci-activation` only for the duration of the activation calls and removes it immediately afterwards (journaled; `SCForgeConfigDrift` fires if membership remains). A compromise of the clone image or of the server exposes it. Mitigations: only the digest-pinned clone image receives netrc; `SCForgeConfigDrift` (plan 16) catches protection changes. Recorded for plan 34.
+- **R-20-1** `sc-woodpecker`'s forge OAuth token (stored in `woodpecker-pg`, used for clone netrc and statuses) carries the user's Forgejo rights. Per **CD-38**, `sc-woodpecker` is a member of a **write-only** team (plan 16 `sc-automation`), never a standing admin, and is not in `sc-mergers`, so the clone token is not a repo-admin token and cannot approve or merge. Repository activation needs repo admin once (Woodpecker creates the repository webhook): `ci-init` W03 adds `sc-woodpecker` to the admin team `sc-ci-activation` only for the duration of the activation calls and removes it immediately afterwards (journaled; `SCForgeConfigDrift` fires if membership remains). A compromise of the clone image or of the server exposes it. Mitigations: only the digest-pinned clone image receives netrc; `SCForgeConfigDrift` (plan 16) catches protection changes. Recorded for plan 34.
 - **R-20-2** The nonce is no longer visible to code under test (it exists only in the separate `sc-verify-emit` pod). The residual is in-suite forgery of per-test observations (printed `--- PASS` lines, a report rewritten while its own suite runs); see SI-07, plan 22.
 - **R-20-3** A repository admin in Woodpecker can create crons on unprotected branches or change approval settings. A cron on an unprotected branch is classified untrusted (§8.2), and drift is reported by `sc-ci-maint`.
 

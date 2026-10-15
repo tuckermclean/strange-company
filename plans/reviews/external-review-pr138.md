@@ -21,3 +21,16 @@
 - The Model Gateway is stronger than the original idea. It denies provider-side state, file and URL sources, MCP, web search and n > 1; keys never reach workers; reservations are atomic; unknown usage is conservatively charged; and the Gateway makes no provider retries.
 
 **Merge bar stated by the reviewer:** fix #1 and #2 before merge; fix #3 and #4 now while everything is still prose; amend gates and definitions for #5–#7.
+
+## Second pass (2026-10-15)
+
+**Verdict:** substantially better; the eight first-pass findings were meaningfully addressed. Do not merge this exact head without one consistency commit. **Disposition:** CD-41.
+
+| # | Severity | Finding (summary) | Disposition |
+|---|---|---|---|
+| 1 | MAJOR | Plan 55 §13 says `sc-runner` holds repo-admin, which contradicts plan 16 and CD-38/CD-40. Add a machine-readable privilege matrix the validator can check. | Fixed (plans 55 and 34, ADR-0007, procedure); `plans/machine-accounts.yaml`; validator C16 (which also caught a stale `sc-woodpecker` claim) |
+| 2 | MAJOR | Q-51-09 is marked resolved but still says "conflict recorded… lead decides… plans disagree". Lint resolved questions for residue markers. | Fixed; validator C17 |
+| 3 | MAJOR-ish | SPEC calls 8 GiB the `minimumPerNode`, although plan 51 says it is expected to fail V-30 (and probably fails for small-HA). | SPEC v1.3: `minimumSupportedPerNode` 12Gi plus `constrainedLowerBoundPerNode` 8Gi; CD-23 unchanged |
+| 4 | MINOR | `maximumConcurrentCIJobs` names the wrong primitive (Woodpecker pipelines, not Jobs). | Renamed `maximumConcurrentCIPipelines` (SPEC v1.3) |
+| 5 | MINOR | Pinned actions run on deprecated Node 20. | checkout v7.0.1 and upload-artifact v7.0.1 (Node 24), SHA-pinned |
+

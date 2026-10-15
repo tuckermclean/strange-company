@@ -10,7 +10,7 @@ SPEC §87 says workers should only clone approved repositories and push `agent/*
 - Deploy keys authenticate Git over SSH only. They have no API access, so workers cannot create statuses, PRs, reviews, labels or releases.
 - Branch protection on protected branches (`main`, `release/*`, plus every pattern in `RepositoryPolicy.protectedBranches`) disallows pushes by deploy keys.
 - Forgejo does not restrict deploy-key pushes to a branch namespace, so the Runner **verifies after the fact**. On result ingestion it compares every repository branch head against its expectations. Any ref other than `agent/<task-id>` that was created or moved during the execution window and is attributable to the execution's key (Forgejo push events/webhooks) causes `POLICY_VIOLATION` and that ref is quarantined or deleted.
-- The Runner's bot account `sc-runner` holds a scoped API token for PRs, statuses, labels, issues and deploy-key management.
+- The Runner's bot account `sc-runner` holds a scoped API token for PRs, statuses, labels and issues (repository write, never admin; CD-38). Deploy-key management uses a separate account, `sc-keys`, the only repository-admin machine account. Its token lives only in the Runner's key-broker container (CD-40).
 
 ## Consequences
 - Strong separation between push ability and merge-gating signals.
