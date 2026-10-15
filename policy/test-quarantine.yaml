@@ -1,0 +1,10 @@
+# Flaky-test quarantine (plan 52 section 9.3; contract contracts/test-quarantine.schema.yaml).
+# Empty: no test is quarantined. Protected path; entries expire (maxDays) and are checked by
+# `make quarantine-check`.
+apiVersion: strange.company/v1alpha1
+kind: TestQuarantine
+metadata: {name: strange-company}
+spec:
+  maxEntries: 10
+  maxDays: 14
+  entries: []

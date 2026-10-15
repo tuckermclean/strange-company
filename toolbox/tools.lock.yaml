@@ -17,6 +17,18 @@ spec:
       versionCommand: [shfmt, --version]
       versionRegex: '^v{version}$'
       verifiedAt: 2026-10-15
+    - name: actionlint
+      set: ci
+      version: "1.7.12"                     # baseline: actionlint v1.7.12 (kubeconform entry notes)
+      selectedBy: "baseline:kubeconform"
+      url: https://github.com/rhysd/actionlint/releases/download/v{version}/actionlint_{version}_linux_{arch}.tar.gz
+      sha256:
+        amd64: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+        arm64: "325e971b6ba9bfa504672e29be93c24981eeb1c07576d730e9f7c8805afff0c6"
+      install: {extract: actionlint, to: /usr/local/bin/actionlint}
+      versionCommand: [actionlint, -version]
+      versionRegex: '^{version}$'
+      verifiedAt: 2026-10-15
   baseImages:
     debian: {ref: docker.io/library/debian:trixie-slim, digest: "sha256:918311b7b6c4c6f68b232ba516584925f6c78ad82b6fd534b98979df6438e483"}
     golang: {ref: docker.io/library/golang:1.27.2-trixie, digest: "sha256:2d658507a011f1eadc0114d7a421b312b2e77d9042a24036a26e267cc9231677"}

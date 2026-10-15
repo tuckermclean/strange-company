@@ -1,6 +1,6 @@
-# Tier V (plan 01 section 7.1): verify and the targets it runs, in order. Later F01 slices replace the
-# placeholders and add targets here (locks-check S3, test/build/... S4).
-VERIFY_TARGETS := toolbox-check layout-check dag-check contracts locks-check lint
+# Tier V (plan 01 section 7.1): verify and the targets it runs, in order. Later F01 slices add targets here
+# (test/build/... S4).
+VERIFY_TARGETS := toolbox-check layout-check dag-check contracts locks-check secrets-scan quarantine-check lint
 .NOTPARALLEL:
 .PHONY: verify $(VERIFY_TARGETS)
 
@@ -11,10 +11,8 @@ toolbox-check:
 	@toolbox/bin/toolbox-check
 	@sh test/e2e/wrapper/run.sh
 
-locks-check:
-	@echo "locks-check: not yet implemented (F01 slice S3)" >&2; exit 1
-
 SH_FILES := bootstrap toolbox/bin/sc-entrypoint
 lint:
 	@shellcheck $(SH_FILES)
 	@shfmt -d $(SH_FILES)
+	@actionlint .github/workflows/*.yaml
