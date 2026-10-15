@@ -196,7 +196,7 @@ Namespace labels: `strange.company/tier` ∈ {`platform-critical`, `platform`, `
 - Every subsystem plan follows `plans/_template.md` (SPEC §121). Any omitted section is written as `N/A — <justification>`.
 - Requirements derived from SPEC carry trace tags such as `[SPEC §50]`.
 - Acceptance criteria are stable checklist items with IDs `<PLAN>-AC-<n>` (e.g. `21-AC-4`), grouped under the DAG gate they belong to (`GATE-<node>`).
-- Version numbers for third-party components are **not** fixed in Stage 0. Each plan states the selection rule (e.g. "latest Forgejo LTS at implementation time"). Implementation records exact versions and digests in the version lock files defined by plan 01. Plans MUST name any version-sensitive behavior they depend on, and require a test that re-verifies it.
+- Third-party versions are fixed by the **Stage-0 compatibility baseline** (`plans/compatibility-baseline.yaml`, ADR-0022, CD-29). It records the exact release, or release line, each plan was reasoned against, with evidence. Implementation pins **within the baseline line**: patch updates are free. A newer minor or major is an explicit plan-amendment task that updates the baseline, re-runs the affected `(verify)` ACs and is reviewed. Exact versions and digests go into plan 01's lock files. Plans still name every version-sensitive behavior they depend on, and require a test that re-verifies it.
 
 ### 6.4 Policy and configuration files
 
@@ -345,6 +345,7 @@ All contracts are validated by CI node F02. Each schema has meta-schema validati
 | `bootstrap-journal.schema.yaml` | BootstrapJournal | 50 |
 | `budget-policy.schema.yaml` | BudgetPolicy | 33 |
 | `ci-policy.schema.yaml` | CIPolicy | 20/52 |
+| `compatibility-baseline.schema.yaml` | Stage-0 compatibility baseline (`plans/compatibility-baseline.yaml`) | lead (ADR-0022) |
 | `cluster-profile.schema.yaml` | ClusterProfile | 03 |
 | `context.schema.yaml` | Context | 25 |
 | `control-transfer-report.schema.yaml` | ControlTransferReport | 19 |

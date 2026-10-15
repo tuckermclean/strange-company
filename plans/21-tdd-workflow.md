@@ -156,6 +156,7 @@ No component of its own. Typical per-task load: 1 tester, 1–5 implementer and 
 ### 14.2 Test authoring (TEST_AUTHORING)
 
 - **Tester inputs** (context projection, plan 25): company rules, repository context, `AGENTS.md`, architecture, decisions, role instructions, task spec, acceptance criteria (scoped), validation rules (test paths, suites, stub policy), context files named by Hermes at the base commit (current behavior), research reports, prior attempt evidence (same generation, tester role), conflict decision (corrected-test generations), orchestrator notes. **Never**: implementation diffs, implementer handoffs, green evidence, the implementer's conflict report, reviewer findings on implementations.
+- **Screening Hermes-authored text (blind TDD-B14, advisory):** at a tester dispatch the Runner flags fenced code blocks longer than 10 lines or function bodies in `objective`, `constraints` and `orchestrator_notes` as a manifest warning and a reviewer check item (plan 25 implements; SPEC §48).
 - **Tester output:** exactly one commit on `agent/<task-id>` with subject `test(<task-id>): <summary>` and trailers `SC-Task`, `SC-Execution`, `SC-Role: tester`, `SC-Base` (plan 27), touching only testPaths, fixturePaths, testInfraPaths and declared stubs in stubPaths (ADR-0352), plus `role_output {kind: tester, test_files, ac_mapping}` and a handoff (plan 30). If the tester believes the behavior already exists, it still commits the tests and reports `already_satisfied`; CI decides [SPEC §51].
 - **Ingestion** (plan 26 step 6): `ROLE_DIFF_VIOLATION` for any other path; protected paths → `PROTECTED_PATH_VIOLATION`.
 
@@ -217,7 +218,7 @@ A **generation** is one version of the task's tests (or judge). Generation 1 sta
 | first tester of generation 1 | none (branch absent) | `create` at `base_commit` |
 | tester retry after `TEST_NEEDS_WORK` (no valid RED yet in the generation) | none | `continue` at current branch head (the previous tester commit) |
 | tester after `ALREADY_SATISFIED`/`NEEDS_INVESTIGATION` (requires `/sc strengthen-tests`, plan 29 T016) | none (same generation; plan 22 R12 keeps every previously declared test) | `continue` at current branch head |
-| tester strengthening after valid RED, before any implementer dispatch (T012) | new generation `strengthened`: tag `sc-archive/<task>/g<g>` (head already equals red(g)) | `continue` at red(g); plan 22 R12 superset rule |
+| tester strengthening after valid RED, before any implementer dispatch, after a human `/sc strengthen-tests` (T016 → T012; blind TDD-B3) | new generation `strengthened`: tag `sc-archive/<task>/g<g>` (head already equals red(g)) | `continue` at red(g); plan 22 R12 superset rule |
 | tester of generation g+1 after an approved conflict | tag head `sc-archive/<task>/g<g>`, delete `agent/<task>`, recreate it at generation g's red commit (Forgejo `POST /repos/{o}/{r}/branches` with `old_ref_name` = the SHA; verify at C03) | `continue` at red(g) |
 | tester of generation g+1 after `respec` or exemption denial | tag head `sc-archive/<task>/g<g>`, delete `agent/<task>` | `create` at `base_commit` |
 | first implementer of a generation | none | `continue` at red(g) |

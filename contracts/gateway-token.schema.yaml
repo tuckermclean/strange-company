@@ -307,7 +307,7 @@ examples:
       - {provider: anthropic, api_family: anthropic-messages, model: claude-sonnet-x, purpose: primary}
       - {provider: anthropic, api_family: anthropic-messages, model: claude-haiku-x, purpose: auxiliary}
     budget_scopes: ["execution:sc-184-x3", "task:sc-184"]
-    max_concurrent_requests: 8
+    max_concurrent_requests: 4
     policy_revision: 0123456789abcdef0123456789abcdef01234567
     trace_parent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
   - iss: sc-agent-runner
@@ -333,7 +333,7 @@ examples:
     allowed_models:
       - {provider: deepseek, api_family: openai-chat-completions, model: deepseek-v4-pro, purpose: primary}
     budget_scopes: [orchestration]
-    max_concurrent_requests: 16
+    max_concurrent_requests: 4
     policy_revision: 0123456789abcdef0123456789abcdef01234567
   - iss: sc-agent-runner
     aud: sc-model-gateway
@@ -386,7 +386,7 @@ x-invalid-examples:
       allowed_models:
         - {provider: anthropic, api_family: anthropic-messages, model: claude-sonnet-x, purpose: primary}
       budget_scopes: ["execution:sc-184-x3", "task:sc-184"]
-      max_concurrent_requests: 8
+      max_concurrent_requests: 4
       policy_revision: 0123456789abcdef0123456789abcdef01234567
   - reason: Execution token without task attribution (SPEC §78 requires task/execution/attempt).
     value:
@@ -413,7 +413,7 @@ x-invalid-examples:
       allowed_models:
         - {provider: anthropic, api_family: anthropic-messages, model: claude-sonnet-x, purpose: primary}
       budget_scopes: ["execution:sc-184-x3", "task:sc-184"]
-      max_concurrent_requests: 8
+      max_concurrent_requests: 4
       policy_revision: 0123456789abcdef0123456789abcdef01234567
   - reason: Orchestrator token claiming a worker role and an empty model allowlist.
     value:
@@ -439,7 +439,7 @@ x-invalid-examples:
       tier_effective: null
       allowed_models: []
       budget_scopes: [orchestration]
-      max_concurrent_requests: 16
+      max_concurrent_requests: 4
       policy_revision: 0123456789abcdef0123456789abcdef01234567
   - reason: Extra claim carrying a provider key (tokens never carry provider credentials).
     value:
@@ -466,7 +466,7 @@ x-invalid-examples:
       allowed_models:
         - {provider: deepseek, api_family: openai-chat-completions, model: deepseek-v4-pro, purpose: primary}
       budget_scopes: [orchestration]
-      max_concurrent_requests: 16
+      max_concurrent_requests: 4
       policy_revision: 0123456789abcdef0123456789abcdef01234567
       provider_api_key: sk-xxxx
   - reason: Orchestrator token carrying an execution trace parent (Hermes calls are root spans).
@@ -494,7 +494,7 @@ x-invalid-examples:
       allowed_models:
         - {provider: deepseek, api_family: openai-chat-completions, model: deepseek-v4-pro, purpose: primary}
       budget_scopes: [orchestration]
-      max_concurrent_requests: 16
+      max_concurrent_requests: 4
       policy_revision: 0123456789abcdef0123456789abcdef01234567
       trace_parent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
   - reason: Verify-only token (task sc-0) carrying a task scope and a non-platform project.

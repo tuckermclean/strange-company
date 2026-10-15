@@ -1536,13 +1536,13 @@ spec:
       runbook: procedures/total-cluster-loss.md
       specRefs: ["§29", "§97", "§108"]
     - alertname: SCRepoBundleBackupStale
-      summary: No successful repository-bundle backup within 2 hours (RPO is 1 hour).
+      summary: No successful repository-bundle backup within 45 minutes (RPO is 1 hour; DR-B11).
       category: backup
       severity: warning
       notifyClass: notify
       alwaysNotify: failed-backup
       blackStartThreat: false
-      source: {kind: check-cronjob, cronjob: repo-bundle-backup, namespace: forgejo, maxAge: 1h, failAfter: 30m}
+      source: {kind: check-cronjob, cronjob: repo-bundle-backup, namespace: forgejo, maxAge: 45m, failAfter: 15m}
       profiles: [self-hosting-minimum, small-ha]
       gate: P10
       ownerPlan: "42"
@@ -1592,6 +1592,44 @@ spec:
       signalOwnerPlan: "44"
       runbook: procedures/restore-test-failure.md
       specRefs: ["§96", "§109"]
+    - alertname: SCCnpgWalGapDetected
+      summary: The CNPG WAL archive of the current generation has a gap or an unhealed archiver-detach window, so PITR and black start cannot reach "latest" (plan 12 §20, DR-B8).
+      category: backup
+      severity: critical
+      notifyClass: page
+      alwaysNotify: failed-backup
+      blackStartThreat: false
+      source:
+        kind: check-cronjob
+        cronjob: cnpg-wal-continuity
+        namespace: dr-tests
+        maxAge: 26h
+        failAfter: 30m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P10
+      ownerPlan: "42"
+      signalOwnerPlan: "44"
+      runbook: procedures/restore-test-failure.md
+      specRefs: ["§26", "§96", "§108"]
+    - alertname: SCRepoBundleFullFailed
+      summary: The weekly full repository-bundle run (full chains, metadata exports, attachment copies) failed or is overdue (plan 44 BK-09/BK-17).
+      category: backup
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: failed-backup
+      blackStartThreat: false
+      source:
+        kind: check-cronjob
+        cronjob: repo-bundle-full
+        namespace: forgejo
+        maxAge: 8d
+        failAfter: 6h
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P10
+      ownerPlan: "42"
+      signalOwnerPlan: "44"
+      runbook: procedures/restore-test-failure.md
+      specRefs: ["§31", "§96", "§108"]
     - alertname: SCRestoreTestEtcdFailed
       summary: The etcd snapshot restore test failed or is overdue.
       category: restore-test
@@ -2422,16 +2460,16 @@ spec:
       specRefs: ["§96"]
       aliases: [ForgejoSSHHostKeyMismatch]
     - alertname: SCForgeBranchProtectionDrift
-      summary: Forgejo branch protection differs from forge/forge.yaml. Merge policy may be weakened.
+      summary: Forgejo branch protection differs from forge/forge.yaml. Merge policy may be weakened (CD-40 — a repository-admin token could weaken protection, merge, and restore it).
       category: security
       severity: critical
       notifyClass: page
-      alwaysNotify: none
+      alwaysNotify: security-audit
       blackStartThreat: false
       source:
         kind: prometheus-rule
         expr: 'max(sc_forge_config_drift{object=~"branch_protection.*"}) == 1'
-        for: 10m
+        for: 0s
       profiles: [self-hosting-minimum, small-ha]
       gate: P09
       ownerPlan: "42"
@@ -3290,6 +3328,25 @@ spec:
       runbook: procedures/woodpecker-failure.md
       specRefs: ["§107"]
       aliases: [SCCIMaintStale, SCRetentionWoodpeckerPurgeFailed]
+    - alertname: SCCITrustModelBroken
+      summary: The daily CI trust-model canary saw an untrusted in-repo pipeline step run, a pod in ci-build, or the canary secret in a ci-jobs pod spec (SEC-B7, plan 20 20-AC-41).
+      category: security
+      severity: critical
+      notifyClass: page
+      alwaysNotify: security-audit
+      blackStartThreat: false
+      source:
+        kind: check-cronjob
+        cronjob: ci-trust-canary
+        namespace: woodpecker
+        maxAge: 26h
+        failAfter: 1m
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C06
+      ownerPlan: "42"
+      signalOwnerPlan: "20"
+      runbook: procedures/credential-compromise.md
+      specRefs: ["§107"]
     - alertname: SCCINightlyFailing
       summary: The nightly CI run on main failed.
       category: ci
@@ -4076,24 +4133,6 @@ spec:
       runbook: procedures/rotate-model-credentials.md
       specRefs: ["§99"]
       aliases: [ModelCredentialRejected]
-    - alertname: SCGatewayReservationOverrun
-      summary: Actual request cost exceeded its budget reservation. A scope may exceed its limit by the overrun.
-      category: budget
-      severity: warning
-      notifyClass: notify
-      alwaysNotify: none
-      blackStartThreat: false
-      source:
-        kind: prometheus-rule
-        expr: 'sum by (provider) (increase(sc_gateway_reservation_overrun_micro_usd_total[1h])) > 0'
-        for: 0s
-      profiles: [self-hosting-minimum, small-ha]
-      gate: C11
-      ownerPlan: "42"
-      signalOwnerPlan: "53"
-      runbook: procedures/budget-emergency-stop.md
-      specRefs: ["§81"]
-      aliases: [GatewayReservationOverrun]
     - alertname: SCEmergencyStopSourceUnavailable
       summary: The Gateway cannot read the Kubernetes emergency-stop source. The effective level is raised to workers.
       category: budget
@@ -4252,6 +4291,20 @@ spec:
       signalOwnerPlan: "26"
       runbook: procedures/tdd-task-recovery.md
       specRefs: ["§4.8", "§97"]
+    - alertname: SCMergeCoolingOffStarted
+      summary: Single-operator mode (N = 1) - an agent PR touching an elevated path entered the 24 h cooling-off window before it can be merged (CD-39).
+      category: forge
+      severity: info
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source: {kind: runner-post, posters: [runner], ttl: 24h, refreshInterval: 5m}
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C06
+      ownerPlan: "42"
+      signalOwnerPlan: "26"
+      runbook: procedures/emergency-merge.md
+      specRefs: ["§97"]
     - alertname: SCTaskRetriesExhausted
       summary: A task exhausted its bounded retries and entered NEEDS_HUMAN.
       category: task
@@ -4788,6 +4841,60 @@ spec:
       signalOwnerPlan: "53"
       runbook: procedures/gateway-failure.md
       specRefs: ["§81", "§97"]
+      aliases: [SCGatewayReservationOverrun, GatewayReservationOverrun]
+    - alertname: SCLedgerProviderDivergence
+      summary: The daily ledger-reconcile job found provider-reported spend differing from the ledger by more than max(5%, $1) for a provider-day, or failed to run (plan 32 §20).
+      category: spend
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: check-cronjob
+        cronjob: ledger-reconcile
+        namespace: strange-company
+        maxAge: 26h
+        failAfter: 1h
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "32"
+      runbook: procedures/pricing-update.md
+      specRefs: ["§81", "§82"]
+    - alertname: SCLedgerProviderUndercount
+      summary: Provider-reported spend exceeds the ledger by more than 20% for a provider-day; budgets understate real spend (plan 32 §20).
+      category: spend
+      severity: critical
+      notifyClass: page
+      alwaysNotify: budget-stop
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'max by (provider) (sc_ledger_provider_divergence_ratio) > 0.2'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "32"
+      runbook: procedures/pricing-update.md
+      specRefs: ["§81", "§97"]
+    - alertname: SCGatewayPolicyDenialsRepeated
+      summary: The same Gateway policy code (SC_MODEL_QUARANTINED, SC_PRICE_UNKNOWN, ...) ended 3 or more executions within 1 hour; a policy or harness bug, not task failure (plan 33 §14.5).
+      category: budget
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'max by (sc_code) (increase(sc_runner_gateway_policy_denials_total[1h])) >= 3'
+        for: 0s
+      profiles: [self-hosting-minimum, small-ha]
+      gate: C11
+      ownerPlan: "42"
+      signalOwnerPlan: "33"
+      runbook: procedures/gateway-failure.md
+      specRefs: ["§81"]
 
     # ------------------------------------------------------------------ notification test
     - alertname: SCNotificationTest

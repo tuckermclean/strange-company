@@ -160,7 +160,7 @@ kube-router accepts traffic whose source is the local node (`--src-type LOCAL`),
 | `strange-company` | per SC-* |
 | `hermes` | per HE-* |
 | `agent-jobs` | **none** |
-| `renovate` | none |
+| `renovate` | none (egress only through R-1) |
 | `dr-tests` | intra-namespace (scratch CNPG clusters); 9187 from Prometheus |
 | `apps` | Traefik on any port; intra-namespace; per-app additions by PR in `gitops/apps/<app>/` |
 
@@ -238,7 +238,7 @@ Each row is rendered as an egress rule in the source namespace **and** an ingres
 | FJ-7 | `forgejo` github-mirror-watch | Internet | 443 | `api.github.com` (plan 17) |
 | FJ-8 | `strange-company` agent-runner | `forgejo` Forgejo | 3000 | Runner API calls (PRs, statuses, deploy keys) |
 | FJ-9 | `woodpecker` server | `forgejo` Forgejo | 3000 | OAuth token exchange, API |
-| FJ-10 | `ci-jobs` | `forgejo` Forgejo | 3000, 2222 | clone (Woodpecker netrc over HTTP; SSH for submodules, plan 20 §13.3) |
+| FJ-10 | `ci-jobs` | `forgejo` Forgejo | **3000 only** | clone over HTTP with the Woodpecker netrc. No SSH (2222): submodule recursion and LFS are forced off by `sc-ci-config` (SEC-B4, plan 20) |
 | FJ-11 | `renovate` | `forgejo` Forgejo | 3000 | PRs |
 | FJ-12 | `monitoring` Prom, blackbox, platform-probes | `forgejo` Forgejo | 3000, 2222 | metrics, health and SSH probes |
 | FJ-13 | `dr-tests` | `forgejo` Forgejo | 3000 | repository restore tests (plan 44) |
@@ -292,7 +292,8 @@ Each row is rendered as an egress rule in the source namespace **and** an ingres
 | MO-10 | `strange-company` agent-runner, model-gateway | `monitoring` OTel Collector (`otel-collector`) | 4317 | OTLP/gRPC spans (ADR-0551, plan 40 §13) |
 | MO-11 | `monitoring-node` otel-agent (H03) | `monitoring` Loki | 3100 | logs |
 | MO-12 | `monitoring` OTel Collector | `monitoring` Tempo (H03) | 4317 | traces |
-| MO-12a | `monitoring` OTel Collector | Nodes | 6443 | `k8sattributes` processor (plan 40); no Internet egress |
+| MO-12a | `monitoring` OTel Collector (`otel-collector` only, not `otel-collector-workers`) | Nodes | 6443 | `k8sattributes` processor (plan 40); no Internet egress |
+| MO-12c | `monitoring` `otel-collector-workers` | `monitoring` `otel-collector` | 4317 | forwards worker spans after its own privacy pipeline; this is its **only** egress besides DNS (SEC-B5: a hostile worker that compromises this receiver reaches no API and no pod read) |
 | MO-12b | Prom | `monitoring` OTel Collector | 8888, 8889, 13133 | self-metrics, span metrics, health (plan 40) |
 | MO-13 | `monitoring` Loki, Tempo | S3 | S3 port | `telemetry` bucket |
 | MO-14 | `monitoring` platform-probes | `forgejo` 3000/2222, `authentik` 9000, Internet 443 (`api.github.com`, plan 17 mirror module) | listed | plan 15 §21.2 |
@@ -323,18 +324,18 @@ Each row is rendered as an egress rule in the source namespace **and** an ingres
 
 | ID | From | To | Port | Purpose |
 |---|---|---|---|---|
-| W-1 | `agent-jobs` | `forgejo` Forgejo | 2222, 3000 | clone/push with the per-execution deploy key (ADR-0007); HTTP for LFS/raw reads |
+| W-1 | `agent-jobs` | `forgejo` Forgejo | **2222 only** | clone/push with the per-execution deploy key (ADR-0007). Workers have no HTTP path to Forgejo's web/API surface (SEC-B10; LFS smudge is disabled in workers, plan 27) |
 | W-2 | `agent-jobs` | `strange-company` agent-runner | 8082 | task packet, result, heartbeat |
 | W-3 | `agent-jobs` | `strange-company` model-gateway | 8080 | model calls |
 | W-4 | `agent-jobs` | `strange-company` egress-proxy | 3128 | package/source registries (authenticated) |
-| W-5 | `agent-jobs` pods labeled `app.kubernetes.io/name=agent-worker` | `monitoring` `otel-collector-workers` (Service 4318 → pod port 4319) | 4319 | OTLP/HTTP spans (plan 40 §13 explicit exception to SPEC §88's list; the only monitoring endpoint workers reach) |
+| W-5 | `agent-jobs` pods labeled `app.kubernetes.io/name=agent-worker` | `monitoring` pods `app.kubernetes.io/name=otel-collector-workers` (a **separate** Collector Deployment with `automountServiceAccountToken: false`, no `k8sattributes`, no API egress; plan 40) via Service 4318 → pod port 4319 | 4319 | OTLP/HTTP spans (plan 40 §13 explicit exception to SPEC §88's list; the only monitoring endpoint workers reach) |
 | — | `agent-jobs` | **anything else** (API server, every CNPG instance, Longhorn, Flux, Woodpecker, Hermes, Alertmanager, Traefik, internet) | — | denied [SPEC §88] |
 
 **Other**
 
 | ID | From | To | Port | Purpose |
 |---|---|---|---|---|
-| R-1 | `renovate` | Internet | 443 | upstream registries and release metadata. **Permanent direct egress** (GC-04 option b): Renovate needs hundreds of registry and changelog hosts; it runs trusted, pinned code and holds only `SC-RENOVATE` (PR creation). Recorded residual risk; plan 23 aligns its text |
+| R-1 | `renovate` | `strange-company` egress-proxy | 3132 | upstream registries, chart repositories and release metadata through the `renovate` listener and profile (SEC-B13; supersedes GC-04's permanent direct egress). No direct Internet. |
 | D-1 | `dr-tests` scratch CNPG instance pods (`cnpg.io/podRole=instance`) | S3 | S3 port | barman restore of scratch clusters (they hold only the scoped backup read credential) |
 | D-1a | `dr-tests` restore-tester and check pods (every pod that is not a scratch instance or scratch app) | `strange-company` egress-proxy | 3131 | S3 endpoint and, for pods labeled `strange.company/check=restore-test-github-black-start`, `github.com`/`api.github.com`, through the `dr` listener and `dr-tests` profile (SEC-23: credential-rich pods processing restored data get no general Internet egress) |
 | D-2 | `dr-tests` | `dr-tests` | all | scratch CNPG clusters |
@@ -343,7 +344,7 @@ Each row is rendered as an egress rule in the source namespace **and** an ingres
 
 ### 9.4 Internet egress holders (complete list)
 
-Only these pods have an Internet rule: CoreDNS (53), Flux source-controller, cert-manager controller, CNPG instances and plugin, Longhorn, cloudflared, Forgejo (+ repo-backup, mirror watch), Authentik worker (SMTP), Alertmanager, blackbox, blackbox-public, platform-probes, Loki, Tempo, agent-runner, model-gateway, egress-proxy, Renovate, `dr-tests`, and `ci-jobs`/`ci-build` only in `ci-egress-direct` mode. Plan 20 §13.3 assumed permanent direct `0.0.0.0/0:443` egress for `ci-jobs`; §9.5 supersedes it from GATE-C02. Plan 53's statement that the Gateway is the only internet-egress workload "among `agent-jobs`, `hermes` and `strange-company`" is refined: within `strange-company`, the Runner (S3 only, not FQDN-enforceable) and the egress proxy also hold it (Q-36-04). `agent-jobs` and `hermes` never do.
+Only these pods have an Internet rule: CoreDNS (53), Flux source-controller, cert-manager controller, CNPG instances and plugin, Longhorn, cloudflared, Forgejo (+ repo-backup, mirror watch), Authentik worker (SMTP), Alertmanager, blackbox, blackbox-public, platform-probes, Loki, Tempo, agent-runner, model-gateway, egress-proxy, `dr-tests` scratch CNPG instances (S3 only), and `ci-jobs`/`ci-build` only in `ci-egress-direct` mode. Plan 20 §13.3 assumed permanent direct `0.0.0.0/0:443` egress for `ci-jobs`; §9.5 supersedes it from GATE-C02. Plan 53's statement that the Gateway is the only internet-egress workload "among `agent-jobs`, `hermes` and `strange-company`" is refined: within `strange-company`, the Runner (S3 only, not FQDN-enforceable) and the egress proxy also hold it (Q-36-04). `agent-jobs` and `hermes` never do.
 
 ### 9.5 CI egress modes
 
@@ -363,7 +364,7 @@ GATE-C02 requires `proxy` (36-AC-15). F11 check `ci-egress-mode` fails if `SC_CI
 
 ### 9.7 Kubernetes API access (36-R-3)
 
-API egress (row API-1) is rendered for exactly: `kube-system` (K-3), `flux-system` (all controllers), `cert-manager` (all three), `cnpg-system` (operator, plugin), CNPG instance pods in `forgejo`, `authentik`, `woodpecker`, `strange-company`, `dr-tests` (the instance manager watches its `Cluster`), `longhorn-system`, `ingress` (Traefik CRD/Ingress providers), `monitoring` (Prometheus service discovery, operator, KSM, Grafana sidecar if enabled, OTel Collector `k8sattributes`), `monitoring-node` (otel-agent k8sattributes, H03), `strange-company` (agent-runner, model-gateway per plan 53), `woodpecker` (both agents, `sc-ci-maint`), `dr-tests` (restore-test orchestration), and upgrade-gate Job pods in gated namespaces (API-2). **Never** `agent-jobs`, `ci-jobs`, `ci-build`, `hermes`, `authentik` (non-instance, non-gate pods), `forgejo` (non-instance, non-gate pods), `renovate`, `apps`.
+API egress (row API-1) is rendered for exactly: `kube-system` (K-3), `flux-system` (all controllers), `cert-manager` (all three), `cnpg-system` (operator, plugin), CNPG instance pods in `forgejo`, `authentik`, `woodpecker`, `strange-company`, `dr-tests` (the instance manager watches its `Cluster`), `longhorn-system`, `ingress` (Traefik CRD/Ingress providers), `monitoring` (Prometheus service discovery, operator, KSM, Grafana sidecar if enabled, OTel Collector `k8sattributes`; **never** `otel-collector-workers`, SEC-B5), `monitoring-node` (otel-agent k8sattributes, H03), `strange-company` (agent-runner, model-gateway per plan 53), `woodpecker` (both agents, `sc-ci-maint`), `dr-tests` (restore-test orchestration), and upgrade-gate Job pods in gated namespaces (API-2). **Never** `agent-jobs`, `ci-jobs`, `ci-build`, `hermes`, `authentik` (non-instance, non-gate pods), `forgejo` (non-instance, non-gate pods), `renovate`, `apps`.
 
 ### 9.8 Knobs
 
@@ -379,7 +380,7 @@ API egress (row API-1) is rendered for exactly: `kube-system` (K-3), `flux-syste
 #### 9.9.1 Behavior
 
 - **Protocol:** HTTP/1.1 forward proxy. `CONNECT host:port` tunnels TLS end to end (no interception, no CA injection). Absolute-form `http://` requests are proxied only to patterns that list port 80. Other methods to the proxy itself return 405. `Upgrade`/WebSocket inside CONNECT tunnels is opaque and therefore allowed.
-- **Listeners:** `:3131` dr (no auth, `dr-tests` profile, reachable only from `dr-tests`; SEC-23); `:3128` agent (auth required), `:3129` ci (no auth, `ci-base` only, reachable only from `ci-jobs`), `:3130` build (no auth, `ci-build` profile, reachable only from `ci-build` by NetworkPolicy; the proxy additionally maps the listener to its profile, so a `ci-jobs` pod can never select the build profile), `:9090` (port name `metrics`, CD-02) metrics/health (`/healthz`, `/readyz`, `/metrics`).
+- **Listeners:** `:3132` renovate (no auth, `renovate` profile, reachable only from `renovate`; SEC-B13); `:3131` dr (no auth, `dr-tests` profile, reachable only from `dr-tests`; SEC-23); `:3128` agent (auth required), `:3129` ci (no auth, `ci-base` only, reachable only from `ci-jobs`), `:3130` build (no auth, `ci-build` profile, reachable only from `ci-build` by NetworkPolicy; the proxy additionally maps the listener to its profile, so a `ci-jobs` pod can never select the build profile), `:9090` (port name `metrics`, CD-02) metrics/health (`/healthz`, `/readyz`, `/metrics`).
 - **Authentication (agent):** `Proxy-Authorization: Basic base64("sc:<jws>")`. The JWS is the per-execution **egress token** (`contracts/task-token.schema.yaml`). Verify: EdDSA signature against `sc-runner-jwks` (`kid` match; the ConfigMap holds current and previous keys), `aud` = `[sc-egress-proxy]` and `token_use` = `egress`, `exp` > now − 30 s skew, `nbf` ≤ now + 30 s, `execution_id` present, `egress_allow` present (may be empty). Failure → 407 `Proxy-Authenticate: Basic realm="sc-egress"` and `sc_egress_auth_failures_total{reason}`.
 - **Decision** for host `h`, port `p` (host lowercased, trailing dot removed, IDNA → punycode):
   1. `h` is an IP literal (v4 or v6, including decimal/octal forms) → deny `IP_LITERAL`.
@@ -397,7 +398,7 @@ API egress (row API-1) is rendered for exactly: `kube-system` (K-3), `flux-syste
 
 #### 9.9.2 Deployment
 
-Deployment `strange-company/egress-proxy`, 2 replicas (both profiles; `topologySpreadConstraints` on hostname at small-ha, `ScheduleAnyway`), PDB `minAvailable: 1`, `priorityClassName: platform`, resources 50m / 64Mi request, 256Mi limit, PSA restricted (non-root, read-only root fs, drop ALL), `automountServiceAccountToken: false` (no API access), Service `egress-proxy` (ClusterIP) ports `agent` 3128, `ci` 3129, `build` 3130, `dr` 3131, `metrics` 9090. Delivered by the `strange-company` chart (plan 54) with values `egressProxy.enabled: true`. Image built by trusted CI (plan 23), digest-pinned.
+Deployment `strange-company/egress-proxy`, 2 replicas (both profiles; `topologySpreadConstraints` on hostname at small-ha, `ScheduleAnyway`), PDB `minAvailable: 1`, `priorityClassName: platform`, resources 50m / 64Mi request, 256Mi limit, PSA restricted (non-root, read-only root fs, drop ALL), `automountServiceAccountToken: false` (no API access), Service `egress-proxy` (ClusterIP) ports `agent` 3128, `ci` 3129, `build` 3130, `dr` 3131, `renovate` 3132, `metrics` 9090. Delivered by the `strange-company` chart (plan 54) with values `egressProxy.enabled: true`. Image built by trusted CI (plan 23), digest-pinned.
 
 #### 9.9.3 Default policy file (initial `policy/egress.yaml`)
 
@@ -430,11 +431,15 @@ spec:
       description: Restore tests (SEC-23). The object-storage endpoint plus GitHub for the black-start check only.
       includeObjectStorageEndpoint: true
       hosts: [github.com, api.github.com, codeload.github.com]
+    renovate:
+      description: Renovate (SEC-B13). Registries and release metadata for the pinned dependency types only.
+      hosts: [github.com, api.github.com, codeload.github.com, objects.githubusercontent.com, raw.githubusercontent.com, "*.github.io", ghcr.io, pkg-containers.githubusercontent.com, registry-1.docker.io, auth.docker.io, hub.docker.com, quay.io, "*.quay.io", registry.k8s.io, "*.pkg.dev", proxy.golang.org, sum.golang.org, update.k3s.io, charts.longhorn.io, registry.npmjs.org, pypi.org]
   listeners:
     agent: {port: 3128, auth: task-token, baseProfile: agent-base, maxConcurrentTunnelsPerClient: 32}
     ci: {port: 3129, auth: none, baseProfile: ci-base, maxConcurrentTunnelsPerClient: 64}
     build: {port: 3130, auth: none, baseProfile: ci-build, maxConcurrentTunnelsPerClient: 64}
     dr: {port: 3131, auth: none, baseProfile: dr-tests, maxConcurrentTunnelsPerClient: 32}
+    renovate: {port: 3132, auth: none, baseProfile: renovate, maxConcurrentTunnelsPerClient: 32}
   delegation:
     repositoryAllowed: ["*.npmjs.org", "*.pythonhosted.org", "*.crates.io", "repo.maven.apache.org", "repo1.maven.org", "plugins.gradle.org", "services.gradle.org", "rubygems.org", "*.rubygems.org", "api.nuget.org", "packagist.org", "repo.packagist.org", "github.com", "codeload.github.com", "objects.githubusercontent.com"]
     maxHostsPerRepository: 20

@@ -164,9 +164,9 @@ Resource names and argument shapes above are taken from the provider documentati
 | Commitment | `P1M` | module constant (catalogue `commitment` must equal it) | PR |
 | OS | Debian 13 | plan 08 constant mapped to `vps_os` label and `image_id` lookup | PR |
 | Delivery wait | 45 min (inside the 60 min provision timeout) | `infra/bootstrap/settings.yaml` `ovh.deliveryTimeout` | PR |
-| Provider plugin | latest `ovh/ovh` release whose `ovh_vps` supports ordering with `plan`, `public_ssh_key`, `image_id`, `do_not_send_password` (verify) | `.terraform.lock.hcl` | PR |
+| Provider plugin | baseline: OVH Terraform provider (ovh/ovh) v2.22.0, line 2.22.x (`plans/compatibility-baseline.yaml`); whether its `ovh_vps` supports ordering with `plan`, `public_ssh_key`, `image_id`, `do_not_send_password` is decided by spikes S-1/S-2 at that version (verify) | `.terraform.lock.hcl` | PR |
 
-**Region guidance.** Choose the compute region close to the operator; choose object storage in a **different** region or provider (SPEC §29: the cluster must not be the sole failure domain for backups). Preflight emits warn `PF-10 S3_SAME_REGION_AS_COMPUTE` when the S3 endpoint host contains the compute region code (heuristic; plan 14 may refine).
+**Region and account guidance (DR-B14).** Choose the compute region close to the operator; choose object storage in a **different** region and preferably a **different provider or at least a different provider account** (an OVH account suspension or billing lock would otherwise take compute and every backup together; plan 45 Q-45-3). The `fresh-install.md` reference setup therefore recommends a non-OVH object-storage account for `PROVIDER=ovh`; same-account placement stays allowed but is reported in every `verify` (SPEC §29: the cluster must not be the sole failure domain for backups). Preflight emits warn `PF-10 S3_SAME_REGION_AS_COMPUTE` when the S3 endpoint host contains the compute region code (heuristic; plan 14 may refine).
 
 ### 9.2 Catalogue entries (`infra/catalog/prices/ovh.yaml`)
 

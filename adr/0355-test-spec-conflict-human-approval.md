@@ -8,7 +8,7 @@ SPEC §53 says that when implementation reveals an invalid test the task enters 
 ## Decision
 - Adjudication by a read-only reviewer execution is required first (`test_valid`, `test_invalid`, `spec_ambiguous`).
 - `test_valid` (keep the test) needs no human: it can only tighten.
-- `test_invalid` (change the test) needs a human `/sc accept-test-change` (ADR-0350) when `testSpecConflict.resolutionApproval` is `human` — the platform default. Platform policy may set `adjudicator`; repositories can only tighten back to `human`.
+- `test_invalid` (change the test) needs a human `/sc accept-test-change conflict=<id> digest=<12 hex of sha256(proposed_test_change)>` (ADR-0350; the approval is bound to that conflict and that proposed change, blind TDD-B13) when `testSpecConflict.resolutionApproval` is `human` — the platform default. Platform policy may set `adjudicator`; repositories can only tighten back to `human`.
 - An approved change opens a new generation: new red commit on top of the previous red commit, new RED verification, new manifest; old provenance retained.
 
 ## Consequences

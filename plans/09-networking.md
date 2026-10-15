@@ -46,7 +46,7 @@ Derived requirements:
 
 - flannel `wireguard-native` overlay (configured by plan 07's cluster file) verified by this plan.
 - CoreDNS: Deployment `kube-system/coredns`, Service `kube-system/kube-dns` (`10.43.0.10`), ConfigMap `kube-system/coredns` (Corefile, Ansible-owned) and ConfigMap `kube-system/coredns-custom` (rewrite, Flux-owned).
-- Traefik: HelmRelease `ingress/traefik`, Service `ingress/traefik` (**pinned ClusterIP `10.43.0.20`**, CD-21; ports 80→8000, 443→8443), metrics Service `ingress/traefik-metrics` (9100), IngressClass `traefik` (default), TLSOption `default`, TLSStore `default`.
+- Traefik: HelmRelease `ingress/traefik`, Service `ingress/traefik` (**pinned ClusterIP `${SC_TRAEFIK_CLUSTER_IP}`**: the 20th address of `SC_SERVICE_CIDR`, computed by plan 50 at render into `cluster-vars`, `10.43.0.20` for the default CIDR; CD-21 as amended by CD-37. Preflight rejects a service CIDR too small to hold it or one where it collides with the cluster DNS IP; ports 80→8000, 443→8443), metrics Service `ingress/traefik-metrics` (9100), IngressClass `traefik` (default), TLSOption `default`, TLSStore `default`.
 - Tunnel mode: Deployment `ingress/cloudflared`, ConfigMap `ingress/cloudflared-config`, Secret `ingress/cloudflared-tunnel` (`SC-DNS-TUNNEL`, key `token`; name per `contracts/secret-classes.yaml`), PodMonitor target port 2000.
 - Public DNS records (Cloudflare): tunnel mode `CNAME <host> → <tunnel-id>.cfargotunnel.com` (proxied); direct mode `A <host> → <every node public IPv4>` (DNS-only, not proxied).
 - Generated committed files (§9.3): `cloudflared-config.yaml`, `coredns-custom.yaml`, `dns-records.yaml`.
@@ -164,7 +164,7 @@ k3s's bundled CoreDNS addon is suppressed by the marker file `/var/lib/rancher/k
   }
   import /etc/coredns/custom/*.server
   ```
-- Deployment `coredns`: replicas `min(2, server count)` (rendered by Ansible from inventory), `priorityClassName: system-cluster-critical`, `podAntiAffinity` **required** on `kubernetes.io/hostname`, `maxUnavailable: 1` rolling update, `readinessProbe` `:8181/ready`, `livenessProbe` `:8080/health`, resources 50m/70Mi request, 170Mi limit, image = the CoreDNS image the pinned k3s bundles (`rancher/mirrored-coredns-coredns:<v>@sha256:<d>`, from `versions/k3s.lock.yaml`), volumes `config-volume` (ConfigMap `coredns`) and `custom-config-volume` (ConfigMap `coredns-custom`, `optional: true`) mounted at `/etc/coredns/custom`; security context non-root, `NET_BIND_SERVICE` only, read-only root fs;
+- Deployment `coredns`: replicas `min(2, server count)` (rendered by Ansible from inventory), `priorityClassName: system-cluster-critical`, `podAntiAffinity` **required** on `kubernetes.io/hostname`, `maxUnavailable: 1` rolling update, `readinessProbe` `:8181/ready`, `livenessProbe` `:8080/health`, resources 50m/70Mi request, 170Mi limit, image = the CoreDNS image the pinned k3s bundles (baseline k3s v1.36.5 → CoreDNS **v1.14.7**, `rancher/mirrored-coredns-coredns:1.14.7@sha256:<d>`, from `versions/k3s.lock.yaml`; `rewrite … answer auto` is supported in 1.14, re-verified by 09-AC-6), volumes `config-volume` (ConfigMap `coredns`) and `custom-config-volume` (ConfigMap `coredns-custom`, `optional: true`) mounted at `/etc/coredns/custom`; security context non-root, `NET_BIND_SERVICE` only, read-only root fs;
 - Service `kube-dns`: ClusterIP `10.43.0.10`, ports 53/udp, 53/tcp, 9153/tcp, label `k8s-app: kube-dns`;
 - PodDisruptionBudget `coredns` (`minAvailable: 1`), rendered only when server count ≥ 2.
 
@@ -194,7 +194,7 @@ Consequences that other plans must honor:
 
 - **Tunnel:** one named tunnel `sc-<cluster>` per installation, `config_src: local` (ingress rules live in Git, not in the Cloudflare dashboard). Created by `sc-bootstrap tunnel ensure` with `SC-DNS-API` (Cloudflare API `POST /accounts/{account_id}/cfd_tunnel` with `config_src: local`, then `GET .../cfd_tunnel/{id}/token`; verify endpoints at implementation, 09-AC-14). The tunnel UUID is written to `cluster-vars.SC_TUNNEL_ID`; the token to the SOPS file.
 - **Required token permissions** (PF-15): Account › Cloudflare Tunnel › Edit; Zone › DNS › Edit; Zone › Zone › Read. Direct mode with DNS-01 needs only the zone permissions.
-- **Deployment `ingress/cloudflared`:** replicas 1 (self-hosting-minimum), 2 (small-ha, `podAntiAffinity` preferred on hostname, PDB `minAvailable: 1`); image `cloudflare/cloudflared@sha256:<d>` (selection rule: newest release at least 14 days old; Renovate weekly, because Cloudflare supports connector versions for about a year); args `tunnel --no-autoupdate --config /etc/cloudflared/config.yaml run`; env `TUNNEL_TOKEN` from Secret `cloudflared-tunnel` key `token` (verify env name, 09-AC-14); readiness `GET :2000/ready` (200 when at least one edge connection is registered, verify); liveness same path, `failureThreshold: 6`, `periodSeconds: 10`; resources 20m/48Mi request, 128Mi limit; `priorityClassName: platform-critical`; runAsNonRoot uid 65532, read-only root fs, drop ALL, seccomp RuntimeDefault (PSA restricted-compatible).
+- **Deployment `ingress/cloudflared`:** replicas 1 (self-hosting-minimum), 2 (small-ha, `podAntiAffinity` preferred on hostname, PDB `minAvailable: 1`); image `cloudflare/cloudflared@sha256:<d>` (baseline **2026.10.0**, `plans/compatibility-baseline.yaml`; patches within the month line via Renovate after a 14-day soak; Cloudflare supports connector versions for about a year); args `tunnel --no-autoupdate --config /etc/cloudflared/config.yaml run`; env `TUNNEL_TOKEN` from Secret `cloudflared-tunnel` key `token` (verify env name, 09-AC-14); readiness `GET :2000/ready` (200 when at least one edge connection is registered, verify); liveness same path, `failureThreshold: 6`, `periodSeconds: 10`; resources 20m/48Mi request, 128Mi limit; `priorityClassName: platform-critical`; runAsNonRoot uid 65532, read-only root fs, drop ALL, seccomp RuntimeDefault (PSA restricted-compatible).
 - **Config (`cloudflared-config`, generated):**
   ```yaml
   tunnel: ${SC_TUNNEL_ID}
@@ -221,7 +221,7 @@ Consequences that other plans must honor:
 
 ### 9.3 Traefik
 
-HelmRelease `ingress/traefik` (remediation class `controller`, plan 18 §8.5), chart: official Traefik chart (selection rule: latest Traefik v3 chart release ≥ 14 days old whose CRDs support the pinned Kubernetes minor; OCI `oci://ghcr.io/traefik/helm/traefik` if published, else `https://traefik.github.io/charts`; verify). Values (abridged; key names verify against the pinned chart, 09-AC-12):
+HelmRelease `ingress/traefik` (remediation class `controller`, plan 18 §8.5), chart: official Traefik chart, baseline **chart 41.7.1 / Traefik v3.7.14** from `https://traefik.github.io/charts` (`plans/compatibility-baseline.yaml`, CD-29); the value keys below are re-verified against that chart by 09-AC-12. Values (abridged; key names verify against the pinned chart, 09-AC-12):
 
 ```yaml
 deployment:
@@ -237,7 +237,7 @@ ports:
   websecure: {port: 8443, expose: {default: true}, exposedPort: 443, http3: {enabled: false}}
   oidc:      {port: 8444, expose: {default: false}}   # in-cluster `auth.` only; Service traefik-oidc (extraObjects) maps 443 → 8444 (SEC-16)
   metrics:   {port: 9100, expose: {default: false}}
-service: {type: ClusterIP, spec: {clusterIP: 10.43.0.20}}   # pinned (CD-21); reserved: no other Service may request it (F11 check)
+service: {type: ClusterIP, spec: {clusterIP: "${SC_TRAEFIK_CLUSTER_IP}"}}   # derived (CD-21/CD-37); reserved: no other Service may request it (F11 check)
 tlsOptions:
   default: {minVersion: VersionTLS12, sniStrict: true}
 tlsStore:
@@ -429,7 +429,7 @@ Existing catalogue alerts whose signal this plan owns: `SCEdgeDown`, `SC*PublicE
 - **09-AC-14** `sc-bootstrap tunnel ensure` run twice reports `unchanged` on the second run, and the Cloudflare API shows exactly one tunnel named `sc-<cluster>` with `config_src: local` (re-verifies the API endpoints and token flow).
 - **09-AC-15** From outside the cluster: `curl -sk --max-time 5 https://<node-public-ip>:6443/` fails to connect, and no public hostname routes to the API (`curl -s https://kubernetes.<domain>/` → 404 or DNS failure).
 - **09-AC-16** `sc-gitops gen public-hosts --cluster <c> --check` exits 0 on the seeded commit (generated files match).
-- **09-AC-18** `kubectl -n ingress get svc traefik -o jsonpath='{.spec.clusterIP}'` = `10.43.0.20` (CD-21).
+- **09-AC-18** `kubectl -n ingress get svc traefik -o jsonpath='{.spec.clusterIP}'` equals `cluster-vars.SC_TRAEFIK_CLUSTER_IP`, which equals the 20th address of `SC_SERVICE_CIDR` (`python3 -c` `ipaddress` computation in the check; CD-37). CI fixture: a cluster rendered with `SC_SERVICE_CIDR=10.96.0.0/16` yields `10.96.0.20` in both the HelmRelease values and the plan 08 hosts block.
 - **09-AC-19** (SEC-16) From a probe pod: `nslookup auth.<domain>` returns the ClusterIP of `ingress/traefik-oidc`; `curl --resolve git.<domain>:443:<traefik-oidc IP> https://git.<domain>/` returns 404 from Traefik (no route on `oidc`), while `curl https://auth.<domain>/-/health/live/` returns 200.
 
 ### GATE-C01 (contributed; first internal image exists only after P11)

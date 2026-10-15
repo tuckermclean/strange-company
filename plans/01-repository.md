@@ -42,7 +42,7 @@ Derived requirements:
 
 - SPEC §5, §7, §9, §37, §42, §100, §120.
 - Paths requested by other plans (collected in §6.1; every reference in `plans/*.md` was reconciled when this plan was written, see §25 for conflicts).
-- Third-party version selection rules from the owning plans (02, 06, 07, 18, 23, …).
+- Third-party versions from `plans/compatibility-baseline.yaml` (CD-29, ADR-0022).
 
 ## 4. Outputs
 
@@ -185,8 +185,8 @@ Every pinned identifier lives in exactly one of these files. Nothing else in the
 | `versions/lab-images.lock.yaml` | lab VM cloud images (Debian 13 genericcloud, Ubuntu 24.04 cloud image) per arch: URL, upstream checksum (sha512 for Debian, sha256 for Ubuntu), image build serial | `kind: LabImageLock` | Renovate / human PR | `sc-lab` (plan 05 §14.6) | `locks-check` |
 | `infra/catalog/prices/*.yaml` | infrastructure prices (not versions, but version-controlled facts with `verifiedAt`) | `InfraPriceCatalog` | human PR | plan 03 guard | `locks-check` (version bump rule, plan 03 §14.5) |
 
-**Version selection rules** are stated by the owning plans (02, 06, 07, 18, 23 …). This plan states the mechanics only:
-- A lock entry records `version`, the immutable identifier, `selectedBy` (the selection rule's short id from the owning plan, e.g. `flux:latest-minor-supporting-k8s`) and `verifiedAt` (date of the last re-verification test run for version-sensitive behavior).
+**Versions** come from `plans/compatibility-baseline.yaml` (CD-29, ADR-0022): every pin lies inside its component's baseline line; moving to a newer minor or major is a plan-amendment PR that also updates the baseline. This plan states the mechanics only:
+- A lock entry records `version`, the immutable identifier, `selectedBy` (`baseline:<component>`, the baseline entry the pin belongs to, e.g. `baseline:flux`) and `verifiedAt` (date of the last re-verification test run for version-sensitive behavior).
 - Renovate (plan 23) is configured with custom regex managers for every file above, so every update arrives as a PR that runs the full catalogue.
 - `make locks-check` (implemented in `sc-lint locks`) asserts, deterministically and offline:
   1. every lock file validates against its kind's schema;
@@ -383,7 +383,7 @@ Rules:
 
 - **`AGENTS.md`** (repository root) is advisory instruction for any coding agent working in the tree (SPEC §42). Content (≤ 300 lines; `make layout-check` enforces the size): how to run `make verify` and `make test GO_TEST_RUN=…`; where code lives (§6.1, §6.2); the TDD rule (RED commit `test(<task-id>): …` first); the list of protected paths (generated from §13.2, with a header pointing out that the list is enforced by platform policy, not by this file); "never commit secrets"; "never edit generated files". It is a **protected path**: agents cannot change their own instructions (ADR-0008). It contains no policy that exists only there: `make layout-check` verifies that every rule in `AGENTS.md` section "Enforced rules" maps to a policy key in `.strange-company/policy.yaml` or `policy/verification.yaml` (by a `<!-- policy: <key> -->` marker per bullet).
 - **`.strange-company/repo.yaml`** for this repository: `project: strange-company`, `languages: [go, yaml, sh, hcl]`, `importantPaths` from §6.1 with owner plans, `buildCommands: [make build]`, `testCommands: [make test]`, `contextFiles: {architecture: .strange-company/architecture.md, decisionsDir: adr, rolesDir: .strange-company/roles, agentsMd: AGENTS.md}`. `decisionsDir: adr` makes the canonical ADRs the repository decisions (SPEC §42 `decisions/`), so there is no duplicate directory.
-- **`.strange-company/validation.yaml`** (`contracts/repo-validation.schema.yaml`, plan 22): suite command `make test` with `JUNIT=/workspace/out/junit.xml`; `selectArgv: ["GO_TEST_RUN={test_ids}"]` (and `GO_TEST_PKGS={protected_test_packages}` where plan 22 scopes by package) so the verifier can run only selected tests; `checks` = `make lint`, `make contracts`, `make policy-check`, `make gitops-validate` with `toolingFrom: base`. Every Make target that inspects source honors **`SC_TARGET_TREE`** (default: the repository root): when set, the target's tooling is built from the current worktree (base) and the files it checks are read from `$SC_TARGET_TREE` (head). Full validation `make verify`.
+- **`.strange-company/validation.yaml`** (`contracts/repo-validation.schema.yaml`, plan 22): suite command `make test` with `JUNIT=/workspace/out/junit.xml`; `selectArgv: ["GO_TEST_RUN={test_ids}"]` (and `GO_TEST_PKGS={protected_test_packages}` where plan 22 scopes by package) so the verifier can run only selected tests; `checks` = `make lint`, `make contracts`, `make policy-check`, `make gitops-validate`, `make secrets-lint`, `make secrets-scan` and `make stage0-validate`, all with `toolingFrom: base` (SEC-B8). Every Make target that inspects source honors **`SC_TARGET_TREE`** (default: the repository root): when set, the target's tooling is built from the current worktree (base) and the files it checks are read from `$SC_TARGET_TREE` (head). Full validation `make verify`.
 - **`.strange-company/policy.yaml`**: protected paths (§13.2), protected branches (`main`, `release/*`), reserved branch prefixes (§6.4), test-infrastructure paths (`test/fixtures/**`, `src/**/testdata/**` are *not* protected; `mk/**`, `Makefile` are).
 - **Company context** lives in `context/company/*.md` (plan 25 owns content; first file `rules.md` with the SPEC §41 examples).
 
@@ -404,8 +404,8 @@ The kinds `PlatformVersionLock`, `K3sVersionLock`, `CompatibilityMatrix`, `Inter
 apiVersion: strange.company/v1alpha1
 kind: PlatformVersionLock
 spec:
-  kubernetes: {minor: "1.34"}               # must equal versions/k3s.lock.yaml minor
-  flux: {version: "2.7.2", selectedBy: flux:latest-minor-supporting-k8s, verifiedAt: 2026-10-01}
+  kubernetes: {minor: "1.36"}               # must equal versions/k3s.lock.yaml minor (baseline k3s v1.36.5+k3s1)
+  flux: {version: "2.9.6", selectedBy: "baseline:flux", verifiedAt: 2026-10-14}
   charts:
     - name: cert-manager
       source: {oci: oci://quay.io/jetstack/charts/cert-manager}   # or {helm: https://…, chart: …}
@@ -419,7 +419,7 @@ spec:
       usedBy: gitops/platform/cloudflared
 ```
 
-(Version numbers above are illustrative only.)
+(Values follow `plans/compatibility-baseline.yaml`; chart versions and digests are filled in at implementation.)
 
 ### 8.3 Contract tooling (F02)
 
@@ -490,7 +490,7 @@ src/.golangci.yaml  test/fixtures/secrets-scan/**  test/fixtures/age/**  test/co
 
 This list is the plan 22 §9.3 default set (which binds every repository) plus this repository's additions; plan 22 is authoritative for the task-level default set, and `policy/test-quarantine.yaml` (plan 52) is covered by `policy/**`. 01-AC-11 asserts the union.
 
-**Elevated paths (TDD-15, plan 22 §… item 7):** the code that judges future work stays an autonomous work area but needs elevated review: `.strange-company/policy.yaml` lists under `merge.elevatedPaths` `src/internal/verify/**`, `src/internal/statemachine/**`, `src/internal/policy/**`, `src/cmd/sc-verify/**`, `src/cmd/sc-ci-config/**`; plan 55's `strange-company/review` status stays `failure` until `spec.merge.elevatedApprovals` (2) human approvals exist. In addition, `validation.yaml` marks the checker targets (`make contracts`, `make policy-check`, `make lint`, `make gitops-validate`) `toolingFrom: base`, so GREEN runs them from the base worktree with `SC_TARGET_TREE` pointing at the head workspace (§7.3). (An earlier draft made these paths protected; plan 22's elevated-review resolution is authoritative.)
+**Elevated paths (TDD-15, plan 22 §… item 7):** the code that judges future work stays an autonomous work area but needs elevated review: `.strange-company/policy.yaml` lists under `merge.elevatedPaths` (TDD-B4, SEC-B8): `src/internal/verify/**`, `src/internal/statemachine/**`, `src/internal/policy/**`, `src/cmd/sc-verify/**`, `src/cmd/sc-ci-config/**`, `src/internal/runner/**`, `src/cmd/agent-runner/**`, `src/internal/forge/**`, `src/cmd/sc-worker/**`, `src/internal/worker/**`, `src/internal/gateway/**`, `src/cmd/model-gateway/**`, `src/internal/ledger/**`, `src/internal/lint/**`, `src/cmd/sc-lint/**`, `src/internal/scrub/**`, `src/internal/gitops/**`, `src/cmd/sc-gitops/**`, `src/internal/jobs/**` (Job builder), `src/cmd/egress-proxy/**`, `src/cmd/sc-release/**`, `src/cmd/sc-e2e/**` and `test/e2e/**` (the SPEC §106 self-test trajectories). Approvals follow CD-39: with N = size of team `sc-mergers` (recorded in installation config), elevated-path changes need `min(2, N)` human approvals; with **N = 1** (single-operator mode) the Runner additionally keeps `strange-company/review` pending until 24 h after the last push touching an elevated path, and announces the change on the operator's notification channel when the window starts. Merging is human-only by construction (team `sc-mergers`, CD-38). In addition, `validation.yaml` marks the checker targets (`make contracts`, `make policy-check`, `make lint`, `make gitops-validate`) `toolingFrom: base`, so GREEN runs them from the base worktree with `SC_TARGET_TREE` pointing at the head workspace (§7.3). (An earlier draft made these paths protected; plan 22's elevated-review resolution is authoritative.)
 
 Not protected (normal autonomous work areas): `src/**` (except `src/.golangci.yaml`; the elevated paths above need two approvals), `charts/**`, `images/**`, `gitops/platform/**` (except the two generated/admission subtrees above), `gitops/apps/**`, `observability/**`, `infra/ansible/**`, `infra/lab/**`, `test/**` (except the listed fixtures), `evidence/**`, `README.md`.
 

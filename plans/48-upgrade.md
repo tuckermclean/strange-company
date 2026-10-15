@@ -116,16 +116,18 @@ If the gate fails, the app layer stays at the old version and `SCUpgradeGateFail
 
 ## 9. Configuration
 
-### 9.1 Version selection rules (summary; component plans hold the specifics)
+### 9.1 Version baselines (CD-29; `plans/compatibility-baseline.yaml` is authoritative)
+
+Every component runs the version recorded in `plans/compatibility-baseline.yaml` (e.g. k3s v1.36.5+k3s1, Flux 2.9.x, cert-manager v1.21.2, Traefik chart 41.7.1 / v3.7.14, cloudflared 2026.10.0, kured 1.23.0). Patches within a baseline line are routine upgrades under the rules below; a new minor or major is a plan-amendment task that updates the baseline entry and re-runs the version-sensitive ACs the entry lists. The rules below decide *when* a change within a line is taken:
 
 | Component | Rule |
 |---|---|
-| k3s | plan 07 §19.1: latest patch of the newest minor on the k3s `stable` channel, GA ≥ 30 days, supported by every pinned component in `compat.yaml`, ≥ 1.30 |
+| k3s | baseline line 1.36.x (plan 07 §19.1); patches via Renovate; the next minor only by plan amendment, using plan 07's criteria |
 | OS | Debian 13 / Ubuntu 24.04 security pocket automatically; point upgrades monthly; release upgrades per §14.2 |
-| Flux | latest minor ≥ 14 days old supporting the pinned Kubernetes minor |
-| Third-party charts | latest release ≥ 14 days old (Renovate `minimumReleaseAge: 14 days`), except security releases (no wait) |
+| Flux | baseline line (2.9.x); patches ≥ 14 days old |
+| Third-party charts | patches within the baseline line ≥ 14 days old (Renovate `minimumReleaseAge: 14 days`), except security releases (no wait) |
 | PostgreSQL | stay on a major until it has < 12 months of community support left, then move to the newest major CNPG supports and that has ≥ 1 minor release (x.1) |
-| Longhorn | latest patch of the current minor; minors one at a time along Longhorn's documented upgrade path |
+| Longhorn | baseline line; patches only; minors by plan amendment, one at a time along Longhorn's documented upgrade path |
 | Internal components | released by trusted CI from `main` (plan 23) |
 
 ### 9.2 Renovate policy (plan 23 renders `renovate.json`)

@@ -256,6 +256,7 @@ $defs:
             - preexisting_test_removed
             - test_dependency_changed
             - not_task_pull_request
+            - marker_conditional
       warnings:
         type: array
         items: {type: string, maxLength: 300}

@@ -140,10 +140,15 @@ $defs:
     properties:
       name: {type: string, pattern: "^[a-z][a-z0-9-]{0,40}$"}
       toolingFrom:
-        description: "`base` runs the check from the base worktree (checker built from trusted code) with `SC_TARGET_TREE` pointing at the head workspace, so the work under test cannot weaken its own checker (TDD-15). `head` (default) runs it in the head workspace."
+        description: "`base` (default, TDD-B5) runs the check from the base worktree (checker and its configuration from trusted code) with `SC_TARGET_TREE` pointing at the head workspace, so the work under test cannot weaken its own checker. `head` must be justified and its argv/config files are then discovery-protected whole files."
         type: string
         enum: [base, head]
-        default: head
+        default: base
+      configPaths:
+        description: Tool configuration files the check reads (e.g. `.golangci.yml`, `ruff.toml`, `.eslintrc*`, included `*.mk`). They become discovery-protected whole files for implementers (plan 22 §14.5).
+        type: array
+        maxItems: 50
+        items: {$ref: "#/$defs/RepoPath"}
       argv: {$ref: "#/$defs/Argv"}
       timeoutSeconds: {type: integer, minimum: 10, maximum: 3600}
       env:

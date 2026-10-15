@@ -49,7 +49,7 @@ nodes:
   - {id: C11, phase: 3, name: sc-dashboards-and-alerts, plans: ["34", "38", "39", "40", "41", "42", "55"], deps: [C06, P09, C10]}
   # ---------------- PHASE 4 ----------------
   - {id: R01, phase: 4, name: real-harness, plans: ["28", "40"], deps: [C10]}
-  - {id: R02, phase: 4, name: self-hosting-threshold, plans: ["37", "43", "46", "51"], deps: [R01, C11, P12]}
+  - {id: R02, phase: 4, name: self-hosting-threshold, plans: ["37", "43", "44", "45", "46", "51"], deps: [R01, C11, P12]}
   # ---------------- PHASE 6 ----------------
   - {id: H01, phase: 6, name: nodes-2-3-etcd-quorum, plans: ["05", "07", "47"], deps: [P12, R02]}
   - {id: H02, phase: 6, name: cnpg-3-longhorn-2, plans: ["11", "12", "13", "44", "47"], deps: [H01, C08]}

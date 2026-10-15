@@ -25,7 +25,7 @@ Not for: TDD tasks (never merge agent work this way); routine merges; branch-pro
 
 - Toolbox shell: `./bootstrap shell`, then `sc-env`.
 - `SC-BREAK-GLASS-FORGEJO` from the recovery bundle: `./bootstrap exec -- sc-bootstrap bundle open --show SC-BREAK-GLASS-FORGEJO` (the password of `sc-breakglass`).
-- An incident ID (e.g. `inc-20261014-1`) recorded in an issue in `strange-company`.
+- An incident ID (e.g. `inc-20261014-1`) recorded **before step 2** in an issue in `strange-company` labeled `sc/incident` whose title contains the ID. The merge auditor accepts the push as `emergency_merge` only if that issue predates the push, the pusher is `sc-breakglass`, and the push falls inside the observed bootstrap-stage window (plan 55 §14.8); otherwise it records `bypass`.
 - The reviewed PR number `<n>` and its head commit `<sha>`. The commit must apply as a **fast-forward** onto the protected branch tip; if it does not, rebase the PR branch first and get the review re-confirmed.
 
 ## Safety checks before acting
@@ -38,7 +38,7 @@ Not for: TDD tasks (never merge agent work this way); routine merges; branch-pro
 ## Steps
 
 1. **Commit trailer.** Make sure the commit to land carries the trailer `SC-Emergency-Merge: <incident-id>`. If it does not, amend the commit on the PR branch (`git commit --amend --trailer "SC-Emergency-Merge: <incident-id>"`), push the PR branch, and have the reviewer re-approve. Expected: `git log -1 --format=%B <sha>` shows the trailer.
-2. **Open the gate (bootstrap stage).** `./bootstrap exec -- sc-bootstrap forge apply --stage bootstrap`. Expected: the protected branch's push whitelist contains the break-glass identity, as committed in `forge/forge.yaml`. Plan 16 must whitelist `sc-breakglass` in the bootstrap stage; until then it whitelists `sc-admin`, so use that account's credential from the recovery bundle instead. The alerts `SCForgeBranchProtectionDrift` and `SCBreakGlassUsed{target="forgejo"}` fire and are expected; annotate them with the incident ID.
+2. **Open the gate (bootstrap stage).** `./bootstrap exec -- sc-bootstrap forge apply --stage bootstrap`. Expected: the protected branch's push whitelist contains the break-glass identity, as committed in `forge/forge.yaml`. Plan 16 whitelists `sc-breakglass` in the bootstrap stage; push only as `sc-breakglass` (a push by `sc-admin` is audited `bypass`). The alerts `SCForgeBranchProtectionDrift` and `SCBreakGlassUsed{target="forgejo"}` fire and are expected; annotate them with the incident ID.
 3. **Fast-forward push** exactly the reviewed commit as the whitelisted identity:
    ```sh
    git fetch https://git.<domain>/strange-company/strange-company.git main pull/<n>/head

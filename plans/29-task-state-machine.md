@@ -189,7 +189,7 @@ Human-only transitions are requested by commenting on the task's **tracking issu
 
 **Authorization (all must hold, else the Runner replies with a rejection comment and records `rejected_events`):**
 1. Webhook HMAC valid and delivery not seen before (plan 26).
-2. The sender is a **human account** (CD-15): `sender.login` (verify the payload field at C03) is not in `spec.humanAuthority.machineAccounts` (default `[sc-runner, sc-woodpecker, sc-renovate, sc-backup, sc-admin, sc-ci-config]`), does not start with `sc-` (reserved for machine accounts, plan 16), and the Forgejo user record is an individual account, not a bot or organization (`GET /api/v1/users/{username}`; verify the field at C03).
+2. The sender is a **human account** (CD-15; allow-list per blind SEC-B12): the Forgejo user's login source is the Authentik OIDC source (`GET /api/v1/users/{username}` / admin user view `login_source_id`; verify the field at C03 on Forgejo v15.0.x, `plans/compatibility-baseline.yaml`), the login does not start with `sc-` (reserved for machine accounts, plan 16) and is not in `spec.humanAuthority.machineAccounts`, and the account is an individual user, not a bot or organization. Local accounts (`sc-admin`, `sc-breakglass`) are therefore never accepted.
 3. The sender is a member of one of `spec.humanAuthority.forgejoTeams` (default `[Owners, engineers]`) of the repository's organization, checked live with `GET /api/v1/orgs/{org}/teams` and `GET /api/v1/teams/{id}/members/{username}` as `sc-runner` (verify paths at C03; 29-AC-31 re-verifies).
 4. The comment is on the issue or PR linked to the task (`tracking_issue` or `pull_request`). Exception: `/sc accept-external-commit` may also be posted on a **non-task** PR to adopt foreign commits there (plan 55 §7.2, SEC-2); it then changes no task state and only records the adoption.
 5. At most `spec.humanAuthority.maxCommandsPerTaskPerHour` (default 10) accepted commands per task per hour.
@@ -209,8 +209,8 @@ Hermes holds **no** Forgejo account (CD-15) and workers hold only deploy keys (A
 | `/sc done` | `declare_done` | T071 | — |
 | `/sc cancel` | `cancel_requested` | T060, T061 | — |
 | `/sc escalate` | `escalate` | T062 | — |
-| `/sc accept-test-change` | `approve_test_change` | `TEST_SPEC_CONFLICT` (T083) | optional `guidance:` text for the tester (≤ 4000 chars) |
-| `/sc strengthen-tests` | `strengthen_tests` | `ALREADY_SATISFIED`, `NEEDS_INVESTIGATION` (T016; enables T015/T131) | optional `guidance:` |
+| `/sc accept-test-change conflict=<id> digest=<12 hex>` | `approve_test_change` | `TEST_SPEC_CONFLICT` (T083) | `conflict` must be the open conflict id (`sc-<n>-c<k>`) and `digest` the first 12 hex digits of sha256 of the decisive adjudication's `proposed_test_change` (shown in the Runner's notification comment); mismatch → `PAYLOAD_INVALID`; both are recorded on the transition (blind TDD-B13). Optional `guidance:` text for the tester (≤ 4000 chars) |
+| `/sc strengthen-tests` | `strengthen_tests` | `ALREADY_SATISFIED`, `NEEDS_INVESTIGATION`, `RED_VERIFIED`, `JUDGE_APPROVED` (T016; enables T015/T131 and the strengthening transitions T012/T112, which now require it — blind TDD-B3) | optional `guidance:` |
 | `/sc accept-external-commit <sha> [<sha>…]` | `accept_external_commit` | `NEEDS_HUMAN` (T072, T073) | the listed SHAs must be exactly the commits in `branch head..` not produced by accepted executions; recorded as `human_commit` provenance; GREEN and a new final review follow |
 | `/sc reject-conflict` | `reject_conflict` | `TEST_SPEC_CONFLICT` (T084, T085) | — |
 | `/sc approve-judge` | `approve_judge` | `JUDGE_AWAITING_APPROVAL` (T121) | — |
@@ -383,7 +383,7 @@ N/A as a separate workload — the library runs inside the Runner process (plan 
 
 ### 14.2 Tester retries (TEST_NEEDS_WORK)
 
-**Strengthening after valid RED** (T012) is allowed only while no implementer has ever been dispatched in the generation (`G_NO_IMPLEMENTER_DISPATCHED_IN_GENERATION`); it opens a new generation (`strengthened`, start = red(g)) and the new RED must be a superset of the old manifest (plan 22 R12). After any implementer dispatch, test changes need TEST_SPEC_CONFLICT and a human (TDD-5).
+**Strengthening after valid RED** (T012) requires a human `/sc strengthen-tests` (T016; blind TDD-B3) and is allowed only while no implementer has ever been dispatched in the generation (`G_NO_IMPLEMENTER_DISPATCHED_IN_GENERATION`); it opens a new generation (`strengthened`, start = red(g)) and the new RED must be a superset of the old manifest (plan 22 R12). After any implementer dispatch, test changes need TEST_SPEC_CONFLICT and a human (TDD-5).
 
 RED evidence classified `red_invalid` (T021) counts one merit failure. Hermes re-dispatches a tester (T011) with `prior_attempt_evidence` (the red-result reasons) in context; the new tester commit continues on the branch head. The red range of the generation is `(generation start, head]`; every commit in it must be a tester commit. Exhaustion → `NEEDS_HUMAN` through T103 when attempts run out at dispatch time is impossible (`G_ATTEMPTS_REMAIN` refuses the dispatch → Hermes gets `ATTEMPTS_EXHAUSTED` and escalates; the watchdog escalates after 72 h otherwise).
 
@@ -487,6 +487,7 @@ Many-to-one, first matching entry by `priority`: `NEEDS_HUMAN`, `JUDGE_AWAITING_
 | Worker `failure.reason` | all reasons and details of plan 27 §14.15 (adopted as authoritative): infrastructure for transport/harness/clone/commit/stream failures; **merit** for `HARNESS_GAVE_UP` (`harness_error` with `max_turns:`/`claim_failed:`), `OUTPUT_CONTRACT_VIOLATED` (`malformed_harness_output` `claim:`) and `NO_CHANGES`; policy for `DIFF_PRECHECK_FAILED`, `SECRET_DETECTED`; `branch_exists`/`branch_moved`/`push_rejected` infrastructure unless the ref audit upgrades to `REF_VIOLATION` | as listed | FAILED |
 | Worker `budget_denied`/`emergency_stop` claim **without** a matching `ledger.denials` row (plan 26 step 11) | `BUDGET_CLAIM_UNSUPPORTED` | infrastructure (requeued like other infrastructure failures; repeated claims hit `maxConsecutive`) | FAILED |
 | Gateway `SC_BUDGET_CONTENDED` surfaced after SDK retries (plan 33) | `BUDGET_CONTENDED` | **infrastructure**, refunded (contention is not exhaustion; T100 requeue) | FAILED |
+| Gateway policy denials `SC_MODEL_QUARANTINED`, `SC_PRICE_UNKNOWN`, `SC_MODEL_NOT_ALLOWED`, `SC_FAMILY_NOT_ALLOWED`, `SC_REQUEST_FEATURE_DENIED`, `SC_MAX_TOKENS_EXCEEDS_POLICY`, `SC_PROVIDER_UNAVAILABLE` (classified from `ledger.denials`, plan 33) | `GATEWAY_POLICY_DENIED` | **infrastructure**, refunded; counts towards `maxConsecutive` (a repeat indicates a policy bug, alerted by plan 33) (G7, blind BUD-B15) | FAILED |
 | Worker `failure.reason` `budget_denied`, classified from `ledger.denials` (plan 33 §14.5) | `execution:`/`task:` scope, request cap, undefined budget | budget, codes `BUDGET_EXECUTION_EXHAUSTED`, `BUDGET_TASK_EXHAUSTED`, `BUDGET_REQUEST_CAP`, `BUDGET_UNDEFINED` → T106 | FAILED |
 | Worker `failure.reason` `budget_denied` on a shared scope (provider, global, orchestration) | — | budget, `BUDGET_SHARED_EXHAUSTED` → T105 (`BLOCKED`) | FAILED |
 | Worker `emergency_stop`, Runner e-stop cancellation (level ≥ `workers`; levels `none`/`workers`/`all`, plan 33) | — | budget, `EMERGENCY_STOP` → T105 (`BLOCKED`) | FAILED (running) / CANCELLED (queued) |
@@ -631,7 +632,7 @@ All deterministic, no model calls [SPEC §104].
 ### GATE-C03 (human channel; with plans 26, 55)
 
 - [ ] **29-AC-30** On the Forgejo test instance: `/sc block test reason here` by a member of `engineers` moves the task to `BLOCKED` and the Runner reply comment contains `T063`; the same comment by `sc-renovate` and by a user in `viewers` only are rejected with `NOT_AUTHORIZED` and the state is unchanged; editing an accepted comment has no effect.
-- [ ] **29-AC-31** Re-verification of third-party behavior: the `issue_comment` webhook payload contains `sender.login`, `comment.id`, `issue.number` and `action: created` at the pinned Forgejo version, and `GET /api/v1/teams/{id}/members/{user}` returns 200/404 for member/non-member (test fails loudly if a field or path differs).
+- [ ] **29-AC-31** Re-verification of third-party behavior: the `issue_comment` webhook payload contains `sender.login`, `comment.id`, `issue.number` and `action: created` at Forgejo v15.0.x (CD-29 baseline, `plans/compatibility-baseline.yaml`), and `GET /api/v1/teams/{id}/members/{user}` returns 200/404 for member/non-member (test fails loudly if a field or path differs).
 
 ## 24. Explicit non-goals
 

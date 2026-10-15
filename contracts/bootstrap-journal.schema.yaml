@@ -101,6 +101,19 @@ properties:
         additionalProperties: false
         properties:
           commit: {$ref: '#/$defs/sha1'}
+          gitops_tree_sha:
+            description: Machine-independent seed identity (SEEDFLUX-B3).
+            $ref: '#/$defs/sha1'
+          reseeds:
+            type: array
+            items:
+              type: object
+              additionalProperties: false
+              required: [at, reason, gitops_tree_sha]
+              properties:
+                at: {$ref: '#/$defs/timestamp'}
+                reason: {enum: [commit-lost, operator]}
+                gitops_tree_sha: {$ref: '#/$defs/sha1'}
           bucket_revision: {type: string, pattern: '^sha256:[0-9a-f]{64}$'}
           complete_at: {$ref: '#/$defs/timestampOrNull'}
       forge_init:
@@ -113,7 +126,15 @@ properties:
         type: object
         additionalProperties: false
         properties:
+          switching_at:
+            description: Intent recorded before T2's apply (SEEDFLUX-B1).
+            $ref: '#/$defs/timestampOrNull'
           switched_at: {$ref: '#/$defs/timestampOrNull'}
+          rollback_step:
+            description: Last completed rollback sub-step (SEEDFLUX-B2); null when no rollback is in progress.
+            oneOf:
+              - type: 'null'
+              - enum: [suspend, root, reconcile, verify]
           forgejo_sha: {$ref: '#/$defs/sha1'}
           pre_snapshot: {$ref: '#/$defs/outputRef'}
       sso_init:
@@ -166,7 +187,7 @@ properties:
       required: [kind, subject_digest, confirmed_at, run_id, method]
       properties:
         kind:
-          enum: [paid-footprint, existing-nodes, expand-footprint, storage-footprint, destroy-install-name, destroy-plan, unlock-run-lock, stale-lock-takeover, abandon-identity, accept-unmirrored-loss, accept-stale-prices, accept-data-loss, accept-empty, model-budget, accept-weak-protection, accept-state-unprotected, notification-nonce, old-installation-destroyed, fence-live, fence-nodes, migrate-provider, migrate-object-storage, seed-without-github, node-remove, upgrade-k3s, handoff-rollback, state-restore, state-unlock, state-import, accept-github-commits, accept-generation, fence-nodes-cleanup, defer-mirror]
+          enum: [paid-footprint, existing-nodes, expand-footprint, storage-footprint, destroy-install-name, destroy-plan, unlock-run-lock, stale-lock-takeover, abandon-identity, accept-unmirrored-loss, accept-stale-prices, accept-data-loss, accept-empty, model-budget, accept-weak-protection, accept-state-unprotected, notification-nonce, old-installation-destroyed, fence-live, fence-nodes, migrate-provider, migrate-object-storage, seed-without-github, node-remove, upgrade-k3s, handoff-rollback, state-restore, state-unlock, state-import, accept-github-commits, accept-generation, fence-nodes-cleanup, defer-mirror, provider-backstop]
         subject_digest:
           description: Digest of what was confirmed (plan digest, node-list digest, lock content digest).
           $ref: '#/$defs/digest'

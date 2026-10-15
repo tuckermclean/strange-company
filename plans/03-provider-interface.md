@@ -140,7 +140,7 @@ The effective profile is written to `cluster-vars` (plan 18 key names) and recor
 
 Consumes `SC-INFRA-PROVIDER` (environment of the OpenTofu or provider subprocess only; never in state, logs or `ProviderOutput`) and `SC-SSH-OPERATOR` (public key injected into nodes; private key used for discovery). Introduces no new secret class. For CI plan-only tests, plan 04 introduces `SC-CI-OVH-READONLY`.
 
-**State hygiene:** compute modules must not put secrets into resource attributes. In particular OVH must not email or return root passwords (plan 04: `do_not_send_password = true` (verify)), and no provider credential may appear in variables persisted to state. `make tofu-validate` fails if a root module declares a `variable` with a name matching `(?i)(secret|password|token|key)` without `sensitive = true` and `ephemeral = true` (OpenTofu ≥ 1.11 ephemeral variables (verify); with ≤ 1.10, credentials are only allowed through provider-native environment variables).
+**State hygiene:** compute modules must not put secrets into resource attributes. In particular OVH must not email or return root passwords (plan 04: `do_not_send_password = true` (verify)), and no provider credential may appear in variables persisted to state. `make tofu-validate` fails if a root module declares a `variable` with a name matching `(?i)(secret|password|token|key)` without `sensitive = true` and `ephemeral = true` (ephemeral variables exist in the baseline OpenTofu v1.13.1, `plans/compatibility-baseline.yaml`; verify).
 
 ## 11. Storage
 

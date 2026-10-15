@@ -86,7 +86,9 @@ D4. A Bucket is needed again after T6 (Forgejo unusable during bootstrap)? Do **
 E1. Read the report: `.bootstrap/runs/<run>/control-transfer-source-switch-*.json`, fields `uid_comparison.changed[]` and `helm_releases[]` with `revision_before != revision_after`.
 
 E2. For each changed object, determine its kind:
-- **Stateless objects** (Deployment, ConfigMap, Service, RBAC): Flux recreated them, and no data is at risk. Record it and continue to E4.
+Every UID change is a transfer failure (plan 19 T5, 19-AC-8 require `changed: []`; SEEDFLUX-B13).
+- **CustomResourceDefinition:** **stop.** A recreated CRD deletes every custom resource of that kind (CNPG `Cluster`, HelmRelease, Kustomization, Longhorn objects). Assume CR loss: on a fresh install destroy and reinstall (below); in black start follow `total-cluster-loss.md` (plan 45) from the restore step.
+- **Stateless objects** (Deployment, ConfigMap, Service, RBAC): no data is at risk, but the transfer still failed. Continuing requires a defect record signed off by the operator (incident id, the object list and why it is harmless) attached to the evidence; then continue to E4.
 - **HelmRelease revision change only:** `./bootstrap exec -- helm history <release> -n <ns>`. An `upgrade` with identical chart and values means the values rendering differs between seed and steady paths (plan 18 defect). The data is unaffected if the pods are healthy.
 - **PVC, CNPG `Cluster`, Longhorn volume, Namespace:** check whether data survived:
   - `kubectl -n forgejo exec deploy/forgejo -- ls /data/git/repositories/strange-company` shows the repository;
@@ -117,7 +119,7 @@ F4. Verify with §D (Bucket gone) and the Verification section below. Close the 
 - `./bootstrap exec -- sc-bootstrap verify control-transfer` → G1–G7 `pass`.
 - `./bootstrap exec -- flux get kustomizations -n flux-system` → all seed layers Ready at `main@sha1:<Forgejo main>`, source `GitRepository`.
 - `./bootstrap exec -- kubectl get buckets.source.toolkit.fluxcd.io -A` → none.
-- The report `source-switch` has `result: pass`, `uid_comparison.changed: []` (except stateless objects accepted in §E2, listed in the evidence).
+- The report `source-switch` has `result: pass`, `uid_comparison.changed: []`. A transfer completed after a §E2 sign-off is recorded with the defect record id in the evidence; the report itself is never edited.
 
 ## Rollback / abort
 - Before T6: `./bootstrap handoff-rollback` (idempotent; returns to the Bucket without deleting).

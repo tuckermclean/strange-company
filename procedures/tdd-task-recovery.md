@@ -85,11 +85,11 @@ Not for: tasks stuck without an alert reason or invariant violations (`stuck-tas
 
 1. On the PR read the conflict (`conflict.ac_ids`, `tests`, explanation) and the adjudication (`conflict_decision`).
 2. Decide:
-   - test is wrong → `/sc accept-test-change <reason>` with optional
+   - test is wrong → `/sc accept-test-change conflict=<conflict id> digest=<12 hex from the Runner's conflict comment> <reason>` with optional
      ```yaml
      guidance: "Restrict the body test to requests with GetBody set."
      ```
-     Expected reply: `Accepted: accept-test-change → T083`. Hermes then dispatches a tester; a new generation and a new RED follow.
+     Expected reply: `Accepted: accept-test-change → T083`; a wrong conflict id or digest gets `Rejected: PAYLOAD_INVALID`. Hermes then dispatches a tester; a new generation and a new RED follow.
    - test is right → `/sc reject-conflict <reason>` (→ RED_VERIFIED).
    - criterion ambiguous → `/sc respec` with the corrected criteria.
 

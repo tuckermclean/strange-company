@@ -49,7 +49,7 @@
       - PR (Forgejo and Git keep working during an S3 outage) that removes `isWALArchiver: true` from that cluster's `plugins` entry (the component `cnpg-wal-archiver-detached`, plan 12), merged by a human; Expect the PR route to fail when CI images are not cached on the node (internal images live in `forgejo-objects`, which is down); then use the direct patch below.
       - or, if the disk will fill before a PR can merge: `flux suspend kustomization <db-layer>` and `kubectl -n <ns> patch cluster <cluster> --type json -p '[{"op":"replace","path":"/spec/plugins/0/isWALArchiver","value":false}]'`.
       Expected: within 15 minutes the `ready` count for that cluster drops to 0 as PostgreSQL recycles WAL after checkpoints (verify CNPG's behavior when the archiver is removed).
-   c. Record the time of the detach: PITR for that cluster cannot target times between the detach and the first base backup after re-attachment.
+   c. Record the detach window: write `{"cluster": "<cluster>", "generation": <N>, "detached_at": "<UTC>", "reattached_at": null}` to `s3://<prefix>-evidence/backups/wal-gaps/<cluster>.json` (toolbox, `dr-tests-results` credential) and fill `reattached_at` after §Post-outage step 2. PITR for that cluster cannot target times between the detach and the first base backup after re-attachment; `cnpg-wal-continuity` (plan 44) and `./bootstrap recover` read this record (DR-B8).
 5. **When the endpoint is back**: go to §Post-outage verification.
 
 ### §Credential (one stream gets 403)

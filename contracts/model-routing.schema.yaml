@@ -306,7 +306,7 @@ $defs:
       billed for (CD-28, plan 53 §14.1 step 6). MVP method `upper_bound`:
       bound = ceil(tokensPerByteUpperBound x UTF-8 bytes of the request body, excluding the
       base64 payload of image blocks) + perMessageOverhead x number of messages/input items
-      (system counts as one) + perRequestOverhead + imageTokensUpperBound x number of images,
+      (system counts as one) + perRequestOverhead + the MODEL's imageTokensUpperBound x number of images,
       capped at the model's contextWindowTokens (the provider rejects larger inputs).
       Body bytes are counted on the JSON as sent, so escapes only increase the bound.
       Byte-level BPE families use tokensPerByteUpperBound 1.0. Each family's values are
@@ -333,11 +333,6 @@ $defs:
         description: Fixed per-request tokens the provider adds (formatting, tool-use system prompt, etc.).
         type: integer
         minimum: 0
-        maximum: 100000
-      imageTokensUpperBound:
-        description: Documented maximum tokens per image after the provider's resize. Absent = image blocks are denied (SC_REQUEST_FEATURE_DENIED, feature class content_source) because they have no provable bound.
-        type: integer
-        minimum: 1
         maximum: 100000
   Model:
     type: object
@@ -368,6 +363,15 @@ $defs:
         type: integer
         minimum: 1024
         maximum: 10000000
+      imageTokensUpperBound:
+        description: |
+          Per-model documented maximum input tokens per image after the provider's resize at the
+          model's maximum image resolution (cite the provider formula in the PR; review BUD-B5).
+          Absent = image blocks to this model are denied (SC_REQUEST_FEATURE_DENIED, feature class
+          content_source). Verified with image items in the 53-AC-36 corpus.
+        type: integer
+        minimum: 1
+        maximum: 100000
       outputCapCoversReasoning:
         description: True iff the provider's output cap also bounds reasoning/thinking tokens (VS-8, verified per model by fixture and smoke, 53-AC-17). When false the model is routable only with a separate provider-ENFORCED reasoning cap (CD-28).
         type: boolean
@@ -560,7 +564,7 @@ examples:
           upstream: {baseUrl: "https://api.anthropic.com/v1"}
           credential: {kind: api-key, secretKey: anthropic, authScheme: x-api-key, forbiddenKeyPrefixes: [sk-ant-oat]}
           apiFamilies:
-            anthropic-messages: {usageDialect: anthropic, outputCapField: max_tokens, inputBound: {method: upper_bound, tokensPerByteUpperBound: 1.0, perMessageOverhead: 8, perRequestOverhead: 1024, imageTokensUpperBound: 1600}, requestPolicy: {bodyMembers: [model, messages, system, max_tokens, metadata, stop_sequences, stream, temperature, top_p, top_k, tools, tool_choice, thinking, service_tier], toolTypes: [custom], anthropicBeta: [claude-code-*, interleaved-thinking-*, fine-grained-tool-streaming-*, token-efficient-tools-*], pinnedParameters: {service_tier: standard_only}}}
+            anthropic-messages: {usageDialect: anthropic, outputCapField: max_tokens, inputBound: {method: upper_bound, tokensPerByteUpperBound: 1.0, perMessageOverhead: 8, perRequestOverhead: 1024}, requestPolicy: {bodyMembers: [model, messages, system, max_tokens, metadata, stop_sequences, stream, temperature, top_p, top_k, tools, tool_choice, thinking, service_tier], toolTypes: [custom], anthropicBeta: [claude-code-*, interleaved-thinking-*, fine-grained-tool-streaming-*, token-efficient-tools-*], pinnedParameters: {service_tier: standard_only}}}
           headerPolicy: {anthropicBetaDenyPrefixes: [oauth-]}
         openai:
           displayName: OpenAI
@@ -594,6 +598,7 @@ examples:
           apiFamily: anthropic-messages
           maxOutputTokens: 32000
           contextWindowTokens: 200000
+          imageTokensUpperBound: 1600
           outputCapCoversReasoning: true
           responseModelMatch: {exact: [claude-haiku-x], prefixes: [claude-haiku-x-]}
           enabled: true
@@ -603,6 +608,7 @@ examples:
           apiFamily: anthropic-messages
           maxOutputTokens: 64000
           contextWindowTokens: 200000
+          imageTokensUpperBound: 1600
           outputCapCoversReasoning: true
           responseModelMatch: {exact: [claude-sonnet-x], prefixes: [claude-sonnet-x-]}
           enabled: true
@@ -612,6 +618,7 @@ examples:
           apiFamily: anthropic-messages
           maxOutputTokens: 32000
           contextWindowTokens: 200000
+          imageTokensUpperBound: 1600
           outputCapCoversReasoning: true
           responseModelMatch: {exact: [claude-opus-x], prefixes: [claude-opus-x-]}
           enabled: true

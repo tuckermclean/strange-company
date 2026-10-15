@@ -97,8 +97,10 @@ Context `strange-company/review`:
 | Situation | State |
 |---|---|
 | no accepted final review for this SHA | `pending` (`review pending`) |
-| latest final review verdict `accept` with all five checks pass and `reviewed_commit == SHA` (F9), and — when the PR diff touches the repository's `merge.elevatedPaths` — at least `spec.merge.elevatedApprovals` (2) approvals on the head SHA by human accounts (`GET /repos/{o}/{r}/pulls/{n}/reviews`, state `APPROVED`, not machine accounts; TDD-15) | `success` (`review <execution> accepted`; `… + 2 human approvals (elevated paths)`) |
+| latest final review verdict `accept` with all five checks pass and `reviewed_commit == SHA` (F9), and — when the PR diff touches the repository's `merge.elevatedPaths` — at least `min(elevatedApprovals, N)` approvals on the head SHA by members of `sc-mergers` (N = size of `sc-mergers`, installation config; `GET /repos/{o}/{r}/pulls/{n}/reviews`, state `APPROVED`, machine accounts never count), and, in single-operator mode (N = 1), at least `singleOperatorCoolingOff` (24 h) since the last push touching an elevated path (CD-39, TDD-15) | `success` (`review <execution> accepted`; `… + elevated approvals`); while the cooling-off runs: `pending` (`elevated paths: cooling-off until <time>`) |
 | latest final review `changes_requested` or `reject_bypass` at this SHA | `failure` |
+
+**Approvals and merge rights (CD-38, CD-39; policy text in plan 22 §9.6).** Merge and approval are human-only: on every protected branch the merge whitelist and approvals whitelist are team `sc-mergers` and admin override is blocked (plan 16 `forge.yaml`); no `sc-*` account is a member. Agent-authored (task) PRs need 1 approval from `sc-mergers`; operator-authored PRs need 0 approvals but only `sc-mergers` can merge them (human authorship is the review). In single-operator mode the start of every elevated-path cooling-off window is announced through a Runner-posted informational alert routed to the operator's notification channel (alert name to be registered by plan 42) and a PR comment naming the earliest merge time; a new push touching an elevated path restarts the window.
 | non-task PR | `success` (`non-task PR: human approval required by branch protection`) |
 
 Context `strange-company/release-provenance` (SEC-11, plan 23 §14.5; non-task merge path):
@@ -142,6 +144,7 @@ Tracking issue: #184 · Mode: test-first · State: GREEN_VERIFIED (Review) · Ge
 | AC-1 | change | HTTP 307 preserves the original method. | `TestRedirect307PreservesMethod` | failed_assertion | passed |
 
 ### Test commit and RED evidence
+_GREEN observations are produced inside the code under test (plan 22 §13); the deterministic facts below are computed by the Runner from Git._
 Test commit `89abcde` (tester sc-184-x1) · Woodpecker pipeline #412 (`verify`, config from base `0123456`) · outcome **red_valid** · evidence `sha256:abab…` · manifest `sha256:efef…` (2 files, 3 tests, 1 stub)
 
 ### Implementation
@@ -162,7 +165,7 @@ Pipeline #431 at `fedcba9` · **green_pass** · suites unit (215 tests, 0 failed
 | 1 | sc-184-x1 | tester | accepted | 89abcde | red #412 red_valid |
 | 1 | sc-184-x2 | implementer | green_fail | 1111111 | green #420 |
 | 1 | sc-184-x3 | implementer | accepted | fedcba9 | green #431 green_pass |
-Conflicts: none · Cost so far: $0.84 (complete)
+Conflicts: none · Generations: 1 (for later generations the body shows the scoped diff `red(g)..red(g+1)`, for strengthening and approved conflicts alike — blind TDD-B3) · Cost so far: $0.84 (complete)
 
 ### Human actions
 Merge when both `strange-company/*` checks are green. Commands (comment on this PR): `/sc status`, `/sc block`, `/sc cancel`, `/sc escalate` (plan 29 §7.3).
@@ -251,7 +254,7 @@ On a new head SHA for a task PR: post `pending` for both contexts on the new SHA
 
 ### 14.6 Human merge
 
-A human with write access merges in the Forgejo UI (merge, squash or rebase) once `ci/woodpecker/pr/ci`, `strange-company/tdd-provenance`, `strange-company/review` are success and the approval count is met. The Runner never merges in MVP (ADR-0019).
+A member of `sc-mergers` merges in the Forgejo UI (merge, squash or rebase) once `ci/woodpecker/pr/ci`, `strange-company/tdd-provenance`, `strange-company/review` and `strange-company/release-provenance` are success and the approval rule of §7.2 is met. Bot tokens (`sc-runner`, `sc-woodpecker`, `sc-renovate`, `sc-release`) get 403 when they try to approve or merge (CD-38). The Runner never merges in MVP (ADR-0019).
 
 ### 14.7 DONE definition
 
@@ -270,7 +273,7 @@ The merge auditor evaluates every update of a protected branch:
 |---|---|---|
 | `pull_request` closed+merged for a task PR | DONE conditions 2–3 | pass → `verified` (T050); fail → `bypass`: T051/T052/T053, label `sc/provenance-bypass`, `sc_tdd_merges_without_provenance_total++`, `SCTddProvenanceBypass` (critical, page, notify) |
 | merge of any PR whose head maps to a task but which is not the task PR, or into a branch ≠ `target_branch` (TDD-11); or merge of the task PR after the task is terminal (TDD-22) | always | `bypass` + alert, independent of whether a task transition applies |
-| emergency merge (`procedures/emergency-merge.md`): direct push by the break-glass identity during an announced emergency (commit trailer `SC-Emergency-Merge: <incident-id>`) | agent markers; recorded incident | `emergency_merge` + `SCBreakGlassUsed{target="forgejo"}`; the range is re-audited when the Runner returns |
+| emergency merge (`procedures/emergency-merge.md`): a push that satisfies **all** of — pusher `sc-breakglass`; commit trailer `SC-Emergency-Merge: <incident-id>` whose incident issue (label `sc/incident`, title containing the id) was created **before** the push; push time inside an observed `bootstrap`-stage protection window (the `SCForgeBranchProtectionDrift` interval recorded by the projection health check) (blind TDD-B10) | as listed; anything else — including a trailer on a commit merged by any other path — is `bypass` | `emergency_merge` + `SCBreakGlassUsed{target="forgejo"}`; the range is re-audited when the Runner returns |
 | merged non-task PR | merged commits contain no agent markers and no unadopted worker-pushed commit | pass → `human_non_task`; fail → `bypass` + alert |
 | `push` to a protected branch without a corresponding merged PR within 60 s | any new commit with agent markers → `bypass`; otherwise `direct_push` + `SCProtectedBranchDirectPush` (warning; expected only in the bootstrap protection stage) |
 | 5-minute resync | protected branch tips compared with the last audited tip; unaudited ranges audited as above | catches missed webhooks |
@@ -279,7 +282,7 @@ The merge auditor evaluates every update of a protected branch:
 
 ### 14.8a Emergency merge (GC-02, TDD-17)
 
-From C09, every merge into a protected branch needs Runner-posted statuses and `ci/woodpecker/pr/ci`. When the Runner, Woodpecker, `sc-ci-config`, the egress-proxy or the heavy-slot advertiser is broken, the PR that would repair it cannot merge. The **only** sanctioned path is `procedures/emergency-merge.md` (owned by this plan): a human reviews the fix as a normal PR; the operator applies the `bootstrap` protection stage (`sc-bootstrap forge apply --stage bootstrap`, push whitelist = break-glass identity), fast-forward-pushes exactly the reviewed commit with trailer `SC-Emergency-Merge: <incident-id>`, and re-applies `--stage steady` immediately. `SCBreakGlassUsed{target="forgejo"}` (always notify) and `SCForgeBranchProtectionDrift` fire and are expected. When the Runner is back, the merge auditor audits the unaudited range of the protected branch, records `emergency_merge` for commits carrying the trailer (and `bypass` for any other unreviewed commit in the range), and posts a PR comment. Every other procedure that needs a merge while a merge-gate component is down references this procedure.
+From C09, every merge into a protected branch needs Runner-posted statuses and `ci/woodpecker/pr/ci`. When the Runner, Woodpecker, `sc-ci-config`, the egress-proxy or the heavy-slot advertiser is broken, the PR that would repair it cannot merge. The **only** sanctioned path is `procedures/emergency-merge.md` (owned by this plan): a human reviews the fix as a normal PR; the operator applies the `bootstrap` protection stage (`sc-bootstrap forge apply --stage bootstrap`, push whitelist = break-glass identity), fast-forward-pushes exactly the reviewed commit with trailer `SC-Emergency-Merge: <incident-id>`, and re-applies `--stage steady` immediately. `SCBreakGlassUsed{target="forgejo"}` (always notify) and `SCForgeBranchProtectionDrift` fire and are expected. When the Runner is back, the merge auditor audits the unaudited range of the protected branch, records `emergency_merge` only when the §14.8 conditions all hold (pusher `sc-breakglass`, incident issue created before the push, push inside the observed bootstrap-stage window), and `bypass` for anything else in the range, and posts a PR comment. Every other procedure that needs a merge while a merge-gate component is down references this procedure.
 
 ### 14.9 Quarantine and cleanup
 
@@ -365,7 +368,7 @@ All Forgejo writes are outbox side effects with exponential backoff (1 s × 2ⁿ
 
 ### GATE-C03 (semantics; mechanics in plan 26)
 
-- [ ] **55-AC-1** Re-verification of Forgejo behavior at the pinned version: (a) a PR titled `WIP: …` cannot be merged and is shown as work in progress; (b) `GET /repos/{o}/{r}/commits/{sha}/statuses` returns the `creator.login` of each status; (c) `POST /repos/{o}/{r}/tag_protections` with name pattern `sc-archive/*` and whitelist `sc-runner` makes a tag push with a test deploy key to `sc-archive/x` fail; (d) `POST /repos/{o}/{r}/branches` with `old_ref_name: <sha>` creates a branch at that SHA. Each sub-check fails loudly if the API differs.
+- [ ] **55-AC-1** Re-verification of Forgejo behavior on the CD-29 baseline Forgejo v15.0.x (`plans/compatibility-baseline.yaml`; newer lines are plan amendments): (a) a PR titled `WIP: …` cannot be merged and is shown as work in progress; (b) `GET /repos/{o}/{r}/commits/{sha}/statuses` returns the `creator.login` of each status; (c) `POST /repos/{o}/{r}/tag_protections` with name pattern `sc-archive/*` and whitelist `sc-runner` makes a tag push with a test deploy key to `sc-archive/x` fail; (d) `POST /repos/{o}/{r}/branches` with `old_ref_name: <sha>` creates a branch at that SHA. Each sub-check fails loudly if the API differs.
 - [ ] **55-AC-2** Hermes-first task creation on `sc-e2e/fake-target` creates exactly one issue titled `[sc-<n>] …` with labels `sc/managed`, `task/sc-<n>`, `mode/test-first`, `status/in-progress`; repeating `agent_start` with the same idempotency key creates no second issue.
 - [ ] **55-AC-3** Issue-first: `agent_start` with `source.ref = sc-e2e/fake-target#<n>` links that issue (labels added, comment posted); a second task referencing the same open issue is rejected with `VALIDATION_FAILED`.
 - [ ] **55-AC-5** Manually setting `status/done` on a managed issue is reverted within 6 minutes and a comment containing `/sc` guidance is posted.
@@ -380,6 +383,9 @@ All Forgejo writes are outbox side effects with exponential backoff (1 s × 2ⁿ
 - [ ] **55-AC-21** Bot and second-PR rules: a `renovate/x` PR opened by a test human gets `tdd-provenance = failure`; a commit pushed by a test deploy key onto a `sc-renovate` PR branch turns its status to `failure`; a second PR from `agent/<task>` into `release/x` gets `failure` `not the task PR` (TDD-11, TDD-16, SEC-2).
 - [ ] **55-AC-22** Elevated paths: on a fixture repository with `merge.elevatedPaths: [enforce/**]`, a PR touching `enforce/x.go` with an accepted review and one human approval has `review = pending`; after a second human approval on the head it is `success` (TDD-15).
 - [ ] **55-AC-24** Release provenance (SEC-11): a non-promotion PR gets `strange-company/release-provenance = success`; the plan 23 forged-provenance fixture (validly signed attestation whose `invocationId` names a non-existent pipeline) on a `promote/*` PR gets `failure` and the PR cannot be merged by a non-admin test user (shared with 23-AC-21).
+- [ ] **55-AC-25** Single-operator mode (CD-39, blind SEC-B2): on a fixture installation whose `sc-mergers` has exactly one human account, that account merges (a) an operator-authored PR with 0 approvals, and (b) an agent PR touching `merge.elevatedPaths` with its own single approval only after `strange-company/review` turned `success` 24 h after the last elevated-path push (test clock); a push touching an elevated path during the window resets it; the window start produced the announcement comment and the Runner-posted alert.
+- [ ] **55-AC-26** Human-only merge (CD-38): the tokens of `sc-runner`, `sc-woodpecker`, `sc-renovate` and `sc-release` each get 403 on `POST /repos/{o}/{r}/pulls/{n}/reviews` (APPROVED) and on `POST /repos/{o}/{r}/pulls/{n}/merge` for a PR with all contexts success.
+- [ ] **55-AC-27** Emergency-merge audit binding (blind TDD-B10): a commit carrying `SC-Emergency-Merge: inc-x` pushed by a test human during steady protection is audited `bypass`; the same push by `sc-breakglass` inside a bootstrap-stage window with a pre-existing `sc/incident` issue is audited `emergency_merge`.
 - [ ] **55-AC-16** Non-task PRs: a human branch PR without agent markers gets both contexts `success` (human-authored); a human branch containing a commit with an `SC-Execution` trailer gets `tdd-provenance = failure`.
 
 ### GATE-C10 (contributions; need full fake task flows)

@@ -125,6 +125,7 @@ Same as §PITR with these differences:
 - In step 4 use the component `cnpg-bootstrap-recovery-latest` and do not set `CNPG_<ID>_TARGET_TIME`.
 - In Replace mode the service is already down, so for the four clusters of safety check 5 step 7 is always 7b; the "statuses before stopping writers" rule does not apply.
 - Step 7's data check is: the newest `heartbeat` row in `sc_dr.markers` (plan 44 RT-0) is within 15 minutes of the failure time (the observed RPO); record it.
+- **If the recovery stops early** (the cluster logs `recovery target not reached`, or replay ends at a missing WAL segment, or `cnpg-wal-continuity` reports a gap; DR-B8): delete the failed `Cluster`, choose the next older completed base backup (`kubectl -n <ns> get backups.postgresql.cnpg.io -l cnpg.io/cluster=<cluster> --sort-by=.status.stoppedAt`), and recreate with the `cnpg-bootstrap-recovery` component, `recoveryTarget.backupID: <that backup's id>` (verify the field at CNPG 1.30) and `CNPG_<ID>_TARGET_TIME` set before the gap. Record the operator's explicit acceptance of the data lost after the gap in the incident before step 9.
 - Step 6: if the old `Cluster` object still exists (node gone, PVC lost), delete it and its PVCs.
 
 ## Verification

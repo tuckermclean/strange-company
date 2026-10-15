@@ -153,7 +153,7 @@ Only `platform-probes` uses the Authentik API, read-only, with service account `
 
 ### 9.1 Version selection and HelmRelease values (illustrative)
 
-Selection rule: the latest Authentik stable release **≥ 2025.10**, with the goauthentik chart of the same version (chart and app versions are aligned). On 2026-10-13 the main branch has chart 2026.8.3 with no Redis keys and a `postgresql` (Bitnami) subchart that defaults to `enabled: false`. Re-verified by 15-AC-2.
+Baseline: Authentik 2026.8.x with goauthentik chart 2026.8.3, chart and app versions aligned (`plans/compatibility-baseline.yaml`, CD-29/ADR-0022). Evidence: the chart has no Redis keys and its `postgresql` (Bitnami) subchart defaults to `enabled: false`. A newer minor or major is a plan-amendment task, not a silent bump. Verified by 15-AC-2 and 15-AC-34.
 
 ```yaml
 # HelmRelease authentik/authentik — chart https://charts.goauthentik.io, version-pinned
@@ -297,7 +297,7 @@ Values are starting points. Plan 51's capacity gate measures the working set (AD
 
 | Step | Action | Idempotency check | Failure |
 |---|---|---|---|
-| A0 | (runs inside `flux-bootstrap` before the source switch, **and** before any start of Authentik on an empty `authentik-pg` (black start fresh initdb, §Bootstrap recovery), AUTH-1) generate `SC-AUTHENTIK-BOOTSTRAP`; `kubectl -n authentik create secret generic authentik-bootstrap --from-literal=password=… --from-literal=token=…` labeled `strange.company/ephemeral=bootstrap` | Secret exists with label → reuse values from `/run/sc/secrets/` (re-read from the Secret if the operator session was lost) | namespace missing → `SSO_NAMESPACE_MISSING` (plan 19 seed-set issue) |
+| A0 | (runs inside `flux-bootstrap` before the source switch, **and** before any start of Authentik on an empty `authentik-pg` (black start fresh initdb, §Bootstrap recovery), AUTH-1) generate `SC-AUTHENTIK-BOOTSTRAP`; `kubectl -n authentik create secret generic authentik-bootstrap --from-literal=password=… --from-literal=token=…` labeled `strange.company/ephemeral=bootstrap`. This is a documented third class of imperative Secret (ephemeral, bootstrap-labeled, destroyed at A9/A10), distinct from plan 19's seed Secrets (SEEDFLUX-B10) | Secret exists with label → reuse values from `/run/sc/secrets/` (re-read from the Secret if the operator session was lost) | namespace missing → `SSO_NAMESPACE_MISSING` (plan 19 seed-set issue) |
 | A1 | (after the `authentik-config` Kustomization is Ready) port-forward `authentik-server:9000`; wait `GET /-/health/ready/` = 200 (timeout 15 min) | — | `AUTHENTIK_UNHEALTHY` |
 | A2 | `GET /api/v3/core/users/me/` with bootstrap token → `is_superuser: true` | — | `AUTHENTIK_BOOTSTRAP_AUTH_FAILED` → `restore-authentik.md` §Bootstrap recovery |
 | A3 | verify all SC blueprint instances `status: successful` (`GET /api/v3/managed/blueprints/`) | — | `AUTHENTIK_BLUEPRINT_FAILED` (prints the instance's last log) |
@@ -501,7 +501,7 @@ Authentik server and worker expose `:9300/metrics` (ServiceMonitors from the cha
 ### GATE-P07 (owner)
 
 - **15-AC-1** Authentik healthy: `kubectl -n authentik exec deploy/authentik-server -- ak healthcheck` exits 0. `curl -fsS https://auth.<d>/-/health/ready/` from outside returns 200 (204 accepted).
-- **15-AC-2** No Redis, no Bitnami: `kubectl get pods -A -o jsonpath='{..image}' | tr ' ' '\n' | grep -Eic 'redis|valkey|bitnami'` = 0. `helm template` of the pinned chart with our values renders zero resources from the `postgresql` subchart, and `grep -ci redis` on the rendered output = 0. The deployed `server` version (`GET /api/v3/admin/version/` `version_current`) is ≥ `2025.10`.
+- **15-AC-2** No Redis, no Bitnami: `kubectl get pods -A -o jsonpath='{..image}' | tr ' ' '\n' | grep -Eic 'redis|valkey|bitnami'` = 0. `helm template` of the pinned chart with our values renders zero resources from the `postgresql` subchart, and `grep -ci redis` on the rendered output = 0. The deployed `server` version (`GET /api/v3/admin/version/` `version_current`) is `2026.8.x` (baseline).
 - **15-AC-3** DB on CNPG: env `AUTHENTIK_POSTGRESQL__HOST` in the server pod = `authentik-pg-rw.authentik.svc.cluster.local`. `kubectl -n authentik get cluster authentik-pg -o jsonpath='{.status.phase}'` = `Cluster in healthy state`. `max_connections` ≥ 150 (`SHOW max_connections` via `kubectl cnpg psql`).
 - **15-AC-4** Blueprints applied: `GET /api/v3/managed/blueprints/?label=sc` (audit token) returns ≥ 10 instances, all `status: successful`. A second `ak apply_blueprint` of each file reports no changes.
 - **15-AC-5** Groups exist: `sc-admins` (superuser), `sc-engineers`, `sc-viewers`, `sc-breakglass` (superuser), `sc-audit`, verified via `GET /api/v3/core/groups/?name=…`.
@@ -537,6 +537,7 @@ Authentik server and worker expose `:9300/metrics` (ServiceMonitors from the cha
 ### GATE-P10 (contributed)
 - **15-AC-27** Authentik restore works: the plan 44 restore test `rt-app-authentik` (scratch PITR of `authentik-pg`, scratch Authentik `/-/health/ready/` = 200, blueprint-created marker user `sc-dr-marker` and brand `sc` present) records `outcome: passed` within the last 35 days.
 - **15-AC-28** Backup works: the latest `authentik-pg` base backup is `completed` and less than 26 h old. `ContinuousArchiving=True`.
+- **15-AC-34** Baseline (verify, CD-29): the rendered chart is `authentik` 2026.8.3 and the server reports `2026.8.x`; the version-sensitive assumptions listed in the baseline entry (blueprint models, flow slugs, metrics port 9300, health path, recovery key units) pass 15-AC-29/30 and Q-15-06 checks against it. A different minor fails the check until the plan is amended.
 - **15-AC-32** Identity-outage restore path (AUTH-6), lab: with Authentik scaled to 0 and no human able to log in to Forgejo through OIDC, `restore-authentik.md` §PITR runs end to end using only a PAT (branch push) and cluster admin (suspend + server-side apply); afterwards the PR is merged through the normal path, `flux get kustomizations authentik-db authentik` are Ready with no diff, and the evidence object records the drift window.
 
 ### GATE-C08 (contributed; plan 24 owns the gate)

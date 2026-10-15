@@ -92,6 +92,7 @@ required:
   - reserved_micro_usd
   - computed_bound
   - bound_violation
+  - attributed_task_id
   - budget_charge_micro_usd
   - budget_scope_keys
   - policy_revision
@@ -257,6 +258,14 @@ properties:
           input_tokens: {type: integer, minimum: 0}
           output_tokens: {type: integer, minimum: 0}
           reasoning_tokens: {type: integer, minimum: 0}
+  attributed_task_id:
+    description: |
+      Reporting-only attribution hint for orchestrator (Hermes) rows (review BUD-B13): the task the
+      orchestrator said it was working on (header `x-sc-attribute-task`, honoured only for
+      `token_kind: orchestrator` and only if the task exists). Never used for enforcement, budget
+      scopes or security decisions; always null for execution tokens (task_id is authoritative).
+    type: [string, "null"]
+    pattern: "^sc-[0-9]+$"
   bound_violation:
     description: |
       True when provider-reported usage exceeded `computed_bound` (input, or output + reasoning)
@@ -560,6 +569,7 @@ examples:
     reserved_micro_usd: 1250000
     computed_bound: {input_tokens: 120000, output_tokens: 32000, reasoning_tokens: 0}
     bound_violation: false
+    attributed_task_id: null
     budget_charge_micro_usd: 60750
     budget_scope_keys: ["execution:sc-184-x3", "task:sc-184", "provider-day:anthropic:2026-10-13", "provider-month:anthropic:2026-10", "global-hour:2026-10-13T10", "global-day:2026-10-13", "global-month:2026-10"]
     policy_revision: 0123456789abcdef0123456789abcdef01234567
@@ -627,6 +637,7 @@ examples:
     reserved_micro_usd: 410000
     computed_bound: {input_tokens: 120000, output_tokens: 32000, reasoning_tokens: 0}
     bound_violation: false
+    attributed_task_id: null
     budget_charge_micro_usd: 410000
     budget_scope_keys: ["orchestration-day:2026-10-13", "orchestration-month:2026-10", "provider-day:deepseek:2026-10-13", "provider-month:deepseek:2026-10", "global-hour:2026-10-13T10", "global-day:2026-10-13", "global-month:2026-10"]
     policy_revision: 0123456789abcdef0123456789abcdef01234567
@@ -686,6 +697,7 @@ x-invalid-examples:
       reserved_micro_usd: 0.5
       computed_bound: {input_tokens: 120000, output_tokens: 32000, reasoning_tokens: 0}
       bound_violation: false
+      attributed_task_id: null
       budget_charge_micro_usd: 0
       budget_scope_keys: ["task:sc-184"]
       policy_revision: 0123456789abcdef0123456789abcdef01234567
@@ -737,6 +749,7 @@ x-invalid-examples:
       reserved_micro_usd: 1250000
       computed_bound: {input_tokens: 120000, output_tokens: 32000, reasoning_tokens: 0}
       bound_violation: false
+      attributed_task_id: null
       budget_charge_micro_usd: 1250000
       budget_scope_keys: ["task:sc-184"]
       policy_revision: 0123456789abcdef0123456789abcdef01234567
@@ -788,6 +801,7 @@ x-invalid-examples:
       reserved_micro_usd: 1250000
       computed_bound: {input_tokens: 120000, output_tokens: 32000, reasoning_tokens: 0}
       bound_violation: false
+      attributed_task_id: null
       budget_charge_micro_usd: 0
       budget_scope_keys: ["global-day:2026-10-13"]
       policy_revision: 0123456789abcdef0123456789abcdef01234567

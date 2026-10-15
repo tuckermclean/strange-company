@@ -246,7 +246,7 @@ $defs:
           additionalProperties: false
           required: [code, path]
           properties:
-            code: {type: string, enum: [unconditional_failure, skip_marker, test_env_detection, ac_tag_missing, network_or_clock_dependence, environment_dependence, shared_test_mapping, preservation_test_new_file_only]}
+            code: {type: string, enum: [unconditional_failure, skip_marker, test_env_detection, ac_tag_missing, network_or_clock_dependence, environment_dependence, shared_test_mapping, preservation_test_new_file_only, source_read_in_test]}
             path: {$ref: "#/$defs/RepoPath"}
             line: {type: integer, minimum: 1}
             detail: {type: string, maxLength: 300}
@@ -305,6 +305,9 @@ $defs:
             - unapproved_test_change
             - preexisting_test_removed
             - tester_deletion
+            - existing_test_weakened
+            - marker_conditional
+            - manifest_too_large
       ac_results:
         type: array
         items:

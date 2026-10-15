@@ -17,11 +17,11 @@ ADR-0008 requires the Runner to trigger a verification pipeline "for a specific 
    ::sc-evidence-end v1 intent=<intent_id>::
    ```
    The decoded document is a `red-result` or `green-result` (plan 22 contracts). Its size is at most 262144 bytes.
-6. **Pulled, identity-checked evidence.** The Runner fetches the pipeline and the `sc-verify` step log through the Woodpecker API. It accepts the block only if:
+6. **Pulled, identity-checked evidence.** The Runner fetches the pipeline and the `sc-verify-emit` step log through the Woodpecker API (amended for TDD-B1: the workflow runs the suites in a step `sc-verify-run` that receives no nonce or intent id, and a separate step `sc-verify-emit`, its own pod, holds the nonce and prints the block; plan 20 §8.4). It accepts the block only if:
    - the pipeline number is the one it created and recorded;
    - `event == manual`, `branch == agent/<task-id>` and `commit == expected_sha`;
    - the intent was served with the expected `config_sha256`;
-   - the step `sc-verify` of workflow `verify` exited 0;
+   - the steps `sc-verify-install`, `sc-verify-run` and `sc-verify-emit` of workflow `verify` exited 0, and evidence is read only from `sc-verify-emit`;
    - exactly one framed block with the intent's nonce exists;
    - the length and sha256 match, and the document validates against its schema.
    The document is then stored in S3 `evidence` and its digest is recorded in `sc-pg`.

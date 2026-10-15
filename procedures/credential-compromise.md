@@ -106,11 +106,12 @@ Classes: `SC-WORKER-DEPLOY-KEY`, `SC-WORKER-TASK-TOKEN`, `SC-GATEWAY-TOKEN/worke
 
 ### model-provider-keys
 
-Classes: `SC-MODEL-API-KEYS`, `SC-GATEWAY-TOKEN` (Hermes instance); alerts `SCAnomalousSpend`, `SCModelMismatch`.
+Classes: `SC-MODEL-API-KEYS`, `SC-MODEL-USAGE-READ`, `SC-GATEWAY-TOKEN` (Hermes instance); alerts `SCAnomalousSpend`, `SCModelMismatch`.
 1. Emergency stop level `all` if spend is ongoing.
 2. Revoke the key in the provider console; set a provider-side spend cap if available.
 3. Compare provider usage for the window with the Gateway ledger (`./bootstrap exec -- sc-bootstrap ledger reconcile --provider <p> --since <start>`): usage absent from the ledger = the key was used outside Strange Company.
 4. Rotate with `rotate-model-credentials.md` (plan 53).
+5. `SC-MODEL-USAGE-READ` leaked: revoke it in the provider organisation console; read the provider's organisation audit log for the window (new API keys, member, limit or workspace changes) and undo them; confirm the provider-side hard monthly limit (plan 33 backstop) is unchanged; re-issue with the least scope (`rotate-secrets.md#sc-model-usage-read`). If it was an admin-type key, also rotate every `SC-MODEL-API-KEYS` instance of that provider.
 
 ### ci-and-supply-chain
 

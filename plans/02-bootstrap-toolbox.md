@@ -139,8 +139,8 @@ spec:
   tools:
     - name: opentofu
       set: runtime
-      version: "1.11.x"                     # illustrative
-      selectedBy: "tofu:latest-stable>=1.11"
+      version: "1.13.1"                     # baseline: OpenTofu v1.13.1
+      selectedBy: "baseline:opentofu"
       url: https://github.com/opentofu/opentofu/releases/download/v{version}/tofu_{version}_linux_{arch}.tar.gz
       sha256: {amd64: "…", arm64: "…"}
       install: {extract: tofu, to: /usr/local/bin/tofu}
@@ -172,40 +172,40 @@ publishedAt: 2026-10-13T12:00:00Z
 
 An empty `toolboxDigest` (before the first release) means "always build".
 
-### 9.4 Tool inventory and selection rules
+### 9.4 Tool inventory and baseline versions (CD-29, ADR-0022)
 
-Versions are selected at implementation time by the stated rule and re-verified by 02-AC-* and the consumer plans' tests. "(verify)" marks behavior that must be re-checked when the pin changes.
+Versions are the entries of `plans/compatibility-baseline.yaml` ("baseline: X"). Implementation pins any release inside the baseline line; a newer minor or major is a plan-amendment task. "(verify)" marks behavior re-checked by 02-AC-* and the consumer plans' tests at the baseline version.
 
-| Tool | Set | Source | Selection rule | Consumer |
+| Tool | Set | Source | Baseline (plans/compatibility-baseline.yaml) | Consumer |
 |---|---|---|---|---|
-| OpenTofu `tofu` | runtime | GitHub release tarball + sha256 | latest stable ≥ 1.11 (S3 `use_lockfile`, state encryption with `fallback`, ephemeral variables; plans 03, 06) | 03, 06 |
-| `ansible-core` + `ansible.posix`, `community.general` | runtime | pip (hash-locked) in `/opt/sc/ansible-venv`; collections by tarball + sha256 | latest ansible-core whose controller supports the image's Python and whose target support includes Python 3.12 (Ubuntu 24.04) and 3.13 (Debian 13) (verify) | 07, 08, 09, 05 |
-| `kubectl` | runtime | `dl.k8s.io` binary + sha256 | same minor as `versions/k3s.lock.yaml`, latest patch (skew 0, plan 01 §6.3) | all |
-| `helm` | runtime | `get.helm.sh` tarball + sha256 | latest stable of the Helm major used by the pinned Flux helm-controller (verify at pin time) | 54, debugging |
-| `flux` | runtime | GitHub release + sha256 | exactly `versions/platform.lock.yaml` `flux.version` | 18, 19 |
-| `sops` | runtime | GitHub release binary + sha256 | latest 3.x | 35, 50 |
-| `age`, `age-keygen` | runtime | GitHub release tarball + sha256 | latest 1.x | 35, 50 |
-| `ssh`, `ssh-keygen`, `ssh-keyscan` | runtime | Debian `openssh-client` (snapshot) | Debian 13 version | 50, 05, 07 |
-| `curl`, `git`, `bash`, `python3` | runtime | Debian (snapshot) | Debian 13 version | all |
-| `jq` | runtime | GitHub release static binary + sha256 | latest 1.x | procedures |
-| `yq` (mikefarah) | runtime | GitHub release + sha256 | latest v4 | procedures |
-| `aws` (AWS CLI v2) — the S3 CLI | runtime | `awscli.amazonaws.com` zip + sha256 | latest 2.x (verify: `endpoint_url` in profiles; checksum env vars below) | 06, 14, 49, procedures |
-| `kubectl-cnpg` | runtime | GitHub release + sha256 | equals the CNPG operator version in `platform.lock.yaml` (plan 12) | 12, procedures |
-| `cosign` | runtime | GitHub release + sha256 | latest stable | 23 (verify signatures from operator side, signing-key rotation) |
-| `syft`, `trivy` | runtime | GitHub releases + sha256 | latest stable each (trivy vulnerability DB is fetched at run time, not baked in) | 23 (SBOM and scan from the operator side, `supply-chain init`) |
-| `gitleaks` | runtime | GitHub release + sha256 | latest stable | 35 (`sc-bootstrap secrets scan`), 01 `secrets-scan` |
-| `etcdutl` | runtime | etcd release tarball + sha256 | equals the etcd minor embedded in the pinned k3s (`versions/k3s.lock.yaml` `etcdctl.version`) | 07 (`restore-etcd.md` snapshot inspection), 45 |
-| `cmctl` | runtime | GitHub release + sha256 | equals the cert-manager version in `versions/platform.lock.yaml` | 10 (`certificate-failure.md`) |
+| OpenTofu `tofu` | runtime | GitHub release tarball + sha256 | baseline: OpenTofu v1.13.1 (line 1.13.x); provides S3 `use_lockfile`, state encryption with `fallback`, ephemeral variables (plans 03, 06) | 03, 06 |
+| `ansible-core` + `ansible.posix`, `community.general` | runtime | pip (hash-locked) in `/opt/sc/ansible-venv`; collections by tarball + sha256 | baseline: ansible-core v2.21.5 (2.21.x); collections community.general 13.5.0, ansible.posix 2.2.2; controller Python 3.13 (Debian 13), targets 3.12/3.13 | 07, 08, 09, 05 |
+| `kubectl` | runtime | `dl.k8s.io` binary + sha256 | baseline: kubectl v1.36.5 (1.36.x; skew 0 with k3s v1.36.5+k3s1, plan 01 §6.3) | all |
+| `helm` | runtime | `get.helm.sh` tarball + sha256 | baseline: Helm v4.3.0 (4.3.x) — the v4 major, because Flux ≥ 2.8 (baseline Flux v2.9.6) embeds Helm v4; Helm 3.x is not used | 54, debugging |
+| `flux` | runtime | GitHub release + sha256 | baseline: Flux v2.9.6 (equals `versions/platform.lock.yaml` `flux.version`) | 18, 19 |
+| `sops` | runtime | GitHub release binary + sha256 | baseline: SOPS v3.13.3 (3.13.x) | 35, 50 |
+| `age`, `age-keygen` | runtime | GitHub release tarball + sha256 | baseline: age v1.3.2 (1.3.x) | 35, 50 |
+| `ssh`, `ssh-keygen`, `ssh-keyscan` | runtime | Debian `openssh-client` (snapshot) | baseline: Debian 13 (13.7) package | 50, 05, 07 |
+| `curl`, `git`, `bash`, `python3` | runtime | Debian (snapshot) | baseline: Debian 13 (13.7); Python 3.13.5 | all |
+| `jq` | runtime | GitHub release static binary + sha256 | baseline: jq 1.8.2 (1.8.x) | procedures |
+| `yq` (mikefarah) | runtime | GitHub release + sha256 | baseline: yq v4.54.1 (4.54.x) | procedures |
+| `aws` (AWS CLI v2) — the S3 CLI | runtime | `awscli.amazonaws.com` zip + sha256 | baseline: AWS CLI 2.38.1 (2.38.x); `endpoint_url` in profiles and the checksum env vars below (verify) | 06, 14, 49, procedures |
+| `kubectl-cnpg` | runtime | GitHub release + sha256 | baseline: CloudNativePG operator v1.30.1 (plugin version = operator version, plan 12) | 12, procedures |
+| `cosign` | runtime | GitHub release + sha256 | baseline: cosign v3.1.3 (3.1.x). v3 uses the standardized bundle format and requires `--bundle` for `sign-blob`/`verify-blob`; the capsule verification (§14.2 (d)) uses `cosign verify-blob --bundle` (verify) | 23 (operator-side verification, signing-key rotation), capsule |
+| `syft`, `trivy` | runtime | GitHub releases + sha256 | baseline: syft v1.54.1, trivy v0.76.0 (trivy DB fetched at run time, not baked in) | 23 (`supply-chain init`) |
+| `gitleaks` | runtime | GitHub release + sha256 | baseline: gitleaks v8.30.1 | 35 (`sc-bootstrap secrets scan`), 01 `secrets-scan` |
+| `etcdutl` | runtime | etcd release tarball + sha256 | the etcd embedded in baseline k3s v1.36.5+k3s1 (etcd v3.6.14; `versions/k3s.lock.yaml` `etcdctl.version`) | 07 (`restore-etcd.md`), 45 |
+| `cmctl` | runtime | GitHub release + sha256 | baseline: cert-manager v1.21.2 (cmctl version matching) | 10 (`certificate-failure.md`) |
 | `sc-bootstrap`, `sc-gitops`, `sc-lint`, `sc-contracts` | runtime | built from `src/` in the `gobuild` stage | repository HEAD | 50, 18, 01 |
-| `tini`, `libnss-wrapper` | runtime | Debian (snapshot) | — | §14.5 |
-| Go toolchain | ci | golang base image by digest | `src/go.mod` `toolchain` directive | `make test/build` |
-| `golangci-lint`, `shfmt`, `kubeconform`, `k3d`, `promtool`, `helm-unittest` (Helm plugin), `goimports`, `actionlint`, `woodpecker-cli` (version = pinned Woodpecker server), envtest assets (`kube-apiserver`, `etcd` binaries for the pinned Kubernetes minor via `setup-envtest`) | ci | GitHub releases + sha256 (Go tools may be `go install` at a pinned version with `GOFLAGS=-mod=mod` and sum-DB verification) | latest stable each | plan 01 §7.1 targets |
-| `yamllint`, `ansible-lint`, `jsonschema` (crosscheck) | ci | pip hash-locked | latest | 01, 07 |
+| `tini`, `libnss-wrapper` | runtime | Debian (snapshot) | Debian 13 packages | §14.5 |
+| Go toolchain | ci | golang base image by digest | baseline: Go 1.27.2 (1.27.x; `src/go.mod` `toolchain` directive) | `make test/build` |
+| `golangci-lint`, `shfmt`, `kubeconform`, `k3d`, `promtool`, `helm-unittest` (Helm plugin), `goimports`, `actionlint`, `woodpecker-cli`, envtest assets (`kube-apiserver`, `etcd` for Kubernetes 1.36 via `setup-envtest`) | ci | GitHub releases + sha256 (Go tools may be `go install` at a pinned version with `GOFLAGS=-mod=mod` and sum-DB verification) | baseline: kubeconform v0.8.0, k3d v5.9.0, helm-unittest v1.2.1 (runs as a Helm v4 plugin, verify), promtool = Prometheus v3.15.0, woodpecker-cli = Woodpecker v3.19.0; golangci-lint v2.14.0, shfmt v3.14.1, actionlint v1.7.12 (lock files only) | plan 01 §7.1 targets |
+| `yamllint`, `ansible-lint`, `jsonschema` (crosscheck) | ci | pip hash-locked | baseline notes: yamllint 1.38.0, ansible-lint 26.10.1 (lock files only) | 01, 07 |
 | Stage-0 validator dependencies (`python3` from Debian plus every pin in `tools/stage0/requirements.txt`, installed hash-checked into `/opt/sc/stage0-venv`) | ci | pip hash-locked from `tools/stage0/requirements.txt` | exactly those pins (ADR-0021) | 01 `stage0-validate` |
-| QEMU, `cloud-localds`, `genisoimage` | ci | Debian (snapshot) | Debian 13 version | 05 lab |
-| SeaweedFS `weed` (the `s3-emulator`, ADR-0205/CD-12) | ci | upstream release binary + sha256 | the version that passes plan 14's `make test-s3-emulator` | 05 lab, 06, 14, 49, 50 |
+| QEMU, `cloud-localds`, `genisoimage` | ci | Debian (snapshot) | baseline: QEMU 1:10.0.13+ds-0+deb13u1 (Debian 13 package) | 05 lab |
+| SeaweedFS `weed` (the `s3-emulator`, ADR-0205/CD-12) | ci | upstream release binary + sha256 | baseline: SeaweedFS 4.48 (4.x); must pass plan 14's `make test-s3-emulator` | 05 lab, 06, 14, 49, 50 |
 | `sc-lab` | ci | built from `src/` | repository HEAD | 05 lab |
-| `docker` CLI | ci | Debian `docker-cli` (snapshot) | — | k3d targets (host socket mounted by plan 52) |
+| `docker` CLI | ci | Debian `docker-cli` (snapshot) | Debian 13 package | k3d targets (host socket mounted by plan 52) |
 
 Defaults baked into the image environment: `AWS_REQUEST_CHECKSUM_CALCULATION=when_required` and `AWS_RESPONSE_CHECKSUM_VALIDATION=when_required` (AWS CLI ≥ 2.23 sends new default checksums that several S3-compatible providers reject (verify)); `ANSIBLE_CONFIG=$SC_REPO_ROOT/infra/ansible/ansible.cfg`; `TF_PLUGIN_CACHE_DIR=$SC_REPO_ROOT/.cache/tofu-plugins`; `HELM_CACHE_HOME=$SC_REPO_ROOT/.cache/helm`; `KUBECTL_EXTERNAL_DIFF` unset; `PATH=/opt/sc/bin:/opt/sc/ansible-venv/bin:/usr/local/bin:/usr/bin:/bin`.
 

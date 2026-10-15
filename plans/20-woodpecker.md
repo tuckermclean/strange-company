@@ -42,7 +42,7 @@ Plan 52 owns *which* Make targets run on which event. Plan 22 owns the semantics
 
 | Input | Source | Notes |
 |---|---|---|
-| Woodpecker chart version and image digests (server, agent, `plugin-git`, permission-init image) | `versions/platform.lock.yaml` (plan 01) | Selection rule §9.1 |
+| Woodpecker chart version and image digests (server, agent, `plugin-git`, permission-init image) | `versions/platform.lock.yaml` (plan 01) | Baseline §9.1 |
 | OAuth app client ID and secret (`SC-WOODPECKER-OAUTH`) | forge-init S13 (plan 16) → SOPS Secret `woodpecker/woodpecker-forgejo-oauth` | Keys `WOODPECKER_FORGEJO_CLIENT`, `WOODPECKER_FORGEJO_SECRET` |
 | Agent credentials (`SC-WOODPECKER-AGENT`, one instance per agent) | per-agent tokens minted by `ci-init` W07 (`POST /api/agents`, verify), SOPS `gitops/clusters/<c>/secrets/woodpecker/agent-token-{ci,build}.sops.yaml`; the pre-seed shared value (`woodpecker-agent-secret.sops.yaml`) is mounted only by the server, never by an agent (§9.3) | |
 | `woodpecker-pg` app Secret `woodpecker-pg-app` | plan 12 | `uri` key |
@@ -169,6 +169,7 @@ Commit statuses posted to Forgejo use context `ci/woodpecker/<event>/<workflow>`
 | `woodpecker-agent-build` | Deployment (second HelmRelease of the chart's agent component, server disabled; verify chart support) | `woodpecker` | same image | 1 |
 | `sc-ci-config` | Deployment | `woodpecker` | internal image `sc-ci-config@sha256:…` (plan 23) | 1 (2 at small-ha, stateless) |
 | `sc-ci-maint` | CronJob `17 * * * *` | `woodpecker` | same image as `sc-ci-config` | — |
+| `sc-ci-trust-canary` | CronJob `40 3 * * *` running `sc-ci-config canary` (SEC-B7, 20-AC-41; uses `SC-WOODPECKER-MAINT` to trigger the manual pipeline) | `woodpecker` | same image | — |
 | `woodpecker-pg` | CNPG `Cluster` | `woodpecker` | plan 12 | 1 / 3 |
 
 Before P11 (internal registry and supply chain), `sc-ci-config` comes from the public release registry like the toolbox (plan 50 OQ-50-2, plan 23).
@@ -213,7 +214,7 @@ Request handling, in order. Any failure returns non-2xx, so Woodpecker creates *
    In **protected** mode, workflows are not dropped, but the image rule is still enforced. A violation returns 422 so the push fails visibly.
 6. **Normalize** (all modes):
    - Set `labels: {sc-lane: <lane>}`. Untrusted is always `ci`. Protected keeps a declared `build`, otherwise `ci`.
-   - Insert an explicit `clone` step using `CIPolicy.spec.cloneImage` with `settings: {depth: 0, tags: true}` (full history, needed by `tdd-discipline-check` and `sc-verify`; verify the `plugin-git` setting names).
+   - Insert an explicit `clone` step using `CIPolicy.spec.cloneImage` with `settings: {depth: 0, tags: true, recursive: false, submodule_update_remote: false, lfs: false}` and no `submodule_override` (full history for `tdd-discipline-check` and `sc-verify`; **no submodule recursion and no LFS fetch**, SEC-B4; setting names verified against baseline plugin-git 2.10.x). A served configuration that declares its own `clone` section, or tries to re-enable submodules or LFS, is rejected (422 `CLONE_OVERRIDE`).
    - Merge into every step's `backend_options.kubernetes`:
      - `securityContext` from `stepSecurityContext`;
      - `resources` from the lane defaults. A step may request less, never more than `lanes.<lane>.max`. `limits["strange.company/heavy-slot"]` is **always overwritten** with `lanes.<lane>.heavySlotUnits` (ci 1, build 8; CD-05), so a step cannot request 0 and escape the slot.
@@ -248,22 +249,26 @@ steps:
   - name: sc-verify-install            # copies the pinned static verifier into the workspace root
     image: <registry>/strange-company/sc-verify@sha256:<digest from CIPolicy.spec.verify.installerImage>
     commands: ["sc-verify install --dest /woodpecker/.sc/bin"]
-  - name: sc-verify                     # the only step whose log is read for evidence
+  - name: sc-verify-run                 # runs the suites; receives NO nonce, intent id or other secret
     image: <toolchain image from .strange-company/validation.yaml spec.verification.image>   # strange-company: the `ci` image
-    commands: ["/woodpecker/.sc/bin/sc-verify run --validation .strange-company/validation.yaml --emit log"]
+    commands: ["/woodpecker/.sc/bin/sc-verify run --validation .strange-company/validation.yaml --record /woodpecker/.sc/run"]
+  - name: sc-verify-emit                # separate pod: own PID namespace and /proc; the only step that sees the nonce
+    image: <registry>/strange-company/sc-verify@sha256:<same installerImage digest>
+    commands: ["sc-verify emit --record /woodpecker/.sc/run --emit log"]
 ```
 
-Rules:
-- There are exactly two steps, named `sc-verify-install` and `sc-verify`, in that order.
-- The first step's image equals `verify.installerImage`.
-- The second step's commands are exactly `["/woodpecker/.sc/bin/sc-verify run --validation .strange-company/validation.yaml --emit log"]`.
-- There are no `services`, `depends_on` cycles or extra steps.
+Rules (TDD-B1):
+- There are exactly three steps, named `sc-verify-install`, `sc-verify-run` and `sc-verify-emit`, in that order, with no `depends_on`, `services` or extra steps.
+- `sc-verify-install` and `sc-verify-emit` use exactly `verify.installerImage`; the commands are exactly as shown.
+- `sc-ci-config` injects `SC_EVIDENCE_NONCE` and `SC_INTENT_ID` **only** into `sc-verify-emit`. `sc-verify-run` receives `SC_PHASE`, `SC_SUBJECT`, `SC_TASK_ID`, `SC_EXPECTED_SHA`, `SC_BASE_SHA`, `SC_RED_SHA`, `SC_PROTECTED_TESTS`, `SC_BASELINE`, which carry no secret. Because the Kubernetes backend runs each step as its own pod (plan 20 §8.1), the code under test can neither read the emit step's environment through `/proc/*/environ` nor write to its stdout.
 - The workspace root `/woodpecker` is the Woodpecker default (verify).
 
-`sc-verify` reads `SC_*` from the environment, runs every `spec.verification.suites[]` entry whose `phases` contains `SC_PHASE` (and, for GREEN, every `spec.verification.checks[]` entry) as child processes (argv, no shell; plan 22 §14) with stdout and stderr captured to a file (not the step log), and prints only:
-- a header;
-- a tail of at most 64 KiB of scrubbed output;
-- the framed evidence block (§8.5).
+`sc-verify run` (semantics owned by plan 22 §14.1) runs every `spec.verification.suites[]` entry whose `phases` contains `SC_PHASE` (and, for GREEN, every `spec.verification.checks[]` entry) as child processes (argv, no shell) with output captured to files, and:
+- sets `PR_SET_CHILD_SUBREAPER`, runs each suite in its own process group, and after each suite SIGKILLs and reaps **every** descendant before reading anything the suite produced;
+- copies each report file into `/woodpecker/.sc/run/<suite>/`, records its sha256 in `run-record.json` and makes the copy read-only before the next suite starts;
+- exits; no process of the step survives (the pod ends).
+
+`sc-verify emit` validates `run-record.json` against the copied reports (sha256), classifies, and prints only a header, a scrubbed tail of at most 64 KiB, and the framed evidence block (§8.5). The Runner reads evidence **only from the `sc-verify-emit` step log**, so anything printed in `sc-verify-run` is never evidence. Residual (SI-07): per-test pass lines that a test binary prints itself, or a report rewritten *during* its own suite, remain forgeable by in-test code; plan 22 and plan 55 state this in the reviewer packet.
 
 **Platform default.** If the base revision has no `.woodpecker/verify.yaml` (project repositories), `sc-ci-config` serves `CIPolicy.spec.verify.defaultWorkflow`, the same shape with the toolchain image from the base revision's `validation.yaml`. A repository without a valid `validation.yaml` gets 422, and the Runner records an infrastructure failure (plan 22 decides whether the task can be test-first at all).
 
@@ -277,7 +282,7 @@ Rules:
 
 - The decoded content is UTF-8 JSON, a `red-result` or `green-result` document (plan 22), of at most **262144 bytes**. The block is therefore at most about 360 KiB.
 - Markers must be at the start of a log line. A line matching `^::sc-evidence-` that is not part of the well-formed block makes the log ambiguous.
-- `sc-verify` keeps the `sc-verify` step log under 1 MiB in total. The Runner reads at most **8 MiB** of that step's log (`EVIDENCE_LOG_TOO_LARGE` above that).
+- `sc-verify` keeps the `sc-verify-emit` step log under 1 MiB in total. The Runner reads at most **8 MiB** of that step's log (`EVIDENCE_LOG_TOO_LARGE` above that).
 - Parser outcomes (the Runner, F06 library):
 
   | Outcome | Meaning |
@@ -302,7 +307,7 @@ All must hold. Otherwise `EVIDENCE_IDENTITY_MISMATCH:<check>`, and the evidence 
 | I3 | `pipeline.commit == intent.expected_sha` (otherwise `EVIDENCE_COMMIT_MISMATCH`: cancel the pipeline and retry per plan 22) |
 | I4 | `pipeline.sender == "sc-runner"` (verify the field for manual events; if Woodpecker does not set it, I1 alone suffices because only the Runner records pipeline numbers) |
 | I5 | The intent has a `served` attestation, and its `config_sha256` equals the Runner's own computation over the expected verify workflow at `base_sha` (same canonicalization library as `sc-ci-config`) |
-| I6 | The pipeline has a workflow `verify` with steps `sc-verify-install` and `sc-verify` in state `success` with `exit_code == 0`, and no other workflows ran |
+| I6 | The pipeline has a workflow `verify` with steps `sc-verify-install`, `sc-verify-run` and `sc-verify-emit` in state `success` with `exit_code == 0`, and no other workflows ran |
 | I7 | The pipeline is terminal (`success`) and finished before the intent's verification deadline (plan 22) |
 
 The Runner records the transition with actor `ci:woodpecker/<number>` (contract `mcp-surface.schema.yaml`).
@@ -322,10 +327,10 @@ Steps, each idempotent. Exit 1 if any step fails (check-cronjob pattern, ADR-055
 
 ## 9. Configuration
 
-### 9.1 Version selection rule
+### 9.1 Version baseline
 
-- Latest stable Woodpecker **3.x** minor at implementation time, latest patch (3.19 was current on 2026-10-13). Official Helm chart at the version shipping that app version (`oci://ghcr.io/woodpecker-ci/helm/woodpecker`, verify the location). Image digests from `docker.io/woodpeckerci/*`.
-- `plugin-git` latest 2.x that is compatible (verify).
+- **baseline: Woodpecker v3.19.x** (v3.19.0) with chart `woodpecker` 3.7.5 from `https://github.com/woodpecker-ci/helm` (`plans/compatibility-baseline.yaml`, CD-29). Image digests from `docker.io/woodpeckerci/*`. Newer minors are plan-amendment tasks.
+- **baseline: plugin-git 2.10.x** (2.10.1).
 - `woodpecker-cli` in the `ci` image (plan 02) at the same version as the server (`make locks-check` cross-file rule, plan 01).
 - A major upgrade (v4) is human-initiated (§19).
 
@@ -528,8 +533,8 @@ Workers (`agent-jobs`) and Hermes have no path to `woodpecker` or `ci-jobs` [SPE
 `ci-build` rules are plan 23's.
 
 ### 13.5 Residual risks
-- **R-20-1** `sc-woodpecker`'s forge OAuth token (stored in `woodpecker-pg`, used for clone netrc and statuses) carries the user's full Forgejo rights. `sc-woodpecker` is in team `sc-automation` (repo admin, plan 16) because activation creates webhooks. A compromise of the clone image or of the server exposes it. Mitigations: only the digest-pinned clone image receives netrc; `SCForgeConfigDrift` (plan 16) catches protection changes. Recorded for plan 34.
-- **R-20-2** Code under test can read `SC_EVIDENCE_NONCE` and attempt evidence forgery (ADR-0302 residual risk).
+- **R-20-1** `sc-woodpecker`'s forge OAuth token (stored in `woodpecker-pg`, used for clone netrc and statuses) carries the user's Forgejo rights. Per **CD-38**, `sc-woodpecker` is a member of a **write-only** team (plan 16 `sc-ci-write`), never admin, and is not in `sc-mergers`, so the clone token is not a repo-admin token and cannot approve or merge. Repository activation needs repo admin once (Woodpecker creates the repository webhook): `ci-init` W03 adds `sc-woodpecker` to the admin team `sc-ci-activation` only for the duration of the activation calls and removes it immediately afterwards (journaled; `SCForgeConfigDrift` fires if membership remains). A compromise of the clone image or of the server exposes it. Mitigations: only the digest-pinned clone image receives netrc; `SCForgeConfigDrift` (plan 16) catches protection changes. Recorded for plan 34.
+- **R-20-2** The nonce is no longer visible to code under test (it exists only in the separate `sc-verify-emit` pod). The residual is in-suite forgery of per-test observations (printed `--- PASS` lines, a report rewritten while its own suite runs); see SI-07, plan 22.
 - **R-20-3** A repository admin in Woodpecker can create crons on unprotected branches or change approval settings. A cron on an unprotected branch is classified untrusted (§8.2), and drift is reported by `sc-ci-maint`.
 
 ## 14. Happy path
@@ -546,7 +551,7 @@ Layer `woodpecker-db` (plan 18 #16) brings `woodpecker-pg` Ready. Layer `woodpec
 | W00 | Wait for the `woodpecker` HelmRelease Ready, `GET https://ci.<d>/healthz` 200, and `sc-ci-config` `/readyz` 200 (port-forward). Timeout 15 m | — | `CI_UNHEALTHY` (retryable) |
 | W01 | Woodpecker sign-in as `sc-admin` (headless OAuth, §14.3) → ephemeral `SC-WOODPECKER-ADMIN` | `GET /api/user` returns `admin: true` | `CI_LOGIN_FAILED:sc-admin` |
 | W02 | Only if W03 finds an inactive repository or W06 needs a new token: sign in as `sc-woodpecker` (set a fresh random Forgejo password through the admin API, then headless OAuth; the password is discarded afterwards). The first sign-in creates the Woodpecker user (registration is open to org members) | `sc-admin` sees user `sc-woodpecker` in `GET /api/users` | `CI_LOGIN_FAILED:sc-woodpecker` |
-| W03 | As `sc-woodpecker`, activate every repository of `managedOwners` that is not yet active (`POST /api/repos?forge_remote_id=`) | repo `active: true` | `CI_ACTIVATION_FAILED:<repo>` |
+| W03 | As `sc-admin` (Forgejo), add `sc-woodpecker` to team `sc-ci-activation`; as `sc-woodpecker`, activate every repository of `managedOwners` that is not yet active (`POST /api/repos?forge_remote_id=`); then remove the team membership (CD-38) | repo `active: true` | `CI_ACTIVATION_FAILED:<repo>` |
 | W04 | As `sc-admin`, `PATCH /api/repos/{id}` to `repoSettings`, with all `trusted.*` false | fields equal | |
 | W05 | `SC-WOODPECKER-RUNNER`: if the local SOPS file exists and `GET /api/user` with it returns `sc-runner`, keep it. Otherwise set a fresh Forgejo password for `sc-runner`, sign in, and `POST /api/user/token` | token valid | |
 | W06 | `SC-WOODPECKER-MAINT`: same as W05 for `sc-woodpecker` | token valid | |
@@ -582,8 +587,8 @@ The flow never prints credentials. Each request is logged with method, host, pat
 2. It records the intent in `sc-pg`.
 3. It calls `POST /api/repos/{id}/pipelines` with `branch=agent/<task>` and `variables {SC_TASK_ID, SC_PHASE, SC_EXPECTED_SHA, SC_INTENT_ID}`, then records the `number`.
 4. Woodpecker resolves the branch head and calls `sc-ci-config`. The extension finds the intent, fetches `verify.yaml` at `base_sha`, validates its shape, normalizes it, injects the `SC_*` environment, posts `served`, and returns the configuration.
-5. The ci agent runs the clone, `sc-verify-install` and `sc-verify` steps.
-6. The Runner's evidence poller (every 10 s) waits for a terminal state, runs I1–I7, fetches the `sc-verify` step log, parses the block, validates it, stores it in S3 `evidence`, records the digest, and transitions the task with actor `ci:woodpecker/<number>`.
+5. The ci agent runs the clone, `sc-verify-install`, `sc-verify-run` and `sc-verify-emit` steps.
+6. The Runner's evidence poller (every 10 s) waits for a terminal state, runs I1–I7, fetches the `sc-verify-emit` step log, parses the block, validates it, stores it in S3 `evidence`, records the digest, and transitions the task with actor `ci:woodpecker/<number>`.
 
 Target latency with an idle queue, from trigger to evidence recorded: ≤ 10 min for `strange-company` RED (`make test` scoped by plan 22), ≤ 20 min for GREEN (`make verify`).
 
@@ -724,6 +729,7 @@ Humans simply log in again.
 | `SCCIWorkspaceFilesystemHigh` | `1 - node_filesystem_avail_bytes{mountpoint="/var/lib/sc/ci-workspace"} / node_filesystem_size_bytes{…} > 0.8` | 10m | warning |
 | `SCCIWorkspaceFilesystemCritical` | same `> 0.95` | 10m | critical |
 | `SCCIBuildLaneAgentMismatch` | `max(sc_ci_build_lane_agent_mismatch) == 1` | 0s | critical, category `security`, page |
+| `SCCITrustModelBroken` | check-cronjob `ci-trust-canary`, `failAfter: 1m`, `maxAge: 26h` (20-AC-41) | — | critical, category `security`, page |
 | `SCCIMaintFailed` | check-cronjob `ci-maint`, `failAfter: 2h`, `maxAge: 3h` (ADR-0553); also fires on `BUILD_LANE_AGENT_MISMATCH` (§8.7 step 5) | — | warning |
 
 Runbook for all of them: `procedures/woodpecker-failure.md`.
@@ -790,6 +796,8 @@ All tests are deterministic and make no model calls.
 - [ ] **20-AC-27** Token hygiene: the decrypted `SC-WOODPECKER-RUNNER` returns login `sc-runner` from `GET /api/user`, and `SC-WOODPECKER-MAINT` returns `sc-woodpecker` with `admin: false`. `git grep -l` over the repository finds no plaintext token prefix (the first 12 characters of each, matched by sha256 in the test harness). No Kubernetes Secret holds an `sc-admin` Woodpecker token (`SC-WOODPECKER-ADMIN` is process-only).
 - [ ] **20-AC-38** Secret injection mechanism (SEC-3; re-verified at every Woodpecker bump): on `sc-e2e/ci-probe`, a repository secret `sc_probe_secret` (events `[tag]`, image filter = the probe image) is used by a protected tag pipeline running a step that sleeps 60 s. During the step, `kubectl -n ci-build get pod <step> -o json` shows whether the value appears inline (`env[].value`) or by reference (`valueFrom.secretKeyRef`). The result (`inline` or `reference`) is recorded in `versions/compat.yaml` key `woodpecker.secretInjection`; plan 23 consumes it (if `inline`, release credentials must be mounted from a Kubernetes Secret only into the `sc-release` pod). The secret is deleted after the test.
 - [ ] **20-AC-39** Clone credentials stay in the clone step (SEC-20): a fixture workflow step that runs after `clone` executes `grep -r -c <first 12 chars of sc-woodpecker's forge token> /woodpecker $HOME; env | grep -c -i netrc` (the token prefix is supplied by the harness as a sha256, compared in-step) and reports 0 matches; the step's pod spec has no `CI_NETRC_*` variables.
+- [ ] **20-AC-40** No submodules, no LFS (SEC-B4): branch `test/submodule-probe` on `sc-e2e/ci-probe` adds a `.gitmodules` entry pointing at a second private repository `sc-e2e/ci-secret` (plus a gitlink) and a `.gitattributes` LFS rule with an LFS pointer file. A PR pipeline from it completes its clone step without fetching either: the workspace has no `ci-secret` checkout and the LFS file is still a pointer; Forgejo's access log shows no request by `sc-woodpecker` for `sc-e2e/ci-secret` or the LFS batch API during the pipeline; and a fixture served config that sets `clone.settings.recursive: true` is rejected with 422 `CLONE_OVERRIDE`. Clone traffic from `ci-jobs` to Forgejo uses HTTP port 3000 only (plan 36 FJ-10 narrowed: the SSH-for-submodules exception on 2222 is removed).
+- [ ] **20-AC-41** Trust-model canary (SEC-B7): the daily CronJob `sc-ci-trust-canary` triggers a manual pipeline on branch `canary/escape` of `sc-e2e/ci-probe`, whose own `.woodpecker/canary.yaml` (never served) declares step `canary-escaped`, `labels: {sc-lane: build}` and `from_secret: sc_canary_secret` (a Woodpecker secret holding a random value, events `[manual]`, image filter = the canary image). The check passes (Job exits 0) only if the pipeline contains no `canary-escaped` step, no pod is created in `ci-build`, and the canary value appears in no `ci-jobs` pod spec. A failure raises `SCCITrustModelBroken` (check-cronjob `ci-trust-canary`, `failAfter: 1m`, category `security`, critical, registered in the alert catalogue). A forced fixture with `WOODPECKER_CONFIG_EXTENSION_EXCLUSIVE=false` in a k3d run (`make e2e-woodpecker`) makes the canary fail.
 
 ### GATE-C04 (co-owned with plans 21 and 22; these items cover the Woodpecker trigger and evidence path)
 
@@ -799,14 +807,14 @@ C04 depends on C01, P08 and F06 only, so these ACs do not dispatch worker Jobs (
 - [ ] **20-AC-29** GREEN end to end: the `fake-green-after-retry` fixture commits, then `GREEN_VERIFIED` with evidence validating against `green-result.schema.yaml`. Pipeline `n` for GREEN has `commit` = the implementation commit, and `verify` ran from the task's `base_sha` (`served.config_revision == base_sha`).
 - [ ] **20-AC-30** Branch race: a test hook pushes a new commit to `agent/<task>` after the Runner's head check and before pipeline creation (fault hook `SC_TEST_FAULT=after:intent-recorded`). The Runner records `EVIDENCE_COMMIT_MISMATCH`, cancels the pipeline (`$WP GET …/pipelines/{n}` state `killed`), and the task does not transition on that pipeline.
 - [ ] **20-AC-31** Foreign pipelines ignored: a manual pipeline created by a human admin on `agent/<task>` (with the same variables) runs no `verify` workflow (the served configuration's workflow names exclude `verify`; `sc_ci_config_intent_lookups_total{outcome="not_found"}` +1), and the task's transition history is unchanged.
-- [ ] **20-AC-32** Forgery attempt detected: a fixture test on `sc-e2e/fake-target` that writes a second `::sc-evidence-begin …` block with the injected nonce to `/proc/<sc-verify pid>/fd/1` yields `EVIDENCE_AMBIGUOUS` (failure class `policy`). The task does not reach `RED_VERIFIED` from that pipeline, and `SCTddProvenanceBypass` is posted (or the Runner metric that feeds it increments, if P09 rules are not loaded yet).
+- [ ] **20-AC-32** Forgery attempts (TDD-B1), each a fixture test on `sc-e2e/fake-target`: (a) a test that prints a complete `::sc-evidence-begin …` block in `sc-verify-run` does not affect the evidence (the Runner reads only `sc-verify-emit`; the pipeline's evidence equals the genuine document); (b) a test that reads every `/proc/*/environ` it can open and writes the contents to the workspace finds no `SC_EVIDENCE_NONCE` and no intent id (asserted by the harness on the copied file); (c) a test whose `init()` starts a detached `setsid` process that rewrites the junit report after the suite exits: the process is killed before the report is copied, `run-record.json`'s sha256 matches the genuine report, and classification is unaffected; (d) a test binary that prints fake `--- PASS` lines for a protected test is recorded as the accepted residual (SI-07), and the AC asserts that the reviewer packet carries the SI-07 notice. Cases (a)–(c) end without `RED_VERIFIED` being influenced, or in `tamper_detected`/`EVIDENCE_AMBIGUOUS`.
 - [ ] **20-AC-33** Unit-level evidence outcomes: `go test ./src/internal/verify/evidence/... -run TestOutcomes` passes, with one fixture per outcome in §8.5 (`ok`, `MISSING`, `AMBIGUOUS`, `TRUNCATED`, `CORRUPT`, `SCHEMA_INVALID`, `LOG_TOO_LARGE`).
 - [ ] **20-AC-34** Latency: over 10 consecutive `sc-e2e c04` RED tasks (fixture `fake-red-valid`) with an idle queue, trigger-to-evidence-recorded p95 ≤ 10 min (from Runner metrics `sc_verification_duration_seconds` or transition timestamps).
 
 ### GATE-P12 (Woodpecker contributions; owners 50 and 19)
 
 - [ ] **20-AC-3** Human login (moved from GATE-P08 to GATE-P12 because it needs plan 15's synthetic OIDC user, delivered at P07; GC-01): `curl -s -o /dev/null -w '%{http_code} %{redirect_url}' https://ci.<d>/authorize` returns 30x to `https://git.<d>/login/oauth/authorize?client_id=<WOODPECKER_FORGEJO_CLIENT>`. The plan 15 synthetic OIDC user in team `engineers` completes the flow and `GET /api/user` returns its login. A Forgejo user outside both orgs is redirected with `error=org_access_denied` or `registration_closed`.
-- [ ] **20-AC-35** Alerts present: Prometheus `GET /api/v1/rules` contains `SCWoodpeckerDown`, `SCWoodpeckerNoAgents`, `SCWoodpeckerBacklog`, `SCWoodpeckerAgentUnavailable`, `SCWoodpeckerBuildAgentUnavailable`, `SCCIConfigExtensionDown`, `SCCIConfigSignatureFailures`, `SCCIRepoPolicyViolation`, `SCCIUntrustedConstructDropped`, `SCCIWorkspaceFilesystemHigh`, `SCCIWorkspaceFilesystemCritical`, `SCCIMaintFailed`, `SCCIBuildLaneAgentMismatch`. None is firing (`ALERTS{alertname=~"SCWoodpecker.*|SCCI.*",alertstate="firing"}` empty). Scaling `sc-ci-config` to 0 for 6 minutes fires `SCCIConfigExtensionDown` (Alertmanager API), and it resolves after restore.
+- [ ] **20-AC-35** Alerts present: Prometheus `GET /api/v1/rules` contains `SCWoodpeckerDown`, `SCWoodpeckerNoAgents`, `SCWoodpeckerBacklog`, `SCWoodpeckerAgentUnavailable`, `SCWoodpeckerBuildAgentUnavailable`, `SCCIConfigExtensionDown`, `SCCIConfigSignatureFailures`, `SCCIRepoPolicyViolation`, `SCCIUntrustedConstructDropped`, `SCCIWorkspaceFilesystemHigh`, `SCCIWorkspaceFilesystemCritical`, `SCCIMaintFailed`, `SCCIBuildLaneAgentMismatch`, `SCCITrustModelBroken`. None is firing (`ALERTS{alertname=~"SCWoodpecker.*|SCCI.*",alertstate="firing"}` empty). Scaling `sc-ci-config` to 0 for 6 minutes fires `SCCIConfigExtensionDown` (Alertmanager API), and it resolves after restore.
 - [ ] **20-AC-36** Required context: `$FJ GET /repos/strange-company/strange-company/branch_protections/main` has `enable_status_check: true` and `status_check_contexts` containing `ci/woodpecker/pr/ci` (16-AC-32). A test PR whose `make verify` fails cannot be merged by a non-admin (`POST /repos/…/pulls/{n}/merge` returns 405 or 409).
 - [ ] **20-AC-37** Prometheus `up{job=~"woodpecker|sc-ci-config"} == 1`, and the Grafana "Woodpecker" dashboard exists (plan 39 API check).
 

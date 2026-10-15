@@ -1,0 +1,953 @@
+# Stage-0 compatibility baseline (CD-29, ADR-0022; external review PR #138 finding #3).
+#
+# For every third-party component the plans depend on, this file records the exact
+# version or release line the plans were reasoned against, with the evidence date.
+# It supersedes the version "selection rules" stated in the plans (ADR-0022).
+#
+# - Implementation pins any release inside `line`. Patch updates inside the line
+#   are free; plan release-age soaks (Renovate `minimumReleaseAge`, "≥ 14 days old")
+#   still apply to them.
+# - A release outside `line` (newer minor or major) is a plan-amendment task: update
+#   this file, re-run the affected plans' (verify) acceptance criteria, review it like
+#   an architecture change.
+# - `lineKind: major` is used only where a component ships a new minor with almost
+#   every release; each such entry gives its reason in `notes`.
+#
+# Validated by contracts/compatibility-baseline.schema.yaml (tools/stage0/validate.py C03).
+apiVersion: strange.company/v1alpha1
+kind: CompatibilityBaseline
+metadata:
+  name: stage0
+  checkedAt: "2026-10-14"
+  decision: CD-29
+  adr: adr/0022-stage0-compatibility-baseline.md
+spec:
+  components:
+    # ------------------------------------------------------------------ cluster
+    - name: k3s / Kubernetes
+      baselineVersion: v1.36.5+k3s1
+      line: 1.36.x
+      evidence:
+        status: verified
+        source: https://update.k3s.io/v1-release/channels
+        checked: "2026-10-14"
+      planRefs: [plans/07-k3s.md, plans/48-upgrade.md, plans/37-admission-policy.md, plans/36-network-policy.md, plans/38-prometheus.md, plans/51-capacity-and-scheduling.md, plans/33-budget-enforcement.md, plans/09-networking.md]
+      versionSensitiveAssumptions:
+        - config.yaml.d drop-in merge order; cluster-init ignored once etcd data exists (07-AC-3, 07-AC-4)
+        - tls-san change regenerates the serving certificate on restart (07-AC-21)
+        - secrets-encryption snapshots unreadable without the token (07-AC-12); secrets-encrypt rotate-keys (k3s ≥ 1.28)
+        - leaf certificates renewed within 90 days of expiry at service start (07-AC-17)
+        - etcd learners on join (07-AC-20); etcd-expose-metrics serves http :2381 (38-AC-5); etcdsnapshotfiles.k3s.cattle.io CRD; `k3s etcd-snapshot ls --output json`
+        - PSA admission config via kube-apiserver-arg or pod-security-admission-config-file (07-AC-24, 37-AC-3); per-controller ServiceAccount credentials
+        - ValidatingAdmissionPolicy GA (≥ 1.30), CEL quantity/strings libraries and cost limits on the pinned minor (37-AC-1, 37-AC-5)
+        - kube-router named-port support and LOCAL source acceptance (36-AC-3, 36-AC-4)
+        - CoreDNS `rewrite … answer auto` in the bundled CoreDNS (09-AC-6); kubelet ConfigMap sync latency (plan 33)
+        - LimitRange defaults for extended resources (51-AC-7)
+      notes: >-
+        Newest minor on the k3s `stable` channel (v1.36.5+k3s1, released 2026-09-30). 1.37 (v1.37.1+k3s1) is only on
+        `latest` and is outside the supported Kubernetes ranges of Flux 2.9 (1.34–1.36), cert-manager 1.21 (1.33–1.36)
+        and CNPG 1.30 (1.34–1.36), so plan 07 §19.1 (b) also selects 1.36. Embedded components of v1.36.5+k3s1: etcd
+        v3.6.14-k3s3, containerd v2.3.4-k3s1.36, runc v1.4.2, flannel v0.28.4, CoreDNS v1.14.7, local-path-provisioner
+        v0.0.37, metrics-server v0.9.0 (k3s release notes). etcdutl and envtest assets derive from this entry.
+
+    - name: kubectl
+      baselineVersion: v1.36.5
+      line: 1.36.x
+      evidence:
+        status: verified
+        source: https://github.com/kubernetes/kubernetes/releases/tag/v1.36.5
+        checked: "2026-10-14"
+      planRefs: [plans/02-bootstrap-toolbox.md, plans/01-repository.md, plans/51-capacity-and-scheduling.md]
+      versionSensitiveAssumptions:
+        - skew 0 with the k3s minor (locks-check cross-file rule)
+        - registry.k8s.io/kubectl image exists for the pinned version (plan 51 heavy-slot-advertiser)
+      notes: Derived from the k3s / Kubernetes entry; same minor, latest patch.
+
+    - name: Flux
+      baselineVersion: v2.9.6
+      line: 2.9.x
+      evidence:
+        status: verified
+        source: https://github.com/fluxcd/flux2/releases/tag/v2.9.6
+        checked: "2026-10-14"
+      planRefs: [plans/18-flux.md, plans/19-seed-handoff.md, plans/33-budget-enforcement.md, plans/35-secrets.md, plans/02-bootstrap-toolbox.md]
+      versionSensitiveAssumptions:
+        - Bucket source semantics used by the seed (19-AC-4)
+        - kustomize-controller StrictPostBuildSubstitutions feature gate name (19-AC-17)
+        - "`flux diff kustomization` exit codes and SOPS skip (19-AC-18)"
+        - healthCheckExprs (Flux ≥ 2.5) for the CNPG Cluster gate (18 Q2)
+        - kustomize build without load restrictor (18 Q5); helm-controller values merge order (18-AC-12)
+        - notification-controller alertmanager Provider path handling; DecryptionFailed event surface (plan 35)
+        - controllers run under PSA restricted; prune only own inventory (33-AC-12)
+      notes: >-
+        Flux 2.9 supports Kubernetes 1.34–1.36 (release notes). Since Flux 2.8 helm-controller embeds Helm v4 and
+        defaults HelmRelease to server-side apply with kstatus health checking; plans 18/54 reasoning about
+        helm-controller drift detection and remediation must be re-verified against that behavior. Flux 2.9 removed
+        image.toolkit/v1beta2 and notification.toolkit/v1beta2 CRD versions. The flux CLI equals this version.
+
+    - name: Helm
+      baselineVersion: v4.3.0
+      line: 4.3.x
+      evidence:
+        status: verified
+        source: https://github.com/helm/helm/releases/tag/v4.3.0
+        checked: "2026-10-14"
+      planRefs: [plans/02-bootstrap-toolbox.md, plans/54-strange-company-chart.md]
+      versionSensitiveAssumptions:
+        - same Helm major as the pinned Flux helm-controller (v4 since Flux 2.8)
+        - chart apiVersion v2 and helm-unittest plugin compatibility
+      notes: Helm 3.22.0 is still released in parallel; plan 02's rule selects the v4 major because Flux ≥ 2.8 uses Helm v4.
+
+    - name: cert-manager
+      baselineVersion: v1.21.2
+      line: 1.21.x
+      evidence:
+        status: verified
+        source: https://cert-manager.io/docs/releases/
+        checked: "2026-10-14"
+      planRefs: [plans/10-tls-certificates.md, plans/48-upgrade.md, plans/23-supply-chain.md]
+      versionSensitiveAssumptions:
+        - metric names certmanager_certificate_expiration_timestamp_seconds / ready_status (10-AC-9)
+        - webhook serving certificate is self-renewing
+        - publisher signature practice (plan 23 upstream-signatures.yaml)
+      notes: cert-manager 1.21 supports Kubernetes 1.33–1.36. cmctl derives from this entry.
+
+    - name: CloudNativePG operator
+      baselineVersion: v1.30.1
+      line: 1.30.x
+      chart: {name: cloudnative-pg, repository: "https://cloudnative-pg.github.io/charts", version: 0.29.1}
+      evidence:
+        status: verified
+        source: https://cloudnative-pg.io/docs/devel/supported_releases
+        checked: "2026-10-14"
+      planRefs: [plans/12-cnpg.md, plans/10-tls-certificates.md, plans/38-prometheus.md, plans/42-alerting-notifications.md, plans/44-backup.md, plans/45-recovery.md, plans/48-upgrade.md]
+      versionSensitiveAssumptions:
+        - enablePDB field; postgresql.synchronous dataDurability preferred (CNPG ≥ 1.25)
+        - declarative offline in-place major upgrade (CNPG ≥ 1.26)
+        - certificate lifetimes and status.certificates.expirations field (10-AC-11)
+        - refusal to archive into a non-empty WAL path (generation scheme, plan 12)
+        - in-tree Barman Cloud removal announced for 1.31 (not confirmed on the supported-releases page)
+      notes: >-
+        CNPG 1.30 (released 2026-06-29, EOL ~Dec 2026) supports Kubernetes 1.34–1.36 and PostgreSQL 14–18. 1.31.0
+        is scheduled for ~Sep 2026 but not released on 2026-10-14; adopting it is a plan amendment (and plan 12's
+        in-tree Barman removal note must be re-checked then). kubectl-cnpg derives from this entry.
+
+    - name: CNPG Barman Cloud plugin
+      baselineVersion: v0.15.1
+      line: 0.15.x
+      chart: {name: plugin-barman-cloud, repository: "https://cloudnative-pg.github.io/charts", version: 0.8.1}
+      evidence:
+        status: verified
+        source: https://github.com/cloudnative-pg/plugin-barman-cloud/releases/tag/v0.15.1
+        checked: "2026-10-14"
+      planRefs: [plans/12-cnpg.md, plans/14-object-storage.md, plans/42-alerting-notifications.md, plans/44-backup.md]
+      versionSensitiveAssumptions:
+        - isWALArchiver toggle for emergency detach; .ready WAL recycling after re-attach
+        - last-backup and first-recoverability-point metrics (plan 42 recording rules)
+        - barman-cloud-wal-archive S3 client behavior against the provider (OC-17)
+      notes: Matches plan 12's observation (0.15.x).
+
+    - name: PostgreSQL
+      baselineVersion: "18.6"
+      line: 18.x
+      lineKind: major
+      evidence:
+        status: verified
+        source: https://www.postgresql.org/support/versioning/
+        checked: "2026-10-14"
+      planRefs: [plans/12-cnpg.md, plans/48-upgrade.md, plans/44-backup.md]
+      versionSensitiveAssumptions:
+        - wal_compression lz4 supported by the image build
+      notes: >-
+        PostgreSQL minors are bug-fix only, so the line is the major. 18 is the newest major CNPG 1.30 supports and has
+        ≥ 1 minor release (plan 48 §9.1). PostgreSQL 18 is supported until 2030-11-14.
+
+    - name: Longhorn
+      baselineVersion: v1.11.3
+      line: 1.11.x
+      chart: {name: longhorn, repository: "https://charts.longhorn.io", version: 1.11.3}
+      evidence:
+        status: verified
+        source: https://github.com/longhorn/longhorn/releases/tag/v1.11.3
+        checked: "2026-10-14"
+      planRefs: [plans/13-longhorn.md, plans/38-prometheus.md, plans/36-network-policy.md, plans/39-grafana.md, plans/48-upgrade.md]
+      versionSensitiveAssumptions:
+        - no downgrade support (13-R-4, Q-13-1)
+        - longhornctl check preflight (13-AC-4)
+        - setting names nodeDrainPolicy values, snapshotMaxCount, deletingConfirmationFlag, autoSalvage; defaultSettings sync on upgrade (13-AC-14)
+        - BackupTarget CR replaces backup-target setting; backups.longhorn.io label key (13-AC-9)
+        - Volume spec.fromBackup URL form and status.restoreRequired
+        - online CSI expansion of V1 volumes; live engine upgrade of single-replica volumes
+        - longhorn_* metric names (13-AC-10); webhook ports 9501/9502
+      notes: >-
+        Plan 13's rule requires patch ≥ .2: 1.13.0 (2026-09-29) and 1.12.1 (2026-08-14) do not qualify, so the line
+        is 1.11 (1.11.3, 2026-07-01). Longhorn 1.11 requires Kubernetes ≥ 1.34. When 1.12.2 ships, moving to 1.12 is
+        a plan amendment.
+
+    - name: Traefik
+      baselineVersion: v3.7.14
+      line: 3.7.x
+      chart: {name: traefik, repository: "https://traefik.github.io/charts", version: 41.7.1}
+      evidence:
+        status: verified
+        source: https://github.com/traefik/traefik-helm-chart/releases/tag/v41.7.1
+        checked: "2026-10-14"
+      planRefs: [plans/09-networking.md, plans/38-prometheus.md, plans/37-admission-policy.md]
+      versionSensitiveAssumptions:
+        - providers.kubernetesCRD allowCrossNamespace false with provider-qualified middleware references (09-AC-12)
+        - chart value key names (09-AC-12); metrics service port 9100
+        - pods start under PSA restricted (37-AC-43)
+      notes: Chart 41.7.1 ships appVersion v3.7.14 (Traefik release 2026-10-07). k3s's bundled Traefik is not used.
+
+    - name: cloudflared
+      baselineVersion: "2026.10.0"
+      line: 2026.10.x
+      evidence:
+        status: verified
+        source: https://github.com/cloudflare/cloudflared/releases/tag/2026.10.0
+        checked: "2026-10-14"
+      planRefs: [plans/09-networking.md, plans/38-prometheus.md, plans/39-grafana.md]
+      versionSensitiveAssumptions:
+        - "`tunnel --no-autoupdate run` with TUNNEL_TOKEN; --metrics on port 2000"
+        - cloudflared_tunnel_ha_connections metric name (Q-39-4)
+      notes: >-
+        Calendar-versioned (year.month.patch); the line is the month. Released 2026-10-05; plan 09's 14-day soak is
+        met on 2026-10-19 (2026.9.3 is the newest soaked release today).
+
+    - name: kured
+      baselineVersion: "1.23.0"
+      line: 1.23.x
+      chart: {name: kured, repository: "https://kubereboot.github.io/charts", version: 6.1.0}
+      evidence:
+        status: verified
+        source: https://github.com/kubereboot/kured/releases/tag/1.23.0
+        checked: "2026-10-14"
+      planRefs: [plans/08-node-security.md, plans/47-ha-expansion.md]
+      versionSensitiveAssumptions:
+        - flag names for window, lock and drain timeout (re-verified at GATE-H01)
+        - reboot sentinel /var/run/reboot-required
+      notes: small-ha only.
+
+    # ------------------------------------------------------------------ forge, identity, CI
+    - name: Forgejo
+      baselineVersion: v15.0.10
+      line: 15.0.x
+      lineKind: lts
+      evidence:
+        status: verified
+        source: https://forgejo.org/releases/
+        checked: "2026-10-14"
+      planRefs: [plans/16-forgejo.md, plans/17-github-mirror.md, plans/20-woodpecker.md, plans/26-agent-runner.md, plans/29-task-state-machine.md, plans/43-retention-gc.md, plans/44-backup.md, plans/55-forge-workflow.md, plans/22-verification-policy.md, plans/25-context.md]
+      versionSensitiveAssumptions:
+        - branch protection apply_to_admins, push_whitelist_deploy_keys and deploy-key namespace restriction (16-AC-18, 16-AC-34)
+        - protected-tag semantics for deploy keys (17-AC-4, 55-AC-1)
+        - "[webhook] ALLOWED_HOST_LIST semantics; [mirror] ENABLED=false stops push mirrors (45-AC-4)"
+        - push-mirror pruning scope and credential storage (17-AC-3, 17-AC-11)
+        - "OIDC source registration via `forgejo admin auth add-oauth` flags (16-AC-31)"
+        - API paths used by Runner, verification and retention (26-AC-40, 29-AC-31, compare behind_by, packages API)
+        - gitea_* metric prefix; doctor/regenerate commands; storage MINIO_BUCKET_LOOKUP key
+        - "`has_actions` field / [actions] ENABLED (16-AC-6); OAuth REFRESH_TOKEN_EXPIRATION_TIME default"
+      notes: >-
+        15.x is the LTS line, supported until 2027-07-15. v16.0.6 is the current non-LTS stable (supported until
+        2026-10-29) and is not used. LTS→LTS majors are human-initiated plan amendments.
+
+    - name: forgejo-helm chart
+      baselineVersion: "17.3.0"
+      line: 17.x
+      lineKind: major
+      evidence:
+        status: verified
+        source: https://code.forgejo.org/forgejo-helm/forgejo-helm/releases/tag/v17.3.0
+        checked: "2026-10-14"
+      planRefs: [plans/16-forgejo.md, plans/18-flux.md]
+      versionSensitiveAssumptions:
+        - appVersion is the Forgejo LTS (15.0.10 in 17.3.0)
+        - "Bitnami `common` library subchart only, `type: library` (CD-26, 16-AC-36); dependency repository is oci://ghcr.io/visualon/bitnamicharts"
+        - admin passwordMode option name; oauth item keys converted to kebab-case flags
+      notes: >-
+        The chart major follows the chart's own breaking changes; within 17.x a release is acceptable only if its
+        appVersion stays in the Forgejo entry's line. 17.3.0 (2026-10-13) changes OAuth handling for Forgejo 16
+        group/feature maps; re-run 16-AC-31 when pinning.
+
+    - name: Authentik
+      baselineVersion: "2026.8.3"
+      line: 2026.8.x
+      chart: {name: authentik, repository: "https://charts.goauthentik.io", version: 2026.8.3}
+      evidence:
+        status: verified
+        source: https://github.com/goauthentik/authentik/releases/tag/version%2F2026.8.3
+        checked: "2026-10-14"
+      planRefs: [plans/15-authentik.md, plans/38-prometheus.md, plans/39-grafana.md, plans/24-hermes.md]
+      versionSensitiveAssumptions:
+        - blueprint models (metaapplyblueprint, token `key`), flow slugs and initial-setup behavior (15-AC-2, 15-AC-29, 15-AC-30)
+        - sub_mode user_uuid stability across secret-key rotation
+        - embedded outpost managed identifier; recovery API and `ak create_recovery_key` argument units (Q-15-06)
+        - metrics port 9300, health path /-/health/live/, task-failure metric name
+        - no Redis (≥ 2025.10); chart's Bitnami postgresql subchart disabled
+      notes: Chart and app versions are aligned. 2026.8.3 matches plan 15's 2026-10-13 observation.
+
+    - name: Woodpecker server and agent
+      baselineVersion: v3.19.0
+      line: 3.19.x
+      chart: {name: woodpecker, repository: "https://github.com/woodpecker-ci/helm", version: 3.7.5}
+      evidence:
+        status: verified
+        source: https://github.com/woodpecker-ci/woodpecker/releases/tag/v3.19.0
+        checked: "2026-10-14"
+      planRefs: [plans/20-woodpecker.md, plans/23-supply-chain.md, plans/36-network-policy.md, plans/37-admission-policy.md, plans/39-grafana.md, plans/51-capacity-and-scheduling.md, plans/34-security.md]
+      versionSensitiveAssumptions:
+        - exclusive config extension, signed extension requests with server ed25519 key (ADR-0301)
+        - extension calls not retried; running pipelines marked killed on restart
+        - per-agent tokens via POST /api/agents; WOODPECKER_AGENT_SECRET behavior with registered agents (20-AC-4)
+        - WOODPECKER_FORGEJO_* forge variables; EXPERT_WEBHOOK_HOST
+        - workflow agent_id field; pipeline.sender for manual events; per-workflow pod label (Q-20-10)
+        - secret injection mechanism recorded as woodpecker.secretInjection (20-AC-38, 23-AC-3)
+        - log deletion endpoint or native log retention (Q-20-04); Kubernetes backend priority-class option
+        - woodpecker_* metric names (20-AC-25); /healthz
+      notes: >-
+        Chart 3.7.5 ships appVersion 3.19.0 (release 2026-10-08), matching plan 20. The chart's OCI location is not
+        verified here (plan 20 §9.1). woodpecker-cli in the ci image
+        equals this version.
+
+    - name: Woodpecker plugin-git
+      baselineVersion: "2.10.1"
+      line: 2.10.x
+      evidence:
+        status: verified
+        source: https://github.com/woodpecker-ci/plugin-git/releases/tag/2.10.1
+        checked: "2026-10-14"
+      planRefs: [plans/20-woodpecker.md]
+      versionSensitiveAssumptions:
+        - compatible with the pinned Woodpecker server (clone step)
+      notes: Clone image digest is pinned in policy/ci.yaml cloneImage.
+
+    - name: Renovate
+      baselineVersion: "44.158.3"
+      line: 44.x
+      lineKind: major
+      evidence:
+        status: verified
+        source: https://github.com/renovatebot/renovate/releases/tag/44.158.3
+        checked: "2026-10-14"
+      planRefs: [plans/23-supply-chain.md, plans/48-upgrade.md, plans/01-repository.md]
+      versionSensitiveAssumptions:
+        - platform forgejo (fallback gitea) against the Forgejo API
+        - custom managers for every lock kind; minimumReleaseAge; vulnerabilityAlerts
+      notes: >-
+        Renovate ships several minor releases per day (44.150–44.158 on 2026-10-14 alone), so the line is the major.
+        Its output is always a reviewed PR; a Renovate major is a plan amendment.
+
+    # ------------------------------------------------------------------ observability
+    - name: kube-prometheus-stack
+      baselineVersion: "92.7.0"
+      line: 92.x
+      lineKind: major
+      evidence:
+        status: verified
+        source: https://github.com/prometheus-community/helm-charts/releases/tag/kube-prometheus-stack-92.7.0
+        checked: "2026-10-14"
+      planRefs: [plans/38-prometheus.md, plans/42-alerting-notifications.md, plans/39-grafana.md, plans/48-upgrade.md]
+      versionSensitiveAssumptions:
+        - grafana.enabled false with forceDeployDashboards; defaultRules.additionalRuleLabels; nodeExporter namespaceOverride
+        - kubeEtcd endpoints over http :2381
+        - alertmanager.alertmanagerSpec.configSecret key
+        - prometheus-operator-crds chart at the stack's operator version
+      notes: >-
+        92.7.0 (2026-10-14) ships Prometheus Operator v0.94.1, Prometheus v3.15.0, Alertmanager v0.34.1,
+        kube-state-metrics subchart 8.6.0 (app v2.20.0) and node-exporter subchart 4.60.0. The chart major marks
+        breaking values changes and minors arrive several times a week, so the line is the major; a chart bump
+        that moves Prometheus, Alertmanager or kube-state-metrics outside their own lines is still an amendment.
+
+    - name: Prometheus
+      baselineVersion: v3.15.0
+      line: 3.15.x
+      evidence:
+        status: verified
+        source: https://github.com/prometheus/prometheus/releases/tag/v3.15.0
+        checked: "2026-10-14"
+      planRefs: [plans/38-prometheus.md, plans/42-alerting-notifications.md]
+      versionSensitiveAssumptions:
+        - retentionSize bounds blocks and WAL (38-AC-8); local-path does not enforce PVC capacity
+        - promtool unit-test format (plan 42)
+      notes: Default image of kube-prometheus-stack 92.7.0. promtool in the ci image equals this version.
+
+    - name: Alertmanager
+      baselineVersion: v0.34.1
+      line: 0.34.x
+      evidence:
+        status: verified
+        source: https://github.com/prometheus/alertmanager/releases/tag/v0.34.1
+        checked: "2026-10-14"
+      planRefs: [plans/42-alerting-notifications.md, plans/39-grafana.md, plans/18-flux.md]
+      versionSensitiveAssumptions:
+        - "*_file fields of email, Slack, Discord and webhook integrations (42-AC-5)"
+        - receiver_name label on alertmanager_notifications_total / _failed_total (42-AC-6, Q-42-4)
+        - /api/v2/alerts accepted from Flux notification-controller
+      notes: Image tag of kube-prometheus-stack 92.7.0.
+
+    - name: kube-state-metrics
+      baselineVersion: v2.20.0
+      line: 2.20.x
+      evidence:
+        status: verified
+        source: https://github.com/kubernetes/kube-state-metrics/releases/tag/v2.20.0
+        checked: "2026-10-14"
+      planRefs: [plans/38-prometheus.md, plans/42-alerting-notifications.md, plans/18-flux.md]
+      versionSensitiveAssumptions:
+        - kube_cronjob_status_last_successful_time (42-AC-12)
+        - custom-resource-state metrics (kube_customresource_created, Flux gotk_resource_info, CNPG certificate expiry)
+      notes: kube-prometheus-stack 92.7.0 subchart 8.6.0.
+
+    - name: Prometheus blackbox exporter
+      baselineVersion: v0.29.0
+      line: 0.29.x
+      chart: {name: prometheus-blackbox-exporter, repository: "https://prometheus-community.github.io/helm-charts", version: 11.20.0}
+      evidence:
+        status: verified
+        source: https://github.com/prometheus/blackbox_exporter/releases/tag/v0.29.0
+        checked: "2026-10-14"
+      planRefs: [plans/38-prometheus.md]
+      versionSensitiveAssumptions:
+        - http_2xx and tcp_connect modules for the internal probes
+      notes: Released 2026-10-13; the previous line is 0.28.x (2025-12-06).
+
+    - name: Grafana
+      baselineVersion: v13.2.4
+      line: 13.2.x
+      chart: {name: grafana, repository: "https://grafana-community.github.io/helm-charts", version: 13.6.0}
+      evidence:
+        status: verified
+        source: https://github.com/grafana/grafana/releases/tag/v13.2.4
+        checked: "2026-10-14"
+      planRefs: [plans/39-grafana.md, plans/15-authentik.md]
+      versionSensitiveAssumptions:
+        - chart repository location (moved to grafana-community; Q-39-3)
+        - "[plugins] preinstall_disabled key; legacy [alerting] key ignored"
+        - sidecar dashboard path; /login?disableAutoLogin=true; health endpoint permission for Viewer
+        - grafana_api_login_* and grafana_http_* metric names
+      notes: >-
+        The Grafana OSS chart is now published from grafana-community/helm-charts (chart 13.6.0, appVersion 13.2.4).
+        Plan 39 anticipated a repository move and re-verifies it.
+
+    - name: OpenTelemetry Collector (contrib)
+      baselineVersion: v0.162.0
+      line: 0.162.x
+      chart: {name: opentelemetry-collector, repository: "https://open-telemetry.github.io/opentelemetry-helm-charts", version: 0.176.0}
+      evidence:
+        status: verified
+        source: https://github.com/open-telemetry/opentelemetry-collector-releases/releases/tag/v0.162.0
+        checked: "2026-10-14"
+      planRefs: [plans/40-opentelemetry.md, plans/41-logging-tracing.md]
+      versionSensitiveAssumptions:
+        - redaction processor allowed_keys from file provider and summary counters
+        - spanmetrics/Prometheus exporter suffixes for sc_span_* (plan 40)
+        - container log parser operator name (filelog, plan 41)
+        - otelcol_* self-metric names; component stability not "development" (40-AC-9)
+      notes: >-
+        Chart 0.176.0's appVersion is 0.162.0 (plan 40's rule: latest contrib release supported by the chart).
+        Contrib 0.163.0 was tagged on 2026-10-14 and is outside the line. Grafana Alloy is not used by any plan.
+
+    - name: Loki
+      baselineVersion: v3.7.8
+      line: 3.7.x
+      chart: {name: loki, repository: "https://grafana-community.github.io/helm-charts", version: 18.15.1}
+      evidence:
+        status: verified
+        source: https://github.com/grafana/loki/releases/tag/v3.7.8
+        checked: "2026-10-14"
+      planRefs: [plans/41-logging-tracing.md, plans/14-object-storage.md]
+      versionSensitiveAssumptions:
+        - native OTLP endpoint /otlp
+        - SingleBinary deploymentMode key; object-store path prefix support
+        - "`loki -verify-config`; tsdb compaction metric names"
+      notes: >-
+        The OSS Loki chart moved to grafana-community/helm-charts in 2026 (chart 18.15.1, appVersion 3.7.8). The
+        chart remaining in grafana/loki (7.3.0, appVersion 3.6.12) is maintenance-only for Grafana Enterprise Logs.
+        Plan 41 says "Grafana's loki Helm chart"; the chart source must be the community repository.
+
+    - name: Tempo
+      baselineVersion: v2.10.8
+      line: 2.10.x
+      chart: {name: tempo, repository: "https://grafana-community.github.io/helm-charts", version: 2.4.0}
+      evidence:
+        status: verified
+        source: https://github.com/grafana/tempo/releases/tag/v2.10.8
+        checked: "2026-10-14"
+      planRefs: [plans/41-logging-tracing.md, plans/40-opentelemetry.md]
+      versionSensitiveAssumptions:
+        - monolithic single binary with S3 backend and prefix, WAL on emptyDir
+        - "`tempo -config.verify`; tempo_* and tempodb_* metric names"
+      notes: >-
+        Plan 41 selects "latest Tempo 2.x"; that is 2.10.8 (2026-08-13), served by community chart tempo-2.4.0.
+        The current Tempo release is v3.1.0 (2026-09-29, chart tempo-3.2.0). Tempo 3 removes the ingester and
+        compactor config blocks, requires vParquet4+, and has no downgrade path to 2.x. Adopting Tempo 3 is a plan-41
+        amendment. Tempo's chart also moved to grafana-community.
+
+    # ------------------------------------------------------------------ provisioning and toolbox
+    - name: OpenTofu
+      baselineVersion: v1.13.1
+      line: 1.13.x
+      evidence:
+        status: verified
+        source: https://github.com/opentofu/opentofu/releases/tag/v1.13.1
+        checked: "2026-10-14"
+      planRefs: [plans/06-opentofu-state.md, plans/03-provider-interface.md, plans/02-bootstrap-toolbox.md]
+      versionSensitiveAssumptions:
+        - S3 backend use_lockfile, endpoints.s3 key, skip_credentials_validation, skip_s3_checksum (06-AC-1..4)
+        - TF_ENCRYPTION env with pbkdf2 + aes_gcm + fallback; encrypted_data envelope field (06-AC-4)
+        - lock-contention message "Error acquiring the state lock" (06-AC-3)
+        - refresh-only apply rewrites state (06-AC-6); ephemeral variables (≥ 1.11)
+      notes: 1.13.0 released 2026-09-30; 1.12.8 is still maintained. Satisfies plan 02 (≥ 1.11) and plan 06 (≥ 1.10).
+
+    - name: OVH Terraform provider (ovh/ovh)
+      baselineVersion: v2.22.0
+      line: 2.22.x
+      evidence:
+        status: verified
+        source: https://github.com/ovh/terraform-provider-ovh/releases/tag/v2.22.0
+        checked: "2026-10-14"
+      planRefs: [plans/04-ovh-provider.md, plans/03-provider-interface.md]
+      versionSensitiveAssumptions:
+        - ovh_vps ordering with plan, public_ssh_key, image_id, do_not_send_password (spikes S-1, S-2)
+        - ovh_cloud_project_instance flavor.flavor_id and ssh_key_create shapes (fallback b)
+      notes: Whether ovh_vps supports the required ordering attributes is still decided by plan 04's spikes.
+
+    - name: hashicorp/aws provider (storage module)
+      baselineVersion: v6.69.0
+      line: 6.x
+      lineKind: major
+      evidence:
+        status: verified
+        source: https://github.com/hashicorp/terraform-provider-aws/releases/tag/v6.69.0
+        checked: "2026-10-14"
+      planRefs: [plans/06-opentofu-state.md, plans/14-object-storage.md]
+      versionSensitiveAssumptions:
+        - endpoint override for aws_s3_bucket* against non-AWS S3
+      notes: >-
+        Plan 06 selects the major; minors are weekly and only aws_s3_bucket* resources are used, all covered by the
+        plan 06/14 conformance tests on every bump.
+
+    - name: ansible-core
+      baselineVersion: v2.21.5
+      line: 2.21.x
+      evidence:
+        status: verified
+        source: https://docs.ansible.com/projects/ansible/latest/reference_appendices/release_and_maintenance.html
+        checked: "2026-10-14"
+      planRefs: [plans/02-bootstrap-toolbox.md, plans/07-k3s.md, plans/08-node-security.md, plans/05-existing-nodes.md]
+      versionSensitiveAssumptions:
+        - controller Python 3.12–3.14 includes the toolbox's Debian 13 Python 3.13
+        - target Python includes 3.12 (Ubuntu 24.04) and 3.13 (Debian 13)
+      notes: >-
+        2.21 GA May 2026, EOL Nov 2027. 2.22.0rc1 exists (2026-10-13). Collections: community.general 13.5.0,
+        ansible.posix 2.2.2 (Ansible Galaxy, 2026-10-14), pinned by tarball and sha256 at implementation.
+
+    - name: kubeconform
+      baselineVersion: v0.8.0
+      line: 0.8.x
+      evidence:
+        status: verified
+        source: https://github.com/yannh/kubeconform/releases/tag/v0.8.0
+        checked: "2026-10-14"
+      planRefs: [plans/54-strange-company-chart.md, plans/52-ci-strategy.md, plans/18-flux.md, plans/02-bootstrap-toolbox.md]
+      versionSensitiveAssumptions:
+        - validates against the Kubernetes JSON schemas of the pinned minor (1.36)
+      notes: >-
+        Released 2026-06-04. Other CI linters (golangci-lint v2.14.0, shfmt v3.14.1, actionlint v1.7.12,
+        ansible-lint 26.10.1, yamllint 1.38.0) carry no plan-level version-sensitive behavior and are governed by
+        the lock files only.
+
+    - name: helm-unittest
+      baselineVersion: v1.2.1
+      line: 1.2.x
+      evidence:
+        status: verified
+        source: https://github.com/helm-unittest/helm-unittest/releases/tag/v1.2.1
+        checked: "2026-10-14"
+      planRefs: [plans/54-strange-company-chart.md, plans/52-ci-strategy.md, plans/26-agent-runner.md]
+      versionSensitiveAssumptions:
+        - runs as a plugin of the pinned Helm v4
+      notes: Released 2026-10-03.
+
+    - name: SOPS
+      baselineVersion: v3.13.3
+      line: 3.13.x
+      evidence:
+        status: verified
+        source: https://github.com/getsops/sops/releases/tag/v3.13.3
+        checked: "2026-10-14"
+      planRefs: [plans/35-secrets.md, plans/02-bootstrap-toolbox.md, plans/50-bootstrap-orchestrator.md]
+      versionSensitiveAssumptions:
+        - file format decryptable by the pinned Flux kustomize-controller (35-AC-11)
+      notes: Released 2026-07-23.
+
+    - name: age
+      baselineVersion: v1.3.2
+      line: 1.3.x
+      evidence:
+        status: verified
+        source: https://github.com/FiloSottile/age/releases/tag/v1.3.2
+        checked: "2026-10-14"
+      planRefs: [plans/35-secrets.md, plans/02-bootstrap-toolbox.md]
+      versionSensitiveAssumptions:
+        - X25519 recipients readable by SOPS and Flux
+      notes: Released 2026-08-29.
+
+    - name: cosign
+      baselineVersion: v3.1.3
+      line: 3.1.x
+      evidence:
+        status: verified
+        source: https://github.com/sigstore/cosign/releases/tag/v3.1.3
+        checked: "2026-10-14"
+      planRefs: [plans/23-supply-chain.md, plans/02-bootstrap-toolbox.md]
+      versionSensitiveAssumptions:
+        - "`sign --key env://… --tlog-upload=false` and `attest --type …` flag semantics (23-AC-5)"
+        - signature storage via OCI 1.1 referrers or sha256-<digest>.sig/.att tags (23-AC-5; plan 43 retention keeps both)
+        - keyless verification against the public Sigstore TUF root and Rekor; offline bundles (23-AC-23)
+      notes: >-
+        Plan 23 states cosign v2 flag names. The current major is v3 (v2.6.5 is still patched). cosign v3 enables the
+        standardized bundle format, signing-config/trusted-root and OCI 1.1 signature storage by default, and
+        requires --bundle where v2 made it optional. v3.1.3 fixes a legacy-bundle verification bypass
+        (GHSA-fx35-mq7g-6g98).
+
+    - name: syft
+      baselineVersion: v1.54.1
+      line: 1.54.x
+      evidence:
+        status: verified
+        source: https://github.com/anchore/syft/releases/tag/v1.54.1
+        checked: "2026-10-14"
+      planRefs: [plans/23-supply-chain.md, plans/28-harnesses.md]
+      versionSensitiveAssumptions:
+        - SPDX JSON output accepted by cosign attest --type spdxjson; SBOM allowlist diff for harness images
+      notes: Released 2026-10-06.
+
+    - name: trivy
+      baselineVersion: v0.76.0
+      line: 0.76.x
+      evidence:
+        status: verified
+        source: https://github.com/aquasecurity/trivy/releases/tag/v0.76.0
+        checked: "2026-10-14"
+      planRefs: [plans/23-supply-chain.md, plans/28-harnesses.md]
+      versionSensitiveAssumptions:
+        - vulnerability report usable as a cosign `vuln` attestation; DB fetched at run time
+      notes: Released 2026-10-14; 0.75.0 (2026-10-01) is the previous line.
+
+    - name: buildah
+      baselineVersion: v1.45.2
+      line: 1.45.x
+      evidence:
+        status: verified
+        source: https://github.com/containers/buildah/releases/tag/v1.45.2
+        checked: "2026-10-14"
+      planRefs: [plans/23-supply-chain.md]
+      versionSensitiveAssumptions:
+        - chroot isolation as uid 0 with the §13 capability set under PSA baseline, no privileged (23-AC-1, ADR-0501)
+        - hostUsers false with user namespaces (23-AC-6)
+      notes: Released 2026-10-12; 1.43.x is also maintained.
+
+    - name: kaniko (osscontainertools fork, pre-approved fallback)
+      baselineVersion: v1.28.6
+      line: 1.28.x
+      evidence:
+        status: verified
+        source: https://github.com/osscontainertools/kaniko/releases/tag/v1.28.6
+        checked: "2026-10-14"
+      planRefs: [plans/23-supply-chain.md]
+      versionSensitiveAssumptions:
+        - builds from source in the interim lane; runs as root under PSA baseline
+      notes: >-
+        Used only if 23-AC-1 fails for buildah. Upstream kaniko is archived; the chainguard-dev fork is at v1.25.19.
+        Plan 23's statement that neither fork publishes a freely available official image was not re-checked.
+
+    - name: gitleaks
+      baselineVersion: v8.30.1
+      line: 8.30.x
+      evidence:
+        status: verified
+        source: https://github.com/gitleaks/gitleaks/releases/tag/v8.30.1
+        checked: "2026-10-14"
+      planRefs: [plans/35-secrets.md, plans/01-repository.md, plans/02-bootstrap-toolbox.md]
+      versionSensitiveAssumptions:
+        - rule set and exit codes used by `sc-bootstrap secrets scan` and toolbox image scan (02-AC-9)
+      notes: Released 2026-03-21; no newer release.
+
+    - name: AWS CLI v2
+      baselineVersion: "2.38.1"
+      line: 2.38.x
+      evidence:
+        status: verified
+        source: https://github.com/aws/aws-cli/releases/tag/2.38.1
+        checked: "2026-10-14"
+      planRefs: [plans/02-bootstrap-toolbox.md, plans/06-opentofu-state.md, plans/14-object-storage.md, plans/49-destroy.md]
+      versionSensitiveAssumptions:
+        - endpoint_url in profiles
+        - AWS_REQUEST_CHECKSUM_CALCULATION / AWS_RESPONSE_CHECKSUM_VALIDATION=when_required (≥ 2.23 default checksums)
+        - s3api operations used by plans 06 and 49
+      notes: Released 2026-10-14.
+
+    - name: jq
+      baselineVersion: jq-1.8.2
+      line: 1.8.x
+      evidence:
+        status: verified
+        source: https://github.com/jqlang/jq/releases/tag/jq-1.8.2
+        checked: "2026-10-14"
+      planRefs: [plans/02-bootstrap-toolbox.md]
+      versionSensitiveAssumptions: []
+      notes: Used by procedures and acceptance criteria. Released 2026-06-20.
+
+    - name: yq (mikefarah)
+      baselineVersion: v4.54.1
+      line: 4.54.x
+      evidence:
+        status: verified
+        source: https://github.com/mikefarah/yq/releases/tag/v4.54.1
+        checked: "2026-10-14"
+      planRefs: [plans/02-bootstrap-toolbox.md]
+      versionSensitiveAssumptions: []
+      notes: Used by procedures and acceptance criteria. Released 2026-09-29.
+
+    - name: SeaweedFS (CI S3 emulator)
+      baselineVersion: "4.48"
+      line: 4.x
+      lineKind: major
+      evidence:
+        status: verified
+        source: https://github.com/seaweedfs/seaweedfs/releases/tag/4.48
+        checked: "2026-10-14"
+      planRefs: [plans/14-object-storage.md, plans/12-cnpg.md, plans/52-ci-strategy.md, plans/05-existing-nodes.md]
+      versionSensitiveAssumptions:
+        - If-None-Match * → 412 under 8-way concurrent create; versioning and ListObjectVersions (make test-s3-emulator)
+      notes: >-
+        SeaweedFS increments the minor on every release and ships no patches, so the line is the major. Every bump is
+        gated by make test-s3-emulator. CI only.
+
+    - name: k3d
+      baselineVersion: v5.9.0
+      line: 5.9.x
+      evidence:
+        status: verified
+        source: https://github.com/k3d-io/k3d/releases/tag/v5.9.0
+        checked: "2026-10-14"
+      planRefs: [plans/52-ci-strategy.md, plans/54-strange-company-chart.md, plans/19-seed-handoff.md]
+      versionSensitiveAssumptions:
+        - runs the production k3s image digest (v1.36.x)
+      notes: Released 2026-06-02.
+
+    - name: QEMU (lab substrate)
+      baselineVersion: 1:10.0.13+ds-0+deb13u1
+      line: Debian 13 package
+      lineKind: distribution
+      evidence:
+        status: verified
+        source: https://sources.debian.org/src/qemu/
+        checked: "2026-10-14"
+      planRefs: [plans/05-existing-nodes.md, plans/52-ci-strategy.md]
+      versionSensitiveAssumptions:
+        - "-netdev socket mcast (or dgram) for the private lab segment"
+      notes: Taken from the Debian 13 snapshot, not upstream (upstream 11.1.2).
+
+    # ------------------------------------------------------------------ agents and harnesses
+    - name: Hermes Agent (nousresearch/hermes-agent)
+      baselineVersion: v0.22.0
+      line: 0.22.x
+      evidence:
+        status: verified
+        source: https://github.com/NousResearch/hermes-agent/releases/tag/v0.22.0
+        checked: "2026-10-14"
+      planRefs: [plans/24-hermes.md, plans/reference/prior-implementation-lessons.md, plans/15-authentik.md, plans/38-prometheus.md, plans/26-agent-runner.md]
+      versionSensitiveAssumptions:
+        - "`hermes gateway` server mode; API_SERVER_KEY required; port 8642; /health path (L-1)"
+        - dashboard on 9119 with native OIDC env vars (L-1, plan 15)
+        - managed scope directory loaded last with override (ADR-0401, L-1)
+        - backend errors as HTTP 200 with finish_reason error; requested model ignored (L-1)
+        - config keys and disabled_toolsets names (make hermes-contract-test); built-in scheduler
+        - MCP client still performs initialize (plan 26 negotiation)
+      notes: >-
+        The tag scheme changed. Up to 2026-09-24, releases were calendar tags (v2026.8.19 = "v0.20.5", the version
+        L-1 observed; v2026.9.24 = v0.21.5). Since v0.21.6 (2026-10-08) tags are semver v0.x.y, and Docker Hub adds
+        `stable`/`latest` and rc tags. v0.22.0 was published on 2026-10-14, so plan 24's 14-day soak is met on
+        2026-10-28; the newest soaked release today is v2026.9.24 (0.21.5). A semver comparison ranks v2026.x above v0.22.0.
+
+    - name: Claude Code CLI
+      baselineVersion: "2.1.292"
+      line: 2.1.x
+      evidence:
+        status: verified
+        source: https://registry.npmjs.org/-/package/@anthropic-ai/claude-code/dist-tags
+        checked: "2026-10-14"
+      planRefs: [plans/28-harnesses.md, plans/31-model-routing.md, plans/40-opentelemetry.md, plans/reference/prior-implementation-lessons.md]
+      versionSensitiveAssumptions:
+        - --bare, --permission-mode dontAsk, --no-session-persistence; path-scoped Write permission syntax (SelfTest)
+        - stream-json result event fields is_error, subtype, usage, total_cost_usd, permission_denials (L-2)
+        - reads stdin (redirect from /dev/null) (L-2)
+        - CLAUDE_CODE_ENABLE_TELEMETRY, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, DISABLE_TELEMETRY, DISABLE_ERROR_REPORTING (40-AC-10)
+        - small/background model environment variable name (VS-R1, 31-AC-12)
+        - distribution format for headless containers (npm with Node.js vs native binary)
+      notes: >-
+        npm dist-tag `stable` = 2.1.292; `latest` = 2.1.300 (2026-10-14). Same minor as the 2.1.246 evidence in L-2,
+        so the L-2 facts are in-line but must be re-verified at R01 (SelfTest, 28-AC-23).
+
+    - name: Codex CLI
+      baselineVersion: "0.162.1"
+      line: 0.162.x
+      evidence:
+        status: verified
+        source: https://registry.npmjs.org/-/package/@openai/codex/dist-tags
+        checked: "2026-10-14"
+      planRefs: [plans/28-harnesses.md, plans/31-model-routing.md, plans/40-opentelemetry.md, plans/reference/prior-implementation-lessons.md]
+      versionSensitiveAssumptions:
+        - exec --json JSONL with turn.completed (usage only) as terminal event; --skip-git-repo-check; blocks on stdin (L-2)
+        - "--sandbox workspace-write (Landlock) in a restricted pod"
+        - config.toml model_providers base_url/env_key/wire_api responses; project_doc_max_bytes 0; [otel] exporter none (40-AC-10)
+        - forced API-key login config key (VS-R2)
+      notes: >-
+        npm `latest` = 0.162.1. L-2's evidence is 0.149.1, thirteen minors earlier; on 0.x every minor may break, so
+        all L-2 Codex facts need re-verification when Codex is enabled (post-MVP).
+
+    - name: OpenCode
+      baselineVersion: "1.19.0"
+      line: 1.19.x
+      evidence:
+        status: verified
+        source: https://github.com/anomalyco/opencode/releases/tag/v1.19.0
+        checked: "2026-10-14"
+      planRefs: [plans/28-harnesses.md, plans/reference/prior-implementation-lessons.md]
+      versionSensitiveAssumptions:
+        - opencode.json provider/permission schema; OPENCODE_CONFIG plus project-config disable switch
+        - "`opencode run --format json` drops step_finish usage events in containers (L-3)"
+      notes: >-
+        npm `opencode-ai` latest = 1.19.0 (2026-10-11). OpenCode 2 exists (GitHub tags up to v2.0.29 on 2026-10-14;
+        1.19.0 adds `opencode upgrade --major`) but is not on npm `latest`. The repository moved from sst/opencode to
+        anomalyco/opencode. Post-MVP.
+
+    - name: Node.js (harness runtime)
+      baselineVersion: v24.22.0
+      line: 24.x
+      lineKind: lts
+      evidence:
+        status: verified
+        source: https://nodejs.org/dist/index.json
+        checked: "2026-10-14"
+      planRefs: [plans/28-harnesses.md]
+      versionSensitiveAssumptions:
+        - "`npm ci --ignore-scripts` installs a working harness CLI (plan 23)"
+      notes: >-
+        24.x (Krypton) is the active LTS today. Node 26 (v26.12.0) is scheduled to enter LTS in late October 2026;
+        moving to it under plan 28's "active LTS" rule is a plan amendment.
+
+    - name: MCP specification revision
+      baselineVersion: "2026-07-28"
+      line: 2025-06-18 … 2026-07-28
+      lineKind: exact
+      evidence:
+        status: verified
+        source: https://github.com/modelcontextprotocol/modelcontextprotocol/releases/tag/2026-07-28
+        checked: "2026-10-14"
+      planRefs: [plans/26-agent-runner.md, plans/24-hermes.md]
+      versionSensitiveAssumptions:
+        - 2026-07-28 is stateless (no initialize); older clients (Hermes) negotiate down with initialize (26-AC-30)
+      notes: Latest revision as of 2026-10-14. The accepted range is plan 26's; a new revision is a plan amendment.
+
+    - name: MCP Go SDK
+      baselineVersion: v1.8.0
+      line: 1.8.x
+      evidence:
+        status: verified
+        source: https://github.com/modelcontextprotocol/go-sdk/releases/tag/v1.8.0
+        checked: "2026-10-14"
+      planRefs: [plans/26-agent-runner.md]
+      versionSensitiveAssumptions:
+        - negotiates 2026-07-28 and older revisions; SupportedProtocolVersions server option
+      notes: Released 2026-09-14. Its release notes say 2026-07-28 is the newest revision it negotiates.
+
+    # ------------------------------------------------------------------ languages and operating systems
+    - name: Go toolchain
+      baselineVersion: go1.27.2
+      line: 1.27.x
+      evidence:
+        status: verified
+        source: https://go.dev/dl/?mode=json
+        checked: "2026-10-14"
+      planRefs: [plans/01-repository.md, plans/02-bootstrap-toolbox.md, plans/28-harnesses.md, plans/22-verification-policy.md]
+      versionSensitiveAssumptions:
+        - same Go + same source gives byte-identical binaries (01-AC-9)
+        - "`go test -json` action names and build-failure output (22-AC-12)"
+      notes: Supported releases are go1.27.2 and go1.26.9.
+
+    - name: Python (tooling)
+      baselineVersion: 3.13.5 (Debian 13 python3-defaults 3.13.5-1)
+      line: 3.13.x
+      lineKind: distribution
+      evidence:
+        status: verified
+        source: https://sources.debian.org/src/python3-defaults/
+        checked: "2026-10-14"
+      planRefs: [plans/02-bootstrap-toolbox.md, plans/01-repository.md]
+      versionSensitiveAssumptions:
+        - ansible-core controller support; jsonschema Draft202012Validator crosscheck (01-AC-22)
+      notes: The toolbox uses Debian 13's python3. Upstream CPython 3.15.0 was released 2026-10-09 and is not used.
+
+    - name: Debian 13 (trixie)
+      baselineVersion: "13.7"
+      line: "13"
+      lineKind: distribution
+      evidence:
+        status: verified
+        source: https://www.debian.org/releases/trixie/
+        checked: "2026-10-14"
+      planRefs: [plans/08-node-security.md, plans/02-bootstrap-toolbox.md, plans/04-ovh-provider.md, plans/05-existing-nodes.md, plans/48-upgrade.md]
+      versionSensitiveAssumptions:
+        - unattended-upgrades writes /var/run/reboot-required (Q-08-01)
+        - kernel ≥ 6.12, nftables, cgroup v2, AppArmor
+        - OVH vps_os label and image name "Debian 13"
+      notes: Point release 13.7 (2026-09-12). Point releases are in-line; Debian 14 is node replacement.
+
+    - name: Ubuntu 24.04 LTS (noble)
+      baselineVersion: 24.04.5
+      line: "24.04"
+      lineKind: distribution
+      evidence:
+        status: verified
+        source: https://changelogs.ubuntu.com/meta-release-lts
+        checked: "2026-10-14"
+      planRefs: [plans/08-node-security.md, plans/05-existing-nodes.md, plans/48-upgrade.md, plans/52-ci-strategy.md]
+      versionSensitiveAssumptions:
+        - reboot-required sentinel via update-notifier-common; ufw inactive
+        - GitHub-hosted ubuntu-24.04 runners expose /dev/kvm (plan 52)
+      notes: Ubuntu 26.04 LTS is added only by plan 08's addition rule (a plan amendment under this baseline).
+    - name: Anthropic Messages API
+      baselineVersion: "anthropic-version: 2023-06-01"
+      line: "2023-06-01 (header-versioned)"
+      evidence:
+        status: verified
+        source: https://docs.anthropic.com/en/api/versioning
+        checked: '2026-10-14'
+      planRefs:
+        - plans/53-model-gateway.md
+        - plans/32-cost-accounting.md
+        - plans/28-harnesses.md
+      versionSensitiveAssumptions:
+        - "usage fields input_tokens, cache_creation_input_tokens, cache_read_input_tokens and output_tokens are disjoint (32 §usage mapping, verify per model)"
+        - "streaming terminal message_delta carries cumulative usage (53 streaming parser)"
+        - "the max_tokens cap includes extended-thinking tokens only as the thinking budget declares (53 reasoning cap)"
+      notes: "Beta features enabled through anthropic-beta headers are denied by the Gateway allowlist unless listed per model (CD-28, ADR-0004 amendment)."
+    - name: OpenAI Responses / Chat Completions API
+      baselineVersion: "v1 (unversioned REST; model-dated)"
+      line: "v1"
+      evidence:
+        status: verified
+        source: https://platform.openai.com/docs/api-reference
+        checked: '2026-10-14'
+      planRefs:
+        - plans/53-model-gateway.md
+        - plans/32-cost-accounting.md
+        - plans/28-harnesses.md
+      versionSensitiveAssumptions:
+        - "prompt_tokens includes cached_tokens, so normalization subtracts them (32 §usage mapping)"
+        - "a stream ends with a usage chunk only when stream_options.include_usage=true; the Gateway forces it (53)"
+        - "reasoning tokens count inside max_output_tokens / max_completion_tokens (53 reasoning cap)"
+      notes: "The API is unversioned, so model behavior is pinned by dated model IDs in policy/model-routing.yaml. Changing a model ID is a routing-policy PR."

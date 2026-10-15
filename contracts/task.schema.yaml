@@ -340,7 +340,7 @@ $defs:
             additionalProperties: false
             required: [kind, source, executor]
             properties:
-              kind: {type: string, enum: [required-facts, validation-scenario, invariants, benchmark, schema-check, rubric]}
+              kind: {type: string, enum: [required-facts, validation-scenario, invariants, benchmark, schema-check, rubric, characterization]}
               source: {type: string, enum: [artifact, acceptance-criteria]}
               executor: {type: string, enum: [ci, runner-local, reviewer]}
           produces_mergeable_change: {type: boolean}

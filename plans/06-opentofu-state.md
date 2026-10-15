@@ -47,7 +47,7 @@ Derived requirements:
 ## 5. Dependencies
 
 - **Hard:** F08 (orchestrator core), and therefore F02/F03. P01 is co-owned with plan 14, which defines the bucket set, versioning and lifecycle rules, and the credential split.
-- **Runtime:** an S3-compatible endpoint that supports versioning and `If-None-Match` conditional PUT. OpenTofu ≥ 1.10 (S3 native locking via `use_lockfile` (verify at implementation)).
+- **Runtime:** an S3-compatible endpoint that supports versioning and `If-None-Match` conditional PUT. OpenTofu baseline v1.13.1 (`plans/compatibility-baseline.yaml`; S3 native locking via `use_lockfile`, re-verified by 06-AC-1..3).
 - **Consumers:** plans 03/04 (compute module), 49 (destroy), 45 (recover), 44 (restore-test scheduling and alert framework).
 
 ## 6. Owned state
@@ -102,7 +102,7 @@ terraform {
     region                      = "<S3_REGION>"
     endpoints                   = { s3 = "<S3_ENDPOINT>" }   # (verify key name)
     use_path_style              = <S3_FORCE_PATH_STYLE>
-    use_lockfile                = true                        # OpenTofu ≥ 1.10 (verify)
+    use_lockfile                = true                        # baseline OpenTofu v1.13.1 (verify)
     skip_credentials_validation = true                        # non-AWS endpoints (verify)
     skip_region_validation      = true
     skip_requesting_account_id  = true
@@ -144,8 +144,8 @@ Go package `src/internal/tofustate`, called by plan 50 phases:
 |---|---|---|---|
 | `S3_BUCKET_MODE` | `bootstrap.env` | `create` | `create`: the `storage` root module creates the plan 14 bucket set. `existing`: the operator pre-created them; sc-bootstrap only verifies (PF-12). Use `existing` when the S3 provider's bucket-creation API is not supported by the OpenTofu AWS provider or credentials lack `CreateBucket` |
 | State bucket name | derived | `<S3_BUCKET_PREFIX>-tofu-state` | plan 14 is authoritative for names |
-| OpenTofu version | `toolbox/tools.lock.yaml` | latest stable ≥ 1.10 at implementation | selection rule: latest OpenTofu stable release whose S3 backend supports `use_lockfile` and whose state encryption supports `pbkdf2` + `aes_gcm` + `fallback`; all three re-verified by 06-AC-1..4 |
-| AWS (S3) provider version for `storage` | `infra/tofu/storage/.terraform.lock.hcl` | latest `hashicorp/aws` (via registry.opentofu.org) major at implementation | used only for `aws_s3_bucket*` resources against the custom endpoint (verify endpoint override support) |
+| OpenTofu version | `toolbox/tools.lock.yaml` | baseline: OpenTofu v1.13.1, line 1.13.x (`plans/compatibility-baseline.yaml`) | S3 `use_lockfile`, `endpoints.s3`, state encryption `pbkdf2` + `aes_gcm` + `fallback`, `TF_ENCRYPTION` env and the `encrypted_data` envelope re-verified at the baseline version by 06-AC-1..4 (verify) |
+| AWS (S3) provider version for `storage` | `infra/tofu/storage/.terraform.lock.hcl` | baseline: hashicorp/aws v6.69.0, line 6.x (via registry.opentofu.org) | used only for `aws_s3_bucket*` (and plan 14's IAM resources) against the custom endpoint; endpoint override re-verified at the baseline version (verify) |
 | Noncurrent-version retention for `tofu-state` | plan 14 bucket definition | noncurrent versions expire after **365 days** (plan 14 `infra/objstore/buckets.yaml`, plan 43); current versions never expire | stricter than plan 43's general default because state history is recovery data; passphrase rotation keeps the previous passphrase for the same 365 days (§20.3) |
 | Lock timeout | sc-bootstrap | `-lock-timeout=60s` | longer waits surface as `TOFU_STATE_LOCKED` |
 

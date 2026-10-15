@@ -333,7 +333,7 @@ LEFT JOIN runner.repositories r ON r.repository = c.repository;
 
 ### 14.4 Queries answering each SPEC §80 question (sketches; `C` = `ledger.v_cost_records_enriched`)
 
-**Q1. What did this PR cost?**
+**Q1. What did this PR cost?** (Q1–Q4 and Q10 also report, as a separate flagged line, orchestrator rows whose reporting-only `attributed_task_id` names the task, review BUD-B13; they are excluded from enforcement and from the task's `cost_complete`.)
 
 ```sql
 SELECT t.pr_number, sum(c.cost_total_micro_usd) cost, sum(c.budget_charge_micro_usd) charged,
@@ -407,6 +407,8 @@ GROUP BY 1,2;
 
 Every join is 1:1 per task, so no cost row is multiplied.
 
+**Limitation (review BUD-B14).** Starting tier is chosen by Hermes and correlates with task difficulty, so Q8 compares different task populations. The view therefore groups additionally by a size class (`small` / `medium` / `large` by the number of acceptance criteria and the implementer diff size of the accepted commit: ≤ 3 ACs and ≤ 100 changed lines / ≤ 8 and ≤ 500 / larger), reports `accepted_tasks` per cell, and the dashboard shows cells with fewer than 10 tasks as "insufficient sample". A controlled comparison needs randomised starting tiers, which is post-MVP (plan 31 §24).
+
 **Q9. Which harness performs best for this repository/language?**
 
 ```sql
@@ -458,7 +460,7 @@ Each §14.4 query is wrapped as a view in schema `ledger`, created by the Runner
 | `ledger.v_cost_per_green_task` | Q5 | `week, model_id, green_tasks, cost_per_green_task_micro_usd, cost_complete` |
 | `ledger.v_tier_success` | Q6 (all tiers, not only bargain) | `week, tier, role, n, success_rate` |
 | `ledger.v_escalation` | Q7 + escalation frequency | `week, escalation_ratio, escalated_spend_micro_usd, failed_pre_escalation_spend_micro_usd, tasks_escalated` |
-| `ledger.v_cost_per_accepted_task` | Q8 | `week, start_tier, start_model, accepted_tasks, cost_per_accepted_task_micro_usd, avg_impl_attempts, cost_complete` |
+| `ledger.v_cost_per_accepted_task` | Q8 | `week, size_class, start_tier, start_model, accepted_tasks, cost_per_accepted_task_micro_usd, avg_impl_attempts, cost_complete` (`size_class` added for BUD-B14; additive for plan 39) |
 | `ledger.v_harness_performance` | Q9 | `repository, primary_language, harness, green_tasks, executions, cost_per_green_task_micro_usd, cost_complete` |
 | `ledger.v_failed_work_spend` | Q10 (daily, wide) | `day, failed_executions_micro_usd` (= `worker_failed`), `cancelled_tasks_micro_usd` (= `task_abandoned`), `infra_failures_micro_usd`, plus `red_invalid_micro_usd, green_failed_micro_usd, review_rejected_micro_usd, total_failed_micro_usd, cost_complete` (the first three keep plan 39's columns) |
 | `ledger.v_routing_savings` | Q-S | `week, tasks, savings_micro_usd, baseline_tier` |
@@ -473,7 +475,7 @@ The Q-S view reads the baseline digest from a one-row table `ledger.reporting_se
 | Price card missing or expired for a routed model | `make check-pricing` in CI; runtime gauge `sc_routing_unpriced_candidates > 0` → **`SCPricingMissingForRoutedModel`** (critical) | requests denied (`SC_PRICE_UNKNOWN`); routing skips the model | none | `pricing-update.md` |
 | Entry expiring with no successor | `sc_pricing_entry_expiry_timestamp_seconds - time() < 7d` → **`SCPricingEntryExpiringSoon`** (warning) | none yet | none | `pricing-update.md` |
 | Malformed pricing pushed | CI schema + loader rejects; at runtime `SCGatewayPolicyInvalid` | last-known-good kept | none | `pricing-update.md` |
-| Provider price changed but card not updated | monthly reconciliation (§20) differs by > 3 % | ledger inaccurate | none | `pricing-update.md` §reconcile |
+| Provider price changed but card not updated, or a billed dimension the ledger does not know | daily automated reconciliation (§20) → `SCLedgerProviderDivergence`; weekly manual check for providers without a usage API | ledger and budgets understate spend | none (the provider-side hard limit of plan 33 §9.2a is the backstop) | `pricing-update.md` §reconcile |
 | Rollup refresh fails | `sc_ledger_rollup_age_seconds > 900` → **`SCLedgerRollupStale`** (warning) | dashboards stale; exact views still correct | retried every cycle | `gateway-failure.md` §ledger |
 | Outcome view missing (plan 29 not deployed) | enriched view returns null outcomes; CI contract test | Q5–Q10 return empty | none | — |
 
@@ -505,6 +507,7 @@ Pricing and normalization are pure functions and have no retries. Writes follow 
 
 - **Ledger:** restored with `sc-pg` PITR. Rows after the recovery point are lost. Lost spend is reconstructed only approximately, from provider consoles. The operator records it as a `ledger.cost_adjustments` row (append-only: `adjustment_id, period, provider, delta_micro_usd, reason, created_by, created_at, applied_at`, written by the Runner admin API, plan 26, and applied to budget scopes by `ledger.apply_cost_adjustment()`, plan 33 §20). Adjustments appear as a separate line in reports and count towards provider and global month scopes (plan 33 §20).
 - **Monthly reconciliation** (procedure `pricing-update.md` §Reconcile): compare `SELECT provider, sum(cost_total_micro_usd) FROM ledger.cost_records WHERE started_at in month` with the provider invoice or console. A difference > 3 % (or > $5) opens an issue labelled `ledger-discrepancy`.
+- **Automated daily reconciliation** (review BUD-B6; plan 33 §9.2a): CronJob `ledger-reconcile` (namespace `strange-company`, 06:00 UTC daily, check-CronJob pattern ADR-0553) reads, for every enabled production provider whose organisation usage/cost API exists (Anthropic Admin usage and cost reports, OpenAI organization costs/usage endpoints; verify the exact endpoints and their reporting delay against the baseline at implementation; DeepSeek and Z.ai have none known), the provider-reported spend for the previous UTC day and compares it with `sum(budget_charge_micro_usd)` for that provider and day. A difference > max(5 %, $1) exits non-zero and raises **`SCLedgerProviderDivergence`** (warning; new, for plan 42); a provider-reported amount *above* the ledger by > 20 % pages (critical). Providers without an API are listed in the job's evidence as `manual_weekly`, and `pricing-update.md` §E becomes a weekly checklist for them. Credential: a read-only organisation usage key per provider, new secret class **`SC-MODEL-USAGE-READ`** (request to plan 35; it never reaches the Gateway, workers or Hermes).
 - `mv_daily_spend` is rebuilt with `REFRESH MATERIALIZED VIEW`.
 
 ## 21. Observability
@@ -584,6 +587,7 @@ Pricing and normalization are pure functions and have no retries. Writes follow 
 - **32-AC-12** `make check-pricing` fails on a routing file containing an enabled production model with no effective priced entry, and passes on the shipped policy.
 - **32-AC-13** Question views: with `testdata/ledger-seed.sql` loaded, each §14.5 view returns the same rows as its §14.4 query (`make test-ledger-queries` compares both). Connected as `grafana_ro`, `SELECT * FROM ledger.v_cost_per_green_task` succeeds, while `SELECT 1 FROM runner.executions LIMIT 1` and `SELECT 1 FROM ledger.reservations LIMIT 1` fail with `permission denied`; `SELECT pg_has_role('grafana_ro','sc_reporting','member')` is true.
 - **32-AC-14** Test-only pricing: every model id of the fake upstream catalogue and of the `e2e-test` routing example has an effective priced entry (`make check-pricing` on the shipped tree), and a C05 fake request to `fake-b/fake-model-b` yields a row with `pricing_status='priced'`.
+- **32-AC-15** Daily reconciliation (review BUD-B6): with a stub provider usage API returning the ledger total + 10 % for yesterday, the `ledger-reconcile` Job exits 1, `SCLedgerProviderDivergence` fires (`promtool` and KSM check-CronJob rule), and its evidence lists every provider with either a compared amount or `manual_weekly`.
 
 ## 24. Explicit non-goals
 

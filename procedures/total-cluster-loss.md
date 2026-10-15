@@ -52,10 +52,10 @@ All tools come from the toolbox (`./bootstrap shell` / `./bootstrap exec -- <cmd
    ```sh
    ./bootstrap recover --old-installation unknown
    ```
-   Enter the decision time (`decidedAt`, the RTO clock start) and the passphrase when prompted. **Expected:** preflight passes (exit 3 → `bootstrap-preflight-failure.md`); `unlock: bundle v<N> install_uid=<uuid> OK`; `state-recover: compute serial <s> lineage <l> verified; provider inventory: <list>`; `github trust: G == anchor` (or ancestor).
+   Enter the decision time (`decidedAt`, the RTO clock start; recover refuses a value later than the clone's creation time, so step 1 counts) and the passphrase when prompted. **Expected:** preflight passes (exit 3 → `bootstrap-preflight-failure.md`); `unlock: bundle v<N> install_uid=<uuid> OK`; `state-recover: compute serial <s> lineage <l> verified; provider inventory: <list>`; `github trust: G == anchor` (or ancestor).
    - Exit 8 (bundle/passphrase) → §Bundle.
    - Undecryptable state → `recover-opentofu-state.md` §lost-passphrase (import rebuild), then rerun.
-   - `GITHUB_COMMITS_UNTRUSTED` → recover lists the commits on GitHub beyond the newest `repo-backups` manifest ref. Inspect each (author, merge-PR trailer). If every commit is legitimate, type `accept-github-commits <n>`; otherwise stop and go to `github-black-start.md` §B (recover can seed at the anchor instead).
+   - `GITHUB_COMMITS_UNTRUSTED` → recover lists the commits on GitHub beyond the newest `repo-backups` manifest ref. Inspect each (author, merge-PR trailer) and, separately, the printed diff of every path outside `gitops/` (`bootstrap`, `infra/`, `toolbox/`, `tools/`, `.woodpecker/`, `security/`): code there runs with your full authority. If every commit is legitimate, type `accept-github-commits <n>`, and `accept-code-paths <n>` if such paths are touched; otherwise stop and go to `github-black-start.md` §B (recover can seed at the anchor instead).
 3. **Liveness probe and fencing** (≈ 15 min, part of the `plan` phase).
    **Expected:** `liveness: api=unreachable healthz=unreachable newest-wal-age=<h> → not alive`, then `fence: object-storage rotated, github-mirror rotated, tunnel rotated, dr-tests-results rotated, telemetry-debug rotated; SOPS outputs written`. For the GitHub mirror, recover prompts you to create a new fine-grained token and to revoke the old one in GitHub; it verifies the old token returns 401. It asks whether to rotate model API keys if the probe was inconclusive (`rotate-model-credentials.md`).
    - `FENCE_REFUSED_LIVE` → the old installation answers. **Stop**: this is probably not a total loss (`lost-node.md`, `restore-etcd.md`). Type `fence-live <cluster>` only if you are certain you want to replace a running installation.
@@ -102,8 +102,10 @@ All tools come from the toolbox (`./bootstrap shell` / `./bootstrap exec -- <cmd
     CONTROL TRANSFER COMPLETE (RECOVERY)
     ```
     A failing forced restore test → `restore-test-failure.md`; rerun finalize after fixing.
-13. **Resume workers.**
-    The finalize PR reset `policy/budgets.yaml` `spec.emergencyStop.level` to `none`. Confirm no other source holds a stop: `./bootstrap exec -- kubectl -n strange-company get configmap sc-emergency-stop` → NotFound. Confirm the effective level is `none` (Gateway `/sc/v1/status` via port-forward, or `PQ 'max(sc_emergency_stop_level{source="effective"})'` = 0). List blocked tasks (`GET /v1/tasks?state=BLOCKED&blocked_reason=emergency_stop`) and resume each one deliberately with the human transition API (plan 33 §14.5); cancel tasks whose work is obsolete. The first dispatch is milestone **SR-2**; `recover` records it in the report as `rto_sr2_seconds` (target ≤ 6 h from the decision).
+    **Contingency (plan 45 §14.2 step 10.3a):** if the merge gate does not work in the restored cluster (Woodpecker, CI images, Runner statuses), or the PR touches an elevated path in single-operator mode (24-h cooling-off, CD-39), merge it through the emergency-merge path (ADR-0019 amendment) and record it in the incident.
+12.5. **Reconcile the ledger gap** (plan 45 step 10.4). `recover` runs plan 32's provider-usage reconciliation for [newest restored `sc-pg` heartbeat, now] and posts correcting ledger entries. **Expected:** `ledger reconcile: <n> providers compared, corrections posted`. Resume stays blocked until it succeeds; for providers without a usage API, compare the provider console by hand and type `accept-ledger-gap <cluster>`.
+13. **Resume workers.** `recover` has already reported `resume-ready` (milestone **SR-2**, plan 45 §7.1).
+    The finalize PR reset `policy/budgets.yaml` `spec.emergencyStop.level` to `none`. Confirm no other source holds a stop: `./bootstrap exec -- kubectl -n strange-company get configmap sc-emergency-stop` → NotFound. Confirm the effective level is `none` (Gateway `/sc/v1/status` via port-forward, or `PQ 'max(sc_emergency_stop_level{source="effective"})'` = 0). List blocked tasks (`GET /v1/tasks?state=BLOCKED&blocked_reason=emergency_stop`) and resume each one deliberately with the human transition API (plan 33 §14.5); cancel tasks whose work is obsolete. `rto_sr2_seconds` (target ≤ 6 h) was recorded at `resume-ready`; the time until this first real dispatch is reported separately as `resume_human_seconds`.
 14. **Re-enable outage detection:** resume the external heartbeat check if it was paused; confirm a ping arrives.
 
 ### §Bundle (exit 8)
@@ -135,7 +137,7 @@ When the provider API for the lost installation's region is reachable again: for
 
 ## Rollback / abort
 
-Recovery never deletes recovery data, so aborting is always safe: stop the run (Ctrl-C; the journal stays consistent) and rerun later. To abandon a partially recovered cluster entirely: `./bootstrap destroy` on the **new** installation (plan 49) — it never touches buckets, GitHub or the bundle — then start again at step 2. Never roll back by deleting `g<N+1>` objects.
+Recovery never deletes recovery data, so aborting is always safe: stop the run (Ctrl-C; the journal stays consistent) and rerun later. To abandon a partially recovered cluster entirely: `./bootstrap destroy` on the **new** installation (plan 49) — it never touches buckets, GitHub or the bundle — then start again at step 2. Never roll back by deleting `g<N+1>` objects. Each new attempt issues the public certificate again: `recover` warns at the third attempt within 7 days (Let's Encrypt allows 5 duplicate certificates per week); beyond that use plan 10's internal-CA fallback for `git.<domain>` node pulls (plan 45 S27).
 
 ## Evidence to record
 

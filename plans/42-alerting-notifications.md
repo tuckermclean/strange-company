@@ -58,7 +58,7 @@ Derived requirements:
 | task exhaustion | `SCTaskRetriesExhausted`, `SCTaskNeedsHuman`, `SCNeedsHumanBacklog`, `SCTaskStuck` |
 | TDD pipeline failure | `SCTddPipelineFailure`, `SCTddVerificationStalled`, `SCTddProvenanceBypass`, `SCProvenanceStatusForged` (CD-07), `SCProtectedBranchDirectPush`, `SCWorkerPolicyViolation`, `SCTaskEventRejected`, `SCTaskInvariantViolation` |
 | budget thresholds | `SCBudgetThresholdReached`, `SCBudgetExhausted`, `SCBudgetHourlyCapReached`, `SCBudgetCostIncomplete`, `SCBudgetMetricsStale`, `SCEmergencyStopActive`, `SCEmergencyStopNotApplied` |
-| anomalous API spend | `SCAnomalousSpend`, `SCGatewayReservationOverrun`, `SCModelMismatch` |
+| anomalous API spend | `SCAnomalousSpend`, `SCGatewayBoundViolation`, `SCLedgerProviderDivergence`, `SCLedgerProviderUndercount`, `SCModelMismatch` |
 
 Platform essentials named in the assignment: certificate expiry (`SCCertificateExpiringSoon`, `SCCertificateExpiryImminent`, `SCK3sCertificateExpiringSoon`), Watchdog, Gateway down (`SCModelGatewayDown`), orphaned deploy keys (`SCRunnerOrphanDeployKeys`), break-glass used (`SCBreakGlassUsed`, `SCK3sBreakGlassAuditSeen`, `SCGrafanaLocalLogin`), model mismatch (`SCModelMismatch`), emergency stop active (`SCEmergencyStopActive`), WAL backlog (`SCCnpgWalArchiveBacklog`, `SCCnpgWalReadyBacklogHigh/Critical`), object storage unreachable (`SCObjectStorageUnreachable`, `SCObjectStorageCanaryFailing`), etcd snapshot upload failing (`SCEtcdSnapshotUploadFailing`).
 
@@ -138,6 +138,8 @@ Annotations rendered for every rule: `summary` (catalogue text), `description` (
 | (Stage-0 addition, AUTH-8) break-glass use and its detection | `security-audit` | `SCBreakGlassUsed`, `SCGrafanaLocalLogin`, `SCK3sBreakGlassAuditSeen`, `SCBreakGlassAlertSilenced`, `SCCIBuildLaneAgentMismatch` |
 
 ### 7.3 Alertmanager routing tree (rendered; normative structure)
+
+Baseline: Alertmanager v0.34.x and Prometheus/promtool v3.15.x (kube-prometheus-stack 92.x; `plans/compatibility-baseline.yaml`, CD-29). Version-sensitive here: `time_intervals`/`mute_time_intervals` syntax, `*_file` integration fields (42-AC-5) and the `receiver_name` label on notification metrics (42-AC-6), all re-verified on that line.
 
 ```yaml
 global:
@@ -595,7 +597,8 @@ All deterministic; no paid model calls [SPEC §104].
 | `SCEgressPolicyLoadFailed` | security | warning / notify | none | rule / 0s | `sum(increase(sc_egress_policy_load_errors_total[10m])) > 0` | C11 | both | 36 | `agent-runner-failure.md` |
 | `SCBreakGlassTestOverdue` (aka `BreakGlassDrillOverdue`) | security | warning / notify | black-start-threat | rule / 1h | `time() - sc_breakglass_drill_last_success_timestamp_seconds > 8640000 or absent(sc_breakglass_drill_last_success_timestamp_seconds)` | P10 | both | 15 | `break-glass-access.md` |
 | `SCRecoveryDrillOverdue` | black-start-threat | warning / notify | black-start-threat | check-cronjob / fail 1h, stale 26h | `dr-tests/rt-drill-freshness` (ADR-0553) | P10 | both | 45 | `recovery-drill.md` |
-| `SCBootstrapCapsuleCheckFailed` | black-start-threat | warning / notify | black-start-threat | check-cronjob / fail 2h, stale 26h | `dr-tests/rt-bootstrap-capsule` (ADR-0553) | H04 | both | 44 | `github-black-start.md` |
+| `SCBootstrapCapsuleCheckFailed` | black-start-threat | warning / notify | black-start-threat | check-cronjob / fail 1h, stale 26h | `dr-tests/restore-test-bootstrap-capsule-light` (ADR-0553) | H04 | both | 44 | `github-black-start.md` |
+| `SCBootstrapCapsuleFullCheckFailed` | black-start-threat | warning / notify | black-start-threat | check-cronjob / fail 3h, stale 8d | `dr-tests/restore-test-bootstrap-capsule-full` (ADR-0553) | H04 | both | 44 | `github-black-start.md` |
 | `SCHADrillOverdue` | black-start-threat | warning / notify | black-start-threat | rule / 1h | `time() - sc_ha_drill_last_success_timestamp_seconds > 100 * 86400` | H04 | small-ha | 47 | `expand-to-small-ha.md` |
 | `SCObjectStorageUnreachable` (aka `ObjectStorageDown`) | black-start-threat | critical / page | black-start-threat | rule / 10m | `probe_success{probe="object-storage"} == 0` | P09 | both | 14 | `object-storage-outage.md` |
 | `SCObjectStorageCanaryFailing` | black-start-threat | critical / page | black-start-threat | check-cronjob / fail 30m, stale 45m | `dr-tests/objstore-canary` (ADR-0553) | P10 | both | 14 | `object-storage-outage.md` |
@@ -712,7 +715,6 @@ All deterministic; no paid model calls [SPEC §104].
 | `SCGatewayPolicyInvalid` (aka `GatewayPolicyInvalid`) | gateway | critical / page | critical-outage | rule / 0s | `sum(increase(sc_gateway_policy_load_errors_total[10m])) > 0` | C11 | both | 53 | `gateway-failure.md` |
 | `SCModelProviderUnavailable` (aka `ModelProviderUnavailable`) | gateway | warning / notify | none | rule / 10m | `min by (provider) (sc_gateway_provider_available) == 0` | C11 | both | 53 | `rotate-model-credentials.md` |
 | `SCModelCredentialRejected` (aka `ModelCredentialRejected`) | gateway | critical / page | critical-outage | rule / 0s | `sum by (provider) (increase(sc_gateway_upstream_responses_total{code=~"401\|403"}[10m])) > 0` | C11 | both | 53 | `rotate-model-credentials.md` |
-| `SCGatewayReservationOverrun` (aka `GatewayReservationOverrun`) | budget | warning / notify | none | rule / 0s | `sum by (provider) (increase(sc_gateway_reservation_overrun_micro_usd_total[1h])) > 0` | C11 | both | 53 | `budget-emergency-stop.md` |
 | `SCEmergencyStopSourceUnavailable` (aka `GatewayEmergencyStopSourceUnavailable`, `SCGatewayEmergencyStopSourceUnavailable`) | budget | warning / notify | budget-stop | rule / 1m | `max(sc_emergency_stop_level{source="degraded"}) >= 1 or (time() - max(sc_emergency_stop_k8s_last_read_ok_timestamp_seconds)) > 60` | C11 | both | 33 | `gateway-failure.md` |
 | `SCGatewayLatencyOverheadHigh` (aka `GatewayLatencyOverheadHigh`) | gateway | warning / notify | none | rule / 15m | `histogram_quantile(0.99, sum by (le) (rate(sc_gateway_overhead_seconds_bucket[15m]))) > 0.05` | C11 | both | 53 | `gateway-failure.md` |
 | `SCPricingMissingForRoutedModel` (aka `PricingMissingForRoutedModel`) | gateway | critical / page | none | rule / 5m | `max by (tier) (sc_routing_unpriced_candidates) > 0` | C11 | both | 32 | `pricing-update.md` |
@@ -752,7 +754,10 @@ All deterministic; no paid model calls [SPEC §104].
 | `SCBudgetDispatchRefused` | budget | warning / notify | none | rule / 15m | `sum(increase(sc_runner_dispatch_refusals_total{code="BUDGET_EXCEEDED"}[15m])) > 0` | C11 | both | 33 | `budget-emergency-stop.md` |
 | `SCBudgetMetricsStale` | budget | warning / notify | none | rule / 5m | `time() - max(sc_budget_metrics_updated_timestamp_seconds) > 300` | C11 | both | 33 | `gateway-failure.md` |
 | `SCAnomalousSpend` (aka `AnomalousModelSpend`) | spend | critical / page | budget-stop | rule / 0s | `(sc:model_spend_micro_usd:increase15m > 4 * quantile_over_time(0.95, sc:model_spend_micro_usd:increase15m[7d] offset 15m) and sc:model_spend_micro_usd:increase15m > 500000) or sc:model_spend_micro_usd:increase15m > 8000000` | C11 | both | 33 | `budget-emergency-stop.md` |
-| `SCGatewayBoundViolation` | spend | critical / page | budget-stop | rule / 0s | `sum by (provider, model) (increase(sc_gateway_bound_violations_total[15m])) > 0` | C11 | both | 53 | `gateway-failure.md` |
+| `SCGatewayBoundViolation` (aka `SCGatewayReservationOverrun`, `GatewayReservationOverrun`) | spend | critical / page | budget-stop | rule / 0s | `sum by (provider, model) (increase(sc_gateway_bound_violations_total[15m])) > 0` | C11 | both | 53 | `gateway-failure.md` |
+| `SCLedgerProviderDivergence` | spend | warning / notify | none | check-cronjob / fail 1h, stale 26h | `strange-company/ledger-reconcile` (ADR-0553) | C11 | both | 32 | `pricing-update.md` |
+| `SCLedgerProviderUndercount` | spend | critical / page | budget-stop | rule / 0s | `max by (provider) (sc_ledger_provider_divergence_ratio) > 0.2` | C11 | both | 32 | `pricing-update.md` |
+| `SCGatewayPolicyDenialsRepeated` | budget | warning / notify | none | rule / 0s | `max by (sc_code) (increase(sc_runner_gateway_policy_denials_total[1h])) >= 3` | C11 | both | 33 | `gateway-failure.md` |
 | `SCNotificationTest` | notification-test | info / notify | none | external-post by bootstrap,operator / ttl 15m | API post (§7.4) | P09 | both | 42 | `notification-failure.md` |
 
 ### 23.6 Name mapping for consolidation (generated from catalogue `aliases`)
@@ -836,7 +841,6 @@ The catalogue is the single naming authority. Consolidation renames every refere
 | `GatewayPolicyInvalid` | `SCGatewayPolicyInvalid` | — (former catalogue name) |
 | `ModelProviderUnavailable` | `SCModelProviderUnavailable` | — (former catalogue name) |
 | `ModelCredentialRejected` | `SCModelCredentialRejected` | — (former catalogue name) |
-| `GatewayReservationOverrun` | `SCGatewayReservationOverrun` | — (former catalogue name) |
 | `GatewayEmergencyStopSourceUnavailable` | `SCEmergencyStopSourceUnavailable` | — (former catalogue name) |
 | `SCGatewayEmergencyStopSourceUnavailable` | `SCEmergencyStopSourceUnavailable` | — (former catalogue name) |
 | `GatewayLatencyOverheadHigh` | `SCGatewayLatencyOverheadHigh` | — (former catalogue name) |
@@ -847,6 +851,8 @@ The catalogue is the single naming authority. Consolidation renames every refere
 | `SCStatusForgeryDetected` | `SCProvenanceStatusForged` | 55 |
 | `SCPolicyViolationDetected` | `SCWorkerPolicyViolation` | — (former catalogue name) |
 | `AnomalousModelSpend` | `SCAnomalousSpend` | 33 |
+| `SCGatewayReservationOverrun` | `SCGatewayBoundViolation` | 33 |
+| `GatewayReservationOverrun` | `SCGatewayBoundViolation` | — (former catalogue name) |
 
 ## 24. Explicit non-goals
 

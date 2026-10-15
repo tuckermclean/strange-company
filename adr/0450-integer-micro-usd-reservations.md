@@ -25,7 +25,7 @@ SPEC §79 requires exact per-request cost, and §81 requires *prevention*: per-r
 - **Decimal or float USD:** floats are inexact, and `numeric` works in SQL but invites float conversions in Go and in JSON.
 - **Post-hoc enforcement** (deny the next request once settled spend exceeds the limit): unbounded overshoot under concurrency and long streams.
 - **In-memory counters per Gateway replica:** not shared between replicas, and lost on restart.
-- **Provider-side spend limits:** not uniform across providers, not request-granular, and not attributable to task or execution.
+- **Provider-side spend limits as the enforcement mechanism:** not uniform across providers, not request-granular, and not attributable to task or execution. They are kept as a **required out-of-band backstop** (review BUD-B6, plan 33 §9.2a): every in-cluster control shares the same price cards and parsers, so a shared error (unannounced price rise, account surcharge, new billed dimension) could only be caught by the provider's own limit and by the daily automated reconciliation against provider-reported spend (plan 32 §20). That residual risk is accepted up to the provider limit (≤ 1.25 × the provider's `monthlyUsd`).
 
 ## Verification
 GATE-C05 (plan 53, 53-AC-3; plan 32, 32-AC-3/5) and GATE-C06 (plan 33, 33-AC-3): 64 concurrent requests against a scope with headroom for exactly 10 worst-case reservations forward exactly 10; every reservation ends in exactly one cost record; Go and SQL pricing vectors agree.

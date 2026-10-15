@@ -13,7 +13,7 @@ apiVersion: strange.company/v1alpha1
 kind: TaskStateMachine
 metadata:
   name: strange-company-tasks
-  revision: 3
+  revision: 4
   description: Task workflow (test-first and verification-first), execution states and human projection.
 spec:
   actorClasses: [runner, ci, hermes, human]
@@ -250,7 +250,7 @@ spec:
     G_CONFLICT_REJECTED: The open conflict was rejected (adjudication test_valid).
     G_NO_IMPLEMENTER_DISPATCHED_IN_GENERATION: No implementer execution was ever dispatched in the current generation (whatever its outcome); after one, test changes need TEST_SPEC_CONFLICT.
     G_NO_PRODUCER_DISPATCHED_IN_GENERATION: No producer execution was ever dispatched in the current generation.
-    G_STRENGTHEN_AUTHORIZED: A human /sc strengthen-tests decision is recorded for the current ALREADY_SATISFIED / NEEDS_INVESTIGATION episode (SPEC §51 - no failure is manufactured without a human).
+    G_STRENGTHEN_AUTHORIZED: A human /sc strengthen-tests decision is recorded for the current episode - the current ALREADY_SATISFIED / NEEDS_INVESTIGATION stay, or the current generation in RED_VERIFIED / JUDGE_APPROVED (SPEC §51; blind TDD-B3 - no test or judge is re-authored without a human).
     G_REVIEW_INPUT_COMPLETE: The reviewer packet's implementation_diff was not truncated, or ReviewerOutput.inspected_paths lists every omitted path (SPEC §55).
     G_ROLE_AUXILIARY_HERE: The dispatched role is non-producing in this state (researcher or planner anywhere listed; reviewer outside REVIEW).
     G_AUXILIARY_REMAIN: auxiliary_used < spec.retry.maxAuxiliaryExecutions.
@@ -434,7 +434,7 @@ spec:
       countsAttempt: true
       description: Stronger tests after a human authorized it (SPEC §51 - never a manufactured failure); the previously declared tests must remain (plan 22 R12).
     - id: T016
-      from: [ALREADY_SATISFIED, NEEDS_INVESTIGATION]
+      from: [ALREADY_SATISFIED, NEEDS_INVESTIGATION, RED_VERIFIED, JUDGE_APPROVED]
       to: "$same"
       event: strengthen_tests
       actors: [human]
@@ -442,17 +442,17 @@ spec:
       guards: []
       effects: [E_RECORD_HUMAN_DECISION, E_AUTHORIZE_STRENGTHEN]
       humanCommand: /sc strengthen-tests
-      description: Human decides the tests (or judge) are insufficient rather than the behavior already existing.
+      description: Human decides the tests (or judge) are insufficient (rather than the behavior already existing), or authorizes strengthening a RED-verified generation (TDD-B3).
     - id: T012
       from: [RED_VERIFIED]
       to: TEST_AUTHORING
       event: dispatch_tester
       actors: [hermes, human]
       modes: [test-first]
-      guards: [G_DISPATCH_PREREQUISITES, G_NO_ACTIVE_EXECUTION, G_ATTEMPTS_REMAIN, G_NO_IMPLEMENTER_DISPATCHED_IN_GENERATION]
+      guards: [G_STRENGTHEN_AUTHORIZED, G_DISPATCH_PREREQUISITES, G_NO_ACTIVE_EXECUTION, G_ATTEMPTS_REMAIN, G_NO_IMPLEMENTER_DISPATCHED_IN_GENERATION]
       effects: ["E_START_GENERATION:strengthened", "E_CREATE_EXECUTION:tester"]
       countsAttempt: true
-      description: Strengthen tests before any implementer was dispatched (e.g. after a test review). Opens a new generation; the new RED must keep every manifest test and blob (plan 22 R12).
+      description: Strengthen tests before any implementer was dispatched (e.g. after a test review), only after a human /sc strengthen-tests (TDD-B3). Opens a new generation; the new RED must keep every manifest test and leave existing test-function bodies untouched (plan 22 R12).
     - id: T013
       from: [TEST_SPEC_CONFLICT]
       to: TEST_AUTHORING
@@ -1114,7 +1114,7 @@ spec:
       event: dispatch_tester
       actors: [hermes, human]
       modes: [verification-first]
-      guards: ["G_JUDGE_SOURCE:artifact", G_DISPATCH_PREREQUISITES, G_NO_ACTIVE_EXECUTION, G_ATTEMPTS_REMAIN, G_NO_PRODUCER_DISPATCHED_IN_GENERATION]
+      guards: ["G_JUDGE_SOURCE:artifact", G_STRENGTHEN_AUTHORIZED, G_DISPATCH_PREREQUISITES, G_NO_ACTIVE_EXECUTION, G_ATTEMPTS_REMAIN, G_NO_PRODUCER_DISPATCHED_IN_GENERATION]
       effects: ["E_START_GENERATION:strengthened", "E_CREATE_EXECUTION:tester"]
       countsAttempt: true
       description: Strengthen the judge before any production; it must be validated and approved again.

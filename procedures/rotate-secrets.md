@@ -199,6 +199,9 @@ Emergency (`--emergency`): one PR replacing key and JWKS; running executions fai
 #### sc-runner-hermes
 G-3: the Runner rotates every 30 days with a 24 h overlap (ADR-0401). Forced: `./bootstrap exec -- sc-runner-admin hermes-credentials rotate [--no-overlap]` through the admin API (port-forward, `SC-RUNNER-ADMIN`). *Verify:* Hermes can call `agent_status`; `SCHermesCredentialRotationFailed` not firing.
 
+#### sc-model-usage-read
+Flow G-1, per provider instance (`anthropic`, `openai`). 1. In the provider organisation console, create a new key with the least scope that still reaches the usage/cost endpoints (read-only where offered). 2. `./bootstrap rotate secret SC-MODEL-USAGE-READ --instance <p>` writes `gitops/clusters/<c>/secrets/strange-company/model-usage-read.sops.yaml` (PR, merge, Flux). 3. Trigger `kubectl -n strange-company create job --from=cronjob/ledger-reconcile lr-rotate` and confirm it exits 0. 4. Revoke the old key in the console. *Verify:* the provider console shows one active usage key for Strange Company; `recovery-bundle status` is not affected (not bundled).
+
 #### sc-hermes-api
 Same as [§sc-runner-hermes](#sc-runner-hermes) (same Secret, same rotation timer).
 

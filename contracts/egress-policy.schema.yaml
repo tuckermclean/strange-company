@@ -95,6 +95,11 @@ properties:
               Optional restore-test listener (`:3131`), reachable only from `dr-tests`
               by NetworkPolicy, bound to its own profile (SEC-23).
             $ref: "#/$defs/CiListener"
+          renovate:
+            description: |
+              Optional Renovate listener (`:3132`), reachable only from `renovate`
+              by NetworkPolicy, bound to its own profile (SEC-B13).
+            $ref: "#/$defs/CiListener"
       delegation:
         type: object
         additionalProperties: false
@@ -255,11 +260,15 @@ examples:
           description: Restore tests (SEC-23). Object-storage endpoint plus GitHub for the black-start check only.
           includeObjectStorageEndpoint: true
           hosts: [github.com, api.github.com, codeload.github.com]
+        renovate:
+          description: Renovate (SEC-B13). Registries and release metadata only.
+          hosts: [github.com, api.github.com, codeload.github.com, objects.githubusercontent.com, raw.githubusercontent.com, "*.github.io", ghcr.io, pkg-containers.githubusercontent.com, registry-1.docker.io, auth.docker.io, hub.docker.com, quay.io, "*.quay.io", registry.k8s.io, "*.pkg.dev", proxy.golang.org, sum.golang.org, update.k3s.io, charts.longhorn.io, registry.npmjs.org, pypi.org]
       listeners:
         agent: {port: 3128, auth: task-token, baseProfile: agent-base, maxConcurrentTunnelsPerClient: 32}
         ci: {port: 3129, auth: none, baseProfile: ci-base, maxConcurrentTunnelsPerClient: 64}
         build: {port: 3130, auth: none, baseProfile: ci-build, maxConcurrentTunnelsPerClient: 64}
         dr: {port: 3131, auth: none, baseProfile: dr-tests, maxConcurrentTunnelsPerClient: 32}
+        renovate: {port: 3132, auth: none, baseProfile: renovate, maxConcurrentTunnelsPerClient: 32}
       delegation:
         repositoryAllowed: ["*.npmjs.org", "*.pythonhosted.org", "*.crates.io", repo.maven.apache.org, repo1.maven.org, plugins.gradle.org, services.gradle.org, rubygems.org, "*.rubygems.org", api.nuget.org, packagist.org, repo.packagist.org, github.com, codeload.github.com, objects.githubusercontent.com]
         maxHostsPerRepository: 20

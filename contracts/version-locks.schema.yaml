@@ -64,7 +64,7 @@ $defs:
     required: [selectedBy, verifiedAt]
     properties:
       selectedBy:
-        description: Short id of the owning plan's selection rule.
+        description: The `plans/compatibility-baseline.yaml` entry the pin belongs to, as `baseline:<component>` (CD-29, ADR-0022).
         type: string
         pattern: '^[a-z0-9-]+:[A-Za-z0-9.<>=_+-]+$'
       verifiedAt:
@@ -167,7 +167,7 @@ $defs:
             required: [version, kubernetesMinor, sha256, selectedBy, verifiedAt]
             properties:
               version:
-                description: k3s release, e.g. v1.34.1+k3s1.
+                description: k3s release, e.g. v1.36.5+k3s1 (baseline).
                 type: string
                 pattern: '^v1\.[0-9]{2}\.[0-9]+\+k3s[0-9]+$'
               kubernetesMinor: {$ref: '#/$defs/k8sMinor'}
@@ -434,40 +434,40 @@ examples:
   - apiVersion: strange.company/v1alpha1
     kind: PlatformVersionLock
     spec:
-      kubernetes: {minor: '1.34'}
-      flux: {version: 2.7.2, selectedBy: 'flux:latest-minor-supporting-k8s', verifiedAt: '2026-10-01'}
+      kubernetes: {minor: '1.36'}
+      flux: {version: 2.9.6, selectedBy: 'baseline:flux', verifiedAt: '2026-10-01'}
       charts:
         - name: cert-manager
           source: {oci: oci://quay.io/jetstack/charts/cert-manager}
-          version: 1.19.1
+          version: v1.21.2
           digest: sha256:1111111111111111111111111111111111111111111111111111111111111111
           usedBy: gitops/platform/cert-manager
         - name: forgejo
           source: {oci: oci://code.forgejo.org/forgejo-helm/forgejo}
-          version: 14.0.3
+          version: 17.3.0
           digest: sha256:2222222222222222222222222222222222222222222222222222222222222222
           usedBy: gitops/platform/forgejo
       images:
         - name: cloudflared
-          ref: docker.io/cloudflare/cloudflared:2026.9.1@sha256:3333333333333333333333333333333333333333333333333333333333333333
-          tag: 2026.9.1
+          ref: docker.io/cloudflare/cloudflared:2026.10.0@sha256:3333333333333333333333333333333333333333333333333333333333333333
+          tag: '2026.10.0'
           usedBy: gitops/platform/cloudflared
   - apiVersion: strange.company/v1alpha1
     kind: K3sVersionLock
     spec:
       k3s:
-        version: v1.34.1+k3s1
-        kubernetesMinor: '1.34'
+        version: v1.36.5+k3s1
+        kubernetesMinor: '1.36'
         sha256: {amd64: '4444444444444444444444444444444444444444444444444444444444444444'}
-        selectedBy: 'k3s:latest-patch-of-supported-minor'
+        selectedBy: 'baseline:k3s'
         verifiedAt: '2026-10-01'
-      etcdctl: {version: v3.6.5, sha256: {amd64: '5555555555555555555555555555555555555555555555555555555555555555'}}
-      coredns: {image: docker.io/coredns/coredns:1.12.4@sha256:6666666666666666666666666666666666666666666666666666666666666666, tag: 1.12.4}
+      etcdctl: {version: v3.6.14, sha256: {amd64: '5555555555555555555555555555555555555555555555555555555555555555'}}
+      coredns: {image: docker.io/coredns/coredns:1.14.7@sha256:6666666666666666666666666666666666666666666666666666666666666666, tag: 1.14.7}
   - apiVersion: strange.company/v1alpha1
     kind: CompatibilityMatrix
     spec:
       components:
-        longhorn: {version: 1.10.0, kubernetesMinors: ['1.32', '1.33', '1.34'], source: 'https://longhorn.io/docs/1.10.0/best-practices/'}
+        longhorn: {version: 1.10.0, kubernetesMinors: ['1.32', '1.33', '1.36'], source: 'https://longhorn.io/docs/1.10.0/best-practices/'}
       facts:
         k3s.etcdLearnerJoin: {value: true, evidence: 'out/e2e-lab/expand/member-list.txt (lab-ha nightly 2026-10-01)', verifiedAt: '2026-10-01'}
   - apiVersion: strange.company/v1alpha1
@@ -505,7 +505,7 @@ examples:
     spec:
       baseImages:
         debian: {ref: 'docker.io/library/debian:trixie-slim', digest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'}
-        golang: {ref: 'docker.io/library/golang:1.25-trixie', digest: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'}
+        golang: {ref: 'docker.io/library/golang:1.27-trixie', digest: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'}
       debianSnapshot: 20261001T000000Z
       aptPackages:
         runtime: [bash, ca-certificates, curl, git, openssh-client, python3, tini, libnss-wrapper]
@@ -513,17 +513,17 @@ examples:
       tools:
         - name: opentofu
           set: runtime
-          version: 1.11.0
-          selectedBy: 'tofu:latest-stable>=1.11'
+          version: 1.13.1
+          selectedBy: 'baseline:opentofu'
           url: https://github.com/opentofu/opentofu/releases/download/v{version}/tofu_{version}_linux_{arch}.tar.gz
           sha256: {amd64: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc}
           install: {extract: tofu, to: /opt/sc/bin/tofu}
           versionCommand: [tofu, version, -json]
-          versionRegex: '"terraform_version":\s*"1\.11\.0"'
+          versionRegex: '"terraform_version":\s*"1\.13\.1"'
           verifiedAt: '2026-10-01'
       pythonRequirements: toolbox/requirements.txt
       ansibleCollections:
-        - {name: ansible.posix, version: 2.1.0, url: 'https://galaxy.ansible.com/api/v3/plugin/ansible/content/published/collections/artifacts/ansible-posix-2.1.0.tar.gz', sha256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd}
+        - {name: ansible.posix, version: 2.2.2, url: 'https://galaxy.ansible.com/api/v3/plugin/ansible/content/published/collections/artifacts/ansible-posix-2.2.2.tar.gz', sha256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd}
   - apiVersion: strange.company/v1alpha1
     kind: ToolboxImageLock
     inputsId: 4b825dc642cb6eb9a060e54bf8d69288fbee4904
@@ -547,8 +547,8 @@ x-invalid-examples:
       apiVersion: strange.company/v1alpha1
       kind: PlatformVersionLock
       spec:
-        kubernetes: {minor: '1.34'}
-        flux: {version: 2.7.2, selectedBy: 'flux:latest-minor-supporting-k8s', verifiedAt: '2026-10-01'}
+        kubernetes: {minor: '1.36'}
+        flux: {version: 2.9.6, selectedBy: 'baseline:flux', verifiedAt: '2026-10-01'}
         charts: []
         images:
           - {name: cloudflared, ref: 'docker.io/cloudflare/cloudflared:2026.9.1', usedBy: gitops/platform/cloudflared}
@@ -557,18 +557,18 @@ x-invalid-examples:
       apiVersion: strange.company/v1alpha1
       kind: PlatformVersionLock
       spec:
-        kubernetes: {minor: '1.34'}
-        flux: {version: 2.7.2, selectedBy: 'flux:latest-minor-supporting-k8s', verifiedAt: '2026-10-01'}
+        kubernetes: {minor: '1.36'}
+        flux: {version: 2.9.6, selectedBy: 'baseline:flux', verifiedAt: '2026-10-01'}
         charts:
-          - {name: cert-manager, source: {oci: 'oci://quay.io/jetstack/charts/cert-manager'}, version: 1.19.1, usedBy: gitops/platform/cert-manager}
+          - {name: cert-manager, source: {oci: 'oci://quay.io/jetstack/charts/cert-manager'}, version: v1.21.2, usedBy: gitops/platform/cert-manager}
         images: []
   - reason: chart version range instead of an exact version
     value:
       apiVersion: strange.company/v1alpha1
       kind: PlatformVersionLock
       spec:
-        kubernetes: {minor: '1.34'}
-        flux: {version: 2.7.2, selectedBy: 'flux:x', verifiedAt: '2026-10-01'}
+        kubernetes: {minor: '1.36'}
+        flux: {version: 2.9.6, selectedBy: 'flux:x', verifiedAt: '2026-10-01'}
         charts:
           - {name: longhorn, source: {helm: 'https://charts.longhorn.io', chart: longhorn}, version: '^1.10', usedBy: gitops/platform/longhorn}
         images: []
@@ -577,8 +577,8 @@ x-invalid-examples:
       apiVersion: strange.company/v1alpha1
       kind: K3sVersionLock
       spec:
-        k3s: {version: v1.34.1+k3s1, kubernetesMinor: '1.34', sha256: {amd64: '4444444444444444444444444444444444444444444444444444444444444444'}, selectedBy: x, verifiedAt: '2026-10-01'}
-        etcdctl: {version: v3.6.5, sha256: {amd64: '5555555555555555555555555555555555555555555555555555555555555555'}}
+        k3s: {version: v1.36.5+k3s1, kubernetesMinor: '1.36', sha256: {amd64: '4444444444444444444444444444444444444444444444444444444444444444'}, selectedBy: x, verifiedAt: '2026-10-01'}
+        etcdctl: {version: v3.6.14, sha256: {amd64: '5555555555555555555555555555555555555555555555555555555555555555'}}
   - reason: tool without a checksum
     value:
       apiVersion: strange.company/v1alpha1
@@ -590,7 +590,7 @@ x-invalid-examples:
         debianSnapshot: 20261001T000000Z
         aptPackages: {runtime: [bash], ci: []}
         tools:
-          - {name: jq, set: runtime, version: 1.8.1, selectedBy: 'jq:latest-1.x', url: 'https://github.com/jqlang/jq/releases/download/jq-{version}/jq-linux-{arch}', versionCommand: [jq, --version], versionRegex: 'jq-1\.8\.1', verifiedAt: '2026-10-01'}
+          - {name: jq, set: runtime, version: 1.8.1, selectedBy: 'baseline:jq', url: 'https://github.com/jqlang/jq/releases/download/jq-{version}/jq-linux-{arch}', versionCommand: [jq, --version], versionRegex: 'jq-1\.8\.1', verifiedAt: '2026-10-01'}
         pythonRequirements: toolbox/requirements.txt
         ansibleCollections: []
   - reason: published toolbox digest without the inputs id it was built from

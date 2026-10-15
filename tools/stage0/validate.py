@@ -36,6 +36,9 @@ Checks (each prints PASS/FAIL with details):
   C13 blocking        no open question in any plan is marked blocking: yes.
   C14 spec-issues     every SPEC issue row has a non-empty resolution and a
                       blocking column that is not "Yes".
+  C15 baseline        plans/compatibility-baseline.yaml (ADR-0022): component
+                      names unique, every planRefs file exists, every evidence
+                      entry is present.
 """
 from __future__ import annotations
 
@@ -174,7 +177,12 @@ def check_contracts(repo: str, r: Result) -> dict:
         if schema not in schemas:
             r.add("C03 data-files", f"{data}: schema {schema} missing or invalid")
             continue
-        errs = list(V(schemas[schema], registry=registry).iter_errors(load_yaml(dpath)))
+        try:
+            data = load_yaml(dpath)
+        except yaml.YAMLError as e:
+            r.add("C03 data-files", f"{os.path.basename(dpath)}: YAML parse error: {str(e)[:200]}")
+            continue
+        errs = list(V(schemas[schema], registry=registry).iter_errors(data))
         for e in errs[:5]:
             r.add("C03 data-files", f"{data}: {e.message[:200]} at {list(e.absolute_path)}")
     return schemas
@@ -521,6 +529,26 @@ def check_spec_issues(repo: str, r: Result) -> None:
     r.stats["spec_issues"] = n
 
 
+def check_baseline(repo: str, r: Result) -> None:
+    r.add("C15 baseline")
+    path = os.path.join(repo, "plans", "compatibility-baseline.yaml")
+    if not os.path.exists(path):
+        r.add("C15 baseline", "plans/compatibility-baseline.yaml missing (ADR-0022)")
+        return
+    doc = load_yaml(path)
+    comps = (doc.get("spec") or {}).get("components") or doc.get("components") or []
+    names = [c.get("name") for c in comps]
+    for n in sorted({n for n in names if names.count(n) > 1}):
+        r.add("C15 baseline", f"duplicate component {n}")
+    for c in comps:
+        if not c.get("evidence"):
+            r.add("C15 baseline", f"{c.get('name')}: no evidence")
+        for ref in c.get("planRefs") or []:
+            if not os.path.exists(os.path.join(repo, ref)):
+                r.add("C15 baseline", f"{c.get('name')}: planRefs {ref} does not exist")
+    r.stats["baseline_components"] = len(comps)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--repo", default=os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..")))
@@ -540,6 +568,7 @@ def main() -> int:
     check_plan_md(repo, r)
     check_blocking(repo, r)
     check_spec_issues(repo, r)
+    check_baseline(repo, r)
     if args.json:
         print(json.dumps({"ok": r.ok, "stats": r.stats, "failures": r.checks}, indent=2, sort_keys=True))
     else:

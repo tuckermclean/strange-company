@@ -268,8 +268,8 @@ metadata: {name: default}
 spec:
   currency: USD
   calendarTimezone: UTC
-  perRequest: {maxCostUsd: "3.00", maxOutputTokens: 32000, maxRequestBodyBytes: 33554432}
-  perExecution: {maxCostUsd: "8.00", maxTotalTokens: 10000000, maxRequests: 1000, maxWallTimeSeconds: 3600, maxConcurrentRequests: 4}
+  perRequest: {maxCostUsd: "3.00", maxOutputTokens: 32000, maxRequestBodyBytes: 8388608}
+  perExecution: {maxCostUsd: "8.00", maxTotalTokens: 10000000, maxRequests: 1000, maxWallTimeSeconds: 3600, maxConcurrentRequests: 4, maxCountTokensPerMinute: 60}
   perTask: {maxCostUsd: "20.00", maxAttempts: 15}
   providers:
     anthropic: {dailyUsd: "30.00", monthlyUsd: "250.00"}
@@ -282,7 +282,7 @@ spec:
   orchestration: {dailyUsd: "10.00", monthlyUsd: "120.00"}
   thresholds: {warnPercents: [50, 80]}
   dispatch: {minimumHeadroomUsd: {clerical: "0.50", bargain: "0.50", standard: "1.50", frontier: "3.00"}}
-  anomaly: {windowMinutes: 15, baselineDays: 7, baselineQuantile: 0.95, multiplier: 4, minimumSpendUsd: "0.50", absoluteWindowCapUsd: "8.00"}
+  anomaly: {windowMinutes: 15, baselineDays: 7, baselineQuantile: 0.95, multiplier: 4, minimumSpendUsd: "0.50", absoluteWindowCapUsd: "8.00", autoStop: true}
   repositories:
     sc-e2e/fake-target: {perTask: {maxCostUsd: "5.00"}}
   emergencyStop: {level: none}
@@ -315,6 +315,15 @@ Rationale:
 10. (added, warning) `global.hourlyUsd ≥ 2 × perExecution.maxConcurrentRequests × max worst(model)`. Below that, a single execution can routinely contend on the hourly scope.
 
 A violation rejects the whole policy set. Last-known-good is kept and `SCGatewayPolicyInvalid` / `SCRunnerPolicyInvalid` fire. With no valid policy ever loaded, the Gateway is not ready, so nothing is spent.
+
+### 9.2a Out-of-band backstop (review BUD-B6)
+
+Every in-cluster defence uses the same price cards and parsers, so a shared error (an unannounced price rise, an account-level surcharge, a new billed dimension, a costing bug) would not trip any of them. Two independent controls cover that:
+
+1. **Provider-side hard limit, required before enabling a production provider.** For each enabled production provider the operator sets a provider-enforced monthly spend limit, or uses a prepaid balance with auto-reload off, sized ≤ 1.25 × that provider's `monthlyUsd`. Preflight (plan 50) verifies it through the provider's admin API where one exists (verify per provider at implementation), otherwise requires a typed attestation recorded in the bootstrap journal; `make policy-check` warns when a provider is enabled in `policy/` without a recorded attestation in `gitops/clusters/<cluster>/config/provider-backstops.yaml` (plan 50 writes it). Changing a provider's `monthlyUsd` above 0.8 × the recorded limit requires updating the attestation in the same PR.
+2. **Automated daily reconciliation** (plan 32 §20): a CronJob compares provider-reported spend with the ledger per provider and day, and alerts `SCLedgerProviderDivergence`.
+
+Residual: providers without a hard limit or a usage API rely on the attestation and the weekly manual comparison.
 
 ### 9.3 Runtime knobs (chart values, plan 54)
 
@@ -365,7 +374,7 @@ No additional pods.
   - The Runner SA has `get`, `list`, `watch` with the same `resourceNames` (a list/watch with `fieldSelector=metadata.name=sc-emergency-stop`).
   - Kubernetes `resourceNames` cannot restrict `create`. Path 3 is therefore deliberately a cluster-admin action.
 - **Flux exclusion:** kustomize-controller prunes only objects in its own inventory, and helm-controller manages only chart-rendered objects (verify on the pinned Flux; 33-AC-12). A CI rule (`make lint-gitops`, plans 18/54) fails if any rendered manifest names a ConfigMap `sc-emergency-stop`, so Flux can never adopt it.
-- **Fail-safe direction:** an unparseable `data.level` is treated as `all` and alerted. An unreadable Kubernetes source for 60 s raises the effective level to `workers`. An unreadable DB means no spend at all. An invalid Git policy keeps the last-known-good level.
+- **Fail-safe direction:** an unparseable `data.level` is treated as `all` and alerted. An unreadable Kubernetes source for 60 s raises the effective level to `workers`. An unreadable DB means no spend at all. A missing `ledger.emergency_stop_state` row, a NULL level or an unknown level value is treated as `all` and raises `SCEmergencyStopSourceUnavailable{source="db"}` (review BUD-B10). An invalid Git policy keeps the last-known-good level.
 - **Denial responses** use HTTP 403 so SDKs do not auto-retry them (plan 53 §7.3).
 
 ## 14. Happy path
@@ -497,6 +506,7 @@ When a worker's request is denied, the harness surfaces the provider-format erro
 | `SC_BUDGET_UNDEFINED` | `FAILED`, `budget`, `BUDGET_UNDEFINED` | → `NEEDS_HUMAN` (`budget_exceeded`) | `SCTaskNeedsHuman` (+ `SCGatewayPolicyInvalid` if policy-caused) |
 | `SC_BUDGET_EXHAUSTED` on a shared scope (provider, global, orchestration) | `FAILED`, `budget`, `BUDGET_SHARED_EXHAUSTED` | → `BLOCKED` (`blocked_reason: budget_window_exhausted`, `resume_state` = the state the task had before this dispatch) | `SCBudgetExhausted` / `SCBudgetHourlyCapReached` |
 | `SC_EMERGENCY_STOP` or a Runner e-stop cancellation | running: `FAILED`, `budget`, `EMERGENCY_STOP`; queued: `CANCELLED` | → `BLOCKED` (`blocked_reason: emergency_stop`, `resume_state` as above) | `SCEmergencyStopActive` |
+| Gateway policy denials surfaced to a worker: `SC_MODEL_QUARANTINED`, `SC_PRICE_UNKNOWN`, `SC_MODEL_NOT_ALLOWED`, `SC_REQUEST_FEATURE_DENIED`, `SC_MAX_TOKENS_EXCEEDS_POLICY`, `SC_PROVIDER_UNAVAILABLE`, `SC_FAMILY_NOT_ALLOWED` (review BUD-B15) | `FAILED`, class **infrastructure**, code `GATEWAY_POLICY_DENIED` (detail = the SC code), refunded, counting towards plan 29's consecutive-infrastructure limit | per plan 29's infrastructure rule; after the limit → `NEEDS_HUMAN` (`infrastructure_exhausted`) | `SCGatewayPolicyDenialsRepeated` (new, warning: the same SC code ends ≥ 3 executions in 1 h; it indicates a policy or harness bug, not task failure) |
 | `SC_BUDGET_CONTENDED` (surfaced after SDK retries) | `FAILED`, class **infrastructure**, code `BUDGET_CONTENDED` (refunded, plan 29) | per plan 29's infrastructure rule (requeue; no human-only state) | none (`sc_budget_denials_total{code="SC_BUDGET_CONTENDED"}` visible on the dashboard) |
 | Dispatch refusal `BUDGET_EXCEEDED` on the **`task:`** scope (review COST-7) | none created | → `NEEDS_HUMAN` (`budget_exceeded`, plan 29 T132, event `dispatch_refused`): task headroom never returns by waiting | `SCTaskNeedsHuman` |
 | Dispatch refusal `BUDGET_EXCEEDED` on a **shared** scope | none created | unchanged (Hermes waits; headroom returns with the next period) | `SCBudgetDispatchRefused` (new, warning: `increase(sc_runner_dispatch_refusals_total{code="BUDGET_EXCEEDED"}[15m]) > 0` for 15 m) and, at 100 %, `SCBudgetExhausted` |
@@ -516,7 +526,7 @@ Rationale:
 Levels are totally ordered: `none` (0) < `workers` (1) < `all` (2).
 
 ```text
-db       = ledger.emergency_stop_state.level        (Gateway: inside every reservation txn + 2 s poll;
+db       = ledger.emergency_stop_state.level        (missing row / NULL / unknown value = all; Gateway: inside every reservation txn + 2 s poll;
                                                      Runner: read at every dispatch + 2 s poll)
 git      = BudgetPolicy.spec.emergencyStop.level    (last-known-good policy)
 k8s      = ConfigMap sc-emergency-stop data.level   (absent/404 = none; unparseable = all)
@@ -589,7 +599,8 @@ for: 0s   severity: critical   notifyClass: page   alwaysNotify: budget-stop
 - `sc_model_spend_micro_usd_total` counts `budget_charge_micro_usd` (plan 32 §21), so unknown-usage requests count at worst case.
 - Cold start: with less than 7 days of history, the quantile uses what exists. With no history the baseline is 0 and the `minimumSpendUsd` guard prevents trivial alerts.
 - Prometheus retention MUST be ≥ 8 days (request to plan 38). Prometheus loss disables detection only; prevention is unaffected.
-- Response: the procedure checks the top spenders (`sum by (provider, model, harness, role)(increase(sc_model_spend_micro_usd_total[15m]))`) and the ledger, then decides whether to engage a stop. There is no automatic stop in MVP. An absolute cap that should *prevent* belongs in `global.hourlyUsd`.
+- Response: the procedure checks the top spenders (`sum by (provider, model, harness, role)(increase(sc_model_spend_micro_usd_total[15m]))`) and the ledger, then decides whether to keep or release a stop.
+- **Automatic trip (review BUD-B8).** Independently of Prometheus, the Gateway leader computes every 30 s the trailing `windowMinutes` spend from `sc-pg` (settled `budget_charge` of cost records started in the window + open reservations). If it exceeds `absoluteWindowCapUsd` and `anomaly.autoStop` is true (default), the leader inserts an emergency-stop event at level `workers` (DB source, actor `budget:anomaly`, reason with the amount). Release is human-only (§14.7). This closes the fixed-window gap: `global-hour` and `global-day` are calendar windows, so up to 2 × `hourlyUsd` could otherwise be spent around an hour boundary; with the trip, sustained spend above $8 per 15 min stops worker spend within ≈ 30 s. Grant: `sc_gateway` may insert into `emergency_stop_events` only rows with actor `budget:anomaly` and level `workers` (trigger `estop_events_gateway_guard`).
 
 ### 14.9 Attempts, tokens and wall time
 
@@ -710,7 +721,7 @@ SCEmergencyStopNotApplied: max(sc_runner_emergency_stop_level{source="effective"
 
 Budget alert expressions are in §14.4 and the anomaly alert in §14.8.
 
-**Catalogue alignment (CD-01).** `contracts/alert-catalog.yaml` carries every alert above under these names and with these expressions (`SCBudgetThresholdReached`, `SCBudgetExhausted`, `SCBudgetHourlyCapReached`, `SCBudgetCostIncomplete`, `SCBudgetMetricsStale`, `SCEmergencyStopActive`, `SCEmergencyStopNotApplied`, `SCEmergencyStopSourceUnavailable`, `SCAnomalousSpend`). `SCBudgetDispatchRefused` (§14.5) and `SCGatewayBoundViolation` (critical, page, `budget-stop`; replaces `SCGatewayReservationOverrun`, CD-28) are new in this review round and must be added by plan 42. The catalogue summaries of `SCModelUsageUnknown` and `SCBudgetCostIncomplete` must say that unknown usage is charged at its worst case (a ceiling, not a floor; review COST-15). The catalogue is the naming authority; this section is normative for the signal semantics. Runbooks: `procedures/budget-emergency-stop.md`, and `procedures/gateway-failure.md` for the source-unavailable alert.
+**Catalogue alignment (CD-01).** `contracts/alert-catalog.yaml` carries every alert above under these names and with these expressions (`SCBudgetThresholdReached`, `SCBudgetExhausted`, `SCBudgetHourlyCapReached`, `SCBudgetCostIncomplete`, `SCBudgetMetricsStale`, `SCEmergencyStopActive`, `SCEmergencyStopNotApplied`, `SCEmergencyStopSourceUnavailable`, `SCAnomalousSpend`). `SCBudgetDispatchRefused` (§14.5), `SCGatewayPolicyDenialsRepeated` (§14.5, BUD-B15), `SCLedgerProviderDivergence` (plan 32 §20, BUD-B6) and `SCGatewayBoundViolation` (critical, page, `budget-stop`; replaces `SCGatewayReservationOverrun`, CD-28) are new in this review round and must be added by plan 42. The catalogue summaries of `SCModelUsageUnknown` and `SCBudgetCostIncomplete` must say that unknown usage is charged at its worst case (a ceiling, not a floor; review COST-15). The catalogue is the naming authority; this section is normative for the signal semantics. Runbooks: `procedures/budget-emergency-stop.md`, and `procedures/gateway-failure.md` for the source-unavailable alert.
 
 **Dashboards** (plan 39, "Economics"):
 - spend today and month vs limits: `sc_budget_spent_micro_usd / sc_budget_limit_micro_usd` per scope kind;
@@ -773,10 +784,15 @@ All deterministic with the fake upstream and fake harnesses [SPEC §104].
 - **33-AC-24** Attempt counting (review COST-8): `make policy-check` rejects a policy with `perTask.maxAttempts` below the ladder + review + infrastructure sum; in the Runner unit tests, a task with 2 refunded infrastructure failures and 5 implementer merit failures under the **shipped** policy still reaches the frontier rung (no `ATTEMPTS_EXHAUSTED` before `escalation_ladder_exhausted`).
 - **33-AC-25** Hard ceiling and bound violation (CD-28): (a) 1 000 random requests from the adversarial fixture corpus (plan 53 53-AC-36) through the fake family each have `budget_charge_micro_usd ≤ reserved_micro_usd ≤ perRequest.maxCostUsd` in micro-USD and no `bound_violation`; (b) a policy whose full-window worst case for a model exceeds `perRequest.maxCostUsd` is rejected by `make policy-check` (invariant 8); (c) with `fake-over-bound`, the scope's `spent_micro_usd` includes the full real charge, the row has `bound_violation=true`, and the next request for that model is `SC_MODEL_QUARANTINED`.
 
+- **33-AC-28** Automatic trip (review BUD-B8): with a test `absoluteWindowCapUsd` of $0.50, fake requests totalling $0.60 within the window make the Gateway leader insert an `emergency_stop_events` row (actor `budget:anomaly`, level `workers`) within 60 s; execution-token requests are then denied `SC_EMERGENCY_STOP`; with `autoStop: false` no row is inserted. `sc_gateway` cannot insert a row with another actor or level (permission/trigger error).
+- **33-AC-29** Missing DB stop row (review BUD-B10): after `DELETE FROM ledger.emergency_stop_state` in a test database, the next request is denied `SC_EMERGENCY_STOP` (effective `all`, orchestrator tokens included) and `sc_gateway_estop_source_up{source="db"} == 0`; restoring the row restores service.
+- **33-AC-30** Backstop (review BUD-B6): `make policy-check` warns for an enabled production provider without an entry in `provider-backstops.yaml` and for a `monthlyUsd` above 0.8 × the recorded limit; the reconciliation job of plan 32 (32-AC-15) raises `SCLedgerProviderDivergence` on a seeded divergence.
+
 ### GATE-C10 (moved from GATE-C06; they need fake-harness Jobs (C02), Hermes (C08) or evidence (C04), which C06 does not depend on — review COST-10 / GC-01)
 
 - **33-AC-26** Dispatch refusal notification (review COST-7): with `task:` headroom below `minimumHeadroomUsd[tier]`, `agent_start` returns `BUDGET_EXCEEDED`, the task enters `NEEDS_HUMAN` (`budget_exceeded`) and `SCTaskNeedsHuman` reaches the test receiver within 2 min; with only `provider-day:fake` short, the task state is unchanged and `SCBudgetDispatchRefused` fires after 15 m (`promtool test rules`).
 - **33-AC-27** Queued re-validation (review COST-7): an execution QUEUED behind a held worker slot whose task scope is lowered below `minimumHeadroomUsd[tier]` ends `FAILED` `BUDGET_TASK_EXHAUSTED` at the next dispatcher cycle and the task is `NEEDS_HUMAN` via T106 (`runner.transitions` row with that id); with only `provider-day:fake` short and a test `queueTimeout` of 1 m, the execution stays QUEUED until the timeout, then ends `FAILED` `BUDGET_SHARED_EXHAUSTED` (refunded) and the task is `BLOCKED` via T105.
+- **33-AC-31** Gateway policy denials (review BUD-B15): a fake harness that requests a quarantined model and one that sends a non-allowlisted member each end `FAILED`, class `infrastructure`, code `GATEWAY_POLICY_DENIED` with the SC code in the detail, refunded; three such executions within 1 h fire `SCGatewayPolicyDenialsRepeated` (`promtool test rules`).
 - **33-AC-5** Exhaustion classification (each §14.5 row, k3d, `fake-spend-loop`):
   - execution-scope exhaustion → execution `FAILED`/`budget`/`BUDGET_EXECUTION_EXHAUSTED`, task `NEEDS_HUMAN`, and an `SCTaskNeedsHuman` delivery with `reason=budget_exceeded` at the test receiver within 2 min;
   - provider-day exhaustion → `BUDGET_SHARED_EXHAUSTED`, task `BLOCKED` with `blocked_reason=budget_window_exhausted` and `resume_state` equal to the pre-dispatch state, and an `SCBudgetExhausted` delivery within 2 min.
@@ -796,12 +812,12 @@ All deterministic with the fake upstream and fake harnesses [SPEC §104].
 
 ## 24. Explicit non-goals
 
-- Automatic emergency stop on anomaly detection (MVP alerts only; hard caps are limits).
+- Automatic emergency stop on the *statistical* anomaly rule (`SCAnomalousSpend` pages only); the absolute-window trip of §14.8 is automatic.
 - Automatic resume of `BLOCKED` tasks after a window resets or a stop is lifted (L-4).
 - Per-repository or per-project calendar budgets (additive later, §19).
 - Currencies other than USD; non-UTC budget calendars (schema constants).
 - Budgeting CI compute or infrastructure cost (SPEC §14 covers paid infrastructure separately).
-- Provider-side spend caps as an enforcement mechanism (operators may set them as defense in depth; not relied upon).
+- Provider-side spend caps as the *primary* enforcement mechanism. They are a required out-of-band backstop (§9.2a), not the enforcement path.
 - A Hermes-facing tool to read or set budgets or the emergency stop.
 
 ## 25. Open questions
@@ -814,3 +830,5 @@ All deterministic with the fake upstream and fake harnesses [SPEC §104].
 6. **Recovery commit sets the Git e-stop source** (§20) is a request to plan 45 and is consistent with ADR-0554. Blocking: no. Owner: plan 45.
 7. **Hermes spend is not task-attributed** (review COST-9, SPEC §78/§82). Acceptance criteria written by Hermes are charged to `orchestration` (`project _platform`), so a task's "specification cost" covers planner/researcher executions only. Blocking: no. Resolution: recorded as a SPEC interpretation (spec-issues, lead); a task-scoped orchestrator sub-scope is post-MVP. Owner: plans 32/33.
 8. **Contended requests surfaced to a worker** are class `infrastructure` with code `BUDGET_CONTENDED` and refunded; plans 26 and 29 must add the code to their classification tables (needs other owner). Blocking: no. Owner: plans 26/29.
+9. **Backstop attestation and reconciliation credentials** (review BUD-B6) need plan 50 (preflight check via provider admin APIs where available, attestation file) and plan 35 (new read-only usage credential class `SC-MODEL-USAGE-READ`, plan 32 §20). Blocking: no. Owner: plans 50/35/32.
+10. **Stop-procedure rehearsal** (review BUD-B9): A0 (console key pause) and A3 must be timed in the recovery drill. Needs plan 45 (`recovery-drill.md`). Blocking: no.

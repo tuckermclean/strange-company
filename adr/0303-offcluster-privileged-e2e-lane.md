@@ -26,7 +26,8 @@ Woodpecker's pipelines run as pods in `ci-jobs` on the production node, under PS
 ## Consequences
 - Regressions caught only by tier-E tests surface after merge (within about 24 h on `main`), and always before a release. That is the accepted cost of keeping the production node unprivileged.
 - GitHub Actions minutes are consumed: about 45 min per run. Daily-if-changed plus tags is roughly 1,400 minutes per month in the worst case. Private repositories on the free plan have 2,000 (cost risk, plan 52 §25).
-- `/dev/kvm` availability on hosted runners is version-sensitive (verify). If it is absent, `e2e-lab` falls back to a documented operator-run lane before each release (plan 52 §14.5).
+- `/dev/kvm` availability on hosted runners is version-sensitive (verify). If it is absent, `e2e-lab` for `lab-small` and `lab-ha` falls back to a documented operator-run lane before each release (plan 52 §14.5).
+- **`lab-seed` (CD-36, SEEDFLUX-B7):** the `lab-seed` substrate needs at least 8 vCPU, 16 GiB, KVM and 60 GiB free disk (plan 05). It runs only on a GitHub larger Linux runner (label from `SC_LAB_SEED_RUNNER`; roughly US$ 2-3 per run, US$ 20-40 per month, recorded in plan 52 §12) or on an off-cluster self-hosted runner per decision item 5, registered for this lane only. The operator-run fallback never applies to `lab-seed`; only the CI run result counts as evidence for GATE-P04 and GATE-P06.
 
 ## Alternatives rejected
 - Privileged `ci-e2e` namespace on the production node: memory contention with the platform and a privileged surface next to production.

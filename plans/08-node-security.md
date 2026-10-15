@@ -61,7 +61,7 @@ Derived requirements:
   - `sc-node-facts.service` + `.timer` (5 min) and `sc-maintenance.service` + `.timer`.
 - Textfile metrics in `/var/lib/node_exporter/textfile/sc_node.prom` (§21), alongside plan 07's `sc_k3s.prom`.
 - Cluster break-glass node account (SEC-9; plan 15 §14.4.1, ADR-0251): user `sc-breakglass` (uid 1501, group `sc-breakglass`), key-only, authorized key from `infra/ansible/files/breakglass.pub` (public half of `SC-BREAK-GLASS-CLUSTER`), sudoers drop-in `/etc/sudoers.d/91-sc-breakglass` (`NOPASSWD:ALL`, `visudo -cf` validated), a PAM hook `session optional pam_exec.so quiet /usr/local/libexec/sc/breakglass-login` in `/etc/pam.d/sshd` that acts only when `PAM_USER=sc-breakglass` and atomically writes `/var/lib/node_exporter/textfile/sc_breakglass.prom` (`sc_breakglass_ssh_last_login_timestamp_seconds{account="sc-breakglass"}`, `sc_breakglass_ssh_key_present{account="sc-breakglass"}`), timer `sc-breakglass-keycheck.timer` (15 min) refreshing the key-present line, and auditd watches `-w /home/sc-breakglass/.ssh -p wa -k sc-breakglass` plus `-a always,exit -F arch=b64 -S execve -F auid=1501 -k sc-breakglass-exec`.
-- The managed `/etc/hosts` block (CD-21) mapping `git.<baseDomain>` to the pinned Traefik ClusterIP `10.43.0.20` (plan 09 §9.3), between `# BEGIN strange-company managed` / `# END strange-company managed` markers, so kubelet/containerd image pulls from the Forgejo registry never leave the cluster.
+- The managed `/etc/hosts` block (CD-21) mapping `git.<baseDomain>` to the pinned Traefik ClusterIP `SC_TRAEFIK_CLUSTER_IP` (the 20th address of the service CIDR, `10.43.0.20` by default; plan 09 §9.3, CD-37), between `# BEGIN strange-company managed` / `# END strange-company managed` markers, so kubelet/containerd image pulls from the Forgejo registry never leave the cluster.
 - The node ownership marker `/etc/strange-company/install-uid` (0644 root, one line: the installation's `install_uid` from the plan 50 journal). Plan 05's preflight reads it to accept nodes this installation already configured and to refuse nodes of another installation (`NODE_BELONGS_TO_OTHER_INSTALL`). The `baseline` role writes it first (before any other change) and only if it is absent or already equal; a different value fails the run with `NODE_BELONGS_TO_OTHER_INSTALL`. It is removed only by decommission: `playbooks/node-remove.yml` (plan 47, last step after the node has left the cluster) and plan 49's destroy of `existing` nodes.
 - The Ansible facts file `/etc/sc/node-baseline.json` (`{"baseline_version": "<git tree hash of roles/baseline>", "applied_at": "<RFC3339>", "os": "<id>-<version>"}`), read by `sc-node-facts`.
 
@@ -418,7 +418,7 @@ A converge with unchanged inputs reports `changed=0`. A changed firewall render 
 
 Each is a command with an exact expected result; failures name the item:
 - `cat /etc/strange-company/install-uid` equals the journal's `install_uid`;
-- `getent hosts git.<baseDomain>` returns `10.43.0.20` (CD-21);
+- `getent hosts git.<baseDomain>` returns `SC_TRAEFIK_CLUSTER_IP` (CD-21/CD-37);
 - `id -nG sc-breakglass` contains `sc-breakglass`; `sudo -l -U sc-breakglass` shows `NOPASSWD: ALL`; `grep -c pam_exec.so /etc/pam.d/sshd` ≥ 1;
 - `id -nG sc-admin` contains `sudo` and `sc-admin`; `sshd -T | grep -E '^(permitrootlogin|passwordauthentication|kbdinteractiveauthentication) '` → `no` for all three;
 - `swapon --show --noheadings | wc -l` = 0;
@@ -478,7 +478,7 @@ Each is a command with an exact expected result; failures name the item:
 - **Baseline changes** arrive as PRs to `infra/ansible/**`; the operator applies them with `./bootstrap configure --tags baseline,firewall` (plan 48 explains why node configuration is not Flux-managed: ADR-0154).
 - **OS packages:** security updates automatically (§9.9); everything else through plan 48's `os-upgrade.yml` (`serial: 1`, drain, `apt-get dist-upgrade`, reboot, health gates).
 - **OS major releases** (for example Debian 13 → 14): node replacement, not in-place upgrade, using `add-node.md` then `remove-node.md` at small-ha, or a rebuild at self-hosting-minimum (plan 48 §OS).
-- **kured values** (small-ha), selection rule "latest kured chart release whose app version supports the pinned Kubernetes minor" (chart and image digest in `versions/platform.lock.yaml`; flag names verified at implementation and re-verified by plan 47 at GATE-H01):
+- **kured values** (small-ha), baseline **kured 1.23.0, chart 6.1.0** (`plans/compatibility-baseline.yaml`) (chart and image digest in `versions/platform.lock.yaml`; flag names verified at implementation and re-verified by plan 47 at GATE-H01):
   ```yaml
   configuration:
     rebootDays: [sun]
@@ -586,7 +586,7 @@ Clock metrics come from node-exporter's `timex` collector (`node_timex_offset_se
 - **08-AC-21** Lab: create 15 snapshots `pre-test-<i>` (12 recent, 3 whose local files are back-dated with `touch -d '40 days ago'`); after `systemctl start sc-etcd-snapshot-prune`, local `pre-*` count = 10, no `etcd-snapshot-*` scheduled snapshot was removed, and the S3 bucket still lists all 15 `pre-test-*` objects (re-verifies local-only deletion and k3s retention behavior).
 - **08-AC-22** Lab (SEC-5): from a pod on node-01 with **no** NetworkPolicy applied (k3s lab namespace without default-deny), `nc -z -w 3 <node-01 IP> 22` and `nc -z -w 3 <node-01 IP> 2379` fail, while `nc -z -w 3 <node-01 IP> 10250` succeeds. This proves the host firewall alone blocks SSH and etcd from pods.
 - **08-AC-23** `./bootstrap exec -- ssh -i <bundle key> sc-breakglass@node-01 'sudo k3s kubectl get nodes'` lists node-01 Ready, and within 60 s `/var/lib/node_exporter/textfile/sc_breakglass.prom` holds a `sc_breakglass_ssh_last_login_timestamp_seconds` value within 60 s of the login (SEC-9; co-verifies 15-AC-19). Logging in as `sc-admin` does not change that value.
-- **08-AC-24** `./bootstrap exec -- ssh node-01 'getent hosts git.<baseDomain>'` prints `10.43.0.20` (CD-21; the pull test with the tunnel down is 09-AC-17).
+- **08-AC-24** `./bootstrap exec -- ssh node-01 'getent hosts git.<baseDomain>'` prints the value of `cluster-vars.SC_TRAEFIK_CLUSTER_IP` (CD-21/CD-37; the pull test with the tunnel down is 09-AC-17).
 - **08-AC-11** `./bootstrap exec -- ssh node-01 'sudo nft list table inet sc_host'` exits 0 and `sc_host_firewall_ruleset_info` equals `sc_host_firewall_expected_info` (PromQL equality after P09; before P09 the textfile values are compared directly over SSH).
 - **08-AC-12** `./bootstrap exec -- ssh node-01 'sudo longhornctl check preflight'` (or the pinned Longhorn version's equivalent) reports no errors, and `systemctl is-active iscsid` = `active` (re-verifies plan 13's host prerequisites).
 - **08-AC-13** External scan of node-01's public IP from the toolbox host matches the §9.4 column for the configured mode: tunnel → only 22/tcp open; direct → 22, 80, 443 open (2222 only if opted in). UDP 51820 shows `open|filtered` only from a peer (not tested from outside at one node).

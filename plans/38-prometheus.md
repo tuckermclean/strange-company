@@ -70,12 +70,12 @@ No Strange Company business state is owned here. Exact values (spend, task histo
 
 ### 7.1 Chart and version selection
 
-| Component | Chart | Selection rule |
+| Component | Chart | Version (baseline: `plans/compatibility-baseline.yaml`, CD-29) |
 |---|---|---|
-| CRDs | `prometheus-community/prometheus-operator-crds` | Same operator version as the stack chart's appVersion |
-| Stack | `prometheus-community/kube-prometheus-stack` | Latest chart minor whose Prometheus Operator supports the k3s minor pinned by plan 07. Pinned in the version lock (plan 01). Upgraded only by Renovate PR. |
-| Blackbox | `prometheus-community/prometheus-blackbox-exporter` | Latest stable at implementation |
-Images are digest-pinned, from upstream registries (quay.io/prometheus, registry.k8s.io/kube-state-metrics). No Bitnami (F11 lint).
+| CRDs | `prometheus-community/prometheus-operator-crds` | the operator version shipped by the stack chart (Prometheus Operator v0.94.x) |
+| Stack | `prometheus-community/kube-prometheus-stack` | baseline: chart 92.x (92.7.0) with Prometheus v3.15.x, Alertmanager v0.34.x, kube-state-metrics v2.20.x, node-exporter subchart 4.60.x; k3s v1.36.x. Pinned in the version lock (plan 01); a chart bump that leaves any of these lines is a plan amendment. Upgraded only by Renovate PR. |
+| Blackbox | `prometheus-community/prometheus-blackbox-exporter` | baseline: chart 11.20.0, blackbox exporter v0.29.x |
+Images are digest-pinned, from upstream registries (quay.io/prometheus, registry.k8s.io/kube-state-metrics). No Bitnami images or directly referenced Bitnami charts (F11 lint); template-only Bitnami library subcharts vendored inside an upstream chart package are allowed (CD-26).
 
 Stack values (decisions):
 - `crds.enabled: false` (CRDs come from the separate release, so CRD upgrades are explicit).

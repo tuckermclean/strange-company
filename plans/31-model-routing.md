@@ -154,7 +154,7 @@ The Runner calls it at `agent_start` (plan 26 §14.2 step 7) and re-validates at
 
 ### 9.2 Shipped default policy (`policy/model-routing.yaml`)
 
-Concrete model strings are **not** fixed in Stage 0 (SPEC §75, master plan §6.3). Each slot below is filled at implementation with this **selection rule**: the newest generally-available model of the named class from that provider whose price can be verified from the official pricing page (plan 32 §9.4) and whose usage fixtures pass (53-AC-17). Model ids follow `<provider>/<apiModel>`.
+Concrete model strings are **not** fixed in Stage 0 (SPEC §75). They are policy data, not third-party software versions, so CD-29's compatibility baseline does not pin them; adding or changing a model is already a reviewed policy PR with price, fixture and probe evidence (§19). The provider **API** versions the Gateway speaks (Anthropic `anthropic-version: 2023-06-01`, OpenAI and DeepSeek `/v1` paths; verify) are not yet recorded in `plans/compatibility-baseline.yaml`; the lead should add them (request), and until then 53-AC-17 re-verifies them. Each slot below is filled at implementation with this **selection rule**: the newest generally-available model of the named class from that provider whose price can be verified from the official pricing page (plan 32 §9.4) and whose usage fixtures pass (53-AC-17). Model ids follow `<provider>/<apiModel>`.
 
 | Tier | Ordered candidates (class) | Intended use [SPEC §76] |
 |---|---|---|
@@ -391,8 +391,8 @@ The resolver does not retry. It is a pure function, and transient DB read errors
 
 | ID | Behavior | Assumption | Verified by |
 |---|---|---|---|
-| VS-R1 | Claude Code's environment variable for its background/small model | Older CLIs read `ANTHROPIC_SMALL_FAST_MODEL`, newer ones a per-class default such as `ANTHROPIC_DEFAULT_HAIKU_MODEL` (verify for the pinned version); `envHint` is set per pinned version | 31-AC-12 (R01 smoke: zero `SC_MODEL_NOT_ALLOWED` denials for the execution) |
-| VS-R2 | Codex can be forced into API-key mode with a custom provider base URL | config key for forced API-key login (verify) | plan 28 R01 smoke (when Codex is enabled) |
+| VS-R1 | Claude Code (baseline 2.1.292, `plans/compatibility-baseline.yaml`) environment variable for its background/small model | Older CLIs read `ANTHROPIC_SMALL_FAST_MODEL`, newer ones a per-class default such as `ANTHROPIC_DEFAULT_HAIKU_MODEL` (verify for the pinned version); `envHint` is set per pinned version | 31-AC-12 (R01 smoke: zero `SC_MODEL_NOT_ALLOWED` denials for the execution) |
+| VS-R2 | Codex (baseline 0.162.1) can be forced into API-key mode with a custom provider base URL | config key for forced API-key login (verify) | plan 28 R01 smoke (when Codex is enabled) |
 | VS-R3 | Anthropic OAuth access tokens start with `sk-ant-oat` | = plan 53 VS-7 | 53-AC-19 |
 
 ## 20. Recovery behavior
@@ -482,6 +482,7 @@ All deterministic, no paid model calls [SPEC §104].
 
 ## 24. Explicit non-goals
 
+- Randomised starting tiers (A/B assignment) to answer SPEC §80's model-comparison question without selection bias (review BUD-B14). Plan 32 reports Q8 per size class with sample sizes; a policy knob for random assignment is post-MVP.
 - Dynamic routing by live latency, price comparison or provider load; A/B or random routing.
 - Translation between API families (ADR-0004). A harness can only use models of a family it speaks.
 - Per-repository *expansion* of providers or models (overrides are tighten-only).

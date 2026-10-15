@@ -213,11 +213,11 @@ examples:
     kind: RepositoryPolicy
     metadata: {name: strange-company}
     spec:
-      testPaths: ["**/*_test.go", "test/**", "src/**/testdata/**"]
+      testPaths: ["**/*_test.go", "test/integration/**", "src/**/testdata/**"]
       fixturePaths: ["**/testdata/**"]
       testInfraPaths: ["src/internal/testutil/**"]
       stubPaths: ["src/**/*.go"]
-      protectedPaths: ["Makefile", "mk/**", "toolbox/**", "gitops/clusters/*/flux-system/**"]
+      protectedPaths: ["Makefile", "mk/**", "toolbox/**", "gitops/clusters/*/flux-system/**", "test/e2e/**"]
       discoveryConfig:
         wholeFiles: ["Makefile", "mk/**"]
       verification:
@@ -226,7 +226,7 @@ examples:
       retry: {maxAutonomousAttempts: 5}
       merge:
         humanApprovalsRequired: 1
-        elevatedPaths: ["src/internal/verify/**", "src/internal/statemachine/**", "src/internal/policy/**", "src/cmd/sc-verify/**", "src/cmd/sc-ci-config/**"]
+        elevatedPaths: ["src/internal/verify/**", "src/internal/statemachine/**", "src/internal/policy/**", "src/cmd/sc-verify/**", "src/cmd/sc-ci-config/**", "src/internal/runner/**", "src/internal/forge/**", "src/cmd/agent-runner/**", "src/cmd/sc-worker/**", "src/internal/gateway/**", "src/internal/ledger/**", "src/cmd/model-gateway/**", "src/internal/jobbuilder/**", "src/internal/scrub/**", "src/internal/lint/**", "src/cmd/sc-gitops/**", "src/cmd/egress-proxy/**", "src/cmd/sc-release/**", "src/cmd/sc-e2e/**"]
       modelRouting:
         maxTier: frontier
 x-invalid-examples:

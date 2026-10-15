@@ -51,7 +51,7 @@ Derived requirements:
 | Agent Runner | `strange-company` | Deployment `agent-runner` (1 replica, `Recreate`), Service `agent-runner` (ports `mcp` 8081, `worker` 8082, `hooks` 8083 (Forgejo webhooks and CI intents, CD-03), `metrics` 8090; **not** 8080), ServiceAccount `agent-runner`, ConfigMap `agent-runner-config` (`config.yaml`, plan 26 §9.1), ConfigMap `hermes-managed-template` (from `files/hermes/managed/*.tmpl`), Roles/RoleBindings exactly as plan 26 §13 (in `agent-jobs`, `strange-company` incl. `sc-emergency-stop` get/list/watch, `hermes`, and read-only `pods` list/watch in `renovate` and `dr-tests` only for the heavy-slot dispatch gate (plan 51; never `ci-jobs`/`ci-build`, review SEC-3)) |
 | Model Gateway | `strange-company` | Deployment `model-gateway` (2 replicas, `maxUnavailable: 0`), Services `model-gateway` (8080) and `model-gateway-metrics` (9090), ServiceAccount `model-gateway` (token mounted, plan 53), Role `get configmaps/sc-emergency-stop`, PodDisruptionBudget `minAvailable: 1` |
 | Runner JWKS | `strange-company` | ConfigMap `sc-runner-jwks` (`jwks.json`) mounted by the Gateway and the egress proxy |
-| Egress proxy (plan 36, ADR-0150) | `strange-company` | Deployment `egress-proxy` (2 replicas), Service `egress-proxy` (3128 `agent`, 3129 `ci`, 3131 `dr` for `dr-tests`, 9090 `metrics`; plan 36), ServiceAccount (no token), PDB `minAvailable: 1`; mounts `sc-policy` (`egress.yaml`) and `sc-runner-jwks` |
+| Egress proxy (plan 36, ADR-0150) | `strange-company` | Deployment `egress-proxy` (2 replicas), Service `egress-proxy` (3128 `agent`, 3129 `ci`, 3130 `build` for `ci-build`, 3131 `dr` for `dr-tests`, 3132 `renovate` for `renovate` (SEC-B13), 9090 `metrics`; ports and names exactly plan 36 §14 `listeners`, unit-tested by 54-AC-22), ServiceAccount (no token), PDB `minAvailable: 1`; mounts `sc-policy` (`egress.yaml`) and `sc-runner-jwks` |
 | Fake model upstream (test-only provider; stays enabled after R02, review RA-m12) | `strange-company` | Deployment + Service `fake-model-upstream` (8080) when `modelGateway.fakeUpstream.enabled` (plan 53 §22.3) |
 | Hermes (plan 24) | `hermes` | Deployment `hermes` (Recreate), Service `hermes` (8642, 9119), ServiceAccount `hermes` (no token, no bindings), `imagePullSecrets: [sc-registry-pull]` (the preflight init container uses the internal Runner image, review RA-9), a reference to the existing claim `hermes-data` (not rendered, 54-R-5), ConfigMap `hermes-skills`, IngressRoute `hermes` (Traefik CRD; when `hermes.dashboard.ingress.enabled`) |
 | Workers | `agent-jobs` | ServiceAccount `agent-worker` (`automountServiceAccountToken: false`, no bindings). Jobs and per-execution Secrets are created at runtime by the Runner, never by the chart |
@@ -131,9 +131,11 @@ HelmRelease settings: `interval: 10m`, `timeout: 10m`, `install.remediation.retr
 
 ### 9.4 Version selection rules
 
-- Helm: the version in the toolbox lock (plan 02/01); chart `apiVersion: v2`; no chart dependencies (`dependencies: []`).
-- helm-unittest plugin, kubeconform and Kubernetes JSON schemas: pinned in `versions/*.lock` (plan 01); kubeconform validates against the schema version matching the pinned k3s minor.
-- k3d: pinned; its k3s image equals the production k3s minor (plan 07).
+Versions are the baseline entries (plans/compatibility-baseline.yaml, ADR-0022), pinned exactly in `versions/*.lock` (plan 01); a newer minor or major is a plan-amendment task, not a Renovate auto-update of this plan's assumptions:
+- Helm: baseline Helm v4.3.x (v4.3.0); chart `apiVersion: v2`; no chart dependencies (`dependencies: []`). Helm 4 is the same major as Flux helm-controller (baseline); `values.schema.json` draft support under Helm 4 is verified by 54-AC-23.
+- helm-unittest: baseline v1.2.x (v1.2.1), as a Helm 4 plugin (54-AC-23). kubeconform: baseline v0.8.x (v0.8.0), validating against Kubernetes JSON schemas for the baseline k3s minor.
+- k3d: baseline v5.9.x (v5.9.0); its k3s image is the baseline k3s/Kubernetes v1.36.x (v1.36.5+k3s1), equal to production (plan 07).
+- cosign (chart OCI signing and verification, plan 23 §14): baseline v3.1.x (v3.1.3); plan 23 owns the flag names.
 
 ## 10. Secrets
 
@@ -263,6 +265,8 @@ Before the first release (no previous version), T8 upgrades from the same chart 
 
 - [ ] **54-AC-20** T6–T10 pass with `ci/values-k3d-real.yaml` (real Runner, Gateway, egress-proxy, fake upstream images from trusted CI); T8 upgrades from the latest published chart version.
 - [ ] **54-AC-21** On the live cluster: `kubectl -n strange-company get helmrelease strange-company -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'` = `True`, every image in `kubectl get pods -n strange-company -n hermes -o jsonpath='{..image}'` is digest-pinned and equals the base values, and `cosign verify` of the published chart artifact for the deployed version succeeds (plan 23 key).
+- [ ] **54-AC-22** Unit test: Service `egress-proxy` exposes exactly the ports `agent` 3128, `ci` 3129, `build` 3130, `dr` 3131, `renovate` 3132 and `metrics` 9090, matching plan 36's `listeners` block (routed from G2, SEC-B13).
+- [ ] **54-AC-23** (verify, baseline Helm v4.3.0 / helm-unittest v1.2.1 / kubeconform v0.8.0) T1 runs on the pinned toolchain: `helm lint --strict` rejects a values file violating a draft 2020-12 keyword in `values.schema.json` (else the draft-07 fallback of §25 Q1 is taken), helm-unittest loads as a Helm 4 plugin, and kubeconform validates against v1.36 schemas.
 
 ## 24. Explicit non-goals
 
@@ -274,7 +278,7 @@ Before the first release (no previous version), T8 upgrades from the same chart 
 
 ## 25. Open questions
 
-1. **Values schema draft** (blocking: no). Helm's bundled validator support for draft 2020-12 is version-sensitive; verified at F13 (T2); fallback draft-07 with the same constraints.
+1. **Values schema draft** (blocking: no). Helm's bundled validator support for draft 2020-12 is version-sensitive; verified against baseline Helm v4.3.0 by 54-AC-23 at F13 (T2); fallback draft-07 with the same constraints.
 2. **helm-controller drift-ignore syntax** (blocking: no). Verified at C08 (24-AC-10 would loop otherwise); fallback: disable drift detection for the Hermes Deployment only.
 3. **JWKS ConfigMap name** — resolved by CD-08: `sc-runner-jwks`.
 4. **SPEC §115 scope interpretation** (blocking: no). Recorded in §2 and ADR-0404 for `spec-issues.md` consolidation.

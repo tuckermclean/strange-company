@@ -102,6 +102,12 @@ properties:
             type: integer
             minimum: 1
             maximum: 64
+          maxCountTokensPerMinute:
+            description: Per-token rate limit on the non-billable `count_tokens` route (plan 53 §7.1, review BUD-B1). Default 60.
+            type: integer
+            minimum: 1
+            maximum: 600
+            default: 60
       perTask:
         type: object
         additionalProperties: false
@@ -209,6 +215,14 @@ properties:
             $ref: "#/$defs/Money"
           absoluteWindowCapUsd:
             $ref: "#/$defs/Money"
+          autoStop:
+            description: |
+              When true (default), the Gateway leader engages an emergency stop at level `workers`
+              (DB source, actor `budget:anomaly`) when trailing `windowMinutes` spend (settled +
+              open reservations) exceeds `absoluteWindowCapUsd`, evaluated from `sc-pg` every 30 s,
+              independent of Prometheus (plan 33 §14.8, review BUD-B8). Release is human-only.
+            type: boolean
+            default: true
       repositories:
         description: |
           Optional per-repository task-budget overrides (plan 33 §9.1a), keyed by managed
@@ -261,6 +275,7 @@ $defs:
     type: string
     pattern: "^(0|[1-9][0-9]{0,5})(\\.[0-9]{1,6})?$"
 examples:
+  # Example 1 mirrors the shipped `policy/budgets.yaml` of plan 33 §9.1 (normative there).
   - apiVersion: strange.company/v1alpha1
     kind: BudgetPolicy
     metadata:
@@ -269,48 +284,51 @@ examples:
       currency: USD
       calendarTimezone: UTC
       perRequest:
-        maxCostUsd: "5.00"
-        maxOutputTokens: 64000
-        maxRequestBodyBytes: 33554432
+        maxCostUsd: "3.00"
+        maxOutputTokens: 32000
+        maxRequestBodyBytes: 8388608
       perExecution:
         maxCostUsd: "8.00"
-        maxTotalTokens: 20000000
-        maxRequests: 1500
+        maxTotalTokens: 10000000
+        maxRequests: 1000
         maxWallTimeSeconds: 3600
-        maxConcurrentRequests: 8
+        maxConcurrentRequests: 4
+        maxCountTokensPerMinute: 60
       perTask:
-        maxCostUsd: "25.00"
+        maxCostUsd: "20.00"
         maxAttempts: 15
       providers:
-        anthropic: {dailyUsd: "40.00", monthlyUsd: "400.00"}
-        deepseek: {dailyUsd: "10.00", monthlyUsd: "100.00"}
-        fake: {dailyUsd: "100.00", monthlyUsd: "1000.00"}
+        anthropic: {dailyUsd: "30.00", monthlyUsd: "250.00"}
+        deepseek: {dailyUsd: "10.00", monthlyUsd: "80.00"}
+        fake: {dailyUsd: "1000.00", monthlyUsd: "10000.00"}
       global:
-        hourlyUsd: "15.00"
-        dailyUsd: "50.00"
-        monthlyUsd: "500.00"
+        hourlyUsd: "20.00"
+        dailyUsd: "60.00"
+        monthlyUsd: "300.00"
       orchestration:
-        dailyUsd: "5.00"
-        monthlyUsd: "60.00"
+        dailyUsd: "10.00"
+        monthlyUsd: "120.00"
       thresholds:
         warnPercents: [50, 80]
       dispatch:
         minimumHeadroomUsd:
-          clerical: "0.10"
+          clerical: "0.50"
           bargain: "0.50"
-          standard: "2.00"
-          frontier: "5.00"
+          standard: "1.50"
+          frontier: "3.00"
       anomaly:
         windowMinutes: 15
         baselineDays: 7
         baselineQuantile: 0.95
         multiplier: 4
         minimumSpendUsd: "0.50"
-        absoluteWindowCapUsd: "10.00"
+        absoluteWindowCapUsd: "8.00"
+        autoStop: true
       repositories:
-        sc-e2e/fake-target: {perTask: {maxCostUsd: "2.00"}}
+        sc-e2e/fake-target: {perTask: {maxCostUsd: "5.00"}}
       emergencyStop:
         level: none
+  # Example 2: a small DeepSeek-only installation during a slow-path stop (illustrative).
   - apiVersion: strange.company/v1alpha1
     kind: BudgetPolicy
     metadata:

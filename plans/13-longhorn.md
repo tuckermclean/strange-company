@@ -189,7 +189,7 @@ spec:
 
 | Item | Decision |
 |---|---|
-| Chart | `longhorn` from `https://charts.longhorn.io` as `HelmRelease longhorn` in `longhorn-system`, release name `longhorn`. **Selection rule:** latest Longhorn minor that (a) supports the pinned k3s Kubernetes minor per Longhorn's support matrix, (b) is at patch ≥ `.2`, and (c) has a supported upgrade path from the installed minor (one minor at a time). |
+| Chart | `longhorn` from `https://charts.longhorn.io` as `HelmRelease longhorn` in `longhorn-system`, release name `longhorn`. **Baseline:** Longhorn v1.11.x, chart `longhorn` 1.11.x (`plans/compatibility-baseline.yaml`, CD-29; 1.11 requires Kubernetes ≥ 1.34, and the k3s baseline is 1.36). Moving to a newer minor (one minor at a time, patch ≥ `.2`) is a plan-amendment task. Every "(verify)" in this plan is checked against 1.11.x by 13-AC-14, 13-AC-25 and the lab suite. |
 | Images | digest-pinned through chart values `image.longhorn.*.tag` + digest overrides (F11 `images-pinned`, plan 18) |
 | Remediation | `upgrade.remediation.retries: 0`, `remediateLastFailure: false`; `install.remediation.retries: 3`. This deviates from plan 18's `controller` class (§25 Q-13-1). |
 | Namespace | `longhorn-system`, PSA `privileged` (master plan §5), tier `platform-critical` |

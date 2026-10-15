@@ -53,6 +53,8 @@
 
 ### A. Engage the stop (pick the first path that works)
 
+**A0. Provider console (first, when the Gateway itself is suspected, the cluster API is unreachable, or spend is still rising after one path below; review BUD-B9).** In each enabled provider's console, pause or revoke the API key the Gateway uses (Anthropic: Console → API keys → disable; OpenAI: API keys → revoke; DeepSeek / Z.ai: API keys → delete). This works in every cluster failure combination: all model spend through that key stops at the provider, Hermes included, and the Gateway reports `SCModelCredentialRejected` afterwards. It is not reversible for revoked keys: recovery is `procedures/rotate-model-credentials.md` §A with a new key. Keep console access with MFA ready (preflight check, plan 50). Record the time from alert to stop.
+
 **A1. Path 1 — Runner admin API (preferred).**
 
 ```sh
@@ -101,7 +103,9 @@ kubectl -n strange-company annotate configmap sc-emergency-stop --overwrite \
 
 1. `flux suspend helmrelease -n strange-company strange-company`. This stops Flux from restoring the replicas. Record that you did it.
 2. `kubectl -n strange-company scale deploy/model-gateway --replicas=0`. All model traffic now fails closed, Hermes included.
-3. If provider consoles still show traffic after 5 min, the traffic does not come through the Gateway, so a provider key is in use elsewhere. Revoke the key in the provider console and follow `procedures/rotate-model-credentials.md` §C.
+3. If provider consoles still show traffic, do **A0 immediately** (do not wait): the traffic either does not come through the Gateway (a key is in use elsewhere: then also `procedures/rotate-model-credentials.md` §C) or the Gateway is not enforcing.
+
+**A5. Node-level kill when the Kubernetes API is down (review BUD-B9).** If `kubectl` cannot reach the API (tunnel and `sc-env` fail) and A0 is not possible: SSH to every node with the operator key (`SC-SSH-OPERATOR`) and block the Gateway pods' egress to provider APIs at the host: `sudo iptables -I FORWARD -p tcp --dport 443 -m comment --comment sc-estop -j REJECT` (blocks all pod HTTPS egress, including other platform components; accept that for the incident). Expected: provider consoles show no new traffic within 1 min. Reverse with `sudo iptables -D FORWARD -p tcp --dport 443 -m comment --comment sc-estop -j REJECT` on every node once A1/A3 are possible. Note that with the API down the Gateway already raised its level to `workers` after 60 s (degraded source), so this mainly stops Hermes.
 
 ### B. Verify the stop is effective
 

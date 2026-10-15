@@ -226,10 +226,12 @@ argv per §8.2. Env: `SC_FAKE_GATEWAY_URL`, `SC_FAKE_GATEWAY_TOKEN`. Classificat
 
 ### 9.3 Version selection rules
 
-- **Claude Code:** latest stable release published ≥ 14 days before R01 implementation; pinned exactly (`cliVersion`), installed with integrity verification (npm lockfile integrity or release sha256; verify which distribution upstream recommends for headless containers at R01). Upgrades via Renovate PR (plan 23) that must pass `SelfTest` and the injection test (28-AC-23).
-- **Codex / OpenCode:** same rule when they are enabled post-MVP.
-- **Node.js** (if required by the Claude Code distribution): the active LTS line, digest-pinned base layer.
-- **Go toolchain in images:** exactly the `toolchain` of `strange-company`'s `go.mod` (plan 01), so local validation matches trusted CI.
+Versions are the baseline entries (plans/compatibility-baseline.yaml, ADR-0022), pinned exactly; a newer minor or major than the baseline line is a plan-amendment task (re-run of the version-sensitive ACs below), never a silent Renovate bump:
+- **Claude Code:** baseline 2.1.x (2.1.292, npm dist-tag `stable`; `latest` was 2.1.300 on 2026-10-14); pinned exactly (`cliVersion`), installed with integrity verification (npm lockfile integrity or release sha256; the headless-container distribution, npm with Node.js vs native binary, is a version-sensitive assumption, 28-AC-28). Patch upgrades within 2.1.x come via Renovate PR (plan 23) that must pass `SelfTest` and the injection test (28-AC-23). L-2's evidence (2.1.246) is the same minor, but its facts are re-verified on the baseline version (28-AC-28).
+- **Codex:** baseline 0.162.x (0.162.1). L-2's evidence is 0.149.1, thirteen 0.x minors earlier; every L-2 Codex fact is re-verified when Codex is enabled post-MVP (28-AC-29).
+- **OpenCode:** baseline 1.19.x (1.19.0, npm `opencode-ai`); the upstream repository moved from `sst/opencode` to `anomalyco/opencode`; OpenCode 2 exists on GitHub but is not npm `latest` and is out of scope (a move is a plan amendment). Re-verified when enabled post-MVP (28-AC-29).
+- **Node.js** (if required by the Claude Code distribution): baseline 24.x LTS (v24.22.0), digest-pinned base layer. Node 26 entering LTS (late October 2026) does not move the pin; the move is a plan amendment.
+- **Go toolchain in images:** baseline go1.27.x (go1.27.2), exactly the `toolchain` of `strange-company`'s `go.mod` (plan 01), so local validation matches trusted CI.
 
 ## 10. Secrets
 
@@ -428,6 +430,8 @@ Nothing to recover: images are rebuilt from Git by trusted CI; the registry is i
 - [ ] **28-AC-25** Memory: the peak container working set of the smoke-test executions (Prometheus `container_memory_working_set_bytes` max over the execution) is ≤ 80 % of the profile limit in the active set; the value is recorded in the R01 evidence for plan 51.
 - [ ] **28-AC-27** API-key mode: `yq` on the golden and the live Job for a `claude` execution finds no env var named `CLAUDE_CODE_OAUTH_TOKEN` and no volume/mount under `/home/worker/.claude` or `/home/worker/.codex`; the archived `system/init` event reports API-key authentication (field name verify).
 - [ ] **28-AC-26** The PR enabling `claude` (`enabled: true`) is merged with the smoke evidence linked, and `agent_start` with `harness: claude` for role `tester` on `strange-company/strange-company` no longer returns `HARNESS_NOT_ALLOWED`.
+- [ ] **28-AC-28** (verify, baseline Claude Code 2.1.292) `SelfTest` on the pinned version confirms every Claude Code version-sensitive assumption of the baseline entry: `--bare`, `--permission-mode dontAsk`, `--no-session-persistence` and path-scoped Write syntax are accepted; the stream-json `result` event carries `is_error`, `subtype`, `usage`, `total_cost_usd`, `permission_denials`; the CLI terminates with stdin from `/dev/null`; the telemetry-off variables of 40-AC-10 and the small/background model variable (31-AC-12) are honoured; the chosen distribution (npm + Node.js 24.x or native binary) runs headless in the `harness` image. The evidence names the exact version.
+- [ ] **28-AC-29** (verify, baseline Codex 0.162.1 / OpenCode 1.19.0; post-MVP, run in the enabling PR) the enabling PR's `SelfTest` re-verifies every L-2/L-3 fact listed under the harness's baseline entry (Codex: `exec --json` terminal `turn.completed`, `--skip-git-repo-check`, stdin behaviour, `--sandbox workspace-write`, `model_providers` keys, forced API-key login; OpenCode: `opencode.json` schema, project-config disable switch, `run --format json` usage events) on the pinned version; the harness stays `enabled: false` until it passes.
 
 ## 24. Explicit non-goals
 

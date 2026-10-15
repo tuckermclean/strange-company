@@ -79,7 +79,7 @@ Derived requirements:
 
 **Assumed interfaces (other plans must honor):**
 - **Plan 16:** forge-init step S17 calls this plan's steps M0–M5 (§14.2). `forge/forge.yaml` carries a `pushMirrors` list whose element shape is §7.2. `forge apply` creates or recreates the mirror from it using `SC-GITHUB-MIRROR`, which it reads from the operator's `bootstrap.env` or unlocked bundle (never from the cluster). The platform-probes Forgejo token (`sc-admin`, scopes `read:admin,read:repository,read:user`) can list push mirrors.
-- **Plan 16:** the Forgejo version selected is ≥ the first release carrying push-mirror `branch_filter` (merged upstream July 2025, Forgejo PR #7823). The LTS in plan 16 §9.1 satisfies this. 17-AC-1 re-verifies.
+- **Plan 16:** the Forgejo version selected is ≥ the first release carrying push-mirror `branch_filter` (merged upstream July 2025, Forgejo PR #7823). The baseline Forgejo v15.0.x LTS (`plans/compatibility-baseline.yaml`; plan 16 §9.1) satisfies this. 17-AC-1 re-verifies.
 - **Plan 16:** Forgejo protected-tag rule `*` (whitelist: `sc-admin`, team `Owners`) in `forge.yaml` (§13.3 here explains why). Plan 16 adds the field.
 - **Plan 50:** CLI forms in §7.3, new `bootstrap.env` keys `GITHUB_PROBE_TOKEN` and `GITHUB_MIRROR_PROTECTION_TIER`, PF-16 implemented as §14.1.3, and V-08 implemented as `mirror-verify` (§14.3). V-08 uses a probe **tag**, not an `sc-verify/<run-id>` branch, because branches outside the filter are never mirrored (17-R-1).
 - **Plan 19:** check C8 = `sc-bootstrap mirror verify` (§14.3). The "probe commit" in plan 19's C8 wording is a probe tag (no commit lands on `main`).

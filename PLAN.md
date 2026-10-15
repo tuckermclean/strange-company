@@ -70,24 +70,24 @@ Version-sensitive facts (chart values, API endpoints, CLI flags) are pinned and 
 
 - **Depends on:** F02, F04
 - **Owning plans:** `plans/22-verification-policy.md`
-- **Gate `GATE-F06`:** 15 acceptance criteria
-  - `plans/22-verification-policy.md`: 22-AC-3, 22-AC-4, 22-AC-5, 22-AC-6, 22-AC-7, 22-AC-8, 22-AC-9, 22-AC-10, 22-AC-11, 22-AC-22, 22-AC-23, 22-AC-24, 22-AC-25, 22-AC-26, 22-AC-27
+- **Gate `GATE-F06`:** 20 acceptance criteria
+  - `plans/22-verification-policy.md`: 22-AC-3, 22-AC-4, 22-AC-5, 22-AC-6, 22-AC-7, 22-AC-8, 22-AC-9, 22-AC-10, 22-AC-11, 22-AC-22, 22-AC-23, 22-AC-24, 22-AC-25, 22-AC-26, 22-AC-27, 22-AC-29, 22-AC-30, 22-AC-31, 22-AC-32, 22-AC-33
 
 ### F07 — worker-sdk-and-fake-harness
 
 - **Depends on:** F02
 - **Owning plans:** `plans/27-worker-contract.md`, `plans/28-harnesses.md`
-- **Gate `GATE-F07`:** 24 acceptance criteria
-  - `plans/27-worker-contract.md`: 27-AC-1, 27-AC-2, 27-AC-3, 27-AC-4, 27-AC-5, 27-AC-6, 27-AC-7, 27-AC-8, 27-AC-9, 27-AC-10, 27-AC-11, 27-AC-12, 27-AC-13, 27-AC-14, 27-AC-15, 27-AC-16, 27-AC-17
+- **Gate `GATE-F07`:** 25 acceptance criteria
+  - `plans/27-worker-contract.md`: 27-AC-1, 27-AC-2, 27-AC-3, 27-AC-4, 27-AC-5, 27-AC-6, 27-AC-7, 27-AC-8, 27-AC-9, 27-AC-10, 27-AC-11, 27-AC-12, 27-AC-13, 27-AC-14, 27-AC-15, 27-AC-16, 27-AC-17, 27-AC-24
   - `plans/28-harnesses.md`: 28-AC-1, 28-AC-2, 28-AC-3, 28-AC-4, 28-AC-5, 28-AC-6, 28-AC-7
 
 ### F08 — bootstrap-orchestrator-core
 
 - **Depends on:** F02, F03
 - **Owning plans:** `plans/06-opentofu-state.md`, `plans/50-bootstrap-orchestrator.md`
-- **Gate `GATE-F08`:** 33 acceptance criteria
+- **Gate `GATE-F08`:** 36 acceptance criteria
   - `plans/06-opentofu-state.md`: 06-AC-1, 06-AC-2, 06-AC-3, 06-AC-4, 06-AC-5, 06-AC-6, 06-AC-8, 06-AC-9, 06-AC-13, 06-AC-14
-  - `plans/50-bootstrap-orchestrator.md`: 50-AC-1, 50-AC-2, 50-AC-3, 50-AC-4, 50-AC-5, 50-AC-6, 50-AC-7, 50-AC-8, 50-AC-9, 50-AC-10, 50-AC-11, 50-AC-12, 50-AC-13, 50-AC-14, 50-AC-15, 50-AC-16, 50-AC-17, 50-AC-18, 50-AC-19, 50-AC-29, 50-AC-30, 50-AC-31, 50-AC-32
+  - `plans/50-bootstrap-orchestrator.md`: 50-AC-1, 50-AC-2, 50-AC-3, 50-AC-4, 50-AC-5, 50-AC-6, 50-AC-7, 50-AC-8, 50-AC-9, 50-AC-10, 50-AC-11, 50-AC-12, 50-AC-13, 50-AC-14, 50-AC-15, 50-AC-16, 50-AC-17, 50-AC-18, 50-AC-19, 50-AC-29, 50-AC-30, 50-AC-31, 50-AC-32, 50-AC-34, 50-AC-35, 50-AC-36
 
 ### F09 — providers-and-paid-guardrails
 
@@ -156,9 +156,9 @@ Version-sensitive facts (chart values, API endpoints, CLI flags) are pinned and 
 
 - **Depends on:** P02, F10
 - **Owning plans:** `plans/05-existing-nodes.md`, `plans/07-k3s.md`, `plans/08-node-security.md`, `plans/09-networking.md`, `plans/36-network-policy.md`
-- **Gate `GATE-P03`:** 42 acceptance criteria
+- **Gate `GATE-P03`:** 44 acceptance criteria
   - `plans/05-existing-nodes.md`: 05-AC-22, 07-AC-2
-  - `plans/07-k3s.md`: 07-AC-7, 07-AC-8, 07-AC-9, 07-AC-10, 07-AC-11, 07-AC-12, 07-AC-13, 07-AC-14, 07-AC-15, 07-AC-16, 07-AC-17, 07-AC-18, 07-AC-24, 07-AC-25, 07-AC-26
+  - `plans/07-k3s.md`: 07-AC-7, 07-AC-8, 07-AC-9, 07-AC-10, 07-AC-11, 07-AC-12, 07-AC-13, 07-AC-14, 07-AC-15, 07-AC-16, 07-AC-17, 07-AC-18, 07-AC-24, 07-AC-25, 07-AC-26, 07-AC-27, 07-AC-28
   - `plans/08-node-security.md`: 08-AC-11, 08-AC-12, 08-AC-13, 08-AC-14, 08-AC-15, 08-AC-16, 08-AC-17, 08-AC-18, 08-AC-19, 08-AC-20, 08-AC-21, 08-AC-22, 08-AC-23, 08-AC-24, 09-AC-17, 15-AC-19, 20-AC-10
   - `plans/09-networking.md`: 09-AC-1, 09-AC-2, 09-AC-3, 09-AC-4, 09-AC-5, 09-AC-6, 09-AC-7
   - `plans/36-network-policy.md`: 36-AC-7
@@ -183,19 +183,19 @@ Version-sensitive facts (chart values, API endpoints, CLI flags) are pinned and 
 
 - **Depends on:** P04
 - **Owning plans:** `plans/16-forgejo.md`, `plans/17-github-mirror.md`
-- **Gate `GATE-P05`:** 19 acceptance criteria
-  - `plans/16-forgejo.md`: 16-AC-10, 16-AC-11, 16-AC-12, 16-AC-13, 16-AC-14, 16-AC-15, 16-AC-16, 16-AC-17, 16-AC-18, 16-AC-19, 16-AC-20, 16-AC-21, 16-AC-22, 16-AC-23, 16-AC-34, 16-AC-35, 16-AC-36, 16-AC-37
+- **Gate `GATE-P05`:** 23 acceptance criteria
+  - `plans/16-forgejo.md`: 16-AC-10, 16-AC-11, 16-AC-12, 16-AC-13, 16-AC-14, 16-AC-15, 16-AC-16, 16-AC-17, 16-AC-18, 16-AC-19, 16-AC-20, 16-AC-21, 16-AC-22, 16-AC-23, 16-AC-34, 16-AC-35, 16-AC-36, 16-AC-37, 16-AC-38, 16-AC-39, 16-AC-40, 16-AC-41
   - `plans/17-github-mirror.md`: 17-AC-1
 
 ### P06 — control-transfer-and-mirror
 
 - **Depends on:** P05
 - **Owning plans:** `plans/05-existing-nodes.md`, `plans/16-forgejo.md`, `plans/17-github-mirror.md`, `plans/18-flux.md`, `plans/19-seed-handoff.md`, `plans/45-recovery.md`
-- **Gate `GATE-P06`:** 36 acceptance criteria
+- **Gate `GATE-P06`:** 38 acceptance criteria
   - `plans/05-existing-nodes.md`: 05-AC-24, 19-AC-21
   - `plans/16-forgejo.md`: 16-AC-24, 16-AC-25, 17-AC-1
   - `plans/17-github-mirror.md`: 17-AC-2, 17-AC-3, 17-AC-4, 17-AC-4b, 17-AC-5, 17-AC-6, 17-AC-7, 17-AC-8, 17-AC-9, 17-AC-10, 17-AC-11
-  - `plans/18-flux.md`: 18-AC-9, 18-AC-10, 18-AC-11, 18-AC-12, 18-AC-13, 18-AC-14, 18-AC-15
+  - `plans/18-flux.md`: 18-AC-9, 18-AC-10, 18-AC-11, 18-AC-12, 18-AC-13, 18-AC-14, 18-AC-15, 18-AC-16, 19-AC-11
   - `plans/19-seed-handoff.md`: 18-AC-13, 19-AC-8, 19-AC-9, 19-AC-10, 19-AC-11, 19-AC-12, 19-AC-13, 19-AC-17, 19-AC-18, 19-AC-21
   - `plans/45-recovery.md`: 19-AC-14, 45-AC-3, 45-AC-11
 
@@ -211,21 +211,21 @@ Version-sensitive facts (chart values, API endpoints, CLI flags) are pinned and 
 
 - **Depends on:** P06
 - **Owning plans:** `plans/20-woodpecker.md`, `plans/52-ci-strategy.md`
-- **Gate `GATE-P08`:** 38 acceptance criteria
-  - `plans/20-woodpecker.md`: 20-AC-1, 20-AC-2, 20-AC-4, 20-AC-5, 20-AC-6, 20-AC-7, 20-AC-8, 20-AC-9, 20-AC-10, 20-AC-11, 20-AC-12, 20-AC-13, 20-AC-14, 20-AC-15, 20-AC-16, 20-AC-17, 20-AC-18, 20-AC-19, 20-AC-20, 20-AC-21, 20-AC-22, 20-AC-23, 20-AC-24, 20-AC-25, 20-AC-26, 20-AC-27, 20-AC-35, 20-AC-38, 20-AC-39
+- **Gate `GATE-P08`:** 40 acceptance criteria
+  - `plans/20-woodpecker.md`: 20-AC-1, 20-AC-2, 20-AC-4, 20-AC-5, 20-AC-6, 20-AC-7, 20-AC-8, 20-AC-9, 20-AC-10, 20-AC-11, 20-AC-12, 20-AC-13, 20-AC-14, 20-AC-15, 20-AC-16, 20-AC-17, 20-AC-18, 20-AC-19, 20-AC-20, 20-AC-21, 20-AC-22, 20-AC-23, 20-AC-24, 20-AC-25, 20-AC-26, 20-AC-27, 20-AC-35, 20-AC-38, 20-AC-39, 20-AC-40, 20-AC-41
   - `plans/52-ci-strategy.md`: 20-AC-20, 52-AC-11, 52-AC-12, 52-AC-13, 52-AC-14, 52-AC-15, 52-AC-16, 52-AC-17, 52-AC-18
 
 ### P09 — observability-and-notifications
 
 - **Depends on:** P06, P07, P08
 - **Owning plans:** `plans/13-longhorn.md`, `plans/15-authentik.md`, `plans/17-github-mirror.md`, `plans/38-prometheus.md`, `plans/39-grafana.md`, `plans/40-opentelemetry.md`, `plans/41-logging-tracing.md`, `plans/42-alerting-notifications.md`
-- **Gate `GATE-P09`:** 62 acceptance criteria
+- **Gate `GATE-P09`:** 63 acceptance criteria
   - `plans/13-longhorn.md`: 13-AC-23
   - `plans/15-authentik.md`: 15-AC-11, 15-AC-13, 15-AC-23, 15-AC-23b, 15-AC-25, 15-AC-26, 15-AC-26b, 39-AC-6
   - `plans/17-github-mirror.md`: 17-AC-12, 17-AC-13, 17-AC-14, 17-AC-15
   - `plans/38-prometheus.md`: 38-AC-1, 38-AC-2, 38-AC-3, 38-AC-4, 38-AC-5, 38-AC-6, 38-AC-7, 38-AC-8, 38-AC-9, 38-AC-10, 38-AC-11, 38-AC-12, 38-AC-13, 38-AC-19, 38-AC-21
   - `plans/39-grafana.md`: 15-AC-13, 39-AC-1, 39-AC-2, 39-AC-3, 39-AC-4, 39-AC-5, 39-AC-6, 39-AC-7, 39-AC-8, 39-AC-9, 39-AC-16
-  - `plans/40-opentelemetry.md`: 40-AC-1, 40-AC-2, 40-AC-3, 40-AC-4, 40-AC-5, 40-AC-6, 40-AC-7, 40-AC-9
+  - `plans/40-opentelemetry.md`: 40-AC-1, 40-AC-2, 40-AC-3, 40-AC-4, 40-AC-5, 40-AC-6, 40-AC-7, 40-AC-9, 40-AC-14
   - `plans/41-logging-tracing.md`: 41-AC-1, 41-AC-2
   - `plans/42-alerting-notifications.md`: 42-AC-1, 42-AC-2, 42-AC-3, 42-AC-4, 42-AC-5, 42-AC-6, 42-AC-7, 42-AC-8, 42-AC-9, 42-AC-10, 42-AC-11, 42-AC-22, 42-AC-23
 
@@ -233,13 +233,13 @@ Version-sensitive facts (chart values, API endpoints, CLI flags) are pinned and 
 
 - **Depends on:** P06, P09, P08
 - **Owning plans:** `plans/06-opentofu-state.md`, `plans/11-storage.md`, `plans/12-cnpg.md`, `plans/13-longhorn.md`, `plans/14-object-storage.md`, `plans/15-authentik.md`, `plans/16-forgejo.md`, `plans/17-github-mirror.md`, `plans/35-secrets.md`, `plans/42-alerting-notifications.md`, `plans/43-retention-gc.md`, `plans/44-backup.md`, `plans/45-recovery.md`, `plans/48-upgrade.md`
-- **Gate `GATE-P10`:** 99 acceptance criteria
+- **Gate `GATE-P10`:** 103 acceptance criteria
   - `plans/06-opentofu-state.md`: 06-AC-12
   - `plans/11-storage.md`: 11-AC-4, 11-AC-5, 11-AC-6
   - `plans/12-cnpg.md`: 12-AC-6, 12-AC-7, 12-AC-8, 12-AC-9, 12-AC-10, 12-AC-11, 12-AC-12, 12-AC-13, 12-AC-14, 12-AC-19, 44-AC-4
   - `plans/13-longhorn.md`: 13-AC-8, 13-AC-9, 13-AC-10, 13-AC-11, 13-AC-12, 13-AC-13, 13-AC-14, 13-AC-24, 13-AC-25, 44-AC-6
-  - `plans/14-object-storage.md`: 14-AC-11, 14-AC-12, 14-AC-13, 14-AC-14, 14-AC-15, 14-AC-16, 14-AC-17
-  - `plans/15-authentik.md`: 15-AC-27, 15-AC-28, 15-AC-32
+  - `plans/14-object-storage.md`: 14-AC-11, 14-AC-12, 14-AC-13, 14-AC-14, 14-AC-15, 14-AC-16, 14-AC-17, 14-AC-18, 14-AC-19
+  - `plans/15-authentik.md`: 15-AC-27, 15-AC-28, 15-AC-29, 15-AC-32, 15-AC-34
   - `plans/16-forgejo.md`: 16-AC-28, 16-AC-29, 16-AC-30
   - `plans/17-github-mirror.md`: 17-AC-16
   - `plans/35-secrets.md`: 35-AC-1, 35-AC-2, 35-AC-3, 35-AC-4, 35-AC-5, 35-AC-6, 35-AC-7, 35-AC-8, 35-AC-9, 35-AC-10, 35-AC-11, 35-AC-12, 35-AC-13, 35-AC-14, 35-AC-15, 35-AC-16, 35-AC-17, 35-AC-18
@@ -253,9 +253,9 @@ Version-sensitive facts (chart values, API endpoints, CLI flags) are pinned and 
 
 - **Depends on:** P08, P12
 - **Owning plans:** `plans/17-github-mirror.md`, `plans/23-supply-chain.md`, `plans/43-retention-gc.md`, `plans/48-upgrade.md`, `plans/52-ci-strategy.md`
-- **Gate `GATE-P11`:** 35 acceptance criteria
+- **Gate `GATE-P11`:** 39 acceptance criteria
   - `plans/17-github-mirror.md`: 16-AC-18, 17-AC-4, 17-AC-4b
-  - `plans/23-supply-chain.md`: 17-AC-4, 20-AC-12, 20-AC-38, 23-AC-1, 23-AC-2, 23-AC-3, 23-AC-4, 23-AC-5, 23-AC-6, 23-AC-7, 23-AC-8, 23-AC-9, 23-AC-10, 23-AC-11, 23-AC-12, 23-AC-13, 23-AC-14, 23-AC-15, 23-AC-16, 23-AC-17, 23-AC-18, 23-AC-19, 23-AC-20, 23-AC-21, 23-AC-22, 23-AC-23, 52-AC-20
+  - `plans/23-supply-chain.md`: 17-AC-4, 20-AC-12, 20-AC-38, 23-AC-1, 23-AC-2, 23-AC-3, 23-AC-4, 23-AC-5, 23-AC-6, 23-AC-7, 23-AC-8, 23-AC-9, 23-AC-10, 23-AC-11, 23-AC-12, 23-AC-13, 23-AC-14, 23-AC-15, 23-AC-16, 23-AC-17, 23-AC-18, 23-AC-19, 23-AC-20, 23-AC-21, 23-AC-22, 23-AC-23, 23-AC-25, 23-AC-26, 23-AC-27, 34-AC-10, 52-AC-20
   - `plans/43-retention-gc.md`: 43-AC-3
   - `plans/48-upgrade.md`: 48-AC-5, 48-AC-6
   - `plans/52-ci-strategy.md`: 52-AC-20, 52-AC-22
@@ -289,18 +289,18 @@ Version-sensitive facts (chart values, API endpoints, CLI flags) are pinned and 
 
 - **Depends on:** F04, F05, F13, P11
 - **Owning plans:** `plans/09-networking.md`, `plans/26-agent-runner.md`, `plans/29-task-state-machine.md`, `plans/54-strange-company-chart.md`
-- **Gate `GATE-C01`:** 27 acceptance criteria
+- **Gate `GATE-C01`:** 29 acceptance criteria
   - `plans/09-networking.md`: 09-AC-17
   - `plans/26-agent-runner.md`: 26-AC-10, 26-AC-11, 26-AC-12, 26-AC-13, 26-AC-14, 26-AC-15, 26-AC-16, 26-AC-17, 26-AC-18, 26-AC-19, 26-AC-20, 26-AC-33, 26-AC-34, 26-AC-36, 26-AC-44, 26-AC-50
   - `plans/29-task-state-machine.md`: 29-AC-20, 29-AC-21, 29-AC-22, 29-AC-23, 29-AC-24, 29-AC-25, 29-AC-26, 29-AC-27
-  - `plans/54-strange-company-chart.md`: 54-AC-20, 54-AC-21
+  - `plans/54-strange-company-chart.md`: 54-AC-20, 54-AC-21, 54-AC-22, 54-AC-23
 
 ### C02 — k8s-adapter
 
 - **Depends on:** C01, F07, F12, C03, C07
 - **Owning plans:** `plans/26-agent-runner.md`, `plans/27-worker-contract.md`, `plans/28-harnesses.md`, `plans/29-task-state-machine.md`, `plans/30-handoffs.md`, `plans/34-security.md`, `plans/36-network-policy.md`, `plans/37-admission-policy.md`, `plans/51-capacity-and-scheduling.md`
-- **Gate `GATE-C02`:** 51 acceptance criteria
-  - `plans/26-agent-runner.md`: 26-AC-21, 26-AC-22, 26-AC-23, 26-AC-24, 26-AC-25, 26-AC-26, 26-AC-27, 26-AC-28, 26-AC-29, 26-AC-35, 26-AC-38, 26-AC-39, 26-AC-45, 26-AC-46, 26-AC-49
+- **Gate `GATE-C02`:** 53 acceptance criteria
+  - `plans/26-agent-runner.md`: 26-AC-21, 26-AC-22, 26-AC-23, 26-AC-24, 26-AC-25, 26-AC-26, 26-AC-27, 26-AC-28, 26-AC-29, 26-AC-35, 26-AC-38, 26-AC-39, 26-AC-45, 26-AC-46, 26-AC-49, 26-AC-51, 26-AC-53
   - `plans/27-worker-contract.md`: 27-AC-20, 27-AC-21, 27-AC-22, 27-AC-23
   - `plans/28-harnesses.md`: 26-AC-26, 28-AC-10, 28-AC-11, 28-AC-12
   - `plans/29-task-state-machine.md`: 29-AC-28, 29-AC-29
@@ -314,8 +314,8 @@ Version-sensitive facts (chart values, API endpoints, CLI flags) are pinned and 
 
 - **Depends on:** C01, P05
 - **Owning plans:** `plans/26-agent-runner.md`, `plans/29-task-state-machine.md`, `plans/55-forge-workflow.md`
-- **Gate `GATE-C03`:** 16 acceptance criteria
-  - `plans/26-agent-runner.md`: 26-AC-11, 26-AC-12, 26-AC-33, 26-AC-34, 26-AC-40, 26-AC-41, 26-AC-42, 26-AC-43, 26-AC-44, 26-AC-48
+- **Gate `GATE-C03`:** 18 acceptance criteria
+  - `plans/26-agent-runner.md`: 26-AC-11, 26-AC-12, 26-AC-33, 26-AC-34, 26-AC-40, 26-AC-41, 26-AC-42, 26-AC-43, 26-AC-44, 26-AC-48, 26-AC-52, 26-AC-54
   - `plans/29-task-state-machine.md`: 29-AC-30, 29-AC-31
   - `plans/55-forge-workflow.md`: 55-AC-1, 55-AC-2, 55-AC-3, 55-AC-5
 
@@ -332,17 +332,17 @@ Version-sensitive facts (chart values, API endpoints, CLI flags) are pinned and 
 
 - **Depends on:** C01
 - **Owning plans:** `plans/31-model-routing.md`, `plans/32-cost-accounting.md`, `plans/53-model-gateway.md`
-- **Gate `GATE-C05`:** 51 acceptance criteria
+- **Gate `GATE-C05`:** 57 acceptance criteria
   - `plans/31-model-routing.md`: 31-AC-1, 31-AC-2, 31-AC-3, 31-AC-9, 31-AC-10
-  - `plans/32-cost-accounting.md`: 32-AC-1, 32-AC-2, 32-AC-3, 32-AC-4, 32-AC-5, 32-AC-6, 32-AC-7, 32-AC-8, 32-AC-9, 32-AC-10, 32-AC-11, 32-AC-12, 32-AC-13, 32-AC-14
-  - `plans/53-model-gateway.md`: 53-AC-1, 53-AC-2, 53-AC-3, 53-AC-4, 53-AC-5, 53-AC-6, 53-AC-7, 53-AC-8, 53-AC-9, 53-AC-10, 53-AC-11, 53-AC-12, 53-AC-13, 53-AC-14, 53-AC-15, 53-AC-16, 53-AC-17, 53-AC-18, 53-AC-19, 53-AC-20, 53-AC-21, 53-AC-22, 53-AC-25, 53-AC-26, 53-AC-27, 53-AC-28, 53-AC-30, 53-AC-31, 53-AC-32, 53-AC-34, 53-AC-35, 53-AC-37
+  - `plans/32-cost-accounting.md`: 32-AC-1, 32-AC-2, 32-AC-3, 32-AC-4, 32-AC-5, 32-AC-6, 32-AC-7, 32-AC-8, 32-AC-9, 32-AC-10, 32-AC-11, 32-AC-12, 32-AC-13, 32-AC-14, 32-AC-15
+  - `plans/53-model-gateway.md`: 53-AC-1, 53-AC-2, 53-AC-3, 53-AC-4, 53-AC-5, 53-AC-6, 53-AC-7, 53-AC-8, 53-AC-9, 53-AC-10, 53-AC-11, 53-AC-12, 53-AC-13, 53-AC-14, 53-AC-15, 53-AC-16, 53-AC-17, 53-AC-18, 53-AC-19, 53-AC-20, 53-AC-21, 53-AC-22, 53-AC-25, 53-AC-26, 53-AC-27, 53-AC-28, 53-AC-30, 53-AC-31, 53-AC-32, 53-AC-34, 53-AC-35, 53-AC-37, 53-AC-38, 53-AC-39, 53-AC-40, 53-AC-41, 53-AC-42
 
 ### C06 — budgets-emergency-stop-notifications
 
 - **Depends on:** C05, P09, C02, C04, C08
 - **Owning plans:** `plans/33-budget-enforcement.md`, `plans/42-alerting-notifications.md`
-- **Gate `GATE-C06`:** 23 acceptance criteria
-  - `plans/33-budget-enforcement.md`: 33-AC-1, 33-AC-2, 33-AC-3, 33-AC-4, 33-AC-6, 33-AC-10, 33-AC-12, 33-AC-13, 33-AC-14, 33-AC-15, 33-AC-17, 33-AC-18, 33-AC-19, 33-AC-20, 33-AC-21, 33-AC-22, 33-AC-23, 33-AC-24, 33-AC-25, 53-AC-36
+- **Gate `GATE-C06`:** 27 acceptance criteria
+  - `plans/33-budget-enforcement.md`: 32-AC-15, 33-AC-1, 33-AC-2, 33-AC-3, 33-AC-4, 33-AC-6, 33-AC-10, 33-AC-12, 33-AC-13, 33-AC-14, 33-AC-15, 33-AC-17, 33-AC-18, 33-AC-19, 33-AC-20, 33-AC-21, 33-AC-22, 33-AC-23, 33-AC-24, 33-AC-25, 33-AC-28, 33-AC-29, 33-AC-30, 53-AC-36
   - `plans/42-alerting-notifications.md`: 42-AC-14, 42-AC-15, 42-AC-16
 
 ### C07 — context-compiler
@@ -356,10 +356,10 @@ Version-sensitive facts (chart values, API endpoints, CLI flags) are pinned and 
 
 - **Depends on:** C01, C05, P07
 - **Owning plans:** `plans/13-longhorn.md`, `plans/15-authentik.md`, `plans/24-hermes.md`, `plans/26-agent-runner.md`, `plans/44-backup.md`
-- **Gate `GATE-C08`:** 27 acceptance criteria
+- **Gate `GATE-C08`:** 30 acceptance criteria
   - `plans/13-longhorn.md`: 13-AC-9, 13-AC-24
   - `plans/15-authentik.md`: 15-AC-14
-  - `plans/24-hermes.md`: 24-AC-1, 24-AC-2, 24-AC-3, 24-AC-4, 24-AC-5, 24-AC-6, 24-AC-7, 24-AC-8, 24-AC-9, 24-AC-10, 24-AC-11, 24-AC-12, 24-AC-13, 24-AC-14, 24-AC-15, 24-AC-16, 24-AC-17, 46-AC-6, 46-AC-17
+  - `plans/24-hermes.md`: 24-AC-1, 24-AC-2, 24-AC-3, 24-AC-4, 24-AC-5, 24-AC-6, 24-AC-7, 24-AC-8, 24-AC-9, 24-AC-10, 24-AC-11, 24-AC-12, 24-AC-13, 24-AC-14, 24-AC-15, 24-AC-16, 24-AC-17, 24-AC-18, 24-AC-19, 24-AC-20, 46-AC-6, 46-AC-17
   - `plans/26-agent-runner.md`: 26-AC-30, 26-AC-31, 26-AC-32, 26-AC-37
   - `plans/44-backup.md`: 44-AC-22
 
@@ -367,21 +367,21 @@ Version-sensitive facts (chart values, API endpoints, CLI flags) are pinned and 
 
 - **Depends on:** C03, C04, C02
 - **Owning plans:** `plans/22-verification-policy.md`, `plans/34-security.md`, `plans/55-forge-workflow.md`
-- **Gate `GATE-C09`:** 13 acceptance criteria
+- **Gate `GATE-C09`:** 17 acceptance criteria
   - `plans/22-verification-policy.md`: 22-AC-28
-  - `plans/34-security.md`: 34-AC-5
-  - `plans/55-forge-workflow.md`: 23-AC-21, 55-AC-10, 55-AC-11, 55-AC-15, 55-AC-16, 55-AC-19, 55-AC-20, 55-AC-21, 55-AC-22, 55-AC-24, 55-AC-30
+  - `plans/34-security.md`: 34-AC-5, 34-AC-10
+  - `plans/55-forge-workflow.md`: 23-AC-21, 55-AC-10, 55-AC-11, 55-AC-15, 55-AC-16, 55-AC-19, 55-AC-20, 55-AC-21, 55-AC-22, 55-AC-24, 55-AC-25, 55-AC-26, 55-AC-27, 55-AC-30
 
 ### C10 — fake-end-to-end-tdd-flows
 
 - **Depends on:** C02, C03, C04, C05, C06, C07, C08, C09
 - **Owning plans:** `plans/21-tdd-workflow.md`, `plans/22-verification-policy.md`, `plans/30-handoffs.md`, `plans/31-model-routing.md`, `plans/33-budget-enforcement.md`, `plans/37-admission-policy.md`, `plans/46-self-hosting-threshold.md`, `plans/48-upgrade.md`, `plans/55-forge-workflow.md`
-- **Gate `GATE-C10`:** 43 acceptance criteria
+- **Gate `GATE-C10`:** 44 acceptance criteria
   - `plans/21-tdd-workflow.md`: 21-AC-4, 21-AC-10, 21-AC-11, 21-AC-12, 21-AC-13, 21-AC-14
   - `plans/22-verification-policy.md`: 22-AC-20, 22-AC-21
   - `plans/30-handoffs.md`: 30-AC-5
   - `plans/31-model-routing.md`: 31-AC-4, 31-AC-5, 31-AC-6, 31-AC-7, 31-AC-8, 31-AC-11, 31-AC-14
-  - `plans/33-budget-enforcement.md`: 33-AC-5, 33-AC-7, 33-AC-8, 33-AC-9, 33-AC-11, 33-AC-16, 33-AC-26, 33-AC-27
+  - `plans/33-budget-enforcement.md`: 33-AC-5, 33-AC-7, 33-AC-8, 33-AC-9, 33-AC-11, 33-AC-16, 33-AC-26, 33-AC-27, 33-AC-31
   - `plans/37-admission-policy.md`: 37-AC-42
   - `plans/46-self-hosting-threshold.md`: 24-AC-8, 24-AC-12, 25-AC-10, 46-AC-1, 46-AC-2, 46-AC-3, 46-AC-4, 46-AC-5, 46-AC-6, 46-AC-7
   - `plans/48-upgrade.md`: 48-AC-7
@@ -407,17 +407,19 @@ Version-sensitive facts (chart values, API endpoints, CLI flags) are pinned and 
 
 - **Depends on:** C10
 - **Owning plans:** `plans/28-harnesses.md`, `plans/40-opentelemetry.md`
-- **Gate `GATE-R01`:** 9 acceptance criteria
-  - `plans/28-harnesses.md`: 28-AC-20, 28-AC-21, 28-AC-22, 28-AC-23, 28-AC-24, 28-AC-25, 28-AC-26, 28-AC-27
+- **Gate `GATE-R01`:** 13 acceptance criteria
+  - `plans/28-harnesses.md`: 28-AC-20, 28-AC-21, 28-AC-22, 28-AC-23, 28-AC-24, 28-AC-25, 28-AC-26, 28-AC-27, 28-AC-28, 28-AC-29, 31-AC-12, 40-AC-10
   - `plans/40-opentelemetry.md`: 40-AC-10
 
 ### R02 — self-hosting-threshold
 
 - **Depends on:** R01, C11, P12
-- **Owning plans:** `plans/37-admission-policy.md`, `plans/43-retention-gc.md`, `plans/46-self-hosting-threshold.md`, `plans/51-capacity-and-scheduling.md`
-- **Gate `GATE-R02`:** 17 acceptance criteria
+- **Owning plans:** `plans/37-admission-policy.md`, `plans/43-retention-gc.md`, `plans/44-backup.md`, `plans/45-recovery.md`, `plans/46-self-hosting-threshold.md`, `plans/51-capacity-and-scheduling.md`
+- **Gate `GATE-R02`:** 24 acceptance criteria
   - `plans/37-admission-policy.md`: 37-AC-40
   - `plans/43-retention-gc.md`: 11-AC-9, 43-AC-7, 43-AC-8, 43-AC-9
+  - `plans/44-backup.md`: 44-AC-25, 44-AC-26, 44-AC-27, 44-AC-28
+  - `plans/45-recovery.md`: 45-AC-21, 45-AC-22, 45-AC-23
   - `plans/46-self-hosting-threshold.md`: 24-AC-13, 46-AC-10, 46-AC-11, 46-AC-12, 46-AC-13, 46-AC-14, 46-AC-15, 46-AC-16, 46-AC-17, 46-AC-18, 46-AC-19
   - `plans/51-capacity-and-scheduling.md`: 51-AC-16
 
@@ -459,14 +461,14 @@ Version-sensitive facts (chart values, API endpoints, CLI flags) are pinned and 
 
 - **Depends on:** H02, H03, R02
 - **Owning plans:** `plans/19-seed-handoff.md`, `plans/23-supply-chain.md`, `plans/38-prometheus.md`, `plans/41-logging-tracing.md`, `plans/42-alerting-notifications.md`, `plans/44-backup.md`, `plans/45-recovery.md`, `plans/47-ha-expansion.md`, `plans/51-capacity-and-scheduling.md`
-- **Gate `GATE-H04`:** 24 acceptance criteria
+- **Gate `GATE-H04`:** 25 acceptance criteria
   - `plans/19-seed-handoff.md`: 19-AC-14
   - `plans/23-supply-chain.md`: 23-AC-24
   - `plans/38-prometheus.md`: 38-AC-20
   - `plans/41-logging-tracing.md`: 41-AC-11
   - `plans/42-alerting-notifications.md`: 42-AC-20
   - `plans/44-backup.md`: 44-AC-24
-  - `plans/45-recovery.md`: 07-AC-22, 15-AC-23, 38-AC-20, 41-AC-11, 42-AC-20, 45-AC-1, 45-AC-2, 45-AC-5, 45-AC-6, 45-AC-8, 45-AC-17, 45-AC-18, 45-AC-19, 45-AC-20
+  - `plans/45-recovery.md`: 07-AC-22, 15-AC-23, 38-AC-20, 41-AC-11, 42-AC-20, 45-AC-1, 45-AC-2, 45-AC-5, 45-AC-6, 45-AC-8, 45-AC-17, 45-AC-18, 45-AC-19, 45-AC-20, 45-AC-23
   - `plans/47-ha-expansion.md`: 47-AC-14, 47-AC-15, 47-AC-16
   - `plans/51-capacity-and-scheduling.md`: 51-AC-15
 

@@ -7,7 +7,7 @@ Deterministic CI (SPEC §104) must exercise OpenTofu locking, CNPG WAL archiving
 
 ## Decision
 - CI and lab tests use **SeaweedFS** (`weed server -s3 -s3.port=9000`, digest-pinned) as `s3-emulator:9000` on the k3d Docker network and as a service container for integration tests.
-- Selection rule: the latest SeaweedFS release that passes `make test-s3-emulator` (conditional create with 8 concurrent writers, versioning round-trip, COMPLIANCE lock blocking `DeleteObjectVersion`, lifecycle round-trip, multipart).
+- Version: baseline SeaweedFS 4.x (`plans/compatibility-baseline.yaml`, CD-29); each bump must pass `make test-s3-emulator` (conditional create with 8 concurrent writers, versioning round-trip, COMPLIANCE lock blocking `DeleteObjectVersion`, lifecycle round-trip, multipart).
 - Fallback: versitygw (POSIX backend) if a SeaweedFS release fails the suite; the suite decides, not this ADR.
 - Provider IAM behavior is not emulated; negative permission tests run only against real providers.
 

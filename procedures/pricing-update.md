@@ -15,7 +15,7 @@
   - `SCPricingMissingForRoutedModel` / `SCModelUnpricedDenied`: a routed model has no effective priced entry, so requests are denied `SC_PRICE_UNKNOWN`;
   - `SCGatewayPolicyInvalid` caused by `policy/pricing/*.yaml`.
 - `make check-pricing` warns that `source.retrievedAt` is older than 90 days, or fails at 120 days.
-- Monthly reconciliation (section E), on the 3rd UTC day of each month, after providers finalize the previous month.
+- Reconciliation (section E): `SCLedgerProviderDivergence` from the daily automated job (plan 32 §20), **weekly** for providers the job lists as `manual_weekly` (no usage API), and monthly against the invoice for every provider on the 3rd UTC day.
 
 ## Preconditions and required material
 

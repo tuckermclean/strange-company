@@ -132,6 +132,12 @@ properties:
   duration_seconds:
     type: number
     minimum: 0
+  decided_at:
+    description: >
+      Drills and real recoveries only: when the operator decided to rebuild (RTO clock start,
+      plan 45 §14.3). Same instant as `RecoveryRecord.spec.decidedAt`.
+    type: string
+    format: date-time
   outcome:
     description: >
       `passed`: every check passed. `failed`: the backup or the restored data did
@@ -265,6 +271,24 @@ properties:
         description: Time from a forced WAL switch to the segment being archived (RT-1). Not an RPO.
         type: number
         minimum: 0
+      rto_data_availability_seconds:
+        description: >
+          Seconds from `decided_at` until all four databases are Ready and important volumes are
+          restored (CD-32 data-availability RTO). Equals `RecoveryRecord.spec.rto.dataAvailabilitySeconds`.
+        type: number
+        minimum: 0
+      rto_sr1_seconds:
+        description: >
+          Seconds from `decided_at` until service restoration stage SR-1 (CD-32). Equals
+          `RecoveryRecord.spec.rto.serviceRestorationSeconds`.
+        type: number
+        minimum: 0
+      rto_sr2_seconds:
+        description: >
+          Seconds from `decided_at` until SR-2 (CD-32; mirror re-enabled and restore tests passed after
+          finalize). Not stored in RecoveryRecord (it completes after the finalize PR).
+        type: number
+        minimum: 0
       per_subject:
         description: >
           Per-subject measurements for documents that cover several subjects (recovery drills,
@@ -323,6 +347,15 @@ allOf:
             properties:
               outcome:
                 enum: [passed, skipped]
+  - if:
+      properties:
+        test_kind:
+          const: blackstart-drill
+    then:
+      required: [decided_at, measurements]
+      properties:
+        measurements:
+          required: [rto_data_availability_seconds, rto_sr1_seconds, rto_sr2_seconds, per_subject, step_durations]
   - if:
       properties:
         test_kind:
@@ -425,9 +458,10 @@ examples:
   - schema_version: v1alpha1
     result_id: 3c2b1a09-8f7e-4d6c-9b5a-4e3d2c1b0a9f
     test_id: rt-blackstart-drill
-    test_kind: recovery-drill
+    test_kind: blackstart-drill
     subject: cluster
     installation: {cluster: prod-drill, backup_generation: 2}
+    decided_at: "2026-11-02T07:50:00Z"
     runner: {kind: operator, host: drill-runner, tool_version: 0.4.0}
     started_at: "2026-11-02T08:00:00Z"
     finished_at: "2026-11-02T11:21:00Z"
@@ -438,6 +472,9 @@ examples:
       - {id: heartbeat-rpo, outcome: passed, expected: "<= 900 s", observed: "612 s max"}
     measurements:
       restore_duration_seconds: 12060
+      rto_data_availability_seconds: 11460
+      rto_sr1_seconds: 9720
+      rto_sr2_seconds: 13600
       per_subject:
         forgejo-pg: {rpo_observed_seconds: 512, restore_duration_seconds: 840}
         sc-pg: {rpo_observed_seconds: 612, restore_duration_seconds: 1310}
@@ -490,6 +527,25 @@ x-invalid-examples:
       checks:
         - {id: marker-a-present, outcome: passed}
       measurements: {restore_duration_seconds: 300}
+  - reason: An RD3 black-start drill document must carry decided_at and the three CD-32 RTO measurements (DR-B3).
+    value:
+      schema_version: v1alpha1
+      result_id: 0e9c2f4a-5b1d-4c7e-9a3b-2d6f8e1a7c47
+      test_id: rt-blackstart-drill
+      test_kind: blackstart-drill
+      subject: cluster
+      installation: {cluster: prod-drill}
+      runner: {kind: operator, tool_version: 0.4.0}
+      started_at: "2026-11-02T08:00:00Z"
+      finished_at: "2026-11-02T11:00:00Z"
+      outcome: passed
+      checks:
+        - {id: control-transfer-recovery, outcome: passed}
+      measurements:
+        restore_duration_seconds: 10800
+        per_subject:
+          sc-pg: {rpo_observed_seconds: 600}
+        step_durations: {seed: 2000}
   - reason: Per-subject measurements are closed objects; unknown measurement keys are rejected.
     value:
       schema_version: v1alpha1

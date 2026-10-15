@@ -37,7 +37,7 @@ Give Strange Company distributed execution telemetry [SPEC §90, §93] without t
 
 ## 4. Outputs
 
-- HelmRelease `otel-collector` (namespace `monitoring`, layer `monitoring`), Services `otel-collector:4317` (platform OTLP/gRPC) and `otel-collector-workers:4318` (worker OTLP/HTTP).
+- HelmRelease `otel-collector` (namespace `monitoring`, layer `monitoring`), Service `otel-collector:4317` (platform OTLP/gRPC), plus a second HelmRelease of the same chart, `otel-collector-workers` (Deployment, Service `otel-collector-workers:4318`, worker OTLP/HTTP): a **relay with no Kubernetes API access** (SEC-B5, below).
 - Span metrics on `otel-collector:8889/metrics`: `sc_span_calls_total`, `sc_span_duration_seconds_bucket|sum|count`, `sc_span_redactions_total` (scraped by plan 38, `job=otel-collector`); Collector self-metrics on `:8888`.
 - `gitops/platform/otel-collector/allowlist.yaml` (generated).
 - Requirements on emitters (§7): span names, attributes, parenting, identifiers on records.
@@ -130,7 +130,7 @@ SPEC §93's "Hermes SHOULD emit OTel" is met by the Runner and Gateway spans tha
 
 ## 8. Internal interfaces — Collector configuration (normative sketch)
 
-Distribution: **OpenTelemetry Collector contrib** (ADR-0552), image `otel/opentelemetry-collector-contrib` digest-pinned; Helm chart `open-telemetry/opentelemetry-collector` (`mode: deployment`). Selection rule: latest contrib release supported by the chart's latest minor at implementation time; components used must not be marked "development" stability (re-verified at each bump, 40-AC-9).
+Distribution: **OpenTelemetry Collector contrib** (ADR-0552), image `otel/opentelemetry-collector-contrib` digest-pinned; Helm chart `open-telemetry/opentelemetry-collector` (`mode: deployment`). **Baseline:** contrib v0.162.x with chart 0.176.0 (`plans/compatibility-baseline.yaml`, CD-29); a newer contrib minor is a plan amendment (contrib releases a minor about every two weeks, so Renovate bumps are reviewed as amendments). Components used must not be marked "development" stability (re-verified at each bump, 40-AC-9).
 
 ```yaml
 extensions:
@@ -145,7 +145,7 @@ processors:
     auth_type: serviceAccount
     passthrough: false
     filter: {namespace: agent-jobs}
-    pod_association: [{sources: [{from: connection}]}]
+    pod_association: [{sources: [{from: resource_attribute, name: k8s.pod.ip}]}]   # set by the relay from the connection (SEC-B5)
     extract:
       labels:
         - {tag_name: sc.execution_id.trusted, key: strange.company/execution-id, from: pod}
@@ -237,6 +237,7 @@ Notes (all version-sensitive items are re-verified by 40-AC-9 on the pinned cont
 - The Prometheus exporter produces `sc_span_calls_total{service_name, span_name, span_kind, status_code, sc_role, sc_harness, sc_phase, sc_gateway_outcome, sc_tool_status}` and `sc_span_duration_seconds_*` (verify exact suffixes), and `sc_span_redactions_total{service_name}`. Plan 38's label vocabulary admits exactly these labels for `sc_span_*` metrics.
 - Cardinality bound: 22 span names × 5 roles × ~4 harnesses × ≤ 9 phases × ≤ 8 outcomes is an upper bound far above reality, because each span name populates only its own attributes. Expected < 600 series; `dimensions_cache_size: 2000` caps it.
 - `k8sattributes` needs `get/list/watch` on `pods` (and `replicasets` is not needed) in `agent-jobs` only: a namespaced Role bound to the Collector's ServiceAccount.
+- **Worker relay (SEC-B5).** Workers never talk to the process that holds an API token. `otel-collector-workers` is a separate Deployment (1 replica, `automountServiceAccountToken: false`, ServiceAccount without any Role, read-only root filesystem, no k8sattributes). Its only pipeline is `otlp/workers` (HTTP :4319, 1 MiB per request) → `memory_limiter` → `transform/relay_peer` (sets resource attribute `k8s.pod.ip` from the request's peer address via `include_metadata: true` / `client.address`, **overwriting** any worker-supplied value, and deletes every other `k8s.*` resource attribute) → `batch` → `otlp/relay` exporter to `otel-collector:4320` (a third receiver `otlp/relay`, gRPC, reachable only from the relay pod). The main collector's worker pipeline receives from `otlp/relay` instead of `otlp/workers` and keeps `k8sattributes/workers` associating by `k8s.pod.ip`, so identity is still derived from the real source pod (40-R-4). A compromised relay can forge only `k8s.pod.ip` among worker pods, which bounds it to the agent-jobs pods the relay already sees traffic from; it holds no credential.
 
 ## 9. Configuration
 
@@ -299,9 +300,9 @@ PriorityClass `platform`. At small-ha two replicas each export their own span-me
 ## 13. Security boundary
 
 - Namespace `monitoring` (PSA baseline; the Collector pod is restricted-compatible: non-root 10001, read-only root FS, no capabilities).
-- RBAC: ServiceAccount `otel-collector` with a Role in `agent-jobs`: `get, list, watch` on `pods` (for `k8sattributes`); nothing else.
-- NetworkPolicy (plan 36): ingress 4317 from `strange-company` pods `app.kubernetes.io/name in (agent-runner, model-gateway)`; ingress 4319 from `agent-jobs` worker pods; ingress 8888/8889/13133 from Prometheus and kubelet; egress to the API server (k8sattributes), DNS, and at H03 Tempo. **No** internet egress.
-- The worker exception: `agent-jobs` → `otel-collector-workers:4318` is the only monitoring endpoint workers can reach. It accepts OTLP/HTTP only, bounded to 1 MiB per request and by `memory_limiter`. Spoofed identifiers are overwritten (40-R-4); spans from unknown pods are dropped.
+- RBAC: ServiceAccount `otel-collector` with a Role in `agent-jobs`: `get, list, watch` on `pods` (for `k8sattributes`); nothing else. ServiceAccount `otel-collector-workers`: no Role, no token mounted.
+- NetworkPolicy (plan 36): `otel-collector`: ingress 4317 from `strange-company` pods `app.kubernetes.io/name in (agent-runner, model-gateway)`, ingress 4320 only from `otel-collector-workers` pods; `otel-collector-workers`: ingress 4319 from `agent-jobs` worker pods, egress only to `otel-collector:4320` and DNS; ingress 8888/8889/13133 from Prometheus and kubelet; egress to the API server (k8sattributes), DNS, and at H03 Tempo. **No** internet egress.
+- The worker exception: `agent-jobs` → `otel-collector-workers:4318` (the token-less relay) is the only monitoring endpoint workers can reach. It accepts OTLP/HTTP only, bounded to 1 MiB per request and by `memory_limiter`. Spoofed identifiers are overwritten (40-R-4); spans from unknown pods are dropped.
 - Privacy layers: (1) emitters only set allowlisted keys (contract tests); (2) span-name and event-name filters; (3) `redaction` with `allow_all_keys: false`, the generated allowlist and the secret value patterns; (4) length caps and status-message coercion; (5) no content in metrics (dimensions are enums). Forbidden content (SPEC §94): prompts, completions, source code, environment variables, command lines and command output, headers, URLs with queries, SQL text, exception messages and stack traces, user e-mails and account IDs (schema `x-forbidden-attribute-patterns`).
 
 ## 14. Happy path
@@ -382,6 +383,7 @@ All deterministic, no paid model calls [SPEC §104].
 - **40-AC-4** `make e2e-otel` passes all five privacy-suite scenarios (§22).
 - **40-AC-5** `make render-otel-allowlist && git diff --exit-code` passes on the P09 merge commit; adding a key to the schema without regenerating fails CI (RED proof).
 - **40-AC-6** NetworkPolicy: from a pod in `apps`, `curl -m 5 http://otel-collector-workers.monitoring.svc:4318/v1/traces` times out; from a labeled worker test pod in `agent-jobs` the same call returns HTTP 200/400 (reachable); from a worker pod, `otel-collector.monitoring.svc:4317` times out.
+- **40-AC-14** Worker relay (SEC-B5, k3d): `kubectl -n monitoring get pod -l app.kubernetes.io/name=otel-collector-workers -o jsonpath='{.items[0].spec.automountServiceAccountToken}'` is `false` and the pod has no `/var/run/secrets/kubernetes.io/serviceaccount`; a worker test pod sending a span with a forged resource attribute `k8s.pod.ip` of another worker produces a stored span attributed to the **sending** pod's execution (privacy suite case); from a worker pod, `otel-collector.monitoring.svc:4320` times out.
 - **40-AC-7** `kubectl auth can-i --as=system:serviceaccount:monitoring:otel-collector list pods -n agent-jobs` = yes; `… list pods -n strange-company` = no; `… get secrets -n agent-jobs` = no.
 - **40-AC-9** Version re-verification (k3d, every contrib bump): `otelcol-contrib components` lists `redaction`, `transform`, `filter`, `k8sattributes`, `spanmetrics`, `count`, `prometheus` with stability ≥ beta (or alpha explicitly accepted in the PR), and the privacy suite passes.
 
@@ -414,6 +416,6 @@ All deterministic, no paid model calls [SPEC §104].
 | Q-40-1 | Plans 26 and 53 use span names (`task`, `execution`, `dispatch`, `ingest`, `verify`; `gateway.request`, `gateway.*`) and attributes (`gen_ai.system`, `sc.cost_micro_usd`, `sc.usage_status`, `sc.denial_code`) that differ from the contract. | no | The contract names win (§7.2); the schema now includes `sc.execution.dispatch|ingest`, `sc.gateway.reserve|upstream|settle`, `sc.cost.total_micro_usd`, `sc.gateway.denial_code`, `sc.token_kind`. Plans 26/53 rename at consolidation. | 26 / 53 / lead |
 | Q-40-2 | The gateway token needs a `trace_parent` claim for trusted parenting of model spans. | no | Plan 53 adds the optional claim to `gateway-token.schema.yaml`; without it the Gateway emits a root span with a link (plan 53's current behavior), and 40-AC-11's hierarchy check accepts a link instead of a parent. | 53 |
 | Q-40-3 | SPEC §93 says Hermes SHOULD emit OTel; upstream Hermes Agent support is unverified. | no | Interpretation: Hermes actions are represented by `sc.runner.mcp` and orchestrator `sc.model.invocation` spans. Re-evaluate at C08 if Hermes exposes OTel with content capture off. | 24 / 40 |
-| Q-40-4 | Workers reaching `otel-collector-workers` is an addition to SPEC §88's default worker egress list. | no | Recorded as explicit platform policy (§13); plan 36 adds the single allow rule; plan 34 security review confirms. The alternative (Runner relays worker spans) is kept as a fallback if review rejects it. | 36 / 34 |
+| Q-40-4 | Workers reaching `otel-collector-workers` is an addition to SPEC §88's default worker egress list. | no | Recorded as explicit platform policy (§13). Blind review SEC-B5: the endpoint is now a token-less relay Deployment (§8), so a worker reaches no process with API access. Plan 34 must list this egress in §5 and its zone table; plan 36 adds the relay rows; plan 37 E48 adds the Prometheus, KSM, OTel collector and Grafana sidecar ServiceAccounts to its "cannot read `ci-build` pod specs" list. | 34 / 36 / 37 |
 | Q-40-5 | Worker pod labels `strange.company/execution-id` and `strange.company/task-id` must exist on worker pods. | no | Plan 26 Job builder sets both (ADR-0014 already requires the execution label for Secret binding). | 26 |
 | Q-40-6 | Debug-capture storage. | — | **Resolved by plan 14 B9:** prefix `telemetry-debug/` in the `evidence` bucket; instance `telemetry-debug` (Gateway writes, Runner sweeper deletes where the provider supports prefix scoping; otherwise the lifecycle rule alone enforces retention). | — |

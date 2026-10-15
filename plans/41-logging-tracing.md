@@ -100,7 +100,7 @@ Loki OTLP ingestion is configured so that only the label set above becomes index
 
 ### 8.1 Log agent `otel-agent` (H03; ADR-0552)
 
-DaemonSet in `monitoring-node` (PSA privileged, ADR-0550), image: the same digest-pinned contrib image as plan 40, chart `open-telemetry/opentelemetry-collector` with `mode: daemonset`.
+DaemonSet in `monitoring-node` (PSA privileged, ADR-0550), image: the same digest-pinned contrib image as plan 40 (baseline v0.162.x), chart `open-telemetry/opentelemetry-collector` 0.176.0 with `mode: daemonset`.
 
 ```yaml
 extensions:
@@ -169,7 +169,7 @@ Kubernetes events (`job=k8s-events`): the gateway Collector (plan 40) gains, in 
 
 | Item | Decision |
 |---|---|
-| Chart / mode | Grafana's `loki` Helm chart, **SingleBinary** mode (`deploymentMode: SingleBinary`, verify key), `replicas: 1`. Selection rule: latest Loki 3.x minor supported by the chart at H03 time; requires native OTLP ingestion. |
+| Chart / mode | The OSS `loki` chart from the **`grafana-community`** repository (`https://grafana-community.github.io/helm-charts`; the chart left in `grafana/loki` is maintenance-only for Grafana Enterprise Logs), **SingleBinary** mode (`deploymentMode: SingleBinary`, verify key on chart 18.15.x), `replicas: 1`. **Baseline:** chart 18.15.1, Loki v3.7.x (`plans/compatibility-baseline.yaml`, CD-29); native OTLP ingestion at `/otlp`. A newer Loki minor is a plan amendment. |
 | Schema / index | `schema_config` v13, `store: tsdb`, `object_store: s3`, period 24h. |
 | Storage | S3 `<prefix>-telemetry`, path prefix `loki/` (verify prefix support in the pinned Loki object-store client; fallback: a dedicated bucket `<prefix>-telemetry-loki` added by plan 14). Credential `SC-OBJECT-STORAGE/telemetry`. |
 | WAL / ingester | `emptyDir` 5 GiB; `chunk_idle_period: 30m`, `max_chunk_age: 2h`, `flush_on_shutdown: true`, `replication_factor: 1`. |
@@ -182,7 +182,7 @@ Kubernetes events (`job=k8s-events`): the gateway Collector (plan 40) gains, in 
 
 | Item | Decision |
 |---|---|
-| Chart / mode | Grafana's `tempo` Helm chart (monolithic), `replicas: 1`. Selection rule: latest Tempo 2.x minor at H03 time. |
+| Chart / mode | The `tempo` chart (monolithic) from the **`grafana-community`** repository, `replicas: 1`. **Baseline:** chart 2.4.0, **Tempo v2.10.x** (`plans/compatibility-baseline.yaml`, CD-29). Tempo **stays on the 2.10.x line**: Tempo 3 removes the `ingester` and `compactor` config blocks this plan's monolithic config uses, requires vParquet4+ and cannot be downgraded, so adopting it is a plan-41 amendment, not a Renovate bump. |
 | Receivers | `otlp` gRPC on 4317 only (from `otel-collector`). |
 | Storage | `trace.backend: s3`, bucket `<prefix>-telemetry`, `prefix: tempo/` (verify); WAL `emptyDir` 3 GiB. |
 | Retention | `compactor.compaction.block_retention: 336h` (14 d, plan 43 R-03); lifecycle `tempo/` 21 d backstop. |
@@ -319,7 +319,7 @@ Self-hosting-minimum installs nothing from this plan. `./bootstrap expand --prof
 
 ## 19. Upgrade behavior
 
-Renovate PRs for the Loki, Tempo and contrib charts/images. CI renders and validates configs (`loki -verify-config`, `tempo -config.verify` (verify flags), `otelcol-contrib validate`) and runs the k3d privacy suite (§22) with the new images. Loki schema changes are introduced as a new `schema_config` period starting the next day, never by rewriting old periods.
+Renovate PRs for the Loki, Tempo and contrib charts/images, limited to their baseline lines (Loki 3.7.x, Tempo 2.10.x, contrib 0.162.x; Renovate `allowedVersions` per line); leaving a line is a plan amendment. CI renders and validates configs (`loki -verify-config`, `tempo -config.verify` (verify flags), `otelcol-contrib validate`) and runs the k3d privacy suite (§22) with the new images. Loki schema changes are introduced as a new `schema_config` period starting the next day, never by rewriting old periods.
 
 ## 20. Recovery behavior
 

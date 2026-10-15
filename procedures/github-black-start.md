@@ -73,7 +73,7 @@ This procedure establishes a **trusted source tree** for black start: obtaining 
 3. **From H04:** use the bootstrap capsule (§E). **Before H04, or if the capsule check is failing:** **wait** for GitHub; record the waiting time separately in the incident. This is an accepted, recorded risk (SI-43, CD-33).
 
 ### §E Black start from the bootstrap capsule (from H04; plan 45 §9.4)
-1. On the clean machine, with the object-storage credentials from `bootstrap.env`: `aws s3 cp s3://<prefix>-recovery/<cluster>/capsule/LATEST.json -` names the capsule id; `aws s3 cp --recursive s3://<prefix>-recovery/<cluster>/capsule/<id>/ ./capsule/`. **Expected:** ≈ 5 GiB, 5–10 min.
+1. On the clean machine, with the object-storage credentials from `bootstrap.env`: `aws s3 cp s3://<prefix>-recovery/<cluster>/capsule/LATEST.json -` names the capsule id; `aws s3 cp --recursive s3://<prefix>-recovery/<cluster>/capsule/<id>/ ./capsule/`. **Expected:** ≈ 9–10 GiB, ≈ 15 min on 100 Mbit/s.
 2. `git clone ./capsule/strange-company.bundle strange-company && cd strange-company`.
 3. `./bootstrap recover --from-capsule ../capsule` — it loads the toolbox from the capsule archive, unlocks the recovery bundle, verifies `capsule.json` with the bundle's copy of the trusted signing keys and every file digest, then fast-forwards `main` from the newest `repo-backups` chain (trust anchor). **Expected:** `capsule <id>: signature ok, <n>/<n> digests ok`; then continue with `total-cluster-loss.md` from step 2. Nodes import images from the capsule; charts come from the seed Bucket.
 4. Finalize: if GitHub is still down, type `defer-mirror <cluster>`; the mirror stays disabled and `SCGitHubMirrorRecoveryModeTooLong` keeps notifying until §C.5 / `forge-reconnect` after GitHub returns.

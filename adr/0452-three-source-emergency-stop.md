@@ -22,7 +22,8 @@ A stop that exists only in Git takes minutes (PR, CI, merge, Flux) and is lost i
    3. **Kubernetes:** ConfigMap `strange-company/sc-emergency-stop`, created with cluster-admin. The Gateway reads it with a direct API GET every 5 s. It does not depend on the Runner, the DB, Forgejo or Flux. It is never in Git, CI rejects any rendered manifest that names it, and Flux's inventory-based pruning never touches it.
 3. **Effective level = max(db, git, k8s, degraded).** `degraded = workers` when the Kubernetes source has not been read for 60 s. Any one source stops spending. Releasing requires clearing every source that is set. Malformed input (an unknown ConfigMap level) is treated as `all`.
 4. **No automatic resumption.** Tasks stopped by an emergency stop or a shared-budget exhaustion move to `BLOCKED` with a stored resume state. Only a human transition resumes them (lesson L-4).
-5. **No Hermes or worker path.** No MCP tool exists to read or change the stop. Workers have no route to the admin listener or the Kubernetes API.
+5. **Automatic trip (review BUD-B8).** The Gateway leader writes a DB-source event at level `workers` (actor `budget:anomaly`) when trailing-window spend from `sc-pg` exceeds `anomaly.absoluteWindowCapUsd` and `anomaly.autoStop` is true (default). This is the only automatic writer of a stop; release stays human-only. A missing or invalid DB state row counts as `all`.
+6. **No Hermes or worker path.** No MCP tool exists to read or change the stop. Workers have no route to the admin listener or the Kubernetes API.
 
 ## Consequences
 - The spend stop holds whenever *any* control channel works. When none does, the Gateway being down or the DB being down also means no spend (fail closed, ADR-0450).
