@@ -146,7 +146,7 @@ Implementation is a separate task. Start at DAG node **F01** in `PLAN.md`, follo
 
 ### F01 — repo-skeleton
 
-Branch `node/F01-repo-skeleton`, built with `/sc-node F01` (CD-44). Base `main` 0d4e721. Five slices: S1 seed `ci` image and `./bootstrap exec`; S2 layout-check; S3 locks, secrets scan, quarantine and CI workflows; S4 `make verify`, lint and determinism; S5 TDD discipline checker. **Status: in progress (S1 approved).**
+Branch `node/F01-repo-skeleton`, built with `/sc-node F01` (CD-44). Base `main` 0d4e721. Five slices: S1 seed `ci` image and `./bootstrap exec`; S2 layout-check; S3 locks, secrets scan, quarantine and CI workflows; S4 `make verify`, lint and determinism; S5 TDD discipline checker. **Status: in progress (S1, S2 approved).**
 
 #### S1 — seed `ci` image, `./bootstrap exec`, Makefile re-exec
 
@@ -171,3 +171,44 @@ Deviations and open items:
 - The wrapper passes `build --cgroup-manager=cgroupfs` when `$XDG_RUNTIME_DIR/bus` is absent (hosts without a user session bus). This is not in plan 02.
 - Reviewer low findings, not fixed in S1 (retry budget spent; carry into a later slice that touches `bootstrap`): L1, a missing or unreadable `toolbox/Containerfile` makes the build path exit 2 with no message; L2, stage names are compared case-sensitively, and BuildKit is case-insensitive.
 - Accepted residual risk: an image built from an unpinned Containerfile by older wrapper code can still be reused, because the 02-R-1 guard runs only before a build.
+
+#### S2 — layout-check and repository hygiene
+
+The branch was rewritten after S1 with operator approval (CD-50). Round 1 (RED dc09d49 + 9ceb865, GREEN 80e12fa) got `request_changes`: the RED's declared target `make test` did not exist at the RED commit. The new history puts a `make test` commit before the RED.
+
+| Commit | Role |
+|---|---|
+| 08548d0 | `make test` with `go test -json` and the JUnit converter (`src/internal/testreport`, `sc-lint junit`). Bootstrapping exception, no RED; converter tests are S4 work |
+| 0d80999 | RED: `src/internal/lint` tests, fixtures, declared stubs and types (CD-50). At R, `make test GO_TEST_PKGS=./src/internal/lint/...` exits 2 with 21 top-level failures and 0 build errors |
+| 361fbd3 | RED: 01-AC-11 instance validation (operator: the Stage-0 venv `jsonschema` at F01; F02 replaces it with `sc-contracts`) |
+| f324222 | docs CD-50 |
+| df735bf | RED: executable-files exactly per plan 01 §6.1, lettered AC ids, `make` mentions inside backtick spans; clears the x-bit on `test/e2e/wrapper/*.sh`. 28 top-level failures |
+| 9745770 | GREEN (attempt 2 of 3): **`approve`** at 9745770 |
+
+Red target: `test GO_TEST_PKGS=./src/internal/lint/...`. CI: none yet (S3).
+
+| Criterion | Test(s) | Result at 9745770 |
+|---|---|---|
+| 01-AC-1 | `TestLayoutCheck_{ValidFixturePasses,RealTreePasses,Negatives,SizeBoundary,EachGitignoreEntryRequired,ExecutableFilesFollowPlan}`, `TestRealTree_{GitignoreHasAllEntries,NoStrayExecutables}`, `TestMakeWiring` | pass; `make layout-check` 0 |
+| 01-AC-2 | `TestRealTree_CheckIgnore_01AC2` | pass; already satisfied by S1's `.gitignore` |
+| 01-AC-10 | `TestLayoutCheck_AgentsMd{Size,PolicyMarkers,MarkerKeyFromVerificationPolicy}`, `TestRealTree_AgentsMd` | pass |
+| 01-AC-11 | `TestRealTree_{PolicyProtectedPathsEqualPlan,StrangeCompanyFilesKinds,ContractsTarget,MakeContractsValidatesInstances}`, `TestMakeContracts_{RejectsSchemaViolation,RejectsWrongType,UnknownKindFails}` | pass; `make contracts` 0 |
+| 01-AC-12 | `TestLayoutCheck_{MakeTargetsKnown,MakeTargetInsideSpan}`, `TestRealTree_PlannedPathsFileExists` | pass |
+| 01-AC-14 | `TestDagCheck_{ValidFixturePasses,RealTreePasses,Negatives,UsesNonUpstreamIsWarning,WritesReport,LetteredACIds}` | pass; `make dag-check` 0 |
+
+Deviations and open items:
+- **Before F01 completes (assigned to S4):** the host re-exec passes `$(MAKEOVERRIDES)` unquoted (`Makefile:14`). So `make test GO_TEST_RUN='TestA$'` from the host selects zero tests and exits 0, and `'^(A|B)$'` is a shell syntax error. In-container runs are correct. Also, `src/internal/lint/hygiene_test.go` fails `gofmt -l`; it needs a whitespace-only `test(F01):` commit, which raises a T8 warning.
+- **Deferred, no GATE-F01 criterion:**
+  - the plan 01 §7.1 / 01-R-1 rule that every backticked plan path exists or is listed in `planned-paths.txt`; `planned-paths.txt` holds only `make` targets;
+  - `SC_TARGET_TREE` support (plan 01 §7.3), which nothing consumes before plan 22.
+- **Plan/contract conflict:** plan 01 §6.4 and §7.3 put `reservedBranchPrefixes` in `policy.yaml`, but `contracts/repo-policy.schema.yaml` has no such field and sets `additionalProperties: false`. This needs an operator decision.
+- **Implementation choices the plan leaves open:**
+  - most layout rule IDs;
+  - `planned-paths.txt` format: one entry per line, `make <target>` for targets;
+  - `DAG_USES_UPSTREAM` warning ID;
+  - a duplicate node id reports under `DAG_UNKNOWN_NODE`;
+  - the `make` mention scan skips the `<make target>` placeholder.
+- **Low reviewer findings:**
+  - a `###` subheading ends the "Enforced rules" marker scan;
+  - the marker key lookup is textual;
+  - `make -n verify`-style mentions are not checked.
