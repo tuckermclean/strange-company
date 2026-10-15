@@ -160,13 +160,29 @@ RED/GREEN verification pipelines are Runner-triggered (`manual` event, plan 20 �
 
 | Repository / period | Branch protection | Required checks |
 |---|---|---|
-| GitHub `strange-company`, Phase 1 → P06 | `main`: PR required, no force push, no deletion. Approvals follow CD-39 and CD-46: **1 required**. Agent PRs are opened by the machine account `sc-agent-bot` (collaborator with Write, never Admin; classic token scopes `repo` and `read:org`, held by `gh` on the operator's workstation), so the operator's approval is a real second identity. The bot never approves or merges; `.claude/settings.json` runs `.claude/hooks/guard.py session` to block it. Operator-authored PRs need 0 approvals (CD-39) and are merged through the repository admin's bypass, which therefore stays enabled. Without a bot account, set 0 required (single-operator mode) | `verify`, `tdd-discipline`, `e2e-gate` (GH job names) |
+| GitHub `strange-company`, Phase 1 → P06 | `main`, configured as two rulesets (§8.2a, CD-47). **Gates:** PR required with **0 approvals**, required checks, no force push, no deletion; the repository admin may bypass for pull requests only, which is how operator-authored PRs merge (CD-39). **Merge rights:** "Restrict updates" with only the repository admin on the bypass list, so only the operator can move `main`. Agent PRs are opened by the machine account `sc-agent-bot` (collaborator with Write, never Admin; classic token scopes `repo` and `read:org`, held by `gh` on the operator's workstation, CD-46). The bot never approves or merges. `.claude/settings.json` runs `.claude/hooks/guard.py session` to block that and to restrict the statuses it may post to `sc-review`. | `validate` (Stage-0 validator) until F01, then also `verify`, `tdd-discipline` and `e2e-gate` (GH job names, source pinned to GitHub Actions); plus `sc-review` (commit status from `sc-agent-bot`, §8.2a) |
 | Forgejo `strange-company`, P05 → P12 (protection stage `bootstrap`, plan 16) | push-whitelist `sc-admin`, 1 approval | none. Only bootstrap commits land in this window (plan 20 §18) |
 | Forgejo `strange-company`, P12 → C09 (stage `steady`) | as plan 16 | `ci/woodpecker/pr/ci` |
 | Forgejo `strange-company`, C09+ | as plan 16/55 | `ci/woodpecker/pr/ci`, `strange-company/tdd-provenance`, `strange-company/review` (ADR-0019) |
 | Forgejo `projects/*` with `.woodpecker/ci.yaml` | per plan 55 template | `ci/woodpecker/pr/ci`, `strange-company/tdd-provenance`, `strange-company/review` |
 | Forgejo `projects/*` without CI | per plan 55 | Runner contexts only. Plan 22 decides whether test-first tasks are allowed (they need `validation.yaml`) |
 | GitHub mirror, P06+ | read-only (plan 17) | none. GH workflows are advisory, except the OCL as release evidence |
+
+#### 8.2a Interim review status `sc-review` (Phase 1, CD-47)
+
+This mirrors `strange-company/review` (plan 55, ADR-0019) before the Runner exists. The reviewer's verdict is a required status on the reviewed commit, and the merge stays human.
+
+- **Who posts it.** The orchestrating session (`/sc-node`, CD-44) posts it through `gh` as `sc-agent-bot`, and only after an `sc-reviewer` agent returned `approve`:
+  `gh api repos/<owner>/strange-company/statuses/<head-sha> -f state=success -f context=sc-review -f description='<verdict summary, ≤ 140 chars>' -f target_url=<PR comment holding the verdict>`.
+  Role agents cannot use `gh`, and the guard hook rejects any status context other than `sc-review`.
+- **Which commit.** The status goes on the PR head. Every slice of the node has an `approve` verdict, and the last reviewed SHA equals the head, or every later commit changes only `STATUS.md` (the evidence commit). Any other new commit has no status, so the check returns to pending until a fresh reviewer approves the new head.
+- **Verdict record.** Before posting the status, the orchestrator adds the verdicts to the PR as a comment (`gh pr comment`): verdict, reviewed SHAs, and the criterion → test → status table. `target_url` points at that comment.
+- **Spoofing.** A commit status can be posted by anyone with Write. So each check produced by a workflow is required **with its source pinned to GitHub Actions**, and only `sc-review` accepts any source. `sc-review` is as trustworthy as the session that posts it. The independent checks remain CI (`tdd-discipline` from F01) and the operator's merge.
+- **Operator setup (once, repository settings → Rules → Rulesets, both targeting the default branch):**
+  1. `main-gates`, Active. Bypass: Repository admin, *for pull requests only*. Rules: restrict deletions; block force pushes; require a pull request before merging with 0 approvals; require status checks `validate` (source GitHub Actions) and `sc-review` (any source). Add `verify`, `tdd-discipline` and `e2e-gate` (source GitHub Actions) when F01 merges (52-AC-2).
+  2. `main-merge-rights`, Active. Bypass: Repository admin, always. Rule: restrict updates.
+  3. Delete the classic branch-protection rule on `main` (CD-46's 1 approval). Classic rules and rulesets both apply, so keeping it would still require an approval.
+  Check once that the bypass list offers "Repository admin" on a personal-account repository, and that a Write collaborator's merge is refused (verify).
 
 ### 8.3 Bootstrap discipline: `make tdd-discipline-check` (`sc-lint tdd-discipline`)
 

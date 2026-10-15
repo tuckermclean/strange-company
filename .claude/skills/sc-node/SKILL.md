@@ -61,7 +61,15 @@ Append to `STATUS.md` under `## Implementation progress` → `### <id> — <name
 A node is complete only when **every** gate criterion has passing evidence (SPEC §124). Commit this as a human-owned docs change: `docs(<id>): gate evidence`.
 
 ## 6. Pull request
-When all slices are done, push and give the user a ready-to-paste PR title and body: summary, criteria table, RED → GREEN → review evidence, and deviations. End the body with the attribution line. Open it with `gh pr create` (it runs as `sc-agent-bot`, CD-46) and give the user the URL. If `gh` is unavailable, give the user the title and body to paste instead. The user approves and merges; you never approve or merge.
+When all slices are done, push and give the user a ready-to-paste PR title and body: summary, criteria table, RED → GREEN → review evidence, and deviations. End the body with the attribution line. Open it with `gh pr create` (it runs as `sc-agent-bot`, CD-46). If `gh` is unavailable, give the user the title and body to paste instead.
+
+Then post the review status (plan 52 §8.2a, CD-47):
+- Post it only if every slice's verdict is `approve`, and the last reviewed SHA equals the PR head or every later commit changes only `STATUS.md`. Otherwise dispatch a new reviewer for the head first.
+- Add a PR comment with `gh pr comment` holding the verdicts, the reviewed SHAs and the criterion table.
+- Post `gh api repos/<owner>/strange-company/statuses/<head-sha> -f state=success -f context=sc-review -f description='<summary>' -f target_url=<comment URL>`.
+- Any later push to the PR needs a fresh review and a fresh status.
+
+Give the user the PR URL. The user merges; you never approve or merge.
 
 ## 7. Stop and ask the user
 Stop for:

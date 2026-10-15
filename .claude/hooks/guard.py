@@ -38,6 +38,8 @@ GH_FORBIDDEN = re.compile(r"\bgh\s+(pr\s+(merge|review)|repo\s+(edit|delete|rena
                           r"release\s+(create|delete|edit)|secret|variable|ruleset)\b|"
                           r"\bgh\s+api\b[^|;&]*(/merge\b|/reviews\b|/protection\b|/rulesets\b|"
                           r"mergePullRequest|addPullRequestReview|enablePullRequestAutoMerge)")
+# CD-47: the only commit status a session may post is `sc-review` (plan 52 §8.2a).
+STATUS_POST = re.compile(r"/statuses/")
 
 
 def match(path: str, patterns: list[str]) -> bool:
@@ -114,6 +116,11 @@ def main() -> None:
         if tool == "Bash" and GH_FORBIDDEN.search(ti.get("command", "")):
             deny("agents never merge, approve or change repository settings on GitHub; "
                  "the operator does (CD-46, plan 52 §8.2)")
+        cmd = ti.get("command", "") if tool == "Bash" else ""
+        if STATUS_POST.search(cmd):
+            contexts = re.findall(r"context=['\"]?([^\s'\"]*)", cmd)
+            if not contexts or any(c != "sc-review" for c in contexts):
+                deny("the only commit status a session may post is context=sc-review (CD-47, plan 52 §8.2a)")
         return
 
     if tool in ("Edit", "Write", "NotebookEdit"):
