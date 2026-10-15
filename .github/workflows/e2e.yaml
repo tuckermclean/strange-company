@@ -1,0 +1,91 @@
+# Tier-E jobs (plan 52 section 8.4). On pull requests a path filter selects the jobs whose inputs changed;
+# `e2e-gate` always runs and succeeds iff every selected job succeeded (no required check stuck in "expected").
+# At F01 the only tier-E job is `toolbox`: the real-engine checks of the seed ci image on Docker rootful.
+name: e2e
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    outputs:
+      toolbox: ${{ steps.select.outputs.toolbox }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Select the tier-E jobs
+        id: select
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          toolbox=true
+          if [ "$EVENT" = pull_request ]; then
+            toolbox=false
+            if git diff --name-only "$BASE_SHA" HEAD | grep -q '^toolbox/'; then
+              toolbox=true
+            fi
+          fi
+          echo "toolbox=$toolbox" >> "$GITHUB_OUTPUT"
+
+  toolbox:
+    needs: changes
+    if: needs.changes.outputs.toolbox == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 60
+    env:
+      SC_CONTAINER_ENGINE: docker
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # 02-AC-14, 02-AC-15 (build side), 02-AC-16 on Docker rootful.
+      - name: Real-engine checks of the ci image and ./bootstrap exec
+        run: sh test/e2e/wrapper/real-engine.sh
+
+      # 02-AC-15 (static side): toolbox-check rejects a FROM without a digest.
+      - name: Containerfile pin checks
+        run: sh test/e2e/wrapper/check-pins.sh
+
+  e2e-gate:
+    needs: [changes, toolbox]
+    if: always()
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - name: Every selected job succeeded
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          TOOLBOX: ${{ needs.toolbox.result }}
+        run: |
+          echo "changes=$CHANGES toolbox=$TOOLBOX"
+          [ "$CHANGES" = success ] || exit 1
+          case $TOOLBOX in
+            success | skipped) ;;
+            *) exit 1 ;;
+          esac

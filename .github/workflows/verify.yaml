@@ -1,0 +1,174 @@
+# Interim trusted CI of ADR-0018 (plan 52 section 8.4): runs `make verify` and the TDD discipline check on
+# GitHub Actions while GitHub is the primary. No secrets are referenced; every action is pinned by commit SHA.
+name: verify
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # primary=forgejo once a non-CI cluster has committed forge-init.yaml: control moved to Forgejo/Woodpecker
+  # and this workflow stops spending minutes (ADR-0018: advisory).
+  mode:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    outputs:
+      primary: ${{ steps.mode.outputs.primary }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Select the primary CI product
+        id: mode
+        run: |
+          primary=github
+          for f in gitops/clusters/*/config/forge-init.yaml; do
+            [ -e "$f" ] || continue
+            c=${f#gitops/clusters/}
+            c=${c%%/*}
+            case $c in
+              ci-*) ;;
+              *) primary=forgejo ;;
+            esac
+          done
+          echo "primary=$primary" >> "$GITHUB_OUTPUT"
+          echo "primary: $primary (runner image ${ImageOS:-unknown} ${ImageVersion:-unknown})" >> "$GITHUB_STEP_SUMMARY"
+
+  verify:
+    needs: mode
+    if: needs.mode.outputs.primary == 'github'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Same listing as ./bootstrap step 5 (plan 02 section 14.2); keep the two in sync.
+      - name: Compute the toolbox inputs id
+        id: toolbox
+        run: |
+          listing=$(git ls-files -co --exclude-standard -- toolbox src .dockerignore tools/stage0/requirements.txt |
+            grep -v -e '^toolbox/image\.lock$' -e '/testdata/' -e '_test\.go$' |
+            LC_ALL=C sort |
+            while IFS= read -r f; do
+              [ -f "$f" ] || continue
+              printf '%s %s\n' "$(git hash-object "$f")" "$f"
+            done)
+          id=$(printf '%s\n' "$listing" | git hash-object --stdin)
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+          echo "id12=$(printf '%s' "$id" | cut -c1-12)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache .cache (Go modules and build cache, charts, plugins)
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .cache/go
+            .cache/charts
+            .cache/tofu-plugins
+          key: sc-cache-${{ runner.os }}-${{ hashFiles('src/go.sum', 'versions/platform.lock.yaml', 'infra/tofu/**/.terraform.lock.hcl') }}
+          restore-keys: |
+            sc-cache-${{ runner.os }}-
+
+      - name: Cache the ci image
+        id: ci-image
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cache/ci-image
+          key: sc-ci-image-${{ steps.toolbox.outputs.id }}
+
+      - name: Load the cached ci image
+        if: steps.ci-image.outputs.cache-hit == 'true'
+        env:
+          INPUTS_ID: ${{ steps.toolbox.outputs.id }}
+        run: docker load -i ".cache/ci-image/$INPUTS_ID.tar"
+
+      - name: make verify
+        run: make verify
+
+      - name: Save the ci image for the cache
+        if: always() && steps.ci-image.outputs.cache-hit != 'true'
+        env:
+          INPUTS_ID: ${{ steps.toolbox.outputs.id }}
+          INPUTS12: ${{ steps.toolbox.outputs.id12 }}
+        run: |
+          mkdir -p .cache/ci-image
+          docker save "localhost/strange-company-ci:in-$INPUTS12" -o ".cache/ci-image/$INPUTS_ID.tar"
+
+      - name: Upload the verify summary
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: verify-out
+          path: out/
+          if-no-files-found: ignore
+
+  # RED/GREEN history check (plan 52 section 8.3). The checker is `make tdd-discipline-check` (slice S5 of F01).
+  # Until it exists, this job fails instead of passing without checking anything.
+  tdd-discipline:
+    needs: mode
+    if: needs.mode.outputs.primary == 'github' && github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: The checker exists
+        run: |
+          if ! grep -qs '^tdd-discipline-check:' Makefile mk/*.mk; then
+            echo "::error::make tdd-discipline-check is not implemented yet (F01 slice S5); failing instead of passing vacuously"
+            exit 1
+          fi
+
+      - name: Compute the toolbox inputs id
+        id: toolbox
+        run: |
+          listing=$(git ls-files -co --exclude-standard -- toolbox src .dockerignore tools/stage0/requirements.txt |
+            grep -v -e '^toolbox/image\.lock$' -e '/testdata/' -e '_test\.go$' |
+            LC_ALL=C sort |
+            while IFS= read -r f; do
+              [ -f "$f" ] || continue
+              printf '%s %s\n' "$(git hash-object "$f")" "$f"
+            done)
+          id=$(printf '%s\n' "$listing" | git hash-object --stdin)
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the ci image
+        id: ci-image
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cache/ci-image
+          key: sc-ci-image-${{ steps.toolbox.outputs.id }}
+
+      - name: Load the cached ci image
+        if: steps.ci-image.outputs.cache-hit == 'true'
+        env:
+          INPUTS_ID: ${{ steps.toolbox.outputs.id }}
+        run: docker load -i ".cache/ci-image/$INPUTS_ID.tar"
+
+      - name: make tdd-discipline-check
+        run: make tdd-discipline-check
