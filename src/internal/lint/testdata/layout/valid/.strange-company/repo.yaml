@@ -1,0 +1,4 @@
+apiVersion: strange.company/v1alpha1
+kind: RepositoryContext
+metadata: {name: fixture}
+spec: {}
