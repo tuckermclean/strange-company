@@ -1,7 +1,7 @@
 # Tier V test target (plan 01 section 7.1): go test -json, raw stream in out/test/test.json, JUnit always
 # written to $(JUNIT); the exit status is go test's.
-# The container home (/run/sc, 64M tmpfs) is too small for the -race build cache.
-export GOCACHE := /tmp/go-build
+export GOCACHE := $(CURDIR)/.cache/go/build
+export GOMODCACHE := $(CURDIR)/.cache/go/mod
 GO_TEST_PKGS ?= ./...
 GO_TEST_RUN ?=
 JUNIT ?= out/test/junit.xml

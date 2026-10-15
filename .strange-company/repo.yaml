@@ -1,0 +1,54 @@
+# Repository context of this repository (plan 01 section 7.3; plan 25).
+apiVersion: strange.company/v1alpha1
+kind: RepositoryContext
+metadata:
+  name: strange-company
+spec:
+  project: strange-company
+  purpose: "Strange Company: a self-hosting, agent-driven software factory. This repository holds its specification, plans, contracts and implementation."
+  languages: [go, yaml, sh, hcl]
+  importantPaths:
+    - {path: "src/**", description: "owner: plan 01 (single Go module, section 6.2)"}
+    - {path: "Makefile", description: "owner: plan 01"}
+    - {path: "mk/**", description: "owner: plan 01"}
+    - {path: "bootstrap", description: "owner: plan 02"}
+    - {path: ".strange-company/**", description: "owner: plan 01 (policy: plan 22; context: plan 25)"}
+    - {path: ".claude/**", description: "owner: plan 01 (Phase-1 agent scaffolding, CD-44)"}
+    - {path: ".github/**", description: "owner: plan 52 (interim CI, ADR-0018)"}
+    - {path: ".woodpecker/**", description: "owner: plan 20"}
+    - {path: "contracts/**", description: "owner: plan 01 (section 8.3; schemas owned by their plans)"}
+    - {path: "plans/**", description: "owner: plan 00"}
+    - {path: "procedures/**", description: "owner: plan 00"}
+    - {path: "adr/**", description: "owner: plan 00"}
+    - {path: "context/**", description: "owner: plan 25"}
+    - {path: "policy/**", description: "owner: plan 22"}
+    - {path: "versions/**", description: "owner: plan 01"}
+    - {path: "toolbox/**", description: "owner: plan 02"}
+    - {path: "images/**", description: "owner: plan 23"}
+    - {path: "harnesses/**", description: "owner: plan 28"}
+    - {path: "charts/**", description: "owner: plan 54"}
+    - {path: "gitops/**", description: "owner: plan 18"}
+    - {path: "forge/**", description: "owner: plan 16"}
+    - {path: "observability/**", description: "owner: plan 38"}
+    - {path: "infra/profiles/**", description: "owner: plan 03"}
+    - {path: "infra/catalog/**", description: "owner: plan 03"}
+    - {path: "infra/tofu/**", description: "owner: plan 06"}
+    - {path: "infra/ansible/**", description: "owner: plan 07"}
+    - {path: "infra/objstore/**", description: "owner: plan 14"}
+    - {path: "infra/bootstrap/**", description: "owner: plan 50"}
+    - {path: "infra/lab/**", description: "owner: plan 05"}
+    - {path: "secrets/**", description: "owner: plan 35"}
+    - {path: "security/**", description: "owner: plan 23"}
+    - {path: "templates/**", description: "owner: plan 22"}
+    - {path: "evidence/**", description: "owner: plan 53"}
+    - {path: "tools/stage0/**", description: "owner: plan 01 (ADR-0021)"}
+    - {path: "test/**", description: "owner: plan 52 (fixtures, e2e harnesses)"}
+  buildCommands:
+    - make build
+  testCommands:
+    - make test
+  contextFiles:
+    architecture: .strange-company/architecture.md
+    decisionsDir: adr
+    rolesDir: .strange-company/roles
+    agentsMd: AGENTS.md
