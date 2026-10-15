@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 )
 
 // Finding is one rule violation. Severity is "error" or "warning".
@@ -91,6 +92,16 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "sc-lint %s: %v\n", args[0], err)
 		return 2
 	}
+	sort.SliceStable(res.Findings, func(i, j int) bool {
+		a, b := res.Findings[i], res.Findings[j]
+		if a.Rule != b.Rule {
+			return a.Rule < b.Rule
+		}
+		if a.Path != b.Path {
+			return a.Path < b.Path
+		}
+		return a.Message < b.Message
+	})
 	for _, f := range res.Findings {
 		fmt.Fprintln(stdout, f)
 	}

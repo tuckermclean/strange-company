@@ -22,7 +22,7 @@ const (
 )
 
 // neverQuarantine is the Q2 pattern: protected acceptance tests (the schema carries the same pattern).
-var neverQuarantine = regexp.MustCompile(`(^|[./])Test(Spec105|Spec106|AC[0-9]|Gate)`)
+var neverQuarantine = regexp.MustCompile(`(^|[./])Test(Spec105|Spec106|AC[0-9]|Gate)|internal/(verify|statemachine|policy)([./]|$)`)
 
 type quarantineDoc struct {
 	Spec struct {
@@ -82,7 +82,7 @@ func QuarantineCheck(root string) (Result, error) {
 		return r, err
 	}
 	max := d.Spec.MaxEntries
-	if max > 10 || max == 0 && len(d.Spec.Entries) > 0 {
+	if max > 10 {
 		max = 10
 	}
 	if len(d.Spec.Entries) > max {

@@ -77,23 +77,29 @@ func SecretsScan(root string) (Result, error) {
 	return r, nil
 }
 
+var pemOneLineRe = regexp.MustCompile(`PRIVATE KEY(?: BLOCK)?-----\\n[A-Za-z0-9+/=]{40,}`)
+
 var pemBodyRe = regexp.MustCompile(`^\s*[A-Za-z0-9+/=]{40,}\s*$`)
 
-// placeholder reports whether a match is documentation filler: it contains EXAMPLE, or its tail is a run of
-// at most two distinct characters (AAAAAAAA, QQQQQQQQ).
-func placeholder(m string) bool {
-	if strings.Contains(strings.ToUpper(m), "EXAMPLE") {
+// placeholder reports whether a match is a vendor documentation value: it ends in EXAMPLE (the AWS
+// documentation access key id) or EXAMPLEKEY (the AWS documentation secret access key).
+//
+// Contract and plan examples of the age, Anthropic and OpenAI key formats use a body of one repeated
+// character (AGE-SECRET-KEY-1QQQ..., sk-ant-AAA...); that is also a placeholder for those rules. The AWS
+// rules have no such allowance: only the documentation values pass.
+func placeholder(name, m string) bool {
+	if strings.HasSuffix(m, "EXAMPLE") || strings.HasSuffix(m, "EXAMPLEKEY") {
 		return true
 	}
-	tail := m
-	if len(tail) > 16 {
-		tail = tail[len(tail)-16:]
+	switch name {
+	case "age-secret-key", "anthropic-api-key", "openai-api-key":
+		body := m[strings.LastIndexByte(m, '-')+1:]
+		if name == "age-secret-key" {
+			body = strings.TrimPrefix(m, "AGE-SECRET-KEY-1")
+		}
+		return len(body) >= 20 && strings.Count(body, body[:1]) == len(body)
 	}
-	seen := map[rune]bool{}
-	for _, c := range tail {
-		seen[c] = true
-	}
-	return len(seen) <= 2
+	return false
 }
 
 func scanSecrets(rel string, b []byte, r *Result) {
@@ -106,10 +112,11 @@ func scanSecrets(rel string, b []byte, r *Result) {
 			}
 			if p.name == "private-key-block" {
 				// A header alone is prose or a schema example; a key has its base64 body on the next line.
-				if n+1 >= len(lines) || !pemBodyRe.MatchString(lines[n+1]) {
+				// The same holds for a key escaped onto one line (a JSON string with literal backslash-n).
+				if !pemOneLineRe.MatchString(line) && (n+1 >= len(lines) || !pemBodyRe.MatchString(lines[n+1])) {
 					continue
 				}
-			} else if placeholder(m) {
+			} else if placeholder(p.name, m) {
 				continue
 			}
 			// The value is never printed.
