@@ -30,9 +30,10 @@ Version-sensitive facts (chart values, API endpoints, CLI flags) are pinned and 
 ### F01 — repo-skeleton
 
 - **Depends on:** —
-- **Owning plans:** `plans/01-repository.md`, `plans/52-ci-strategy.md`
-- **Gate `GATE-F01`:** 22 acceptance criteria
+- **Owning plans:** `plans/01-repository.md`, `plans/02-bootstrap-toolbox.md`, `plans/52-ci-strategy.md`
+- **Gate `GATE-F01`:** 26 acceptance criteria
   - `plans/01-repository.md`: 01-AC-1, 01-AC-2, 01-AC-3, 01-AC-4, 01-AC-5, 01-AC-6, 01-AC-7, 01-AC-8, 01-AC-9, 01-AC-10, 01-AC-11, 01-AC-12, 01-AC-13, 01-AC-14
+  - `plans/02-bootstrap-toolbox.md`: 02-AC-14, 02-AC-15, 02-AC-16, 02-AC-17
   - `plans/52-ci-strategy.md`: 52-AC-1, 52-AC-2, 52-AC-3, 52-AC-4, 52-AC-5, 52-AC-6, 52-AC-7, 52-AC-8
 
 ### F02 — contract-tooling

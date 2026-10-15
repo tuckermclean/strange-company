@@ -24,7 +24,7 @@ Write `out/sc-node/<id>/brief.md`. `out/` is gitignored from F01 on. Before F01 
 - referenced contracts, ADRs and CDs as pointers;
 - the `(verify)` items the node relies on, plus their entries in `plans/compatibility-baseline.yaml`.
 
-Split large nodes into **slices** of 3–8 related criteria. F01, for example, slices into layout-check, locks and CI workflow, lint and determinism, and TDD discipline. Each slice runs steps 2–5. Order the slices so earlier ones build what later tests need.
+Split large nodes into **slices** of 3–8 related criteria. F01, for example, slices into the seed `ci` image and `./bootstrap exec` (first, because every Make target re-executes through it; plan 02 §14.9), layout-check, locks and CI workflow, lint and determinism, and TDD discipline. Each slice runs steps 2–5. Order the slices so earlier ones build what later tests need.
 
 ## 2. RED (per slice)
 Dispatch a **new** `sc-tester` with the brief path and the slice's criterion IDs. Never resume an old agent: fresh contexts are the point, and they are cheaper.

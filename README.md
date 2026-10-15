@@ -165,7 +165,7 @@ The minimum that must exist to get there:
 - 63 operator procedures;
 - a register of 59 spec issues, none of them blocking;
 - a compatibility baseline pinning 61 third-party components;
-- an acyclic **43-node dependency DAG** with **1,186 acceptance criteria** written in advance.
+- an acyclic **43-node dependency DAG** with **1,190 acceptance criteria** written in advance.
 
 An executable validator (`tools/stage0/validate.py`, run in CI) checks the definition for internal consistency. [`STATUS.md`](STATUS.md) has the details.
 
@@ -191,7 +191,7 @@ A node starts only when all its dependencies have passed their gates. Until Wood
 
 Critical path: F01 → F02 → F08 → P01 → P02 → P03 → P04 → P05 → P06 → P08 → P09 → P10 → P12 → P11 → C01 → (C03, C07) → C02 → C04 → C09 → C10 → R01 → R02.
 
-**Next step: node F01** (repository skeleton and CI; plans 01 and 52).
+**Next step: node F01** (repository skeleton and CI, including the seed `ci` build image; plans 01, 52 and 02).
 
 ### Building it with its own process, from hour zero
 

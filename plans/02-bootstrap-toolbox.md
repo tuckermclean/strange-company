@@ -1,7 +1,7 @@
 # 02 — Bootstrap toolbox
 
 **Status:** Stage-0 plan (draft)
-**DAG nodes:** F03 (owner)
+**DAG nodes:** F01 (contributes: the seed `ci` image and the `./bootstrap exec` subset, §14.9, CD-45), F03 (owner)
 **Related plans:** [01](01-repository.md), [03](03-provider-interface.md), [05](05-existing-nodes.md), [06](06-opentofu-state.md), [07](07-k3s.md), [12](12-cnpg.md), [15](15-authentik.md), [18](18-flux.md), [23](23-supply-chain.md), [35](35-secrets.md), [50](50-bootstrap-orchestrator.md), [52](52-ci-strategy.md)
 **Contracts:** consumes `bootstrap-config.schema.yaml` (SSH and env-file fields); defines the lock kinds `ToolboxLock` and `ToolboxImageLock` (schemas in `contracts/version-locks.schema.yaml`, plan 01 §8.2)
 **ADRs:** relies on ADR-0002, ADR-0013, ADR-0018, ADR-0101; introduces ADR-0103 (toolbox runtime contract)
@@ -57,7 +57,7 @@ Derived requirements:
 
 ## 5. Dependencies
 
-- **Hard (DAG):** F03 depends on F01 (layout, Makefile, `contracts/version-locks.schema.yaml`).
+- **Hard (DAG):** F03 depends on F01 (layout, Makefile, `contracts/version-locks.schema.yaml`). F01 itself builds the seed `ci` image and the `./bootstrap exec` subset (§14.9, CD-45), because every Make target runs in the `ci` image from the first commit (plan 01 §8.1).
 - **Consumers:** F08 (sc-bootstrap runs in it), F10 (Ansible), every procedure, every Make target (ci image, plan 01 §8.1), plan 15 platform probes (toolbox image in-cluster).
 - **Upstream availability at build time:** Debian snapshot archive, GitHub releases and vendor download sites of each tool, Go module proxy, PyPI. Pull time: GHCR. A full upstream outage prevents only *local builds*; the published image remains pullable (and vice versa) — the two paths are independent fallbacks.
 
@@ -331,6 +331,31 @@ The toolbox image also runs `sc-bootstrap probes serve` in `monitoring/platform-
 
 Image availability: if the install used `SC_TOOLBOX_SOURCE=pulled`, `config/toolbox-image.yaml` records `<toolboxImage>@<toolboxDigest>` from `image.lock`. If it used a built image, sc-bootstrap imports `.bootstrap/toolbox/<inputs-id>.oci.tar` into every node's containerd during `configure` (`ssh node sudo k3s ctr -n k8s.io images import --digests -`; verify the flag) and records the resulting manifest digest as `localhost/strange-company-toolbox@sha256:<digest>` with `imagePullPolicy: Never` semantics noted for plan 15. Plan 47 repeats the import for nodes added by `expand`.
 
+### 14.9 Seed `ci` image and the `./bootstrap exec` subset (F01, CD-45)
+
+Every Make target re-executes in the `ci` image (plan 01 §8.1) from the first commit, so F01's own gate (01-AC-3, 01-AC-5, 01-AC-6, 52-AC-5) needs an image and a wrapper before F03 exists. F01 therefore delivers the part of this plan that `make verify` uses. F03 completes the plan without changing that interface.
+
+F01 delivers:
+- **`toolbox/Containerfile`, target `ci`, as one seed stage:**
+  - `FROM golang@<digest>` (§9.2 `baseImages.golang`; the Go version equals the `src/go.mod` `toolchain` directive);
+  - apt sources replaced by the pinned Debian snapshot (§14.1 item 2); install `python3`, `python3-venv`, `tini`, `libnss-wrapper` and the members of `aptPackages.ci` that F01's targets call (at least `make` and `shellcheck`);
+  - the Stage-0 validator venv `/opt/sc/stage0-venv`, from `tools/stage0/requirements.txt` with `--require-hashes` (§9.4);
+  - the `set: ci` tools that F01's tier-V targets invoke: Go tools by `go install <module>@<version>` with sum-DB verification, release binaries by URL and sha256, pip tools hash-locked in `toolbox/requirements-ci.txt` (venv `/opt/sc/ci-venv`);
+  - user `sc` uid/gid `10001`, `ENV SC_IN_CONTAINER=1 TZ=UTC LC_ALL=C.UTF-8`, `USER 10001:10001`, entrypoint `tini` → `sc-entrypoint`.
+- **`toolbox/tools.lock.yaml`** (`kind: ToolboxLock`, §9.2) holding `baseImages.golang`, `debianSnapshot`, `aptPackages.ci` and those tool entries. Later nodes add a tool to the lock in the same PR as the target that first calls it.
+- **`toolbox/bin/fetch-pinned`** (Python, runs in the Stage-0 venv, which already provides PyYAML): downloads every release-binary entry of a set, checks its sha256, installs it, runs `versionCommand` and matches `versionRegex`. Failures are `TOOLBOX_CHECKSUM_MISMATCH:<tool>` and `TOOLBOX_VERSION_MISMATCH:<tool>`, and the build fails. `fetch-pinned --check` re-runs only the version checks. F03 replaces it with `sc-bootstrap toolbox fetch` and `selfcheck`, keeping the same lock and failure codes.
+- **`toolbox/bin/sc-entrypoint`**, minimal: the §14.4 nss_wrapper files and `safe.directory`, then `exec "$@"`.
+- **`./bootstrap`**, `exec` only: `./bootstrap [--engine docker|podman] [--toolbox-build] exec --image ci [--network bridge|host|none] -- <cmd> [args...]`. It implements §14.2 steps 1, 4, 5 and 6 (a) and (c) for target `ci`; the §14.3 repository and worktree mounts and the `/run/sc` and `/tmp` tmpfs mounts; the §14.4 uid mapping for every engine mode; the §14.5 common run flags; and the §7.1 stdin, TTY and exit-code rules. There is no env file, SSH, black-start directory, kube, s3 or unlock scope, and no `shell`. Without `--image ci` it exits 2 (usage) until F03 provides the toolbox image.
+- **`make toolbox-check`** (tier V), covering the seed: lock validation against `contracts/version-locks.schema.yaml` (`ToolboxLock`), every `FROM` pinned by digest, and the §22 wrapper unit tests with the stub engine, limited to the F01 subset.
+- **Interim CI** (plan 52 §8.4): the hosted runner's `make verify` re-executes through `./bootstrap` with Docker and builds the seed image. The workflow caches it as `<engine> save` output at `.cache/ci-image/<inputs-id>.tar` (`actions/cache`, key = inputs id) and loads it before `make`, so an unchanged `toolbox/` costs no rebuild.
+
+F03 then:
+- adds the `gobuild`, `base`, `fetch` and `toolbox` stages and rebases `ci` onto `toolbox` (§14.1). The `ci` tool set and the §7.2 environment contract stay the same;
+- replaces `fetch-pinned`;
+- adds `image.lock` and resolution branch (b), the env file, the remaining mounts, SSH, the `exec` scopes, `shell`, PF-01, `--image toolbox` as the default, and the engine matrix.
+
+The F01 criteria stay green throughout F03 as regression tests.
+
 ## 15. Failure modes
 
 | Failure | Detection | Effect | Automated response | Procedure |
@@ -387,6 +412,20 @@ Nothing to recover: images are reproducible from Git. A corrupted local image is
 - **Reproducibility test:** the pulled image and a local build of the same commit produce identical `selfcheck --json` tool rows and identical sha256 of `/opt/sc/bin/sc-bootstrap`.
 
 ## 23. Acceptance criteria
+
+### GATE-F01
+
+The seed `ci` image and the `./bootstrap exec` subset (§14.9, CD-45). F01 lists plan 02 for these criteria only.
+
+- **02-AC-14** Seed build: after a `--no-cache` build, `./bootstrap --toolbox-build exec --image ci -- /opt/sc/bin/fetch-pinned --check` exits 0. That means every `set: ci` entry in `toolbox/tools.lock.yaml` matches its `versionRegex`. `./bootstrap exec --image ci -- go env GOVERSION` prints the `src/go.mod` `toolchain` version, and `./bootstrap exec --image ci -- sh -c 'echo $SC_IN_CONTAINER'` prints `1`.
+- **02-AC-15** Checksum enforcement: a fixture lock with one wrong sha256 makes the build fail with `TOOLBOX_CHECKSUM_MISMATCH:<tool>`, and no `localhost/strange-company-ci:in-<inputs12>` tag exists for that inputs id afterwards. A fixture `toolbox/Containerfile` with `FROM golang:1.27` (no digest) makes `make toolbox-check` fail.
+- **02-AC-16** Exec contract, on Docker rootful and separately on rootless Podman:
+  - `./bootstrap exec --image ci -- sh -c 'exit 7'` exits 7;
+  - `echo hi | ./bootstrap exec --image ci -- cat` prints `hi` with no TTY error;
+  - after `./bootstrap exec --image ci -- sh -c 'touch "$SC_REPO_ROOT/out/own-probe"'`, the host `stat -c %u out/own-probe` equals `id -u`;
+  - `./bootstrap exec --image ci -- sh -c 'ls /var/run/docker.sock /run/podman/podman.sock 2>/dev/null'` prints nothing;
+  - `./bootstrap exec --image ci --network none -- curl -sS -m 5 https://proxy.golang.org` fails.
+- **02-AC-17** Image reuse: two clean clones of the same commit compute the same inputs id. With the stub engine, a second `./bootstrap exec --image ci -- true` records no `build` call. Changing a file under `toolbox/` changes the inputs id and records a `build`. Changing a file under `plans/` changes neither.
 
 ### GATE-F03
 

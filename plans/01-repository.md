@@ -313,7 +313,7 @@ Execution model (§8.1): every target runs inside the pinned `ci` image (plan 02
 | `test-integration` | E | Go tests tagged `integration` that start containers (SeaweedFS `s3-emulator` per ADR-0205/CD-12, Postgres) | 01 |
 | `build` | V | builds every `src/cmd/*` binary into `out/bin/<os>_<arch>/` | 01 |
 | `images` | E | builds internal images from `images/*` (no push; plan 23 owns push) | 23 |
-| `toolbox` / `toolbox-check` | E (`toolbox`) / V (`toolbox-check`) | build toolbox and ci images from scratch; `toolbox-check` validates `tools.lock.yaml`, `image.lock` and the Containerfile pins offline (plan 02 §22) | 02 |
+| `toolbox` / `toolbox-check` | E (`toolbox`) / V (`toolbox-check`) | build toolbox and ci images from scratch; `toolbox-check` validates `tools.lock.yaml`, `image.lock` and the Containerfile pins offline (plan 02 §22); F01 provides the seed subset (plan 02 §14.9, CD-45) | 02 |
 | `toolbox-pydeps` | — (dev helper) | regenerates `toolbox/requirements.txt` with hashes | 02 |
 | `config-docs-check` | V | `bootstrap.env.example` equals the rendering of plan 50 §9.2 table source (`src/internal/bootstrap/config/vars.go`) | 50 |
 | `profiles-check` | V | `infra/profiles/*.yaml` vs SPEC §11/§12 blocks (03-AC-2) | 03 |
@@ -398,7 +398,7 @@ Rules:
 ### 8.1 Makefile contract
 
 - `Makefile` sets `SHELL := /bin/bash`, `.SHELLFLAGS := -eu -o pipefail -c`, `.DELETE_ON_ERROR`, `MAKEFLAGS += --no-builtin-rules`, and includes `mk/*.mk`.
-- **Container re-exec.** If the environment variable `SC_IN_CONTAINER` is not `1` (the `ci` and `toolbox` images set it), every target re-executes itself as `./bootstrap exec --image ci -- make <target> <vars>` (plan 02 §14.6). So `make verify` on a laptop or on a GitHub runner needs only GNU make, git and Docker/Podman; and `./bootstrap exec --image ci -- make verify` needs no host make. Woodpecker pipelines run steps directly in the `ci` image (`SC_IN_CONTAINER=1`), so no nesting occurs.
+- **Container re-exec.** If the environment variable `SC_IN_CONTAINER` is not `1` (the `ci` and `toolbox` images set it), every target re-executes itself as `./bootstrap exec --image ci -- make <target> <vars>` (plan 02 §14.6). So `make verify` on a laptop or on a GitHub runner needs only GNU make, git and Docker/Podman; and `./bootstrap exec --image ci -- make verify` needs no host make. Woodpecker pipelines run steps directly in the `ci` image (`SC_IN_CONTAINER=1`), so no nesting occurs. F01 builds the seed form of the `ci` image and the `./bootstrap exec` subset (plan 02 §14.9, CD-45); F03 completes both without changing this contract.
 - Caches: `GOMODCACHE=$(REPO)/.cache/go/mod`, `GOCACHE=$(REPO)/.cache/go/build`, chart cache `.cache/charts`, OpenTofu plugin cache `.cache/tofu-plugins`. CI products cache `.cache/` keyed by `src/go.sum`, `versions/platform.lock.yaml` and `infra/tofu/**/.terraform.lock.hcl`.
 - Outputs: `out/<target>/…`; JUnit at `out/<target>/junit.xml` where applicable.
 
