@@ -120,3 +120,52 @@ func TestRealTree_SecretsScanPasses_01AC8(t *testing.T) {
 		t.Errorf("real tree: %s", f)
 	}
 }
+
+// 01-AC-8: a PEM private key escaped onto one line (JSON value with literal backslash-n) is a finding; a
+// header-only mention (no body), as in the contract examples, is not.
+func TestSecretsScan_PEMOneLine_01AC8(t *testing.T) {
+	hdr := "-----BEGIN " + "PRIVATE KEY-----"
+	body := strings.Repeat("MIIEvQIBADANBgkqhkiG9w0B", 3)
+	cases := []struct {
+		name, content string
+		want          bool
+	}{
+		{"escaped on one line", "{\"private_key\":\"" + hdr + "\\n" + body + "\\n-----END " + "PRIVATE KEY-----\\n\"}\n", true},
+		{"header only", "example: \"" + hdr + "\"\nnote: the worker input carries a key\n", false},
+		{"header only inside JSON text", "{\"hint\":\"" + hdr + "\\n...\"}\n", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			d := secretsTree(t)
+			write(t, d, "config/key.json", c.content)
+			r := mustSecrets(t, d)
+			if got := hasRule(r, ruleSecretPattern); got != c.want {
+				t.Errorf("secret-pattern finding = %v, want %v; findings %v", got, c.want, r.Findings)
+			}
+		})
+	}
+}
+
+// 01-AC-8: EXAMPLE in the middle of a key, or an all-Z filler, is not a placeholder; only a key that ends
+// in EXAMPLE (the vendor documentation keys) is.
+func TestSecretsScan_Placeholders_01AC8(t *testing.T) {
+	cases := []struct {
+		name, key string
+		want      bool
+	}{
+		{"EXAMPLE in the middle", "AKIA" + "QYLPMN" + "EXAMPLE" + "7ZZ", true},
+		{"all Z filler", "AKIA" + strings.Repeat("Z", 16), true},
+		{"AWS documentation key", "AKIA" + "IOSFODNN7" + "EXAMPLE", false},
+		{"key ending in EXAMPLE", "AKIA" + "QYLPMN5HH" + "EXAMPLE", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			d := secretsTree(t)
+			write(t, d, "config/creds.yaml", "aws_access_key_id: "+c.key+"\n")
+			r := mustSecrets(t, d)
+			if got := hasRule(r, ruleSecretPattern); got != c.want {
+				t.Errorf("secret-pattern finding for %q = %v, want %v; findings %v", c.name, got, c.want, r.Findings)
+			}
+		})
+	}
+}

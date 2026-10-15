@@ -125,3 +125,40 @@ func TestRealTree_QuarantineListIsEmpty_52AC7(t *testing.T) {
 		t.Errorf("policy/test-quarantine.yaml must be a TestQuarantine with `entries: []`:\n%s", body)
 	}
 }
+
+// 52-AC-7 Q1: the limit is min(maxEntries, 10), so maxEntries 0 with one entry fails.
+func TestQuarantineCheck_MaxEntriesZero_52AC7(t *testing.T) {
+	content := strings.Replace(qFile(qEntry("strange.company/sc/src/internal/runner.TestFlaky", "2026-10-13", "2026-10-20")), "maxEntries: 10", "maxEntries: 0", 1)
+	d := quarantineTree(t, content)
+	r := mustQuarantine(t, d)
+	if !hasRule(r, ruleQ1) {
+		t.Errorf("want rule Q1, got findings %v", r.Findings)
+	}
+	var out, errb bytes.Buffer
+	if code := lint.Main([]string{"quarantine", "--root", d}, &out, &errb); code != 1 || !strings.Contains(out.String(), ruleQ1) {
+		t.Errorf("sc-lint quarantine: exit %d (want 1), output must name Q1:\n%s%s", code, out.String(), errb.String())
+	}
+}
+
+// 52-AC-7 Q2 (plan 52 section 9.3, fifth bullet): every test of internal/verify, internal/statemachine and
+// internal/policy is protected.
+func TestQuarantineCheck_ProtectedPackages_52AC7(t *testing.T) {
+	for _, id := range []string{
+		"strange.company/sc/src/internal/verify.TestFlaky",
+		"strange.company/sc/src/internal/verify/sub.TestFlaky",
+		"strange.company/sc/src/internal/statemachine.TestFlaky",
+		"strange.company/sc/src/internal/policy.TestFlaky",
+	} {
+		t.Run(id, func(t *testing.T) {
+			d := quarantineTree(t, qFile(qEntry(id, "2026-10-13", "2026-10-20")))
+			r := mustQuarantine(t, d)
+			if !hasRule(r, ruleQ2) {
+				t.Errorf("want rule Q2, got findings %v", r.Findings)
+			}
+			var out, errb bytes.Buffer
+			if code := lint.Main([]string{"quarantine", "--root", d}, &out, &errb); code != 1 || !strings.Contains(out.String(), ruleQ2) {
+				t.Errorf("sc-lint quarantine: exit %d (want 1), output must name Q2:\n%s%s", code, out.String(), errb.String())
+			}
+		})
+	}
+}

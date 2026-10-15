@@ -190,8 +190,9 @@ func TestWorkflow_E2EGate_52AC1(t *testing.T) {
 	}
 }
 
-// 52-AC-1 / plan 52 8.4: every job of every workflow declares permissions {contents: read}, either at the
-// workflow level or on the job, except publish.yaml (conditional: it is not part of F01; plan 23 owns it).
+// 52-AC-1 / plan 52 8.4: every job of every workflow declares its own job-level permissions {contents: read}
+// (operator ruling "each job declares": a workflow-level block alone does not suffice), except publish.yaml
+// (conditional: it is not part of F01; plan 23 owns it).
 func TestWorkflow_Permissions_52AC1(t *testing.T) {
 	ws := workflowFiles(t)
 	if len(ws) < 3 {
@@ -199,12 +200,8 @@ func TestWorkflow_Permissions_52AC1(t *testing.T) {
 	}
 	for name, w := range ws {
 		jobs := jobsOf(w)
-		top, hasTop := permsIn(strings.Split(w, "\n"), 0)
 		for j, lines := range jobs {
 			p, ok := permsIn(lines, 4)
-			if !ok {
-				p, ok = top, hasTop
-			}
 			if name == "publish.yaml" {
 				if len(p) != 3 || p["contents"] != "read" || p["id-token"] != "write" || p["packages"] != "write" {
 					t.Errorf("publish.yaml job %s: permissions must be exactly {contents: read, id-token: write, packages: write}, got %v", j, p)
@@ -282,6 +279,52 @@ func TestVerifyRunsSecretsScanAndQuarantine_01AC8_52AC7(t *testing.T) {
 	for _, want := range []string{"locks-check", "secrets-scan", "quarantine-check"} {
 		if !regexp.MustCompile(`(^|\s)` + want + `(\s|$)`).MatchString(targets) {
 			t.Errorf("VERIFY_TARGETS lacks %s: %q", want, targets)
+		}
+	}
+}
+
+// 52-AC-1 / plan 52 8.4, decision CD-52: e2e.yaml runs daily at 03:17 and on v* tags; the scheduled run skips
+// an unchanged commit through an actions/cache marker keyed by github.sha (no `gh run list`, no extra scope).
+func TestWorkflow_E2ESchedule_52AC1(t *testing.T) {
+	w := mustWorkflow(t, "e2e.yaml")
+	on := strings.Join(topBlock(w, "on"), "\n")
+	if !regexp.MustCompile(`(?m)^\s*-?\s*cron:\s*["']?17 3 \* \* \*["']?\s*(#.*)?$`).MatchString(on) || !strings.Contains(on, "schedule:") {
+		t.Errorf("e2e.yaml `on:` must have schedule with cron '17 3 * * *':\n%s", on)
+	}
+	if !regexp.MustCompile(`(?s)push:.*\btags:.*["']?v\*`).MatchString(on) {
+		t.Errorf("e2e.yaml `on.push` must have tags including v*:\n%s", on)
+	}
+	if !regexp.MustCompile(`uses:\s*actions/cache@[0-9a-f]{40}\b`).MatchString(w) {
+		t.Error("e2e.yaml needs an actions/cache@<40-hex> step (the scheduled-run marker)")
+	}
+	if !regexp.MustCompile(`(?m)^\s*key:.*github\.sha`).MatchString(w) {
+		t.Error("e2e.yaml: the actions/cache marker key must contain github.sha")
+	}
+	if strings.Contains(w, "gh run list") {
+		t.Error("e2e.yaml must not use `gh run list`")
+	}
+	if p, ok := permsIn(strings.Split(w, "\n"), 0); !ok || len(p) != 1 || p["contents"] != "read" {
+		t.Errorf("e2e.yaml workflow permissions must be exactly {contents: read}, got %v", p)
+	}
+}
+
+// 52-AC-1 / plan 52 8.4: the path filter fails closed (a failing `git diff` must not read as "no change"),
+// and the toolbox job also runs when the bootstrap wrapper or its e2e scripts change.
+func TestWorkflow_E2EPathFilter_52AC1(t *testing.T) {
+	w := mustWorkflow(t, "e2e.yaml")
+	changes := strings.Join(jobsOf(w)["changes"], "\n")
+	if changes == "" {
+		t.Fatal("e2e.yaml lacks job changes")
+	}
+	pipe := regexp.MustCompile(`git diff[^|]*\|`)
+	for _, l := range strings.Split(changes, "\n") {
+		if pipe.MatchString(l) {
+			t.Errorf("the changes job pipes git diff (a diff failure would be swallowed): %q", strings.TrimSpace(l))
+		}
+	}
+	for _, want := range []string{"toolbox/", "bootstrap", "test/e2e/wrapper/"} {
+		if !strings.Contains(changes, want) {
+			t.Errorf("the changes job's toolbox selection lacks %q", want)
 		}
 	}
 }
