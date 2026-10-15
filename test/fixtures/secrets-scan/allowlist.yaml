@@ -1,0 +1,14 @@
+# Closed allowlist of `make secrets-scan` (plan 35 section 14.8.1, plan 01 section 9).
+# Each entry binds a path, a scanner rule id and the exact matched value. An entry that matches
+# nothing in the tree fails the scan, so the list cannot silently grow. Protected path.
+apiVersion: strange.company/v1alpha1
+kind: SecretsScanAllowlist
+entries:
+  - path: contracts/recovery-bundle.schema.yaml
+    rule: age-secret-key
+    value: AGE-SECRET-KEY-1QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ
+    reason: contract example of the age secret key format, one repeated character
+  - path: plans/40-opentelemetry.md
+    rule: anthropic-api-key
+    value: sk-ant-AAAAAAAAAAAAAAAAAAAAAAAA
+    reason: deliberate privacy-test canary for the redaction sink test
