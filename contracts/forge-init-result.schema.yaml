@@ -1,0 +1,212 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://strange.company/contracts/forge-init-result/v1alpha1
+title: Forge-init result
+description: >-
+  Journal record written by `sc-bootstrap forge init` (phase `forge-init`, plan 16 §7.3, §14.2)
+  into the bootstrap journal (plan 50). One record per run, including `--recover` runs.
+  Contains identifiers, fingerprints and token *names* only; never a secret value.
+type: object
+additionalProperties: false
+required: [phase, run_id, mode, result, started_at, finished_at, steps, protection_stage, errors]
+properties:
+  phase: {const: forge-init}
+  run_id:
+    type: string
+    pattern: "^fi-[0-9]{8}T[0-9]{6}Z$"
+  mode: {enum: [init, recover]}
+  result: {enum: [succeeded, failed, partial]}
+  started_at: {type: string, format: date-time}
+  finished_at: {type: string, format: date-time}
+  forgejo_version:
+    type: string
+    pattern: "^[0-9]+\\.[0-9]+\\.[0-9]+"
+  steps:
+    type: array
+    items:
+      type: object
+      additionalProperties: false
+      required: [id, name, outcome, at]
+      properties:
+        id:
+          type: string
+          pattern: "^(S(0[0-9]|1[0-9])|M[0-5])$"
+        name: {type: string, pattern: "^[a-z0-9-]+$"}
+        outcome: {enum: [created, verified, updated, skipped, failed]}
+        at: {type: string, format: date-time}
+        mutations:
+          description: Count of mutating API calls (POST/PATCH/PUT/DELETE) made by the step.
+          type: integer
+          minimum: 0
+  repo:
+    type: object
+    additionalProperties: false
+    required: [full_name, id, main_sha]
+    properties:
+      full_name: {const: strange-company/strange-company}
+      id: {type: integer, minimum: 1}
+      main_sha: {$ref: "#/$defs/sha"}
+  ssh_host_key_fingerprint: {$ref: "#/$defs/fingerprint"}
+  flux_deploy_key:
+    type: object
+    additionalProperties: false
+    required: [id, fingerprint, read_only]
+    properties:
+      id: {type: integer, minimum: 1}
+      fingerprint: {$ref: "#/$defs/fingerprint"}
+      read_only: {const: true}
+  bots:
+    type: array
+    items:
+      type: object
+      additionalProperties: false
+      required: [username, token_name]
+      properties:
+        username: {type: string, pattern: "^sc-[a-z0-9-]+$"}
+        token_name:
+          type: string
+          pattern: "^[a-z0-9-]+-[0-9]{8}T[0-9]{6}Z$"
+  woodpecker_oauth_client_id: {type: string, minLength: 8}
+  mirror:
+    type: object
+    additionalProperties: false
+    required: [state]
+    properties:
+      id: {type: string, description: Forgejo remote_name of the push mirror.}
+      state: {enum: [synced, pending, failed]}
+      github_main_sha: {$ref: "#/$defs/sha"}
+      last_error_class: {enum: [none, network, auth, workflows-permission, rejected-non-ff, not-found, push-protection, other]}
+  outputs_commit: {$ref: "#/$defs/sha"}
+  pushed_sha:
+    description: Final Forgejo main SHA after S16–S18, recorded at S19; plan 19 T0(c) compares against it (SEED-9).
+    $ref: "#/$defs/sha"
+  protection_stage: {enum: [bootstrap, steady]}
+  errors:
+    type: array
+    items:
+      type: object
+      additionalProperties: false
+      required: [code, step, message]
+      properties:
+        code:
+          enum:
+            - FORGE_UNHEALTHY
+            - FORGE_ADMIN_AUTH_FAILED
+            - FORGE_BREAKGLASS_MISMATCH
+            - FORGE_MAIN_DIVERGED
+            - FORGE_HOSTKEY_MISMATCH
+            - FORGE_DEPLOY_KEY_CONFLICT
+            - FORGE_OUTPUTS_REQUIRE_PR
+            - FORGE_MIRROR_FILTER_UNSUPPORTED
+            - FORGE_API_ERROR
+            - GITHUB_DIVERGED
+            - GITHUB_TAGS_DIVERGED
+            - GITHUB_UNREACHABLE
+            - GITHUB_AUTH_FAILED
+            - GITHUB_PUSH_REJECTED
+        step: {type: string, pattern: "^(S(0[0-9]|1[0-9])|M[0-5])$"}
+        message: {type: string, maxLength: 2000}
+allOf:
+  - if:
+      properties: {result: {const: succeeded}}
+    then:
+      required: [repo, ssh_host_key_fingerprint, flux_deploy_key, outputs_commit, pushed_sha, mirror]
+      properties:
+        errors:
+          items:
+            properties:
+              code: {enum: [GITHUB_UNREACHABLE]}
+$defs:
+  sha:
+    type: string
+    pattern: "^[0-9a-f]{40}$"
+  fingerprint:
+    type: string
+    pattern: "^SHA256:[A-Za-z0-9+/]{43}$"
+examples:
+  - phase: forge-init
+    run_id: fi-20261013T221500Z
+    mode: init
+    result: succeeded
+    started_at: "2026-10-13T22:15:00Z"
+    finished_at: "2026-10-13T22:19:41Z"
+    forgejo_version: "15.0.10"
+    steps:
+      - {id: S07, name: ensure-repo, outcome: created, at: "2026-10-13T22:16:02Z", mutations: 2}
+      - {id: S17, name: push-mirror, outcome: created, at: "2026-10-13T22:19:10Z", mutations: 2}
+      - {id: M4, name: mirror-verify-main, outcome: verified, at: "2026-10-13T22:19:30Z", mutations: 0}
+    repo: {full_name: strange-company/strange-company, id: 1, main_sha: 3f1c2a9b8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a}
+    ssh_host_key_fingerprint: "SHA256:abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ"
+    flux_deploy_key: {id: 1, fingerprint: "SHA256:QPONMLKJIHGFEDCBAzyxwvutsrqponmlkjihgfedcba", read_only: true}
+    bots:
+      - {username: sc-runner, token_name: sc-runner-20261013T221530Z}
+      - {username: sc-gc, token_name: sc-gc-20261013T221531Z}
+    woodpecker_oauth_client_id: 6c2f0e7a-1b2c-4d5e-8f90-a1b2c3d4e5f6
+    mirror: {id: remote_mirror_x1y2z3, state: synced, github_main_sha: 3f1c2a9b8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a, last_error_class: none}
+    outputs_commit: 3f1c2a9b8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a
+    pushed_sha: 3f1c2a9b8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a
+    protection_stage: bootstrap
+    errors: []
+  - phase: forge-init
+    run_id: fi-20261013T230000Z
+    mode: init
+    result: failed
+    started_at: "2026-10-13T23:00:00Z"
+    finished_at: "2026-10-13T23:00:20Z"
+    steps:
+      - {id: S08, name: initial-push, outcome: failed, at: "2026-10-13T23:00:19Z"}
+    protection_stage: bootstrap
+    errors:
+      - {code: FORGE_MAIN_DIVERGED, step: S08, message: "remote main is not an ancestor of local HEAD"}
+x-invalid-examples:
+  - reason: A succeeded run must record the repository, fingerprints, outputs commit and mirror state.
+    value:
+      phase: forge-init
+      run_id: fi-20261013T221500Z
+      mode: init
+      result: succeeded
+      started_at: "2026-10-13T22:15:00Z"
+      finished_at: "2026-10-13T22:19:41Z"
+      steps: []
+      protection_stage: bootstrap
+      errors: []
+  - reason: A succeeded run may carry only the non-fatal GITHUB_UNREACHABLE error.
+    value:
+      phase: forge-init
+      run_id: fi-20261013T221500Z
+      mode: init
+      result: succeeded
+      started_at: "2026-10-13T22:15:00Z"
+      finished_at: "2026-10-13T22:19:41Z"
+      steps: []
+      repo: {full_name: strange-company/strange-company, id: 1, main_sha: 3f1c2a9b8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a}
+      ssh_host_key_fingerprint: "SHA256:abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ"
+      flux_deploy_key: {id: 1, fingerprint: "SHA256:QPONMLKJIHGFEDCBAzyxwvutsrqponmlkjihgfedcba", read_only: true}
+      mirror: {state: synced}
+      outputs_commit: 3f1c2a9b8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a
+      pushed_sha: 3f1c2a9b8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a
+      protection_stage: bootstrap
+      errors:
+        - {code: FORGE_MAIN_DIVERGED, step: S08, message: x}
+  - reason: The Flux deploy key must be read-only (ADR-0016).
+    value:
+      phase: forge-init
+      run_id: fi-20261013T221500Z
+      mode: init
+      result: partial
+      started_at: "2026-10-13T22:15:00Z"
+      finished_at: "2026-10-13T22:19:41Z"
+      steps: []
+      flux_deploy_key: {id: 1, fingerprint: "SHA256:QPONMLKJIHGFEDCBAzyxwvutsrqponmlkjihgfedcba", read_only: false}
+      protection_stage: bootstrap
+      errors: []
+  - reason: Unknown step outcome.
+    value:
+      phase: forge-init
+      run_id: fi-20261013T221500Z
+      mode: init
+      result: partial
+      started_at: "2026-10-13T22:15:00Z"
+      finished_at: "2026-10-13T22:19:41Z"
+      steps: [{id: S01, name: wait-healthy, outcome: maybe, at: "2026-10-13T22:15:05Z"}]
+      protection_stage: bootstrap
+      errors: []

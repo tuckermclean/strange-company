@@ -1,0 +1,735 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://strange.company/contracts/verification/v1alpha1
+title: VerificationPolicy
+description: |
+  Platform verification policy, `policy/verification.yaml` in `strange-company`, kind
+  `VerificationPolicy` (SPEC §4.7, §46, §50, §53, §54, §57, §74, §102; owning plan 22, with
+  the `retry`, `watchdog`, `testSpecConflict` and `humanAuthority` sections owned by plan 29).
+  Delivered to the Runner as a Flux-generated ConfigMap (ADR-0017); `policy/**` is a
+  protected path, so no autonomous task can change it.
+
+  It defines: verification modes and exemption classes; the default protected paths;
+  test-protection rules (discovery configuration, skip markers, test-environment
+  detection, stub policy); per-adapter result-classification rules; RED/GREEN/judge
+  pipeline limits; merge requirements; and retry, watchdog and human-authority settings.
+
+  Repository policy (`repo-policy.schema.yaml`) can only tighten these values (plan 22
+  §9.4). Loader invariants beyond the schema (plan 22 §9.5): exemption class names are
+  unique; `approval: auto` only with a deterministic judge kind or
+  `producesMergeableChange: false`; the effective path set of an `auto` class
+  (allowedPaths minus deniedPaths) does not intersect the allowedPaths of any `human`
+  class other than catch-all classes (allowedPaths containing `**`, always `human`); no
+  allowedPaths glob lies entirely inside the protected set (a dead entry; intersection is
+  allowed because ingestion subtracts protected paths); every adapter named by a class or
+  default exists in `adapters`;
+  every `staticChecks` regex compiles (RE2); `exemptionClasses[].producerRoles` ⊆
+  {implementer, researcher}.
+
+  `$defs/JudgeArtifact` is the format of a verification-first judge file written by a
+  tester under a class's `judge.artifactPaths` (validated by the Runner at ingestion).
+type: object
+additionalProperties: false
+required: [apiVersion, kind, metadata, spec]
+properties:
+  apiVersion:
+    const: strange.company/v1alpha1
+  kind:
+    const: VerificationPolicy
+  metadata:
+    type: object
+    additionalProperties: false
+    required: [name]
+    properties:
+      name: {type: string, pattern: "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"}
+  spec:
+    type: object
+    additionalProperties: false
+    required: [defaultMode, task, protectedPaths, protectedBranches, testProtection, staticChecks, stubPolicy, adapters, red, green, judge, exemptionClasses, testSpecConflict, retry, watchdog, humanAuthority, merge]
+    properties:
+      defaultMode:
+        description: SPEC §46 - the normal mode for behavior-changing software.
+        const: test-first
+      task:
+        type: object
+        additionalProperties: false
+        required: [maxBaseLag]
+        properties:
+          maxBaseLag:
+            description: How far behind the target-branch tip a SHA base_ref may be (plan 29 G_BASE_COMMIT_RESOLVED; plan 26 §14.1). Repositories may only shorten it.
+            type: object
+            additionalProperties: false
+            required: [commits, age]
+            properties:
+              commits: {type: integer, minimum: 0, maximum: 200}
+              age: {$ref: "#/$defs/Duration"}
+      protectedPaths:
+        description: Globs no autonomous task may change (ADR-0008, ADR-0017). Diffed against base..head at ingestion and at merge.
+        $ref: "#/$defs/GlobList"
+      protectedBranches:
+        $ref: "#/$defs/GlobList"
+      testProtection:
+        type: object
+        additionalProperties: false
+        required: [existingTestModification, testDeletion, discoveryConfig]
+        properties:
+          existingTestModification:
+            description: Whether an implementer may modify files that existed at the red commit and match testPaths, fixturePaths or testInfraPaths (tests, goldens, fixtures, helpers) but are not in the manifest. `deny` (default) makes it TEST_TAMPER; the legitimate path is a TEST_SPEC_CONFLICT (plan 22 §14.6, TDD-1).
+            type: string
+            enum: [deny, flag]
+          testDeletion:
+            description: Deleting or renaming any file under testPaths by an implementer.
+            const: deny
+          discoveryConfig:
+            $ref: "#/$defs/DiscoveryConfig"
+      staticChecks:
+        type: object
+        additionalProperties: false
+        required: [skipMarkers, testEnvDetection, unconditionalFailure, literalLeakage]
+        properties:
+          skipMarkers:
+            description: Per language, RE2 patterns that add a skip/ignore/focus marker. Added lines matching in an implementer diff are TEST_TAMPER (`skip_marker_added`).
+            $ref: "#/$defs/PatternsByLanguage"
+          testEnvDetection:
+            description: Per language, RE2 patterns that detect a test environment in non-test code. Added lines matching in non-test files of an implementer diff are TEST_TAMPER (`test_env_detection`).
+            $ref: "#/$defs/PatternsByLanguage"
+          unconditionalFailure:
+            description: Per language, patterns of assertions that cannot pass (warning in red-result scope.static_findings; the reviewer's check).
+            $ref: "#/$defs/PatternsByLanguage"
+          literalLeakage:
+            description: Warn when a string literal of ≥ minLength characters from a manifest test file appears in added non-test lines of the implementation diff.
+            type: object
+            additionalProperties: false
+            required: [enabled, minLength]
+            properties:
+              enabled: {type: boolean}
+              minLength: {type: integer, minimum: 6, maximum: 200}
+      stubPolicy:
+        $ref: "#/$defs/StubPolicy"
+      adapters:
+        description: Result-format adapters and their classification rules (plan 22 §14.1).
+        type: object
+        additionalProperties: false
+        required: [go-test-json, junit-xml, pytest-junit, jest-junit, vitest-junit, cargo-nextest-junit]
+        properties:
+          go-test-json: {$ref: "#/$defs/Adapter"}
+          junit-xml: {$ref: "#/$defs/Adapter"}
+          pytest-junit: {$ref: "#/$defs/Adapter"}
+          jest-junit: {$ref: "#/$defs/Adapter"}
+          vitest-junit: {$ref: "#/$defs/Adapter"}
+          cargo-nextest-junit: {$ref: "#/$defs/Adapter"}
+      red:
+        type: object
+        additionalProperties: false
+        required: [pipelineTimeout, maxInfraRetriggers, baseline, requirePerAcCoverage, repeatNewTests]
+        properties:
+          pipelineTimeout: {$ref: "#/$defs/Duration"}
+          repeatNewTests:
+            description: New and declared tests run this many times at the red commit; every run must fail the same way (else `nondeterministic_test`, plan 22 R11b).
+            type: integer
+            minimum: 1
+            maximum: 5
+          maxInfraRetriggers: {type: integer, minimum: 0, maximum: 5}
+          baseline:
+            description: "`run` = run the full suites (never redScope-limited) at base in the same pipeline; `reuse` = the Runner may pass a cached baseline digest for the same (base SHA, validation blob, sc-verify version) and sc-verify skips the base run."
+            type: string
+            enum: [run, reuse]
+          requirePerAcCoverage:
+            description: Every criterion of the frozen version needs ≥ 1 mapped manifest test (rule R6).
+            const: true
+      green:
+        type: object
+        additionalProperties: false
+        required: [pipelineTimeout, maxInfraRetriggers, repeatProtectedTests, isolationRun, redReplay]
+        properties:
+          pipelineTimeout: {$ref: "#/$defs/Duration"}
+          maxInfraRetriggers: {type: integer, minimum: 0, maximum: 5}
+          repeatProtectedTests:
+            description: Manifest tests run this many times at the head; all runs must pass (plan 22 G4c).
+            type: integer
+            minimum: 1
+            maximum: 5
+          isolationRun:
+            description: G4b - manifest tests re-run in head minus every test-classified file added after the red commit (TDD-2).
+            const: true
+          redReplay:
+            description: G9 - change-criterion manifest tests replayed against an export of the red commit in the GREEN environment must still fail (TDD-3).
+            const: true
+      judge:
+        type: object
+        additionalProperties: false
+        required: [pipelineTimeout, maxInfraRetriggers, maxChecks]
+        properties:
+          pipelineTimeout: {$ref: "#/$defs/Duration"}
+          maxInfraRetriggers: {type: integer, minimum: 0, maximum: 5}
+          maxChecks: {type: integer, minimum: 1, maximum: 200}
+      exemptionClasses:
+        type: array
+        maxItems: 30
+        items: {$ref: "#/$defs/ExemptionClass"}
+      testSpecConflict:
+        type: object
+        additionalProperties: false
+        required: [resolutionApproval, maxConflictsPerTask, maxGenerations]
+        properties:
+          resolutionApproval:
+            description: Who authorizes a corrected acceptance test (ADR-0355). `human` (default) or `adjudicator` (the reviewer adjudication suffices).
+            type: string
+            enum: [human, adjudicator]
+          maxConflictsPerTask: {type: integer, minimum: 1, maximum: 5}
+          maxGenerations: {type: integer, minimum: 1, maximum: 10}
+      retry:
+        description: The retry policy (plan 29 §16). Per CD-11 this section is the only place retry limits live; there is no `policy/retry.yaml` and no `RetryPolicy` kind.
+        $ref: "#/$defs/RetryPolicy"
+      watchdog:
+        type: object
+        additionalProperties: false
+        required: [groups]
+        properties:
+          groups:
+            type: object
+            propertyNames:
+              enum: [specified, noExecution, verification, hermesWait, investigation, awaitingMerge, needsHuman, approval]
+            additionalProperties:
+              type: object
+              additionalProperties: false
+              required: [alertAfter]
+              properties:
+                alertAfter: {$ref: "#/$defs/Duration"}
+                escalateAfter: {$ref: "#/$defs/Duration"}
+      humanAuthority:
+        type: object
+        additionalProperties: false
+        required: [forgejoTeams, machineAccounts, maxCommandsPerTaskPerHour]
+        properties:
+          forgejoTeams:
+            type: array
+            minItems: 1
+            items: {type: string, pattern: "^[A-Za-z0-9_.-]{1,64}$"}
+          machineAccounts:
+            description: Accounts whose /sc commands are always refused (plan 29 §7.3; CD-15 - only human accounts may issue commands, and every `sc-*` login is refused regardless of this list).
+            type: array
+            minItems: 1
+            items: {type: string, pattern: "^[A-Za-z0-9_.-]{1,64}$"}
+          maxCommandsPerTaskPerHour: {type: integer, minimum: 1, maximum: 100}
+      merge:
+        type: object
+        additionalProperties: false
+        required: [requiredStatusContexts, reviewRequired, humanApprovalsRequired, nonTaskPullRequests, elevatedApprovals, singleOperatorCoolingOff]
+        properties:
+          requiredStatusContexts:
+            description: Contexts branch protection requires (plan 55 §9). The Woodpecker context comes from plan 20.
+            type: array
+            minItems: 2
+            items: {type: string, maxLength: 120}
+            allOf:
+              - contains: {const: strange-company/tdd-provenance}
+              - contains: {const: strange-company/review}
+          reviewRequired: {const: true}
+          humanApprovalsRequired: {type: integer, minimum: 0, maximum: 5}
+          elevatedApprovals:
+            description: Upper bound of human approvals (members of team `sc-mergers`, never machine accounts) on the head SHA that `strange-company/review` requires when a PR touches a repository's `merge.elevatedPaths` (TDD-15). Effective value = min(elevatedApprovals, N) where N is the size of `sc-mergers` from installation config (CD-39).
+            type: integer
+            minimum: 2
+            maximum: 5
+          agentPullRequestApprovals:
+            description: Human approvals an agent-authored (task) PR needs (CD-39).
+            const: 1
+          operatorPullRequestApprovals:
+            description: Approvals an operator-authored (human) PR needs; it can still be merged only by `sc-mergers` (CD-38/CD-39 - human authorship is the review).
+            const: 0
+          singleOperatorCoolingOff:
+            description: When N = 1 (single-operator mode), `strange-company/review` stays pending until this long after the last push touching an elevated path; the window start is announced to the operator (CD-39).
+            $ref: "#/$defs/Duration"
+          nonTaskPullRequests:
+            description: Status the Runner posts on PRs that are not task PRs (human or Renovate branches) when they contain no agent-authored commit (plan 55 §14.4).
+            type: string
+            enum: [success-human-authored, failure]
+$defs:
+  Duration: {type: string, pattern: "^[0-9]+(s|m|h)$"}
+  Glob: {type: string, pattern: "^(?!/)[A-Za-z0-9._@+*?{},/\\[\\]-]{1,200}$"}
+  GlobList:
+    type: array
+    maxItems: 200
+    items: {$ref: "#/$defs/Glob"}
+  Language:
+    type: string
+    enum: [go, python, javascript, typescript, rust, java, kotlin, csharp, shell, any]
+  PatternsByLanguage:
+    type: object
+    propertyNames: {$ref: "#/$defs/Language"}
+    additionalProperties:
+      type: array
+      maxItems: 50
+      items: {type: string, minLength: 2, maxLength: 300}
+  DiscoveryConfig:
+    description: Test-discovery configuration protected from implementers (plan 22 §14.6).
+    type: object
+    additionalProperties: false
+    required: [wholeFiles, semanticKeys, protectValidationReferencedFiles]
+    properties:
+      wholeFiles:
+        description: Globs of files whose blob may not change (or appear) in an implementer diff.
+        $ref: "#/$defs/GlobList"
+      semanticKeys:
+        description: Keys inside mixed-content files that may not change.
+        type: array
+        maxItems: 100
+        items:
+          type: object
+          additionalProperties: false
+          required: [path, keys]
+          properties:
+            path: {$ref: "#/$defs/Glob"}
+            format: {type: string, enum: [json, toml, yaml, ini]}
+            keys:
+              type: array
+              minItems: 1
+              items: {type: string, maxLength: 200}
+      protectValidationReferencedFiles:
+        description: Also protect every repository file referenced by a validation.yaml suite or check argv (scripts, Makefile when argv[0] is make).
+        type: boolean
+      forbidNewFiles:
+        description: Globs of discovery-relevant files that an implementer may not add (a nested go.mod silently drops a subtree from ./..., a nested pytest.ini or babel config changes collection or transforms). Adding one is TEST_TAMPER (`discovery_config_changed`).
+        $ref: "#/$defs/GlobList"
+      testDependencyPaths:
+        description: Globs whose changes alter test frameworks or assertion libraries (vendored code); changes by an implementer are TEST_TAMPER (`test_dependency_changed`).
+        $ref: "#/$defs/GlobList"
+  StubPolicy:
+    description: Declared not-implemented stubs (ADR-0352).
+    type: object
+    additionalProperties: false
+    required: [marker, panicMessage, maxAddedLinesPerStub, maxStubsPerTask, allowPanicStubsFor, staticallyTypedLanguages]
+    properties:
+      marker:
+        description: Comment marker each stub carries, formatted `SC-STUB(<task-id> AC-n[ AC-m])`.
+        const: SC-STUB
+      panicMessage:
+        const: SC-STUB-NOT-IMPLEMENTED
+      maxAddedLinesPerStub: {type: integer, minimum: 1, maximum: 40}
+      maxStubsPerTask: {type: integer, minimum: 0, maximum: 100}
+      allowPanicStubsFor:
+        description: Languages where a panic/raise stub counts as `stub_unimplemented` RED evidence. Others need zero-value stubs.
+        type: array
+        items: {$ref: "#/$defs/Language"}
+      staticallyTypedLanguages:
+        type: array
+        items: {$ref: "#/$defs/Language"}
+  Adapter:
+    type: object
+    additionalProperties: false
+    required: [format, idTemplate, errorTypes, assertionTypes, buildFailurePatterns, timeoutPatterns]
+    properties:
+      format: {type: string, enum: [go-test-json, junit-xml]}
+      idTemplate:
+        description: How a test id is formed from report fields, e.g. `{package}.{test}` or `{file}::{classname}::{name}`.
+        type: string
+        maxLength: 200
+      errorTypes:
+        description: Failure types/messages classified `failed_error` (RE2, matched against the failure type then the first message line).
+        type: array
+        items: {type: string, maxLength: 200}
+      assertionTypes:
+        description: Failure types/messages classified `failed_assertion`. A failure matching neither list is `failed_error` (fail closed).
+        type: array
+        minItems: 1
+        items: {type: string, maxLength: 200}
+      buildFailurePatterns:
+        type: array
+        items: {type: string, maxLength: 200}
+      timeoutPatterns:
+        type: array
+        items: {type: string, maxLength: 200}
+  ExemptionClass:
+    type: object
+    additionalProperties: false
+    required: [name, description, allowedPaths, judge, approval, producesMergeableChange, producerRoles]
+    properties:
+      name: {type: string, pattern: "^[a-z][a-z0-9-]{1,40}$"}
+      description: {type: string, minLength: 10, maxLength: 500}
+      allowedPaths:
+        description: Every path the producer changes must match one of these (and none of deniedPaths or the protected set). Empty means the class produces no repository change.
+        $ref: "#/$defs/GlobList"
+      deniedPaths:
+        $ref: "#/$defs/GlobList"
+      judge:
+        type: object
+        additionalProperties: false
+        required: [kind, source, executor, artifactPaths]
+        properties:
+          kind: {type: string, enum: [required-facts, validation-scenario, invariants, benchmark, schema-check, rubric, characterization]}
+          source: {type: string, enum: [artifact, acceptance-criteria]}
+          executor:
+            description: "`ci` = sc-verify in the verify workflow; `runner-local` = the Runner evaluates (no repository change, e.g. research); `reviewer` = rubric judged at REVIEW."
+            type: string
+            enum: [ci, runner-local, reviewer]
+          artifactPaths:
+            $ref: "#/$defs/GlobList"
+      approval: {type: string, enum: [auto, human]}
+      producesMergeableChange: {type: boolean}
+      producerRoles:
+        type: array
+        minItems: 1
+        uniqueItems: true
+        items: {type: string, enum: [implementer, researcher]}
+      repositories:
+        description: Repositories (org/name globs) where the class may be used; absent = all managed repositories (still subject to the repository's allowedExemptionClasses, whose absence means none).
+        type: array
+        items: {type: string, pattern: "^[A-Za-z0-9_.*-]+/[A-Za-z0-9_.*-]+$"}
+    allOf:
+      - if:
+          required: [allowedPaths]
+          properties: {allowedPaths: {contains: {const: "**"}}}
+        then:
+          properties: {approval: {const: human}}
+  RetryPolicy:
+    description: Owned by plan 29 §9 and §16.
+    type: object
+    additionalProperties: false
+    required: [maxAutonomousAttempts, maxTesterAttempts, maxReviewExecutions, maxAuxiliaryExecutions, maxBlockedResults, infrastructure, policy, identicalReplay, humanGrant]
+    properties:
+      maxAutonomousAttempts: {type: integer, minimum: 1, maximum: 20}
+      maxTesterAttempts: {type: integer, minimum: 1, maximum: 10}
+      maxReviewExecutions: {type: integer, minimum: 1, maximum: 10}
+      maxAuxiliaryExecutions: {type: integer, minimum: 0, maximum: 30}
+      maxBlockedResults: {type: integer, minimum: 0, maximum: 10}
+      infrastructure:
+        type: object
+        additionalProperties: false
+        required: [maxConsecutive, maxTotal, maxConsecutiveTimeouts, backoffSeconds]
+        properties:
+          maxConsecutive: {type: integer, minimum: 1, maximum: 10}
+          maxTotal: {type: integer, minimum: 1, maximum: 30}
+          maxConsecutiveTimeouts: {type: integer, minimum: 1, maximum: 5}
+          queueTimeout:
+            description: Longest time an execution may stay QUEUED waiting for a worker slot or heavy-slot units before QUEUE_TIMEOUT (RA-7).
+            $ref: "#/$defs/Duration"
+          backoffSeconds:
+            type: array
+            minItems: 1
+            maxItems: 10
+            items: {type: integer, minimum: 0, maximum: 3600}
+      policy:
+        type: object
+        additionalProperties: false
+        required: [maxViolations]
+        properties:
+          maxViolations: {const: 0}
+      identicalReplay: {const: forbid}
+      humanGrant: {type: integer, minimum: 1, maximum: 20}
+  JudgeArtifact:
+    description: Verification-first judge file (e.g. `verification/sc-200/judge.yaml`), authored by a tester execution, frozen by the judge manifest.
+    type: object
+    additionalProperties: false
+    required: [apiVersion, kind, metadata, spec]
+    properties:
+      apiVersion: {const: strange.company/v1alpha1}
+      kind: {const: Judge}
+      metadata:
+        type: object
+        additionalProperties: false
+        required: [task, exemptionClass]
+        properties:
+          task: {type: string, pattern: "^sc-[0-9]+$"}
+          exemptionClass: {type: string, pattern: "^[a-z][a-z0-9-]{1,40}$"}
+      spec:
+        type: object
+        additionalProperties: false
+        required: [kind, checks]
+        properties:
+          kind: {type: string, enum: [required-facts, validation-scenario, invariants, benchmark, schema-check, rubric, characterization]}
+          checks:
+            type: array
+            minItems: 1
+            maxItems: 200
+            items:
+              type: object
+              additionalProperties: false
+              required: [id, acIds]
+              properties:
+                id: {type: string, pattern: "^J-[1-9][0-9]{0,2}$"}
+                acIds:
+                  type: array
+                  minItems: 1
+                  items: {type: string, pattern: "^AC-[1-9][0-9]{0,2}$"}
+                requiredFacts:
+                  type: object
+                  additionalProperties: false
+                  required: [paths, mustMatch]
+                  properties:
+                    paths: {$ref: "#/$defs/GlobList"}
+                    mustMatch:
+                      type: array
+                      minItems: 1
+                      items: {type: string, maxLength: 300}
+                command:
+                  type: object
+                  additionalProperties: false
+                  required: [argv, timeoutSeconds]
+                  properties:
+                    argv: {type: array, minItems: 1, maxItems: 40, items: {type: string, maxLength: 500}}
+                    timeoutSeconds: {type: integer, minimum: 1, maximum: 3600}
+                threshold:
+                  type: object
+                  additionalProperties: false
+                  required: [metric, op, value]
+                  properties:
+                    metric: {type: string, maxLength: 100}
+                    op: {type: string, enum: ["<", "<=", ">", ">="]}
+                    value: {type: number}
+                rubric:
+                  description: Reviewer-judged statement (kind rubric only).
+                  type: string
+                  maxLength: 2000
+examples:
+  - apiVersion: strange.company/v1alpha1
+    kind: VerificationPolicy
+    metadata: {name: platform}
+    spec:
+      defaultMode: test-first
+      task: {maxBaseLag: {commits: 20, age: 24h}}
+      protectedPaths: [".woodpecker/**", ".strange-company/**", "AGENTS.md", "**/AGENTS.md", "CLAUDE.md", "**/CLAUDE.md", ".claude/**", "**/.claude/**", ".codex/**", "**/.codex/**", ".opencode/**", "**/.opencode/**", "policy/**", "contracts/**", "CODEOWNERS", "**/CODEOWNERS", ".forgejo/**", ".gitea/**", ".github/**", ".gitmodules", ".gitattributes", ".sops.yaml", "**/*.sops.yaml", "forge/**", "gitops/**/generated/**", "gitops/platform/admission/**"]
+      protectedBranches: [main, "release/*"]
+      testProtection:
+        existingTestModification: deny
+        testDeletion: deny
+        discoveryConfig:
+          wholeFiles: ["**/pytest.ini", "**/conftest.py", "**/tox.ini", "**/jest.config.*", "**/vitest.config.*", "**/vitest.workspace.*", "**/.mocharc*", "**/karma.conf.*", "**/babel.config.*", "**/.babelrc*", "**/build.rs", ".nextest.toml", ".config/nextest.toml", ".cargo/config.toml", "go.work"]
+          semanticKeys:
+            - {path: "**/package.json", format: json, keys: [scripts.test, jest, vitest, mocha, devDependencies]}
+            - {path: "**/go.mod", format: ini, keys: [replace, module]}
+            - {path: "**/tsconfig*.json", format: json, keys: [compilerOptions.paths, compilerOptions.baseUrl, compilerOptions.rootDirs]}
+            - {path: "**/pyproject.toml", format: toml, keys: [tool.pytest, tool.pytest.ini_options]}
+            - {path: "**/setup.cfg", format: ini, keys: ["tool:pytest"]}
+            - {path: "**/Cargo.toml", format: toml, keys: [test, "[[test]]", lib.test, lib.harness, patch, dev-dependencies]}
+          protectValidationReferencedFiles: true
+          forbidNewFiles: ["**/go.mod", "**/go.work", "**/pytest.ini", "**/tox.ini", "**/conftest.py", "**/jest.config.*", "**/vitest.config.*", "**/.babelrc*", "**/babel.config.*", "**/.mocharc*"]
+          testDependencyPaths: ["vendor/**", "**/node_modules/**", "third_party/**"]
+      staticChecks:
+        skipMarkers:
+          go: ["\\bt\\.Skip(Now|f)?\\(", "testing\\.Short\\(\\)"]
+          python: ["@pytest\\.mark\\.(skip|skipif|xfail)", "pytest\\.(skip|xfail)\\(", "@unittest\\.skip", "raise\\s+unittest\\.SkipTest"]
+          javascript: ["\\b(it|test|describe)\\.(skip|todo|only)\\(", "\\bx(it|test|describe)\\(", "\\bf(it|describe)\\("]
+          typescript: ["\\b(it|test|describe)\\.(skip|todo|only)\\(", "\\bx(it|test|describe)\\(", "\\bf(it|describe)\\("]
+          rust: ["#\\[ignore\\b"]
+          java: ["@Disabled\\b", "@Ignore\\b", "Assume\\.assume"]
+        testEnvDetection:
+          go: ["flag\\.Lookup\\(\"test\\.", "testing\\.Testing\\(\\)", "strings\\.HasSuffix\\(os\\.Args\\[0\\], \"\\.test\"\\)"]
+          python: ["PYTEST_CURRENT_TEST", "\"pytest\" in sys\\.modules", "'pytest' in sys\\.modules"]
+          javascript: ["JEST_WORKER_ID", "process\\.env\\.VITEST", "NODE_ENV\\s*===?\\s*['\"]test['\"]"]
+          typescript: ["JEST_WORKER_ID", "process\\.env\\.VITEST", "NODE_ENV\\s*===?\\s*['\"]test['\"]"]
+          rust: ["cfg!\\(test\\)"]
+        unconditionalFailure:
+          go: ["t\\.Fatal(f)?\\(\"[^\"]*\"\\)\\s*$"]
+          python: ["assert\\s+False\\b", "pytest\\.fail\\("]
+          javascript: ["expect\\(true\\)\\.toBe\\(false\\)"]
+          typescript: ["expect\\(true\\)\\.toBe\\(false\\)"]
+          rust: ["assert!\\(false"]
+        literalLeakage: {enabled: true, minLength: 12}
+      stubPolicy:
+        marker: SC-STUB
+        panicMessage: SC-STUB-NOT-IMPLEMENTED
+        maxAddedLinesPerStub: 12
+        maxStubsPerTask: 20
+        allowPanicStubsFor: [rust]
+        staticallyTypedLanguages: [go, rust, java, kotlin, csharp, typescript]
+      adapters:
+        go-test-json:
+          format: go-test-json
+          idTemplate: "{package}.{test}"
+          errorTypes: ["^panic: ", "\\[build failed\\]", "\\[setup failed\\]"]
+          assertionTypes: ["_test\\.go:[0-9]+: "]
+          buildFailurePatterns: ["\\[build failed\\]", "\\[setup failed\\]"]
+          timeoutPatterns: ["^panic: test timed out after"]
+        junit-xml:
+          format: junit-xml
+          idTemplate: "{classname}.{name}"
+          errorTypes: ["^error$"]
+          assertionTypes: ["^failure$"]
+          buildFailurePatterns: []
+          timeoutPatterns: ["(?i)timed? ?out"]
+        pytest-junit:
+          format: junit-xml
+          idTemplate: "{file}::{name}"
+          errorTypes: ["ImportError", "ModuleNotFoundError", "NameError", "SyntaxError", "IndentationError", "fixture '.*' not found", "^error$"]
+          assertionTypes: ["AssertionError", "^Failed: DID NOT RAISE", "pytest\\.fail"]
+          buildFailurePatterns: ["ERROR collecting", "Interrupted: [0-9]+ errors? during collection"]
+          timeoutPatterns: ["Timeout >"]
+        jest-junit:
+          format: junit-xml
+          idTemplate: "{file}::{classname} {name}"
+          errorTypes: ["ReferenceError", "TypeError: .* is not a function", "Cannot find module", "SyntaxError"]
+          assertionTypes: ["expect\\(", "Expected:", "Received:", "AssertionError"]
+          buildFailurePatterns: ["Test suite failed to run"]
+          timeoutPatterns: ["Exceeded timeout of"]
+        vitest-junit:
+          format: junit-xml
+          idTemplate: "{file}::{classname} {name}"
+          errorTypes: ["ReferenceError", "TypeError: .* is not a function", "Failed to load url", "SyntaxError"]
+          assertionTypes: ["AssertionError", "expected .* to ", "Expected:"]
+          buildFailurePatterns: ["Failed to load", "Error: Transform failed"]
+          timeoutPatterns: ["Test timed out in"]
+        cargo-nextest-junit:
+          format: junit-xml
+          idTemplate: "{classname}::{name}"
+          errorTypes: ["panicked at .* (called `(Option|Result)::unwrap\\(\\)`|index out of bounds)"]
+          assertionTypes: ["assertion( `[^`]+`)? failed", "assertion failed: "]
+          buildFailurePatterns: ["error\\[E[0-9]{4}\\]", "could not compile"]
+          timeoutPatterns: ["TIMEOUT"]
+      red: {pipelineTimeout: 30m, maxInfraRetriggers: 2, baseline: run, requirePerAcCoverage: true, repeatNewTests: 3}
+      green: {pipelineTimeout: 60m, maxInfraRetriggers: 2, repeatProtectedTests: 3, isolationRun: true, redReplay: true}
+      judge: {pipelineTimeout: 30m, maxInfraRetriggers: 2, maxChecks: 50}
+      exemptionClasses:
+        - name: documentation-only
+          description: Prose documentation changes judged by required facts written before the change.
+          allowedPaths: ["docs/**", "**/*.md"]
+          deniedPaths: ["AGENTS.md", "**/AGENTS.md", "CLAUDE.md", "**/CLAUDE.md", "charts/**", "**/skills/**", "context/**", "**/SOUL.md"]
+          judge: {kind: required-facts, source: artifact, executor: ci, artifactPaths: ["verification/sc-*/**"]}
+          approval: auto
+          producesMergeableChange: true
+          producerRoles: [implementer]
+        - name: research
+          description: A research report answering the acceptance criteria; no repository change.
+          allowedPaths: []
+          judge: {kind: rubric, source: acceptance-criteria, executor: runner-local, artifactPaths: []}
+          approval: auto
+          producesMergeableChange: false
+          producerRoles: [researcher]
+        - name: infrastructure-config
+          description: GitOps, chart or infrastructure configuration judged by a validation scenario or invariant written first.
+          allowedPaths: ["gitops/**", "charts/**", "deploy/**", "ansible/**", "tofu/**"]
+          deniedPaths: ["**/*.sops.yaml", "gitops/clusters/*/flux-system/**"]
+          judge: {kind: validation-scenario, source: artifact, executor: ci, artifactPaths: ["verification/sc-*/**"]}
+          approval: human
+          producesMergeableChange: true
+          producerRoles: [implementer]
+        - name: migration
+          description: Schema or data migrations judged by pre/post invariants written first.
+          allowedPaths: ["**/migrations/**"]
+          judge: {kind: invariants, source: artifact, executor: ci, artifactPaths: ["verification/sc-*/**"]}
+          approval: human
+          producesMergeableChange: true
+          producerRoles: [implementer]
+        - name: benchmark
+          description: Performance work judged by a benchmark command and threshold written first.
+          allowedPaths: ["**"]
+          judge: {kind: benchmark, source: artifact, executor: ci, artifactPaths: ["verification/sc-*/**"]}
+          approval: human
+          producesMergeableChange: true
+          producerRoles: [implementer]
+        - name: metadata
+          description: Machine-readable metadata (YAML/JSON data files) judged by schema checks written first.
+          allowedPaths: ["**/*.yaml", "**/*.yml", "**/*.json"]
+          deniedPaths: ["gitops/**", "charts/**", "deploy/**", "ansible/**", "tofu/**", "**/migrations/**", "**/package.json", "**/package-lock.json", "**/tsconfig*.json", "**/go.mod", "**/Cargo.toml", "**/pyproject.toml", ".github/**", ".woodpecker/**"]
+          judge: {kind: schema-check, source: artifact, executor: ci, artifactPaths: ["verification/sc-*/**"]}
+          approval: auto
+          producesMergeableChange: true
+          producerRoles: [implementer]
+        - name: refactor
+          description: Behavior-preserving change judged by characterization tests that must pass at base and at head; the producer may not touch test-classified paths (TDD-B9).
+          allowedPaths: ["**"]
+          deniedPaths: ["**/*_test.go", "**/test/**", "**/tests/**", "**/testdata/**", "**/__tests__/**"]
+          judge: {kind: characterization, source: artifact, executor: ci, artifactPaths: ["verification/sc-*/**"]}
+          approval: human
+          producesMergeableChange: true
+          producerRoles: [implementer]
+      testSpecConflict: {resolutionApproval: human, maxConflictsPerTask: 2, maxGenerations: 3}
+      retry:
+        maxAutonomousAttempts: 5
+        maxTesterAttempts: 3
+        maxReviewExecutions: 3
+        maxAuxiliaryExecutions: 8
+        maxBlockedResults: 2
+        infrastructure: {maxConsecutive: 3, maxTotal: 8, maxConsecutiveTimeouts: 2, queueTimeout: 2h, backoffSeconds: [60, 300, 900]}
+        policy: {maxViolations: 0}
+        identicalReplay: forbid
+        humanGrant: 3
+      watchdog:
+        groups:
+          specified: {alertAfter: 168h}
+          noExecution: {alertAfter: 30m}
+          verification: {alertAfter: 1h, escalateAfter: 4h}
+          hermesWait: {alertAfter: 24h, escalateAfter: 72h}
+          investigation: {alertAfter: 72h}
+          awaitingMerge: {alertAfter: 168h}
+          needsHuman: {alertAfter: 72h}
+          approval: {alertAfter: 72h}
+      humanAuthority:
+        forgejoTeams: [Owners, engineers]
+        machineAccounts: [sc-runner, sc-woodpecker, sc-renovate, sc-backup, sc-admin, sc-ci-config]
+        maxCommandsPerTaskPerHour: 10
+      merge:
+        requiredStatusContexts: ["ci/woodpecker/pr/ci", strange-company/tdd-provenance, strange-company/review, strange-company/release-provenance]
+        reviewRequired: true
+        humanApprovalsRequired: 1
+        elevatedApprovals: 2
+        agentPullRequestApprovals: 1
+        operatorPullRequestApprovals: 0
+        singleOperatorCoolingOff: 24h
+        nonTaskPullRequests: success-human-authored
+x-invalid-examples:
+  - reason: Test-first may not be replaced as the default mode.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: VerificationPolicy
+      metadata: {name: bad}
+      spec: {defaultMode: verification-first}
+  - reason: Merge policy that drops the TDD provenance status context.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: VerificationPolicy
+      metadata: {name: bad}
+      spec:
+        defaultMode: test-first
+        task: {maxBaseLag: {commits: 20, age: 24h}}
+        protectedPaths: []
+        protectedBranches: [main]
+        testProtection: {existingTestModification: deny, testDeletion: deny, discoveryConfig: {wholeFiles: [], semanticKeys: [], protectValidationReferencedFiles: true}}
+        staticChecks: {skipMarkers: {}, testEnvDetection: {}, unconditionalFailure: {}, literalLeakage: {enabled: false, minLength: 12}}
+        stubPolicy: {marker: SC-STUB, panicMessage: SC-STUB-NOT-IMPLEMENTED, maxAddedLinesPerStub: 12, maxStubsPerTask: 20, allowPanicStubsFor: [], staticallyTypedLanguages: [go]}
+        adapters:
+          go-test-json: {format: go-test-json, idTemplate: x, errorTypes: [], assertionTypes: [x], buildFailurePatterns: [], timeoutPatterns: []}
+          junit-xml: {format: junit-xml, idTemplate: x, errorTypes: [], assertionTypes: [x], buildFailurePatterns: [], timeoutPatterns: []}
+          pytest-junit: {format: junit-xml, idTemplate: x, errorTypes: [], assertionTypes: [x], buildFailurePatterns: [], timeoutPatterns: []}
+          jest-junit: {format: junit-xml, idTemplate: x, errorTypes: [], assertionTypes: [x], buildFailurePatterns: [], timeoutPatterns: []}
+          vitest-junit: {format: junit-xml, idTemplate: x, errorTypes: [], assertionTypes: [x], buildFailurePatterns: [], timeoutPatterns: []}
+          cargo-nextest-junit: {format: junit-xml, idTemplate: x, errorTypes: [], assertionTypes: [x], buildFailurePatterns: [], timeoutPatterns: []}
+        red: {pipelineTimeout: 30m, maxInfraRetriggers: 2, baseline: run, requirePerAcCoverage: true, repeatNewTests: 3}
+        green: {pipelineTimeout: 60m, maxInfraRetriggers: 2, repeatProtectedTests: 3, isolationRun: true, redReplay: true}
+        judge: {pipelineTimeout: 30m, maxInfraRetriggers: 2, maxChecks: 50}
+        exemptionClasses: []
+        testSpecConflict: {resolutionApproval: human, maxConflictsPerTask: 2, maxGenerations: 3}
+        retry: {maxAutonomousAttempts: 5, maxTesterAttempts: 3, maxReviewExecutions: 3, maxAuxiliaryExecutions: 8, maxBlockedResults: 2, infrastructure: {maxConsecutive: 3, maxTotal: 8, maxConsecutiveTimeouts: 2, backoffSeconds: [60]}, policy: {maxViolations: 0}, identicalReplay: forbid, humanGrant: 3}
+        watchdog: {groups: {}}
+        humanAuthority: {forgejoTeams: [Owners], machineAccounts: [sc-runner], maxCommandsPerTaskPerHour: 10}
+        merge: {requiredStatusContexts: ["ci/woodpecker/pr/ci", strange-company/review], reviewRequired: true, humanApprovalsRequired: 1, elevatedApprovals: 2, singleOperatorCoolingOff: 24h, nonTaskPullRequests: failure}
+  - reason: Policy violations may never be retried automatically.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: VerificationPolicy
+      metadata: {name: bad}
+      spec:
+        defaultMode: test-first
+        task: {maxBaseLag: {commits: 20, age: 24h}}
+        protectedPaths: []
+        protectedBranches: [main]
+        testProtection: {existingTestModification: deny, testDeletion: deny, discoveryConfig: {wholeFiles: [], semanticKeys: [], protectValidationReferencedFiles: true}}
+        staticChecks: {skipMarkers: {}, testEnvDetection: {}, unconditionalFailure: {}, literalLeakage: {enabled: false, minLength: 12}}
+        stubPolicy: {marker: SC-STUB, panicMessage: SC-STUB-NOT-IMPLEMENTED, maxAddedLinesPerStub: 12, maxStubsPerTask: 20, allowPanicStubsFor: [], staticallyTypedLanguages: [go]}
+        adapters:
+          go-test-json: {format: go-test-json, idTemplate: x, errorTypes: [], assertionTypes: [x], buildFailurePatterns: [], timeoutPatterns: []}
+          junit-xml: {format: junit-xml, idTemplate: x, errorTypes: [], assertionTypes: [x], buildFailurePatterns: [], timeoutPatterns: []}
+          pytest-junit: {format: junit-xml, idTemplate: x, errorTypes: [], assertionTypes: [x], buildFailurePatterns: [], timeoutPatterns: []}
+          jest-junit: {format: junit-xml, idTemplate: x, errorTypes: [], assertionTypes: [x], buildFailurePatterns: [], timeoutPatterns: []}
+          vitest-junit: {format: junit-xml, idTemplate: x, errorTypes: [], assertionTypes: [x], buildFailurePatterns: [], timeoutPatterns: []}
+          cargo-nextest-junit: {format: junit-xml, idTemplate: x, errorTypes: [], assertionTypes: [x], buildFailurePatterns: [], timeoutPatterns: []}
+        red: {pipelineTimeout: 30m, maxInfraRetriggers: 2, baseline: run, requirePerAcCoverage: true, repeatNewTests: 3}
+        green: {pipelineTimeout: 60m, maxInfraRetriggers: 2, repeatProtectedTests: 3, isolationRun: true, redReplay: true}
+        judge: {pipelineTimeout: 30m, maxInfraRetriggers: 2, maxChecks: 50}
+        exemptionClasses: []
+        testSpecConflict: {resolutionApproval: human, maxConflictsPerTask: 2, maxGenerations: 3}
+        retry: {maxAutonomousAttempts: 5, maxTesterAttempts: 3, maxReviewExecutions: 3, maxAuxiliaryExecutions: 8, maxBlockedResults: 2, infrastructure: {maxConsecutive: 3, maxTotal: 8, maxConsecutiveTimeouts: 2, backoffSeconds: [60]}, policy: {maxViolations: 2}, identicalReplay: forbid, humanGrant: 3}
+        watchdog: {groups: {}}
+        humanAuthority: {forgejoTeams: [Owners], machineAccounts: [sc-runner], maxCommandsPerTaskPerHour: 10}
+        merge: {requiredStatusContexts: ["ci/woodpecker/pr/ci", strange-company/tdd-provenance, strange-company/review], reviewRequired: true, humanApprovalsRequired: 1, elevatedApprovals: 2, singleOperatorCoolingOff: 24h, nonTaskPullRequests: failure}
+  - reason: A catch-all exemption class (allowedPaths contains **) cannot be auto-approved (TDD-12).
+    value: {"apiVersion": "strange.company/v1alpha1", "kind": "VerificationPolicy", "metadata": {"name": "platform"}, "spec": {"defaultMode": "test-first", "task": {"maxBaseLag": {"commits": 20, "age": "24h"}}, "protectedPaths": [".woodpecker/**", ".strange-company/**", "AGENTS.md", "**/AGENTS.md", "CLAUDE.md", "**/CLAUDE.md", ".claude/**", "**/.claude/**", ".codex/**", "**/.codex/**", ".opencode/**", "**/.opencode/**", "policy/**", "contracts/**", "CODEOWNERS", "**/CODEOWNERS", ".forgejo/**", ".gitea/**", ".github/**", ".gitmodules", ".gitattributes", ".sops.yaml", "**/*.sops.yaml", "forge/**", "gitops/**/generated/**", "gitops/platform/admission/**"], "protectedBranches": ["main", "release/*"], "testProtection": {"existingTestModification": "deny", "testDeletion": "deny", "discoveryConfig": {"wholeFiles": ["**/pytest.ini", "**/conftest.py", "**/tox.ini", "**/jest.config.*", "**/vitest.config.*", "**/vitest.workspace.*", "**/.mocharc*", "**/karma.conf.*", "**/babel.config.*", "**/.babelrc*", "**/build.rs", ".nextest.toml", ".config/nextest.toml", ".cargo/config.toml", "go.work"], "semanticKeys": [{"path": "**/package.json", "format": "json", "keys": ["scripts.test", "jest", "vitest", "mocha", "devDependencies"]}, {"path": "**/go.mod", "format": "ini", "keys": ["replace", "module"]}, {"path": "**/tsconfig*.json", "format": "json", "keys": ["compilerOptions.paths", "compilerOptions.baseUrl", "compilerOptions.rootDirs"]}, {"path": "**/pyproject.toml", "format": "toml", "keys": ["tool.pytest", "tool.pytest.ini_options"]}, {"path": "**/setup.cfg", "format": "ini", "keys": ["tool:pytest"]}, {"path": "**/Cargo.toml", "format": "toml", "keys": ["test", "[[test]]", "lib.test", "lib.harness", "patch", "dev-dependencies"]}], "protectValidationReferencedFiles": true, "forbidNewFiles": ["**/go.mod", "**/go.work", "**/pytest.ini", "**/tox.ini", "**/conftest.py", "**/jest.config.*", "**/vitest.config.*", "**/.babelrc*", "**/babel.config.*", "**/.mocharc*"], "testDependencyPaths": ["vendor/**", "**/node_modules/**", "third_party/**"]}}, "staticChecks": {"skipMarkers": {"go": ["\\bt\\.Skip(Now|f)?\\(", "testing\\.Short\\(\\)"], "python": ["@pytest\\.mark\\.(skip|skipif|xfail)", "pytest\\.(skip|xfail)\\(", "@unittest\\.skip", "raise\\s+unittest\\.SkipTest"], "javascript": ["\\b(it|test|describe)\\.(skip|todo|only)\\(", "\\bx(it|test|describe)\\(", "\\bf(it|describe)\\("], "typescript": ["\\b(it|test|describe)\\.(skip|todo|only)\\(", "\\bx(it|test|describe)\\(", "\\bf(it|describe)\\("], "rust": ["#\\[ignore\\b"], "java": ["@Disabled\\b", "@Ignore\\b", "Assume\\.assume"]}, "testEnvDetection": {"go": ["flag\\.Lookup\\(\"test\\.", "testing\\.Testing\\(\\)", "strings\\.HasSuffix\\(os\\.Args\\[0\\], \"\\.test\"\\)"], "python": ["PYTEST_CURRENT_TEST", "\"pytest\" in sys\\.modules", "'pytest' in sys\\.modules"], "javascript": ["JEST_WORKER_ID", "process\\.env\\.VITEST", "NODE_ENV\\s*===?\\s*['\"]test['\"]"], "typescript": ["JEST_WORKER_ID", "process\\.env\\.VITEST", "NODE_ENV\\s*===?\\s*['\"]test['\"]"], "rust": ["cfg!\\(test\\)"]}, "unconditionalFailure": {"go": ["t\\.Fatal(f)?\\(\"[^\"]*\"\\)\\s*$"], "python": ["assert\\s+False\\b", "pytest\\.fail\\("], "javascript": ["expect\\(true\\)\\.toBe\\(false\\)"], "typescript": ["expect\\(true\\)\\.toBe\\(false\\)"], "rust": ["assert!\\(false"]}, "literalLeakage": {"enabled": true, "minLength": 12}}, "stubPolicy": {"marker": "SC-STUB", "panicMessage": "SC-STUB-NOT-IMPLEMENTED", "maxAddedLinesPerStub": 12, "maxStubsPerTask": 20, "allowPanicStubsFor": ["rust"], "staticallyTypedLanguages": ["go", "rust", "java", "kotlin", "csharp", "typescript"]}, "adapters": {"go-test-json": {"format": "go-test-json", "idTemplate": "{package}.{test}", "errorTypes": ["^panic: ", "\\[build failed\\]", "\\[setup failed\\]"], "assertionTypes": ["_test\\.go:[0-9]+: "], "buildFailurePatterns": ["\\[build failed\\]", "\\[setup failed\\]"], "timeoutPatterns": ["^panic: test timed out after"]}, "junit-xml": {"format": "junit-xml", "idTemplate": "{classname}.{name}", "errorTypes": ["^error$"], "assertionTypes": ["^failure$"], "buildFailurePatterns": [], "timeoutPatterns": ["(?i)timed? ?out"]}, "pytest-junit": {"format": "junit-xml", "idTemplate": "{file}::{name}", "errorTypes": ["ImportError", "ModuleNotFoundError", "NameError", "SyntaxError", "IndentationError", "fixture '.*' not found", "^error$"], "assertionTypes": ["AssertionError", "^Failed: DID NOT RAISE", "pytest\\.fail"], "buildFailurePatterns": ["ERROR collecting", "Interrupted: [0-9]+ errors? during collection"], "timeoutPatterns": ["Timeout >"]}, "jest-junit": {"format": "junit-xml", "idTemplate": "{file}::{classname} {name}", "errorTypes": ["ReferenceError", "TypeError: .* is not a function", "Cannot find module", "SyntaxError"], "assertionTypes": ["expect\\(", "Expected:", "Received:", "AssertionError"], "buildFailurePatterns": ["Test suite failed to run"], "timeoutPatterns": ["Exceeded timeout of"]}, "vitest-junit": {"format": "junit-xml", "idTemplate": "{file}::{classname} {name}", "errorTypes": ["ReferenceError", "TypeError: .* is not a function", "Failed to load url", "SyntaxError"], "assertionTypes": ["AssertionError", "expected .* to ", "Expected:"], "buildFailurePatterns": ["Failed to load", "Error: Transform failed"], "timeoutPatterns": ["Test timed out in"]}, "cargo-nextest-junit": {"format": "junit-xml", "idTemplate": "{classname}::{name}", "errorTypes": ["panicked at .* (called `(Option|Result)::unwrap\\(\\)`|index out of bounds)"], "assertionTypes": ["assertion( `[^`]+`)? failed", "assertion failed: "], "buildFailurePatterns": ["error\\[E[0-9]{4}\\]", "could not compile"], "timeoutPatterns": ["TIMEOUT"]}}, "red": {"pipelineTimeout": "30m", "maxInfraRetriggers": 2, "baseline": "run", "requirePerAcCoverage": true, "repeatNewTests": 3}, "green": {"pipelineTimeout": "60m", "maxInfraRetriggers": 2, "repeatProtectedTests": 3, "isolationRun": true, "redReplay": true}, "judge": {"pipelineTimeout": "30m", "maxInfraRetriggers": 2, "maxChecks": 50}, "exemptionClasses": [{"name": "documentation-only", "description": "Prose documentation changes judged by required facts written before the change.", "allowedPaths": ["docs/**", "**/*.md"], "deniedPaths": ["AGENTS.md", "**/AGENTS.md", "CLAUDE.md", "**/CLAUDE.md", "charts/**", "**/skills/**", "context/**", "**/SOUL.md"], "judge": {"kind": "required-facts", "source": "artifact", "executor": "ci", "artifactPaths": ["verification/sc-*/**"]}, "approval": "auto", "producesMergeableChange": true, "producerRoles": ["implementer"]}, {"name": "research", "description": "A research report answering the acceptance criteria; no repository change.", "allowedPaths": [], "judge": {"kind": "rubric", "source": "acceptance-criteria", "executor": "runner-local", "artifactPaths": []}, "approval": "auto", "producesMergeableChange": false, "producerRoles": ["researcher"]}, {"name": "infrastructure-config", "description": "GitOps, chart or infrastructure configuration judged by a validation scenario or invariant written first.", "allowedPaths": ["gitops/**", "charts/**", "deploy/**", "ansible/**", "tofu/**"], "deniedPaths": ["**/*.sops.yaml", "gitops/clusters/*/flux-system/**"], "judge": {"kind": "validation-scenario", "source": "artifact", "executor": "ci", "artifactPaths": ["verification/sc-*/**"]}, "approval": "human", "producesMergeableChange": true, "producerRoles": ["implementer"]}, {"name": "migration", "description": "Schema or data migrations judged by pre/post invariants written first.", "allowedPaths": ["**/migrations/**"], "judge": {"kind": "invariants", "source": "artifact", "executor": "ci", "artifactPaths": ["verification/sc-*/**"]}, "approval": "human", "producesMergeableChange": true, "producerRoles": ["implementer"]}, {"name": "benchmark", "description": "Performance work judged by a benchmark command and threshold written first.", "allowedPaths": ["**"], "judge": {"kind": "benchmark", "source": "artifact", "executor": "ci", "artifactPaths": ["verification/sc-*/**"]}, "approval": "auto", "producesMergeableChange": true, "producerRoles": ["implementer"]}, {"name": "metadata", "description": "Machine-readable metadata (YAML/JSON data files) judged by schema checks written first.", "allowedPaths": ["**/*.yaml", "**/*.yml", "**/*.json"], "deniedPaths": ["gitops/**", "charts/**", "deploy/**", "ansible/**", "tofu/**", "**/migrations/**", "**/package.json", "**/package-lock.json", "**/tsconfig*.json", "**/go.mod", "**/Cargo.toml", "**/pyproject.toml", ".github/**", ".woodpecker/**"], "judge": {"kind": "schema-check", "source": "artifact", "executor": "ci", "artifactPaths": ["verification/sc-*/**"]}, "approval": "auto", "producesMergeableChange": true, "producerRoles": ["implementer"]}], "testSpecConflict": {"resolutionApproval": "human", "maxConflictsPerTask": 2, "maxGenerations": 3}, "retry": {"maxAutonomousAttempts": 5, "maxTesterAttempts": 3, "maxReviewExecutions": 3, "maxAuxiliaryExecutions": 8, "maxBlockedResults": 2, "infrastructure": {"maxConsecutive": 3, "maxTotal": 8, "maxConsecutiveTimeouts": 2, "queueTimeout": "2h", "backoffSeconds": [60, 300, 900]}, "policy": {"maxViolations": 0}, "identicalReplay": "forbid", "humanGrant": 3}, "watchdog": {"groups": {"specified": {"alertAfter": "168h"}, "noExecution": {"alertAfter": "30m"}, "verification": {"alertAfter": "1h", "escalateAfter": "4h"}, "hermesWait": {"alertAfter": "24h", "escalateAfter": "72h"}, "investigation": {"alertAfter": "72h"}, "awaitingMerge": {"alertAfter": "168h"}, "needsHuman": {"alertAfter": "72h"}, "approval": {"alertAfter": "72h"}}}, "humanAuthority": {"forgejoTeams": ["Owners", "engineers"], "machineAccounts": ["sc-runner", "sc-woodpecker", "sc-renovate", "sc-backup", "sc-admin", "sc-ci-config"], "maxCommandsPerTaskPerHour": 10}, "merge": {"requiredStatusContexts": ["ci/woodpecker/pr/ci", "strange-company/tdd-provenance", "strange-company/review"], "reviewRequired": true, "humanApprovalsRequired": 1, "elevatedApprovals": 2, "agentPullRequestApprovals": 1, "operatorPullRequestApprovals": 0, "singleOperatorCoolingOff": "24h", "nonTaskPullRequests": "success-human-authored"}}}

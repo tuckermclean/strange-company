@@ -1,0 +1,134 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://strange.company/contracts/github-mirror-config/v1alpha1
+title: GitHubMirrorConfig
+description: >-
+  Non-secret configuration of the Forgejo→GitHub mirror and its freshness probe
+  (`gitops/clusters/<cluster>/config/github-mirror.yaml`, plan 17 §9.2), rendered as
+  ConfigMap `monitoring/github-mirror-config` and read by the `platform-probes` module
+  `github-mirror`. A schema-invalid file makes the probe export
+  `sc_github_mirror_config_valid 0` and keeps every mirror alert armed (fail closed).
+type: object
+additionalProperties: false
+required: [apiVersion, kind, metadata, spec]
+properties:
+  apiVersion: {const: strange.company/v1alpha1}
+  kind: {const: GitHubMirrorConfig}
+  metadata:
+    type: object
+    additionalProperties: false
+    required: [name]
+    properties:
+      name: {type: string, pattern: "^[a-z0-9-]{1,63}$"}
+  spec:
+    type: object
+    additionalProperties: false
+    required: [repository, forgejoRepository, expectMirror, branchFilter, allowPublic, protectionTier, mirrorTokenExpiresAt, mirrorTokenOwner, canaryBranch]
+    properties:
+      repository:
+        description: GitHub `<owner>/<name>` (GITHUB_MIRROR_REPO).
+        type: string
+        pattern: "^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$"
+      forgejoRepository:
+        type: string
+        pattern: "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$"
+      expectMirror:
+        description: false only while ADR-0554 recovery mode disables push mirrors.
+        type: boolean
+      branchFilter:
+        type: string
+        minLength: 1
+        not: {pattern: "(^|,)\\s*(\\*|agent/|renovate/|sc-verify/)"}
+      allowPublic: {type: boolean}
+      protectionTier: {enum: [rulesets, unavailable-accepted]}
+      mirrorTokenExpiresAt:
+        description: Expiry of SC-GITHUB-MIRROR from the GitHub expiry header; null = no expiry (warned).
+        oneOf:
+          - {type: string, format: date-time}
+          - {type: "null"}
+      mirrorTokenOwner:
+        type: string
+        pattern: "^[A-Za-z0-9-]{1,39}$"
+      canaryBranch:
+        type: string
+        pattern: "^sc-canary/[a-z0-9-]+$"
+      ciSignals:
+        description: CI lane signals exported by the same probe module (plan 52 §21).
+        type: object
+        additionalProperties: false
+        required: [offclusterWorkflow, offclusterBranch, nightlyContext]
+        properties:
+          offclusterWorkflow: {type: string, pattern: "^[a-z0-9-]+$"}
+          offclusterBranch: {type: string, minLength: 1}
+          nightlyContext: {type: string, minLength: 1}
+          quarantineFile: {type: string, minLength: 1}
+      upstream:
+        type: object
+        additionalProperties: false
+        required: [enabled]
+        properties:
+          enabled: {type: boolean}
+          url: {type: string, pattern: "^https://"}
+          ref: {type: string, minLength: 1}
+        if:
+          properties: {enabled: {const: true}}
+        then:
+          required: [url, ref]
+examples:
+  - apiVersion: strange.company/v1alpha1
+    kind: GitHubMirrorConfig
+    metadata: {name: strange-company}
+    spec:
+      repository: example-org/strange-company
+      forgejoRepository: strange-company/strange-company
+      expectMirror: true
+      branchFilter: "main,release/*"
+      allowPublic: false
+      protectionTier: rulesets
+      mirrorTokenExpiresAt: "2027-04-10T00:00:00Z"
+      mirrorTokenOwner: example-org-sc-mirror
+      canaryBranch: sc-canary/protection
+      ciSignals:
+        offclusterWorkflow: e2e
+        offclusterBranch: main
+        nightlyContext: ci/woodpecker/cron/nightly
+        quarantineFile: policy/test-quarantine.yaml
+      upstream: {enabled: false}
+  - apiVersion: strange.company/v1alpha1
+    kind: GitHubMirrorConfig
+    metadata: {name: strange-company}
+    spec:
+      repository: someone/strange-company
+      forgejoRepository: strange-company/strange-company
+      expectMirror: false
+      branchFilter: "main,release/*"
+      allowPublic: false
+      protectionTier: unavailable-accepted
+      mirrorTokenExpiresAt: null
+      mirrorTokenOwner: someone
+      canaryBranch: sc-canary/protection
+      upstream: {enabled: true, url: "https://github.com/upstream-org/strange-company.git", ref: main}
+x-invalid-examples:
+  - reason: Empty branch filter mirrors every branch (17-R-1).
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: GitHubMirrorConfig
+      metadata: {name: strange-company}
+      spec: {repository: o/r, forgejoRepository: strange-company/strange-company, expectMirror: true, branchFilter: "", allowPublic: false, protectionTier: rulesets, mirrorTokenExpiresAt: null, mirrorTokenOwner: o, canaryBranch: sc-canary/protection}
+  - reason: Filter including agent branches.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: GitHubMirrorConfig
+      metadata: {name: strange-company}
+      spec: {repository: o/r, forgejoRepository: strange-company/strange-company, expectMirror: true, branchFilter: "main,agent/*", allowPublic: false, protectionTier: rulesets, mirrorTokenExpiresAt: null, mirrorTokenOwner: o, canaryBranch: sc-canary/protection}
+  - reason: Unknown protection tier.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: GitHubMirrorConfig
+      metadata: {name: strange-company}
+      spec: {repository: o/r, forgejoRepository: strange-company/strange-company, expectMirror: true, branchFilter: "main", allowPublic: false, protectionTier: none, mirrorTokenExpiresAt: null, mirrorTokenOwner: o, canaryBranch: sc-canary/protection}
+  - reason: Enabled upstream sync without a URL.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: GitHubMirrorConfig
+      metadata: {name: strange-company}
+      spec: {repository: o/r, forgejoRepository: strange-company/strange-company, expectMirror: true, branchFilter: "main", allowPublic: false, protectionTier: rulesets, mirrorTokenExpiresAt: null, mirrorTokenOwner: o, canaryBranch: sc-canary/protection, upstream: {enabled: true}}

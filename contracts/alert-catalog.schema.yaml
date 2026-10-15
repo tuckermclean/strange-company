@@ -1,0 +1,608 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://strange.company/contracts/alert-catalog/v1alpha1
+title: AlertCatalog
+description: |
+  The authoritative catalogue of every alert Strange Company can raise, how it is
+  classified, and how Alertmanager routes it (SPEC §96, §97; ADR-0009; plan 42).
+
+  File: `contracts/alert-catalog.yaml` (one document, `kind: AlertCatalog`).
+  Owning plan: 42. Producers of the underlying signals are named per alert
+  (`signalOwnerPlan`).
+
+  Consumers:
+  - the PrometheusRule renderer (plan 42): every alert whose `source.kind` is
+    `prometheus-rule` becomes exactly one rule in a PrometheusRule object
+    under `gitops/platform/monitoring/rules/`;
+  - the Alertmanager config renderer (plan 42): `spec.notificationClasses`,
+    `spec.routing` and `spec.alwaysNotifyReasons` become the routing tree and
+    inhibit rules;
+  - the Runner (plan 26): alerts with `source.kind: runner-post` are the only
+    alertnames the Runner may post (contract `notification.schema.yaml`);
+  - CI lint `make lint-alerts` (plan 42 §22), which enforces invariants that a
+    JSON Schema cannot express:
+    * alertnames are unique;
+    * every `runbook` path exists in the repository;
+    * every rendered PrometheusRule alert appears here, and vice versa
+      (upstream kube-prometheus-stack groups are covered by `spec.upstreamRules`);
+    * every alias is unique across the catalogue and is not itself a
+      catalogue alertname;
+    * no inhibit rule's `targetMatchers` can match an alert whose
+      `alwaysNotify` is not `none` (verified with `amtool config routes test`
+      against a synthetic label set per alert);
+    * `promtool test rules` unit tests exist for every `prometheus-rule` alert.
+
+  Label conventions on every Strange Company alert (rendered by plan 42):
+  `alertname`, `severity`, `category`, `notify_class`, `always_notify`, and
+  `source`. `always_notify` is `none` or one of `spec.alwaysNotifyReasons`.
+type: object
+additionalProperties: false
+required: [apiVersion, kind, metadata, spec]
+properties:
+  apiVersion:
+    const: strange.company/v1alpha1
+  kind:
+    const: AlertCatalog
+  metadata:
+    type: object
+    additionalProperties: false
+    required: [name]
+    properties:
+      name:
+        type: string
+        pattern: "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
+      annotations:
+        type: object
+        additionalProperties:
+          type: string
+  spec:
+    type: object
+    additionalProperties: false
+    required: [alwaysNotifyReasons, notificationClasses, routing, upstreamRules, alerts]
+    properties:
+      alwaysNotifyReasons:
+        description: >
+          SPEC §97 conditions that SHALL always produce a human notification. Alerts
+          carrying one of these reasons are never routed to a silent receiver and are
+          never the target of an inhibit rule.
+        type: array
+        uniqueItems: true
+        minItems: 6
+        items:
+          $ref: "#/$defs/AlwaysNotifyReason"
+      notificationClasses:
+        type: object
+        additionalProperties: false
+        required: [page, notify, silent, heartbeat]
+        properties:
+          page:
+            $ref: "#/$defs/NotificationClass"
+          notify:
+            $ref: "#/$defs/NotificationClass"
+          silent:
+            $ref: "#/$defs/NotificationClass"
+          heartbeat:
+            $ref: "#/$defs/NotificationClass"
+      routing:
+        $ref: "#/$defs/Routing"
+      upstreamRules:
+        $ref: "#/$defs/UpstreamRules"
+      alerts:
+        type: array
+        minItems: 1
+        items:
+          $ref: "#/$defs/Alert"
+$defs:
+  AlwaysNotifyReason:
+    type: string
+    description: >
+      The six SPEC §97 reasons, plus `security-audit` (break-glass use and its
+      detection; added by the review fix round, AUTH-8) so that silences on
+      those alerts are audited like the SPEC §97 classes.
+    enum: [needs-human, budget-stop, failed-backup, critical-outage, failed-mirror, black-start-threat, security-audit]
+  Duration:
+    type: string
+    pattern: "^[0-9]+(s|m|h|d)$"
+  Severity:
+    type: string
+    enum: [critical, warning, info]
+  NotifyClass:
+    type: string
+    enum: [page, notify, silent, heartbeat]
+  Category:
+    type: string
+    enum:
+      - node
+      - storage
+      - etcd
+      - database
+      - backup
+      - restore-test
+      - forge
+      - identity
+      - mirror
+      - gitops
+      - ci
+      - runner
+      - gateway
+      - task
+      - tdd
+      - budget
+      - spend
+      - certificate
+      - ingress
+      - object-storage
+      - security
+      - monitoring
+      - telemetry
+      - black-start-threat
+      - notification-test
+  NotificationClass:
+    type: object
+    additionalProperties: false
+    required: [description, external, groupWait, groupInterval, repeatInterval, sendResolved]
+    properties:
+      description:
+        type: string
+      external:
+        description: Whether alerts in this class leave Alertmanager to a human transport.
+        type: boolean
+      groupWait:
+        $ref: "#/$defs/Duration"
+      groupInterval:
+        $ref: "#/$defs/Duration"
+      repeatInterval:
+        $ref: "#/$defs/Duration"
+      sendResolved:
+        type: boolean
+  Matcher:
+    description: An Alertmanager matcher string, e.g. `severity="critical"` or `alertname=~"SCForgejo.*"`.
+    type: string
+    pattern: "^[a-z_][a-z0-9_]*(=|!=|=~|!~)\"[^\"]*\"$"
+  Routing:
+    type: object
+    additionalProperties: false
+    required: [groupBy, severityFallback, inhibitRules]
+    properties:
+      groupBy:
+        type: array
+        minItems: 1
+        uniqueItems: true
+        items:
+          type: string
+          pattern: "^[a-z_][a-z0-9_]*$"
+        not:
+          contains:
+            enum: [subject, task_id, execution_id, pod, instance]
+      severityFallback:
+        description: >
+          Class used for alerts that carry no `notify_class` label (upstream
+          kube-prometheus-stack rules).
+        type: object
+        additionalProperties: false
+        required: [critical, warning, info, none]
+        properties:
+          critical:
+            $ref: "#/$defs/NotifyClass"
+          warning:
+            $ref: "#/$defs/NotifyClass"
+          info:
+            $ref: "#/$defs/NotifyClass"
+          none:
+            $ref: "#/$defs/NotifyClass"
+      inhibitRules:
+        type: array
+        items:
+          type: object
+          additionalProperties: false
+          required: [name, sourceMatchers, targetMatchers, equal, rationale]
+          properties:
+            name:
+              type: string
+              pattern: "^[a-z0-9-]+$"
+            sourceMatchers:
+              type: array
+              minItems: 1
+              items:
+                $ref: "#/$defs/Matcher"
+            targetMatchers:
+              description: >
+                MUST include `always_notify="none"` unless the target is the
+                `Watchdog` heartbeat (lint-enforced).
+              type: array
+              minItems: 1
+              items:
+                $ref: "#/$defs/Matcher"
+            equal:
+              type: array
+              items:
+                type: string
+            rationale:
+              type: string
+  UpstreamRules:
+    type: object
+    additionalProperties: false
+    required: [chart, addedLabels, keepGroups, disableGroups, disableAlerts]
+    properties:
+      chart:
+        const: kube-prometheus-stack
+      addedLabels:
+        type: object
+        additionalProperties:
+          type: string
+        required: [source]
+      keepGroups:
+        type: array
+        uniqueItems: true
+        items:
+          type: string
+      disableGroups:
+        type: array
+        uniqueItems: true
+        items:
+          type: object
+          additionalProperties: false
+          required: [group, reason]
+          properties:
+            group:
+              type: string
+            reason:
+              type: string
+      disableAlerts:
+        type: array
+        items:
+          type: object
+          additionalProperties: false
+          required: [alertname, reason]
+          properties:
+            alertname:
+              type: string
+            reason:
+              type: string
+            replacedBy:
+              type: string
+            profiles:
+              type: array
+              items:
+                $ref: "#/$defs/Profile"
+  Profile:
+    type: string
+    enum: [self-hosting-minimum, small-ha]
+  Source:
+    type: object
+    required: [kind]
+    oneOf:
+      - additionalProperties: false
+        required: [kind, expr, for]
+        properties:
+          kind:
+            const: prometheus-rule
+          expr:
+            type: string
+            minLength: 3
+          for:
+            $ref: "#/$defs/Duration"
+          recordingRulesUsed:
+            type: array
+            items:
+              type: string
+              pattern: "^sc:[a-z0-9_:]+$"
+      - additionalProperties: false
+        required: [kind, expr, for]
+        properties:
+          kind:
+            const: loki-rule
+          expr:
+            type: string
+          for:
+            $ref: "#/$defs/Duration"
+      - additionalProperties: false
+        required: [kind, cronjob, namespace, maxAge, failAfter]
+        properties:
+          kind:
+            const: check-cronjob
+          cronjob:
+            type: string
+            pattern: "^[a-z0-9-]+$"
+          namespace:
+            type: string
+            pattern: "^[a-z0-9-]+$"
+          maxAge:
+            description: Stale if the last successful run is older than this.
+            $ref: "#/$defs/Duration"
+          failAfter:
+            description: Failed if the latest scheduled run has not succeeded after this long (> the Job deadline).
+            $ref: "#/$defs/Duration"
+      - additionalProperties: false
+        required: [kind, posters]
+        properties:
+          kind:
+            enum: [runner-post, external-post]
+          posters:
+            type: array
+            minItems: 1
+            items:
+              type: string
+              enum: [runner, bootstrap, authentik, operator]
+          ttl:
+            description: endsAt horizon the poster sets on each refresh.
+            $ref: "#/$defs/Duration"
+          refreshInterval:
+            $ref: "#/$defs/Duration"
+  Alert:
+    type: object
+    additionalProperties: false
+    required:
+      - alertname
+      - summary
+      - category
+      - severity
+      - notifyClass
+      - alwaysNotify
+      - blackStartThreat
+      - source
+      - profiles
+      - gate
+      - ownerPlan
+      - signalOwnerPlan
+      - runbook
+      - specRefs
+    properties:
+      alertname:
+        type: string
+        pattern: "^(Watchdog|SC[A-Z][A-Za-z0-9]{2,63})$"
+      summary:
+        type: string
+        minLength: 5
+        maxLength: 200
+      category:
+        $ref: "#/$defs/Category"
+      severity:
+        $ref: "#/$defs/Severity"
+      notifyClass:
+        $ref: "#/$defs/NotifyClass"
+      alwaysNotify:
+        oneOf:
+          - $ref: "#/$defs/AlwaysNotifyReason"
+          - const: none
+      blackStartThreat:
+        type: boolean
+      source:
+        $ref: "#/$defs/Source"
+      profiles:
+        type: array
+        minItems: 1
+        uniqueItems: true
+        items:
+          $ref: "#/$defs/Profile"
+      gate:
+        description: DAG gate at which the alert must exist and be unit-tested.
+        type: string
+        enum: [P09, P10, C06, C11, H03, H04, P12]
+      ownerPlan:
+        type: string
+        pattern: "^[0-9]{2}$"
+      signalOwnerPlan:
+        description: Plan that owns the metric, check or posting that feeds the alert.
+        type: string
+        pattern: "^[0-9]{2}$"
+      runbook:
+        type: string
+        pattern: "^procedures/[a-z0-9-]+\\.md$"
+      specRefs:
+        type: array
+        minItems: 1
+        items:
+          type: string
+          pattern: "^§[0-9]+(\\.[0-9]+)?$"
+      aliases:
+        description: >
+          Names under which another plan introduced this alert before
+          consolidation (e.g. `ForgejoDown` in plan 16). The renderer never
+          emits an alias as an alertname. `make lint-alerts` resolves alias
+          references found in `plans/**` and `procedures/**` and fails on an
+          alias that maps to more than one catalogue entry.
+        type: array
+        uniqueItems: true
+        items:
+          type: string
+          pattern: "^[A-Za-z][A-Za-z0-9]{2,63}$"
+      ruleGroup:
+        description: >
+          PrometheusRule group name for this alert. Default `sc-<category>`.
+          Set only where another plan's acceptance test names the group.
+        type: string
+        pattern: "^[a-z0-9][a-z0-9.-]{1,62}$"
+      extraLabels:
+        type: object
+        propertyNames:
+          pattern: "^[a-z_][a-z0-9_]*$"
+          not:
+            enum: [alertname, severity, category, notify_class, always_notify, source, task_id, execution_id]
+        additionalProperties:
+          type: string
+    allOf:
+      - if:
+          properties:
+            severity:
+              const: critical
+        then:
+          properties:
+            notifyClass:
+              const: page
+      - if:
+          properties:
+            alwaysNotify:
+              $ref: "#/$defs/AlwaysNotifyReason"
+        then:
+          properties:
+            notifyClass:
+              enum: [page, notify]
+      - if:
+          properties:
+            blackStartThreat:
+              const: true
+        then:
+          properties:
+            alwaysNotify:
+              const: black-start-threat
+      - if:
+          properties:
+            alwaysNotify:
+              const: black-start-threat
+        then:
+          properties:
+            blackStartThreat:
+              const: true
+      - if:
+          properties:
+            notifyClass:
+              const: heartbeat
+        then:
+          properties:
+            alertname:
+              const: Watchdog
+examples:
+  - apiVersion: strange.company/v1alpha1
+    kind: AlertCatalog
+    metadata:
+      name: example
+    spec:
+      alwaysNotifyReasons: [needs-human, budget-stop, failed-backup, critical-outage, failed-mirror, black-start-threat]
+      notificationClasses:
+        page: {description: immediate, external: true, groupWait: 30s, groupInterval: 5m, repeatInterval: 4h, sendResolved: true}
+        notify: {description: standard, external: true, groupWait: 2m, groupInterval: 10m, repeatInterval: 24h, sendResolved: true}
+        silent: {description: UI only, external: false, groupWait: 5m, groupInterval: 30m, repeatInterval: 7d, sendResolved: false}
+        heartbeat: {description: dead-man, external: true, groupWait: 0s, groupInterval: 1m, repeatInterval: 1m, sendResolved: false}
+      routing:
+        groupBy: [alertname, category]
+        severityFallback: {critical: page, warning: notify, info: silent, none: silent}
+        inhibitRules:
+          - name: node-down-inhibits-node-symptoms
+            sourceMatchers: ['alertname="SCNodeDown"']
+            targetMatchers: ['always_notify="none"']
+            equal: [node]
+            rationale: A dead node explains its own symptoms.
+      upstreamRules:
+        chart: kube-prometheus-stack
+        addedLabels: {source: upstream}
+        keepGroups: [general, node-exporter]
+        disableGroups:
+          - {group: kubeProxy, reason: kube-proxy not scraped on k3s}
+        disableAlerts:
+          - {alertname: KubeJobFailed, reason: worker Jobs fail by design, replacedBy: SCPlatformJobFailed}
+      alerts:
+        - alertname: SCNodeDown
+          summary: A Kubernetes node is NotReady or its node-exporter is unreachable.
+          category: node
+          severity: critical
+          notifyClass: page
+          alwaysNotify: critical-outage
+          blackStartThreat: false
+          source:
+            kind: prometheus-rule
+            expr: 'kube_node_status_condition{condition="Ready",status="true"} == 0'
+            for: 5m
+          profiles: [self-hosting-minimum, small-ha]
+          gate: P09
+          ownerPlan: "42"
+          signalOwnerPlan: "38"
+          runbook: procedures/lost-node.md
+          specRefs: ["§96"]
+          aliases: [NodeDown, KubeNodeNotReady]
+x-invalid-examples:
+  - reason: critical alert routed to the silent class
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: AlertCatalog
+      metadata: {name: bad}
+      spec:
+        alwaysNotifyReasons: [needs-human, budget-stop, failed-backup, critical-outage, failed-mirror, black-start-threat]
+        notificationClasses:
+          page: {description: p, external: true, groupWait: 30s, groupInterval: 5m, repeatInterval: 4h, sendResolved: true}
+          notify: {description: n, external: true, groupWait: 2m, groupInterval: 10m, repeatInterval: 24h, sendResolved: true}
+          silent: {description: s, external: false, groupWait: 5m, groupInterval: 30m, repeatInterval: 7d, sendResolved: false}
+          heartbeat: {description: h, external: true, groupWait: 0s, groupInterval: 1m, repeatInterval: 1m, sendResolved: false}
+        routing:
+          groupBy: [alertname]
+          severityFallback: {critical: page, warning: notify, info: silent, none: silent}
+          inhibitRules: []
+        upstreamRules: {chart: kube-prometheus-stack, addedLabels: {source: upstream}, keepGroups: [], disableGroups: [], disableAlerts: []}
+        alerts:
+          - alertname: SCForgejoDown
+            summary: Forgejo is down internally.
+            category: forge
+            severity: critical
+            notifyClass: silent
+            alwaysNotify: none
+            blackStartThreat: false
+            source: {kind: prometheus-rule, expr: 'probe_success{probe="forgejo-http"} == 0', for: 3m}
+            profiles: [self-hosting-minimum]
+            gate: P09
+            ownerPlan: "42"
+            signalOwnerPlan: "38"
+            runbook: procedures/restore-forgejo.md
+            specRefs: ["§96"]
+  - reason: groupBy includes the per-task subject label, which would explode notification groups
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: AlertCatalog
+      metadata: {name: bad}
+      spec:
+        alwaysNotifyReasons: [needs-human, budget-stop, failed-backup, critical-outage, failed-mirror, black-start-threat]
+        notificationClasses:
+          page: {description: p, external: true, groupWait: 30s, groupInterval: 5m, repeatInterval: 4h, sendResolved: true}
+          notify: {description: n, external: true, groupWait: 2m, groupInterval: 10m, repeatInterval: 24h, sendResolved: true}
+          silent: {description: s, external: false, groupWait: 5m, groupInterval: 30m, repeatInterval: 7d, sendResolved: false}
+          heartbeat: {description: h, external: true, groupWait: 0s, groupInterval: 1m, repeatInterval: 1m, sendResolved: false}
+        routing:
+          groupBy: [alertname, subject]
+          severityFallback: {critical: page, warning: notify, info: silent, none: silent}
+          inhibitRules: []
+        upstreamRules: {chart: kube-prometheus-stack, addedLabels: {source: upstream}, keepGroups: [], disableGroups: [], disableAlerts: []}
+        alerts:
+          - alertname: Watchdog
+            summary: Always-firing heartbeat.
+            category: monitoring
+            severity: info
+            notifyClass: heartbeat
+            alwaysNotify: none
+            blackStartThreat: false
+            source: {kind: prometheus-rule, expr: vector(1), for: 0s}
+            profiles: [self-hosting-minimum]
+            gate: P09
+            ownerPlan: "42"
+            signalOwnerPlan: "38"
+            runbook: procedures/monitoring-failure.md
+            specRefs: ["§96"]
+  - reason: black-start-threat flag without the black-start-threat always-notify reason
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: AlertCatalog
+      metadata: {name: bad}
+      spec:
+        alwaysNotifyReasons: [needs-human, budget-stop, failed-backup, critical-outage, failed-mirror, black-start-threat]
+        notificationClasses:
+          page: {description: p, external: true, groupWait: 30s, groupInterval: 5m, repeatInterval: 4h, sendResolved: true}
+          notify: {description: n, external: true, groupWait: 2m, groupInterval: 10m, repeatInterval: 24h, sendResolved: true}
+          silent: {description: s, external: false, groupWait: 5m, groupInterval: 30m, repeatInterval: 7d, sendResolved: false}
+          heartbeat: {description: h, external: true, groupWait: 0s, groupInterval: 1m, repeatInterval: 1m, sendResolved: false}
+        routing:
+          groupBy: [alertname]
+          severityFallback: {critical: page, warning: notify, info: silent, none: silent}
+          inhibitRules: []
+        upstreamRules: {chart: kube-prometheus-stack, addedLabels: {source: upstream}, keepGroups: [], disableGroups: [], disableAlerts: []}
+        alerts:
+          - alertname: SCObjectStorageUnreachable
+            summary: Object storage endpoint unreachable.
+            category: object-storage
+            severity: warning
+            notifyClass: notify
+            alwaysNotify: none
+            blackStartThreat: true
+            source: {kind: prometheus-rule, expr: 'probe_success{probe="object-storage"} == 0', for: 10m}
+            profiles: [self-hosting-minimum]
+            gate: P09
+            ownerPlan: "42"
+            signalOwnerPlan: "14"
+            runbook: procedures/object-storage-outage.md
+            specRefs: ["§97"]

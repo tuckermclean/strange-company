@@ -1,0 +1,595 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://strange.company/contracts/restore-test-result/v1alpha1
+title: RestoreTestResult
+description: |
+  Evidence document produced by every restore test, DR check and storage audit
+  (SPEC §109, §108; plan 44 §7.2). One document per tested subject per run.
+
+  Writers:
+  - check CronJobs in namespace `dr-tests` (image `restore-tester`, binary
+    `sc-restore-test`; ADR-0553). They upload to
+    `s3://<prefix>-evidence/restore-tests/<test_id>/<YYYY>/<MM>/<started_at>-<result_id>.json`.
+  - the off-cluster OpenTofu state test `./bootstrap state verify` (plan 06), which
+    uploads to `s3://<prefix>-tofu-state/<cluster>/restore-tests/<started_at>.json`.
+  - operator drills (`rt-blackstart-drill`, `rt-drill-*`), uploaded by the toolbox.
+
+  The Job's exit code is the alerting signal (exit 0 if and only if every
+  document it wrote has `outcome: passed`). This document is the evidence. It
+  never contains secret values, database rows other than DR marker rows, or
+  repository content. Field names are snake_case (master plan §6.1).
+type: object
+additionalProperties: false
+required:
+  - schema_version
+  - result_id
+  - test_id
+  - test_kind
+  - subject
+  - installation
+  - runner
+  - started_at
+  - finished_at
+  - outcome
+  - checks
+properties:
+  schema_version:
+    const: v1alpha1
+  result_id:
+    description: UUID (v4 or v7) unique per document.
+    type: string
+    pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+  test_id:
+    description: >
+      Stable test identifier cited by plans 11, 12, 43, 44 (e.g. `rt-cnpg-pitr-forgejo-pg`,
+      `rt-repo-bundle`, `rt-longhorn-canary`, `rt-longhorn-volume`, `rt-etcd-snapshot`,
+      `rt-tofu-state`, `rt-github-mirror`, `rt-app-forgejo`, `rt-app-authentik`,
+      `rt-blackstart-drill`, `storage-audit`, `objstore-audit`, `objstore-canary`,
+      `retention-audit`, `oci-retention-audit`, `rt-tofu-lock-age`, `rt-recovery-drill`, `rt-drill-freshness`, `longhorn-attach-drill`, `rt-repo-rehydrate`).
+    type: string
+    pattern: "^[a-z][a-z0-9]*(-[a-z0-9]+)*$"
+    maxLength: 63
+  test_kind:
+    type: string
+    enum:
+      - cnpg-pitr
+      - repo-bundle
+      - longhorn-canary
+      - longhorn-volume
+      - etcd-snapshot
+      - opentofu-state
+      - github-black-start
+      - app-restore
+      - blackstart-drill
+      - storage-audit
+      - objstore-audit
+      - objstore-canary
+      - retention-audit
+      - oci-retention-audit
+      - opentofu-lock-age
+      - recovery-check
+      - recovery-drill
+      - drill-freshness
+      - longhorn-attach-drill
+      - repo-rehydrate
+      - bootstrap-capsule
+  subject:
+    description: >
+      What was restored or audited: a CNPG cluster name, `<org>/<repo>`, a Longhorn
+      volume name, `opentofu-state`, `github:<owner>/<repo>`, a bucket name, or `cluster`.
+    type: string
+    minLength: 1
+    maxLength: 200
+  installation:
+    type: object
+    additionalProperties: false
+    required: [cluster]
+    properties:
+      cluster:
+        type: string
+        pattern: "^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$"
+      install_uid:
+        type: string
+        minLength: 8
+        maxLength: 64
+      profile:
+        type: string
+        enum: [self-hosting-minimum, small-ha]
+      backup_generation:
+        description: Backup generation in force when the test ran (plan 12 §9.4, ADR-0200).
+        type: integer
+        minimum: 1
+  runner:
+    type: object
+    additionalProperties: false
+    required: [kind, tool_version]
+    properties:
+      kind:
+        type: string
+        enum: [cronjob, operator, bootstrap, ci]
+      namespace:
+        type: string
+      cronjob:
+        type: string
+      job:
+        type: string
+      host:
+        description: Operator host label for off-cluster runs (no personal data).
+        type: string
+        maxLength: 100
+      tool_version:
+        description: Version of `sc-restore-test` or `sc-bootstrap` that produced the document.
+        type: string
+        minLength: 1
+      image_digest:
+        type: string
+        pattern: "^sha256:[0-9a-f]{64}$"
+  started_at:
+    type: string
+    format: date-time
+  finished_at:
+    type: string
+    format: date-time
+  duration_seconds:
+    type: number
+    minimum: 0
+  decided_at:
+    description: >
+      Drills and real recoveries only: when the operator decided to rebuild (RTO clock start,
+      plan 45 §14.3). Same instant as `RecoveryRecord.spec.decidedAt`.
+    type: string
+    format: date-time
+  outcome:
+    description: >
+      `passed`: every check passed. `failed`: the backup or the restored data did
+      not meet an invariant (a backup problem). `errored`: the test could not be
+      carried out (insufficient capacity, API unavailable, timeout): a test
+      problem. `skipped`: deliberately not run (e.g. the subject is excluded by
+      policy); a skipped result never satisfies freshness.
+    type: string
+    enum: [passed, failed, errored, skipped]
+  failure:
+    type: object
+    additionalProperties: false
+    required: [code, message]
+    properties:
+      code:
+        description: Stable failure code (plan 44 §15 lists them), e.g. `RT_MARKER_MISSING`.
+        type: string
+        pattern: "^RT_[A-Z0-9_]+$"
+      message:
+        type: string
+        maxLength: 2000
+      check_id:
+        type: string
+  source:
+    description: The backup that was restored or inspected.
+    type: object
+    additionalProperties: false
+    required: [kind]
+    properties:
+      kind:
+        type: string
+        enum:
+          - barman-cloud
+          - longhorn-backup
+          - git-bundle-chain
+          - etcd-snapshot
+          - opentofu-state-version
+          - github-mirror
+          - bucket-configuration
+          - live-cluster
+      location:
+        description: Object-storage URI or Git URL without credentials.
+        type: string
+        pattern: "^(s3://|https://|ssh://|k8s://)[^\\s@]+$"
+      backup_id:
+        description: Barman backup id, Longhorn backup name, bundle chain id, etcd snapshot name or object version id.
+        type: string
+        maxLength: 256
+      backup_completed_at:
+        type: string
+        format: date-time
+      recovery_target_time:
+        description: PITR target used (cnpg-pitr only).
+        type: string
+        format: date-time
+      server_name:
+        description: barman-cloud serverName, e.g. `forgejo-pg-g1`.
+        type: string
+        pattern: "^[a-z0-9-]+-g[0-9]+$"
+  target:
+    description: Where the restore was materialized. Scratch targets are always deleted.
+    type: object
+    additionalProperties: false
+    required: [kind]
+    properties:
+      kind:
+        type: string
+        enum: [scratch-cnpg-cluster, scratch-longhorn-volume, scratch-directory, scratch-app, none]
+      name:
+        type: string
+      namespace:
+        type: string
+      cleaned_up:
+        type: boolean
+  checks:
+    description: Individual assertions. At least one per document.
+    type: array
+    minItems: 1
+    items:
+      type: object
+      additionalProperties: false
+      required: [id, outcome]
+      properties:
+        id:
+          description: Check identifier, e.g. `marker-a-present`, `SA-3`, `OA-07`.
+          type: string
+          pattern: "^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$"
+        description:
+          type: string
+          maxLength: 300
+        outcome:
+          type: string
+          enum: [passed, failed, errored, skipped]
+        expected:
+          type: string
+          maxLength: 500
+        observed:
+          type: string
+          maxLength: 500
+        duration_seconds:
+          type: number
+          minimum: 0
+  measurements:
+    description: Numbers that verify RPO/RTO claims (plan 44 §9.6).
+    type: object
+    additionalProperties: false
+    properties:
+      restore_duration_seconds:
+        description: Time from restore start to the restored target being usable (RTO evidence).
+        type: number
+        minimum: 0
+      rpo_observed_seconds:
+        description: Measured data-loss window (e.g. marker insert to WAL archived, last bundle age at test time).
+        type: number
+        minimum: 0
+      backup_age_seconds:
+        description: Age of the restored backup at test start.
+        type: number
+        minimum: 0
+      restored_bytes:
+        type: integer
+        minimum: 0
+      objects_count:
+        description: Repositories, tables, files or bucket objects inspected.
+        type: integer
+        minimum: 0
+      refs_compared:
+        type: integer
+        minimum: 0
+      archive_latency_seconds:
+        description: Time from a forced WAL switch to the segment being archived (RT-1). Not an RPO.
+        type: number
+        minimum: 0
+      rto_data_availability_seconds:
+        description: >
+          Seconds from `decided_at` until all four databases are Ready and important volumes are
+          restored (CD-32 data-availability RTO). Equals `RecoveryRecord.spec.rto.dataAvailabilitySeconds`.
+        type: number
+        minimum: 0
+      rto_sr1_seconds:
+        description: >
+          Seconds from `decided_at` until service restoration stage SR-1 (CD-32). Equals
+          `RecoveryRecord.spec.rto.serviceRestorationSeconds`.
+        type: number
+        minimum: 0
+      rto_sr2_seconds:
+        description: >
+          Seconds from `decided_at` until SR-2 (CD-32; mirror re-enabled and restore tests passed after
+          finalize). Not stored in RecoveryRecord (it completes after the finalize PR).
+        type: number
+        minimum: 0
+      per_subject:
+        description: >
+          Per-subject measurements for documents that cover several subjects (recovery drills,
+          plan 45 D2/D3: one entry per CNPG cluster or Longhorn volume).
+        type: object
+        propertyNames:
+          pattern: "^[a-z0-9][a-z0-9/_.-]{0,99}$"
+        additionalProperties:
+          type: object
+          additionalProperties: false
+          properties:
+            rpo_observed_seconds: {type: number, minimum: 0}
+            restore_duration_seconds: {type: number, minimum: 0}
+            archive_latency_seconds: {type: number, minimum: 0}
+            backup_age_seconds: {type: number, minimum: 0}
+            restored_bytes: {type: integer, minimum: 0}
+      step_durations:
+        description: Seconds per named procedure step (drills; e.g. state-recover, seed, forge-init).
+        type: object
+        propertyNames:
+          pattern: "^[a-z0-9][a-z0-9._-]{0,62}$"
+        additionalProperties:
+          type: number
+          minimum: 0
+  evidence_refs:
+    description: Further artifacts (logs, manifests) with digests. Never secret material.
+    type: array
+    items:
+      type: object
+      additionalProperties: false
+      required: [uri, sha256]
+      properties:
+        uri:
+          type: string
+          pattern: "^s3://[^\\s]+$"
+        sha256:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+allOf:
+  - if:
+      properties:
+        outcome:
+          enum: [failed, errored]
+    then:
+      required: [failure]
+  - if:
+      properties:
+        outcome:
+          const: passed
+    then:
+      not:
+        required: [failure]
+      properties:
+        checks:
+          items:
+            properties:
+              outcome:
+                enum: [passed, skipped]
+  - if:
+      properties:
+        test_kind:
+          const: blackstart-drill
+    then:
+      required: [decided_at, measurements]
+      properties:
+        measurements:
+          required: [rto_data_availability_seconds, rto_sr1_seconds, rto_sr2_seconds, per_subject, step_durations]
+  - if:
+      properties:
+        test_kind:
+          const: cnpg-pitr
+    then:
+      required: [source, target, measurements]
+      properties:
+        source:
+          required: [kind, location, server_name, recovery_target_time]
+          properties:
+            kind:
+              const: barman-cloud
+examples:
+  - schema_version: v1alpha1
+    result_id: 0e9c2f4a-5b1d-4c7e-9a3b-2d6f8e1a7c40
+    test_id: rt-cnpg-pitr-forgejo-pg
+    test_kind: cnpg-pitr
+    subject: forgejo-pg
+    installation:
+      cluster: prod
+      install_uid: 7f3a9c2e41d8
+      profile: self-hosting-minimum
+      backup_generation: 1
+    runner:
+      kind: cronjob
+      namespace: dr-tests
+      cronjob: restore-test-cnpg
+      job: restore-test-cnpg-29342160
+      tool_version: 0.4.0
+      image_digest: sha256:4f8b0f3d2b6f9a1e0c7d5b3a2e1f0c9d8b7a6f5e4d3c2b1a0f9e8d7c6b5a4f3e
+    started_at: "2026-10-11T03:00:04Z"
+    finished_at: "2026-10-11T03:14:41Z"
+    duration_seconds: 877
+    outcome: passed
+    source:
+      kind: barman-cloud
+      location: s3://sc-prod-pg-backups/forgejo-pg/
+      backup_id: 20261011T011002
+      backup_completed_at: "2026-10-11T01:12:48Z"
+      recovery_target_time: "2026-10-11T03:00:20Z"
+      server_name: forgejo-pg-g1
+    target:
+      kind: scratch-cnpg-cluster
+      name: rt-forgejo-pg
+      namespace: dr-tests
+      cleaned_up: true
+    checks:
+      - {id: marker-a-present, description: Marker inserted before the target time is present, outcome: passed, expected: "1 row", observed: "1 row"}
+      - {id: marker-b-absent, description: Marker inserted after the target time is absent, outcome: passed, expected: "0 rows", observed: "0 rows"}
+      - {id: app-schema-present, outcome: passed, expected: ">= 50 tables in forgejo", observed: "112 tables"}
+    measurements:
+      restore_duration_seconds: 412
+      rpo_observed_seconds: 38
+      backup_age_seconds: 6436
+      restored_bytes: 218103808
+      objects_count: 112
+  - schema_version: v1alpha1
+    result_id: 5a1d7e2c-9f3b-4e8a-b6c0-1d2e3f4a5b6c
+    test_id: rt-repo-bundle
+    test_kind: repo-bundle
+    subject: projects/example-service
+    installation: {cluster: prod}
+    runner: {kind: cronjob, namespace: dr-tests, cronjob: restore-test-repos, tool_version: 0.4.0}
+    started_at: "2026-10-12T04:00:00Z"
+    finished_at: "2026-10-12T04:00:51Z"
+    outcome: failed
+    failure:
+      code: RT_REF_MISMATCH
+      message: "refs/heads/main restored at 1a2b3c4 but the chain manifest records 9f8e7d6"
+      check_id: refs-match-manifest
+    source:
+      kind: git-bundle-chain
+      location: s3://sc-prod-repo-backups/git/weekly/projects/example-service/c-20261011T021700Z/
+      backup_id: c-20261011T021700Z
+    target: {kind: scratch-directory, cleaned_up: true}
+    checks:
+      - {id: bundle-verify, outcome: passed}
+      - {id: fsck-full, outcome: passed}
+      - {id: refs-match-manifest, outcome: failed, expected: "9f8e7d6", observed: "1a2b3c4"}
+    measurements: {refs_compared: 14, backup_age_seconds: 1720}
+  - schema_version: v1alpha1
+    result_id: 9b8c7d6e-5f4a-4b3c-8d2e-1f0a9b8c7d6e
+    test_id: rt-tofu-state
+    test_kind: opentofu-state
+    subject: opentofu-state
+    installation: {cluster: prod}
+    runner: {kind: operator, host: operator-laptop, tool_version: 0.4.0}
+    started_at: "2026-10-01T09:12:00Z"
+    finished_at: "2026-10-01T09:13:30Z"
+    outcome: passed
+    source:
+      kind: opentofu-state-version
+      location: s3://sc-prod-tofu-state/prod/compute/terraform.tfstate
+      backup_id: 3HL4kqtJlcpXroDTDmJ.rmSpXd3dIbrHY
+    target: {kind: scratch-directory, cleaned_up: true}
+    checks:
+      - {id: decrypt-current, outcome: passed}
+      - {id: lineage-matches-journal, outcome: passed}
+      - {id: plan-refresh-false, outcome: passed}
+  - schema_version: v1alpha1
+    result_id: 3c2b1a09-8f7e-4d6c-9b5a-4e3d2c1b0a9f
+    test_id: rt-blackstart-drill
+    test_kind: blackstart-drill
+    subject: cluster
+    installation: {cluster: prod-drill, backup_generation: 2}
+    decided_at: "2026-11-02T07:50:00Z"
+    runner: {kind: operator, host: drill-runner, tool_version: 0.4.0}
+    started_at: "2026-11-02T08:00:00Z"
+    finished_at: "2026-11-02T11:21:00Z"
+    outcome: passed
+    target: {kind: none}
+    checks:
+      - {id: control-transfer-recovery, outcome: passed}
+      - {id: heartbeat-rpo, outcome: passed, expected: "<= 900 s", observed: "612 s max"}
+    measurements:
+      restore_duration_seconds: 12060
+      rto_data_availability_seconds: 11460
+      rto_sr1_seconds: 9720
+      rto_sr2_seconds: 13600
+      per_subject:
+        forgejo-pg: {rpo_observed_seconds: 512, restore_duration_seconds: 840}
+        sc-pg: {rpo_observed_seconds: 612, restore_duration_seconds: 1310}
+        forgejo-data: {restore_duration_seconds: 920, backup_age_seconds: 30100}
+      step_durations: {state-recover: 410, provision: 1520, seed: 2210, forge-init: 640, restore: 3900, verify: 1180}
+x-invalid-examples:
+  - reason: A failed outcome must carry a failure object.
+    value:
+      schema_version: v1alpha1
+      result_id: 0e9c2f4a-5b1d-4c7e-9a3b-2d6f8e1a7c41
+      test_id: rt-longhorn-canary
+      test_kind: longhorn-canary
+      subject: dr-canary
+      installation: {cluster: prod}
+      runner: {kind: cronjob, tool_version: 0.4.0}
+      started_at: "2026-10-11T05:00:00Z"
+      finished_at: "2026-10-11T05:03:00Z"
+      outcome: failed
+      checks:
+        - {id: checksum-match, outcome: failed}
+  - reason: A passed outcome cannot contain a failed check.
+    value:
+      schema_version: v1alpha1
+      result_id: 0e9c2f4a-5b1d-4c7e-9a3b-2d6f8e1a7c42
+      test_id: storage-audit
+      test_kind: storage-audit
+      subject: cluster
+      installation: {cluster: prod}
+      runner: {kind: cronjob, tool_version: 0.4.0}
+      started_at: "2026-10-11T07:15:00Z"
+      finished_at: "2026-10-11T07:15:09Z"
+      outcome: passed
+      checks:
+        - {id: SA-1, outcome: passed}
+        - {id: SA-3, outcome: failed}
+  - reason: A CNPG PITR result must name the barman serverName and the recovery target time.
+    value:
+      schema_version: v1alpha1
+      result_id: 0e9c2f4a-5b1d-4c7e-9a3b-2d6f8e1a7c43
+      test_id: rt-cnpg-pitr-sc-pg
+      test_kind: cnpg-pitr
+      subject: sc-pg
+      installation: {cluster: prod}
+      runner: {kind: cronjob, tool_version: 0.4.0}
+      started_at: "2026-10-11T03:30:00Z"
+      finished_at: "2026-10-11T03:41:00Z"
+      outcome: passed
+      source: {kind: barman-cloud, location: "s3://sc-prod-pg-backups/sc-pg/"}
+      target: {kind: scratch-cnpg-cluster, name: rt-sc-pg, cleaned_up: true}
+      checks:
+        - {id: marker-a-present, outcome: passed}
+      measurements: {restore_duration_seconds: 300}
+  - reason: An RD3 black-start drill document must carry decided_at and the three CD-32 RTO measurements (DR-B3).
+    value:
+      schema_version: v1alpha1
+      result_id: 0e9c2f4a-5b1d-4c7e-9a3b-2d6f8e1a7c47
+      test_id: rt-blackstart-drill
+      test_kind: blackstart-drill
+      subject: cluster
+      installation: {cluster: prod-drill}
+      runner: {kind: operator, tool_version: 0.4.0}
+      started_at: "2026-11-02T08:00:00Z"
+      finished_at: "2026-11-02T11:00:00Z"
+      outcome: passed
+      checks:
+        - {id: control-transfer-recovery, outcome: passed}
+      measurements:
+        restore_duration_seconds: 10800
+        per_subject:
+          sc-pg: {rpo_observed_seconds: 600}
+        step_durations: {seed: 2000}
+  - reason: Per-subject measurements are closed objects; unknown measurement keys are rejected.
+    value:
+      schema_version: v1alpha1
+      result_id: 0e9c2f4a-5b1d-4c7e-9a3b-2d6f8e1a7c46
+      test_id: rt-blackstart-drill
+      test_kind: recovery-drill
+      subject: cluster
+      installation: {cluster: prod}
+      runner: {kind: operator, tool_version: 0.4.0}
+      started_at: "2026-11-02T08:00:00Z"
+      finished_at: "2026-11-02T11:00:00Z"
+      outcome: passed
+      checks:
+        - {id: control-transfer-recovery, outcome: passed}
+      measurements:
+        per_subject:
+          sc-pg: {rpo_minutes: 10}
+  - reason: Locations must not embed credentials (user-info in the URI).
+    value:
+      schema_version: v1alpha1
+      result_id: 0e9c2f4a-5b1d-4c7e-9a3b-2d6f8e1a7c44
+      test_id: rt-github-mirror
+      test_kind: github-black-start
+      subject: github:acme/strange-company
+      installation: {cluster: prod}
+      runner: {kind: cronjob, tool_version: 0.4.0}
+      started_at: "2026-10-11T06:00:00Z"
+      finished_at: "2026-10-11T06:02:00Z"
+      outcome: passed
+      source: {kind: github-mirror, location: "https://x-access-token:ghs_abc@github.com/acme/strange-company.git"}
+      checks:
+        - {id: clone, outcome: passed}
+  - reason: Unknown top-level fields are rejected (closed object); `result` is not a field, use `outcome`.
+    value:
+      schema_version: v1alpha1
+      result_id: 0e9c2f4a-5b1d-4c7e-9a3b-2d6f8e1a7c45
+      test_id: rt-tofu-state
+      test_kind: opentofu-state
+      subject: opentofu-state
+      installation: {cluster: prod}
+      runner: {kind: operator, tool_version: 0.4.0}
+      started_at: "2026-10-01T09:12:00Z"
+      finished_at: "2026-10-01T09:13:30Z"
+      outcome: passed
+      result: pass
+      checks:
+        - {id: decrypt-current, outcome: passed}

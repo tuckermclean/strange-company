@@ -1,0 +1,54 @@
+# Stage-0 validator (CD-27, ADR-0021). Deterministically re-checks every structural
+# claim made in STATUS.md. This is the interim trusted CI of ADR-0018 for the
+# Stage-0 artifacts; it needs no secrets and makes no network calls beyond
+# installing the pinned Python dependencies.
+name: stage0-validate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stage0-validate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (node24)
+        with:
+          persist-credentials: false
+
+      - name: Install pinned validator dependencies
+        run: |
+          python3 -m venv .venv
+          .venv/bin/python -m pip install --no-cache-dir --disable-pip-version-check -r tools/stage0/requirements.txt
+
+      - name: Validate the Stage-0 definition
+        run: .venv/bin/python -I tools/stage0/validate.py --repo .
+
+      - name: PLAN.md generation is deterministic
+        run: |
+          for seed in 0 1 2; do
+            PYTHONHASHSEED=$seed .venv/bin/python -I tools/stage0/genplan.py . >/dev/null
+            git diff --exit-code -- PLAN.md
+          done
+
+      - name: Machine-readable report
+        if: always()
+        run: .venv/bin/python -I tools/stage0/validate.py --repo . --json > stage0-report.json || true
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1 (node24)
+        with:
+          name: stage0-report
+          path: stage0-report.json

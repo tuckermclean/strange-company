@@ -1,0 +1,526 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://strange.company/contracts/gateway-token/v1alpha1
+title: GatewayTokenClaims
+description: |
+  Decoded claims (JWS payload) of a Model Gateway token (secret class `SC-GATEWAY-TOKEN`),
+  owning plan 53. Tokens are compact JWS (RFC 7515) signed with EdDSA/Ed25519 by the Agent
+  Runner using `SC-RUNNER-SIGNING`; the JOSE header MUST match `$defs/JoseHeader`
+  (`typ: sc-gw+jwt`), which, together with `aud: sc-model-gateway`, prevents a Runner task
+  token (plan 26, different `aud`/`typ`) from being accepted by the Gateway and vice versa.
+
+  Two kinds exist:
+  - `execution`: minted by the Runner at dispatch for exactly one worker execution
+    (plan 26). Lifetime = Job activeDeadlineSeconds + 300 s, hard maximum 6 h.
+    Revoked by the Runner when the execution reaches a terminal state.
+  - `orchestrator`: the revocable token used by Hermes (pseudo-harness
+    `hermes`, role `orchestrator`, phase `orchestration`). Lifetime <= 31 days (one 30-day rotation period plus the 24 h overlap; review SEC-13),
+    rotated by the Runner every 30 days with a 24 h overlap (plan 24 delivers it).
+
+  Signature validity is necessary but not sufficient: the Gateway additionally requires a
+  row in `ledger.gateway_tokens` with the same `jti`, `revoked_at IS NULL`, and a
+  `claims_sha256` equal to the SHA-256 of the received payload bytes (plan 53 §8). This is
+  the revocation list and also means a stolen signing key cannot mint usable tokens
+  without write access to `sc-pg`.
+
+  Invariants checked by the Gateway beyond this schema: `nbf <= now + 30 s`,
+  `exp > now - 30 s`, `exp - iat <= 21600` for `execution` and `<= 2678400` for
+  `orchestrator`; every `allowed_models[]` entry names a model enabled in the loaded
+  `ModelRouting` policy; `budget_scopes` contains `execution:<execution_id>` and
+  `task:<task_id>` for `execution` tokens and exactly `orchestration` for `orchestrator`.
+
+  Verify-only tokens (plan 53 §14.5a; `POST /v1/admin/gateway-tokens:verify`, plan 26;
+  review RA-8) are `execution` tokens for the synthetic task `sc-0`: `execution_id`
+  `sc-0-x<n>`, `budget_scopes` exactly `[execution:sc-0-x<n>]` (no `task:` scope, because no
+  task row exists), `project: _platform`, `exp - iat <= 600`. The schema enforces the
+  scope shape; the Gateway enforces the lifetime.
+type: object
+additionalProperties: false
+required:
+  - iss
+  - aud
+  - sub
+  - iat
+  - nbf
+  - exp
+  - jti
+  - sc_token_version
+  - token_kind
+  - task_id
+  - execution_id
+  - attempt
+  - worker_id
+  - role
+  - harness
+  - phase
+  - repository
+  - project
+  - tier_requested
+  - tier_effective
+  - allowed_models
+  - budget_scopes
+  - max_concurrent_requests
+  - policy_revision
+properties:
+  iss:
+    const: sc-agent-runner
+  aud:
+    const: sc-model-gateway
+  sub:
+    description: "`execution:<execution_id>` or `orchestrator:hermes`."
+    type: string
+    pattern: "^(execution:sc-[0-9]+-x[0-9]+|orchestrator:hermes)$"
+  iat:
+    $ref: "#/$defs/NumericDate"
+  nbf:
+    $ref: "#/$defs/NumericDate"
+  exp:
+    $ref: "#/$defs/NumericDate"
+  jti:
+    description: UUID (lower-case, hyphenated). Primary key of ledger.gateway_tokens.
+    type: string
+    pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+  sc_token_version:
+    const: 1
+  token_kind:
+    type: string
+    enum: [execution, orchestrator]
+  task_id:
+    type: [string, "null"]
+    pattern: "^sc-[0-9]+$"
+  execution_id:
+    type: [string, "null"]
+    pattern: "^sc-[0-9]+-x[0-9]+$"
+  attempt:
+    description: Attempt number of this execution within its task and role (plan 29).
+    type: [integer, "null"]
+    minimum: 1
+  worker_id:
+    description: Kubernetes Job name of the worker execution (naming owned by plan 26; expected to equal `execution_id`), or `hermes`.
+    type: string
+    pattern: "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
+  role:
+    type: string
+    enum: [researcher, planner, tester, implementer, reviewer, orchestrator]
+  harness:
+    description: Harness registry id (plan 28, `policy/harnesses.yaml`) or the reserved pseudo-harness `hermes`.
+    type: string
+    pattern: "^[a-z][a-z0-9-]{0,31}$"
+  phase:
+    description: TDD economics phase tag (plan 21) used for SPEC §82 cost attribution.
+    $ref: "#/$defs/Phase"
+  repository:
+    description: Forgejo repository `owner/name`; null only for orchestrator tokens.
+    type: [string, "null"]
+    pattern: "^[A-Za-z0-9_.-]{1,64}/[A-Za-z0-9_.-]{1,100}$"
+  project:
+    description: Project id the repository belongs to (plan 25 repository context); `_platform` for orchestration.
+    type: [string, "null"]
+    pattern: "^[a-z0-9_][a-z0-9_-]{0,62}$"
+  tier_requested:
+    oneOf:
+      - $ref: "#/$defs/Tier"
+      - type: "null"
+  tier_effective:
+    oneOf:
+      - $ref: "#/$defs/Tier"
+      - type: "null"
+  allowed_models:
+    description: |
+      Exact allowlist. A request whose (route provider, route API family, body/path model)
+      is not in this list is denied with SC_MODEL_NOT_ALLOWED. `purpose: auxiliary` entries
+      cover harness background calls (e.g. a small fast model) resolved by plan 31.
+    type: array
+    minItems: 1
+    maxItems: 8
+    items:
+      type: object
+      additionalProperties: false
+      required: [provider, api_family, model, purpose]
+      properties:
+        provider:
+          type: string
+          pattern: "^[a-z][a-z0-9-]{0,31}$"
+        api_family:
+          $ref: "#/$defs/ApiFamily"
+        model:
+          description: The provider API model string (`apiModel` in ModelRouting), as sent in the request.
+          type: string
+          minLength: 1
+          maxLength: 128
+        purpose:
+          type: string
+          enum: [primary, auxiliary]
+  budget_scopes:
+    description: Entity budget scopes this token spends against. Shared scopes (provider/global by period) are derived by the Gateway from policy and are not listed here.
+    type: array
+    minItems: 1
+    maxItems: 4
+    uniqueItems: true
+    items:
+      type: string
+      pattern: "^(execution:sc-[0-9]+-x[0-9]+|task:sc-[0-9]+|orchestration)$"
+  max_concurrent_requests:
+    type: integer
+    minimum: 1
+    maximum: 64
+  policy_revision:
+    description: Git commit SHA of the policy set (routing, pricing, budgets) the Runner used to mint this token.
+    type: string
+    pattern: "^[0-9a-f]{40}$"
+  trace_parent:
+    description: |
+      Optional W3C `traceparent` of the execution span (`sc.execution`, plan 26/40). The Gateway
+      uses it as the parent of `sc.model.invocation` when the request carries no `traceparent`
+      header (plan 53 §21). Absent for orchestrator tokens. Carries no secret.
+    type: string
+    pattern: "^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$"
+allOf:
+  - if:
+      required: [task_id]
+      properties:
+        task_id:
+          const: sc-0
+    then:
+      properties:
+        token_kind:
+          const: execution
+        execution_id:
+          type: string
+          pattern: "^sc-0-x[0-9]+$"
+        project:
+          const: _platform
+        budget_scopes:
+          maxItems: 1
+          items:
+            pattern: "^execution:sc-0-x[0-9]+$"
+  - if:
+      properties:
+        token_kind:
+          const: execution
+    then:
+      properties:
+        task_id:
+          type: string
+        execution_id:
+          type: string
+        attempt:
+          type: integer
+        repository:
+          type: string
+        project:
+          type: string
+        tier_effective:
+          $ref: "#/$defs/Tier"
+        role:
+          not:
+            const: orchestrator
+        harness:
+          not:
+            const: hermes
+        phase:
+          not:
+            const: orchestration
+        sub:
+          pattern: "^execution:"
+        worker_id:
+          not:
+            const: hermes
+  - if:
+      properties:
+        token_kind:
+          const: orchestrator
+    then:
+      properties:
+        task_id:
+          type: "null"
+        execution_id:
+          type: "null"
+        attempt:
+          type: "null"
+        repository:
+          type: "null"
+        role:
+          const: orchestrator
+        harness:
+          const: hermes
+        phase:
+          const: orchestration
+        sub:
+          const: orchestrator:hermes
+        worker_id:
+          const: hermes
+        budget_scopes:
+          const: [orchestration]
+      not:
+        required: [trace_parent]
+$defs:
+  NumericDate:
+    description: Seconds since the Unix epoch (RFC 7519 NumericDate), integer.
+    type: integer
+    minimum: 1700000000
+  Tier:
+    type: string
+    enum: [clerical, bargain, standard, frontier]
+  Phase:
+    type: string
+    enum: [specification, test_authoring, red_verification, implementation, green_retry, review, orchestration]
+  ApiFamily:
+    description: Same identifiers as contracts/harness.schema.yaml (plan 28). `google-generative` is reserved (post-MVP).
+    type: string
+    enum: [anthropic-messages, openai-responses, openai-chat-completions, google-generative, fake]
+  JoseHeader:
+    description: Required protected header of the compact JWS.
+    type: object
+    additionalProperties: false
+    required: [alg, typ, kid]
+    properties:
+      alg:
+        const: EdDSA
+      typ:
+        const: sc-gw+jwt
+      kid:
+        description: Key id present in the Runner JWKS mounted into the Gateway (plan 35 rotation).
+        type: string
+        pattern: "^[A-Za-z0-9_-]{8,64}$"
+examples:
+  - iss: sc-agent-runner
+    aud: sc-model-gateway
+    sub: execution:sc-184-x3
+    iat: 1792000000
+    nbf: 1792000000
+    exp: 1792002100
+    jti: 4f1c2a9e-3b7d-4c51-9a0e-6d2f8b7c1e44
+    sc_token_version: 1
+    token_kind: execution
+    task_id: sc-184
+    execution_id: sc-184-x3
+    attempt: 2
+    worker_id: sc-184-x3
+    role: implementer
+    harness: claude
+    phase: green_retry
+    repository: strange-company/strange-company
+    project: strange-company
+    tier_requested: bargain
+    tier_effective: standard
+    allowed_models:
+      - {provider: anthropic, api_family: anthropic-messages, model: claude-sonnet-x, purpose: primary}
+      - {provider: anthropic, api_family: anthropic-messages, model: claude-haiku-x, purpose: auxiliary}
+    budget_scopes: ["execution:sc-184-x3", "task:sc-184"]
+    max_concurrent_requests: 4
+    policy_revision: 0123456789abcdef0123456789abcdef01234567
+    trace_parent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+  - iss: sc-agent-runner
+    aud: sc-model-gateway
+    sub: orchestrator:hermes
+    iat: 1792000000
+    nbf: 1792000000
+    exp: 1794678400
+    jti: 9a7b0c11-2d3e-4f50-8a61-7b8c9d0e1f23
+    sc_token_version: 1
+    token_kind: orchestrator
+    task_id: null
+    execution_id: null
+    attempt: null
+    worker_id: hermes
+    role: orchestrator
+    harness: hermes
+    phase: orchestration
+    repository: null
+    project: _platform
+    tier_requested: standard
+    tier_effective: standard
+    allowed_models:
+      - {provider: deepseek, api_family: openai-chat-completions, model: deepseek-v4-pro, purpose: primary}
+    budget_scopes: [orchestration]
+    max_concurrent_requests: 4
+    policy_revision: 0123456789abcdef0123456789abcdef01234567
+  - iss: sc-agent-runner
+    aud: sc-model-gateway
+    sub: execution:sc-0-x7
+    iat: 1792000000
+    nbf: 1792000000
+    exp: 1792000300
+    jti: 0b5e2c41-7a6d-4e2f-9c13-5d7e8f9a0b1c
+    sc_token_version: 1
+    token_kind: execution
+    task_id: sc-0
+    execution_id: sc-0-x7
+    attempt: 1
+    worker_id: sc-0-x7
+    role: tester
+    harness: fake-success
+    phase: specification
+    repository: strange-company/strange-company
+    project: _platform
+    tier_requested: clerical
+    tier_effective: clerical
+    allowed_models:
+      - {provider: fake, api_family: fake, model: fake-model, purpose: primary}
+    budget_scopes: ["execution:sc-0-x7"]
+    max_concurrent_requests: 1
+    policy_revision: 0123456789abcdef0123456789abcdef01234567
+x-invalid-examples:
+  - reason: Wrong audience (a Runner task token presented to the Gateway).
+    value:
+      iss: sc-agent-runner
+      aud: sc-agent-runner
+      sub: execution:sc-184-x3
+      iat: 1792000000
+      nbf: 1792000000
+      exp: 1792002100
+      jti: 4f1c2a9e-3b7d-4c51-9a0e-6d2f8b7c1e44
+      sc_token_version: 1
+      token_kind: execution
+      task_id: sc-184
+      execution_id: sc-184-x3
+      attempt: 1
+      worker_id: sc-184-x3
+      role: implementer
+      harness: claude
+      phase: implementation
+      repository: strange-company/strange-company
+      project: strange-company
+      tier_requested: bargain
+      tier_effective: bargain
+      allowed_models:
+        - {provider: anthropic, api_family: anthropic-messages, model: claude-sonnet-x, purpose: primary}
+      budget_scopes: ["execution:sc-184-x3", "task:sc-184"]
+      max_concurrent_requests: 4
+      policy_revision: 0123456789abcdef0123456789abcdef01234567
+  - reason: Execution token without task attribution (SPEC §78 requires task/execution/attempt).
+    value:
+      iss: sc-agent-runner
+      aud: sc-model-gateway
+      sub: execution:sc-184-x3
+      iat: 1792000000
+      nbf: 1792000000
+      exp: 1792002100
+      jti: 4f1c2a9e-3b7d-4c51-9a0e-6d2f8b7c1e44
+      sc_token_version: 1
+      token_kind: execution
+      task_id: null
+      execution_id: null
+      attempt: null
+      worker_id: sc-184-x3
+      role: implementer
+      harness: claude
+      phase: implementation
+      repository: strange-company/strange-company
+      project: strange-company
+      tier_requested: bargain
+      tier_effective: bargain
+      allowed_models:
+        - {provider: anthropic, api_family: anthropic-messages, model: claude-sonnet-x, purpose: primary}
+      budget_scopes: ["execution:sc-184-x3", "task:sc-184"]
+      max_concurrent_requests: 4
+      policy_revision: 0123456789abcdef0123456789abcdef01234567
+  - reason: Orchestrator token claiming a worker role and an empty model allowlist.
+    value:
+      iss: sc-agent-runner
+      aud: sc-model-gateway
+      sub: orchestrator:hermes
+      iat: 1792000000
+      nbf: 1792000000
+      exp: 1794678400
+      jti: 9a7b0c11-2d3e-4f50-8a61-7b8c9d0e1f23
+      sc_token_version: 1
+      token_kind: orchestrator
+      task_id: null
+      execution_id: null
+      attempt: null
+      worker_id: hermes
+      role: implementer
+      harness: hermes
+      phase: orchestration
+      repository: null
+      project: _platform
+      tier_requested: null
+      tier_effective: null
+      allowed_models: []
+      budget_scopes: [orchestration]
+      max_concurrent_requests: 4
+      policy_revision: 0123456789abcdef0123456789abcdef01234567
+  - reason: Extra claim carrying a provider key (tokens never carry provider credentials).
+    value:
+      iss: sc-agent-runner
+      aud: sc-model-gateway
+      sub: orchestrator:hermes
+      iat: 1792000000
+      nbf: 1792000000
+      exp: 1794678400
+      jti: 9a7b0c11-2d3e-4f50-8a61-7b8c9d0e1f23
+      sc_token_version: 1
+      token_kind: orchestrator
+      task_id: null
+      execution_id: null
+      attempt: null
+      worker_id: hermes
+      role: orchestrator
+      harness: hermes
+      phase: orchestration
+      repository: null
+      project: _platform
+      tier_requested: standard
+      tier_effective: standard
+      allowed_models:
+        - {provider: deepseek, api_family: openai-chat-completions, model: deepseek-v4-pro, purpose: primary}
+      budget_scopes: [orchestration]
+      max_concurrent_requests: 4
+      policy_revision: 0123456789abcdef0123456789abcdef01234567
+      provider_api_key: sk-xxxx
+  - reason: Orchestrator token carrying an execution trace parent (Hermes calls are root spans).
+    value:
+      iss: sc-agent-runner
+      aud: sc-model-gateway
+      sub: orchestrator:hermes
+      iat: 1792000000
+      nbf: 1792000000
+      exp: 1794678400
+      jti: 9a7b0c11-2d3e-4f50-8a61-7b8c9d0e1f23
+      sc_token_version: 1
+      token_kind: orchestrator
+      task_id: null
+      execution_id: null
+      attempt: null
+      worker_id: hermes
+      role: orchestrator
+      harness: hermes
+      phase: orchestration
+      repository: null
+      project: _platform
+      tier_requested: standard
+      tier_effective: standard
+      allowed_models:
+        - {provider: deepseek, api_family: openai-chat-completions, model: deepseek-v4-pro, purpose: primary}
+      budget_scopes: [orchestration]
+      max_concurrent_requests: 4
+      policy_revision: 0123456789abcdef0123456789abcdef01234567
+      trace_parent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+  - reason: Verify-only token (task sc-0) carrying a task scope and a non-platform project.
+    value:
+      iss: sc-agent-runner
+      aud: sc-model-gateway
+      sub: execution:sc-0-x7
+      iat: 1792000000
+      nbf: 1792000000
+      exp: 1792000300
+      jti: 0b5e2c41-7a6d-4e2f-9c13-5d7e8f9a0b1c
+      sc_token_version: 1
+      token_kind: execution
+      task_id: sc-0
+      execution_id: sc-0-x7
+      attempt: 1
+      worker_id: sc-0-x7
+      role: tester
+      harness: fake-success
+      phase: specification
+      repository: strange-company/strange-company
+      project: strange-company
+      tier_requested: clerical
+      tier_effective: clerical
+      allowed_models:
+        - {provider: fake, api_family: fake, model: fake-model, purpose: primary}
+      budget_scopes: ["execution:sc-0-x7", "task:sc-0"]
+      max_concurrent_requests: 1
+      policy_revision: 0123456789abcdef0123456789abcdef01234567

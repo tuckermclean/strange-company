@@ -1,0 +1,324 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://strange.company/contracts/notification/v1alpha1
+title: NotificationPost
+description: |
+  The request body that Strange Company components POST to the Alertmanager v2
+  API (`POST http://kps-alertmanager.monitoring.svc:9093/api/v2/alerts`) to raise
+  or resolve an organizational notification (SPEC §97; ADR-0009; plan 42 §7.4).
+  It is a JSON array of Alertmanager "postable alerts", narrowed to Strange
+  Company's label and annotation vocabulary.
+
+  Posters and permitted alertnames (must match `contracts/alert-catalog.yaml`
+  entries whose `source.kind` is `runner-post` or `external-post`):
+  - `runner`: `SCTaskNeedsHuman`, `SCTaskRetriesExhausted`;
+  - `bootstrap` / `operator`: `SCNotificationTest`.
+  Break-glass use is detected by Prometheus rules on plan 15's probe metrics
+  (`SCBreakGlassUsed`) and plan 07's audit counter (`SCK3sBreakGlassAuditSeen`);
+  it is never posted.
+
+  Identity and grouping:
+  - Alertmanager identifies an alert by its full label set. Per-task alerts
+    therefore carry the opaque identity label `subject` (the task ID, the test
+    ID or the break-glass event ID). `subject` is never in `group_by`, so a
+    burst of tasks is delivered as one grouped notification per
+    alertname+category (ADR-0555, clarifying ADR-0009; plan 42 §7.3).
+  - `task_id` is also always present as an *annotation* for human display and
+    links. No task, execution or commit identifier is ever a Prometheus label.
+    Alertmanager alerts do not become TSDB series.
+
+  Lifecycle semantics (level-triggered, enforced by the poster, not by this schema):
+  - Firing: `startsAt` = the time the condition began (e.g. the NEEDS_HUMAN
+    transition timestamp). `endsAt` = now + TTL (6h for runner-post, per the
+    catalogue). The poster re-posts the identical label set every
+    `refreshInterval` (5m) while the condition holds, extending `endsAt`. This
+    repopulates Alertmanager after a restart, because Alertmanager keeps
+    active alerts in memory only.
+  - Resolved: post the same label set with `endsAt` <= now. Alertmanager then
+    sends a resolved notification (send_resolved is true for page/notify).
+  - Poster restart: on startup the Runner computes the desired firing set
+    from `sc-pg` (tasks currently in NEEDS_HUMAN) and posts all of them, plus a
+    resolve for any alert it previously recorded as posted whose condition no
+    longer holds (plan 26 keeps a `notification_state` table).
+  - If the poster dies, alerts persist until their `endsAt` (at most 6h) and
+    `SCRunnerDown` pages. A Runner outage never resolves a Needs Human
+    notification early.
+type: array
+minItems: 1
+maxItems: 100
+items:
+  $ref: "#/$defs/PostableAlert"
+$defs:
+  Timestamp:
+    type: string
+    format: date-time
+    pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$"
+  TaskId:
+    type: string
+    pattern: "^sc-[0-9]+$"
+  Labels:
+    type: object
+    additionalProperties: false
+    required: [alertname, severity, category, notify_class, always_notify, source, subject]
+    properties:
+      alertname:
+        type: string
+        enum: [SCTaskNeedsHuman, SCTaskRetriesExhausted, SCNotificationTest]
+      severity:
+        type: string
+        enum: [critical, warning, info]
+      category:
+        type: string
+        description: >
+          Catalogue category. For SCNotificationTest this is the category being
+          tested, so the synthetic alert exercises the real route.
+        enum:
+          - node
+          - storage
+          - etcd
+          - database
+          - backup
+          - restore-test
+          - forge
+          - identity
+          - mirror
+          - gitops
+          - ci
+          - runner
+          - gateway
+          - task
+          - tdd
+          - budget
+          - spend
+          - certificate
+          - ingress
+          - object-storage
+          - security
+          - monitoring
+          - telemetry
+          - black-start-threat
+          - notification-test
+      notify_class:
+        type: string
+        enum: [page, notify]
+      always_notify:
+        type: string
+        enum: [none, needs-human, budget-stop, failed-backup, critical-outage, failed-mirror, black-start-threat, security-audit]
+      source:
+        type: string
+        enum: [runner, bootstrap, operator]
+      subject:
+        description: >
+          Opaque alert identity. Task ID for task alerts, `test-<nonce>` for
+          notification tests.
+        type: string
+        pattern: "^(sc-[0-9]+|test-[a-z0-9]{6})$"
+      reason:
+        description: Bounded NEEDS_HUMAN cause (plan 29 enum).
+        type: string
+        enum:
+          - retries_exhausted
+          - test_spec_conflict
+          - already_satisfied
+          - needs_investigation
+          - policy_violation
+          - budget_exceeded
+          - review_rejected
+          - manual_escalation
+          - infrastructure_exhausted
+          - worker_blocked
+          - merged_without_provenance
+          - external_push
+          - stalled
+          - approval_required
+      synthetic:
+        const: "true"
+  Annotations:
+    type: object
+    additionalProperties: false
+    required: [summary, description]
+    properties:
+      summary:
+        type: string
+        minLength: 5
+        maxLength: 200
+      description:
+        description: >
+          Human text built from structured fields only. It MUST NOT contain
+          prompts, completions, code, command output or secrets (SPEC §94).
+        type: string
+        maxLength: 1000
+      task_id:
+        $ref: "#/$defs/TaskId"
+      task_title:
+        type: string
+        maxLength: 200
+      repository:
+        type: string
+        pattern: "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+      attempt:
+        type: string
+        pattern: "^[0-9]{1,3}$"
+      state:
+        type: string
+        pattern: "^[A-Z_]{3,32}$"
+      task_url:
+        type: string
+        format: uri
+        pattern: "^https://"
+      runbook_url:
+        type: string
+        format: uri
+      dashboard_url:
+        type: string
+        format: uri
+      event_id:
+        type: string
+        pattern: "^[a-z0-9-]{8,64}$"
+      test_nonce:
+        type: string
+        pattern: "^[A-Z0-9]{6}$"
+      actor:
+        type: string
+        maxLength: 64
+  PostableAlert:
+    type: object
+    additionalProperties: false
+    required: [labels, annotations, startsAt, endsAt]
+    properties:
+      labels:
+        $ref: "#/$defs/Labels"
+      annotations:
+        $ref: "#/$defs/Annotations"
+      startsAt:
+        $ref: "#/$defs/Timestamp"
+      endsAt:
+        $ref: "#/$defs/Timestamp"
+      generatorURL:
+        type: string
+        format: uri
+    allOf:
+      - if:
+          properties:
+            labels:
+              properties:
+                alertname:
+                  enum: [SCTaskNeedsHuman, SCTaskRetriesExhausted]
+        then:
+          properties:
+            labels:
+              required: [reason]
+              properties:
+                source:
+                  const: runner
+                subject:
+                  pattern: "^sc-[0-9]+$"
+                category:
+                  const: task
+                always_notify:
+                  const: needs-human
+            annotations:
+              required: [task_id, repository, attempt, state, task_url, runbook_url]
+      - if:
+          properties:
+            labels:
+              properties:
+                alertname:
+                  const: SCTaskRetriesExhausted
+        then:
+          properties:
+            labels:
+              properties:
+                reason:
+                  const: retries_exhausted
+      - if:
+          properties:
+            labels:
+              properties:
+                alertname:
+                  const: SCNotificationTest
+        then:
+          properties:
+            labels:
+              required: [synthetic]
+              properties:
+                source:
+                  enum: [bootstrap, operator]
+                subject:
+                  pattern: "^test-[a-z0-9]{6}$"
+            annotations:
+              required: [test_nonce]
+examples:
+  - - labels:
+        alertname: SCTaskNeedsHuman
+        severity: warning
+        category: task
+        notify_class: notify
+        always_notify: needs-human
+        source: runner
+        subject: sc-184
+        reason: test_spec_conflict
+      annotations:
+        summary: "sc-184 needs a human decision: TEST_SPEC_CONFLICT"
+        description: "Implementer reported TEST_SPEC_CONFLICT on attempt 2 for AC-2. Review the handoff and decide whether the acceptance test changes."
+        task_id: sc-184
+        task_title: Add /healthz to example-service
+        repository: projects/example-service
+        attempt: "2"
+        state: NEEDS_HUMAN
+        task_url: https://git.example.org/projects/example-service/issues/42
+        runbook_url: https://git.example.org/strange-company/strange-company/src/branch/main/procedures/tdd-task-recovery.md
+        event_id: nh-sc-184-0002
+      startsAt: "2026-10-13T10:15:00Z"
+      endsAt: "2026-10-13T16:15:00Z"
+  - - labels:
+        alertname: SCNotificationTest
+        severity: info
+        category: backup
+        notify_class: notify
+        always_notify: failed-backup
+        source: bootstrap
+        subject: test-a1b2c3
+        synthetic: "true"
+      annotations:
+        summary: "[TEST] notification route test"
+        description: "Synthetic test. Enter code K7Q2ZP at the bootstrap verify prompt."
+        test_nonce: K7Q2ZP
+      startsAt: "2026-10-13T10:15:00Z"
+      endsAt: "2026-10-13T10:30:00Z"
+x-invalid-examples:
+  - reason: task alert missing the task_id annotation
+    value:
+      - labels: {alertname: SCTaskNeedsHuman, severity: warning, category: task, notify_class: notify, always_notify: needs-human, source: runner, subject: sc-7, reason: manual_escalation}
+        annotations: {summary: "sc-7 needs a human", description: "manual escalation", repository: a/b, attempt: "1", state: NEEDS_HUMAN, task_url: "https://git.example.org/a/b/issues/1", runbook_url: "https://git.example.org/x"}
+        startsAt: "2026-10-13T10:15:00Z"
+        endsAt: "2026-10-13T16:15:00Z"
+  - reason: execution ID smuggled in as a label
+    value:
+      - labels: {alertname: SCTaskNeedsHuman, severity: warning, category: task, notify_class: notify, always_notify: needs-human, source: runner, subject: sc-7, reason: manual_escalation, execution_id: sc-7-x1}
+        annotations: {summary: "sc-7 needs a human", description: "d", task_id: sc-7, repository: a/b, attempt: "1", state: NEEDS_HUMAN, task_url: "https://git.example.org/a/b/issues/1", runbook_url: "https://git.example.org/x"}
+        startsAt: "2026-10-13T10:15:00Z"
+        endsAt: "2026-10-13T16:15:00Z"
+  - reason: Runner may not post platform alertnames
+    value:
+      - labels: {alertname: SCForgejoDown, severity: critical, category: forge, notify_class: page, always_notify: critical-outage, source: runner, subject: sc-1}
+        annotations: {summary: "forgejo down", description: "d"}
+        startsAt: "2026-10-13T10:15:00Z"
+        endsAt: "2026-10-13T16:15:00Z"
+  - reason: retries-exhausted alert with a non-exhaustion reason
+    value:
+      - labels: {alertname: SCTaskRetriesExhausted, severity: warning, category: task, notify_class: notify, always_notify: needs-human, source: runner, subject: sc-9, reason: budget_exceeded}
+        annotations: {summary: "sc-9 exhausted", description: "d", task_id: sc-9, repository: a/b, attempt: "5", state: NEEDS_HUMAN, task_url: "https://git.example.org/a/b/issues/9", runbook_url: "https://git.example.org/x"}
+        startsAt: "2026-10-13T10:15:00Z"
+        endsAt: "2026-10-13T16:15:00Z"
+  - reason: break-glass use is a Prometheus-rule alert and may not be posted through the API
+    value:
+      - labels: {alertname: SCBreakGlassUsed, severity: critical, category: security, notify_class: page, always_notify: none, source: operator, subject: test-abc123}
+        annotations: {summary: "break-glass used", description: "sc-breakglass logged in"}
+        startsAt: "2026-10-13T10:15:00Z"
+        endsAt: "2026-10-14T10:15:00Z"
+  - reason: notification test without the synthetic label and nonce
+    value:
+      - labels: {alertname: SCNotificationTest, severity: info, category: backup, notify_class: notify, always_notify: failed-backup, source: bootstrap, subject: test-a1b2c3}
+        annotations: {summary: "[TEST] route test", description: "Synthetic test."}
+        startsAt: "2026-10-13T10:15:00Z"
+        endsAt: "2026-10-13T10:30:00Z"

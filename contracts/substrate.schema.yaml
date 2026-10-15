@@ -1,0 +1,319 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://strange.company/contracts/substrate/v1alpha1
+title: BootstrapSubstrate
+description: |
+  Logical substrate manifest for an initial installation (SPEC §11). A substrate
+  states the node count, per-node minimum and preferred machine shape, the
+  Kubernetes topology, execution concurrency and storage topology that a
+  provider must satisfy before bootstrap continues. Owned by plan 03.
+
+  Files: `infra/profiles/<name>.yaml`. `./bootstrap --profile <name>` loads the
+  file whose `metadata.name` equals `<name>`; a fresh install accepts only
+  `kind: BootstrapSubstrate` (plan 03 §9).
+
+  Quantities use Kubernetes binary suffixes. Provider capacity is compared with
+  the measurement tolerance defined in plan 03 §14.3 (0.92 × the quantity), because
+  providers market decimal GB and kernels reserve memory.
+
+  Rules this schema cannot express and that sc-bootstrap enforces (plan 03):
+  `kubernetes.servers <= nodes.count`; `storage.cnpg.instances <= nodes.count`;
+  `storage.longhorn.replicas <= nodes.count`; preferredPerNode >= minimumSupportedPerNode >= constrainedLowerBoundPerNode;
+  a substrate without the label `strange.company/lab: "true"` must be at least the
+  SPEC §11 constrained lower bound (SPEC v1.3: 4 CPU, 8Gi, 100Gi ssd; nodes below the 12Gi supported minimum get the `constrained` profile); lab substrates are refused for any
+  provider whose capabilities declare `paid: true`.
+type: object
+additionalProperties: false
+required: [apiVersion, kind, metadata, spec]
+properties:
+  apiVersion:
+    const: strange.company/v1alpha1
+  kind:
+    const: BootstrapSubstrate
+  metadata:
+    $ref: '#/$defs/metadata'
+  spec:
+    type: object
+    additionalProperties: false
+    required: [nodes, kubernetes, execution, storage]
+    properties:
+      nodes:
+        type: object
+        additionalProperties: false
+        required: [count, minimumSupportedPerNode]
+        properties:
+          count:
+            type: integer
+            minimum: 1
+            maximum: 9
+          minimumSupportedPerNode:
+            description: >-
+              Smallest node shape the engineering plans support and budget for (SPEC v1.3:
+              4 CPU, 12Gi, 100Gi ssd). The measured V-30 capacity gate (plan 51) is authoritative.
+            $ref: '#/$defs/nodeShape'
+          constrainedLowerBoundPerNode:
+            description: >-
+              Absolute floor (SPEC v1.3: 4 CPU, 8Gi, 100Gi ssd). Nodes between this bound and
+              minimumSupportedPerNode are accepted only with the `constrained` resource profile
+              (CD-23, ADR-0020), with a warning and no capacity guarantee; they are expected to
+              fail the V-30 gate. Below this bound bootstrap refuses the node.
+            $ref: '#/$defs/nodeShape'
+          preferredPerNode:
+            $ref: '#/$defs/nodeShape'
+      kubernetes:
+        type: object
+        additionalProperties: false
+        required: [distribution, servers, datastore]
+        properties:
+          distribution:
+            const: k3s
+          servers:
+            description: k3s server (control-plane + etcd member) count. Odd, for etcd quorum (SPEC §16).
+            enum: [1, 3, 5]
+          datastore:
+            description: SPEC §16 requires embedded etcd from the first node.
+            const: embedded-etcd
+      execution:
+        $ref: '#/$defs/execution'
+      storage:
+        type: object
+        additionalProperties: false
+        required: [cnpg, longhorn, objectStorage]
+        properties:
+          cnpg:
+            type: object
+            additionalProperties: false
+            required: [instances, storageClass]
+            properties:
+              instances:
+                type: integer
+                minimum: 1
+                maximum: 5
+              storageClass:
+                description: |
+                  Logical storage class for CNPG PGDATA. `local` = node-local persistent
+                  storage, realized as the k3s `local-path` StorageClass (ADR-0006, plan 11).
+                enum: [local]
+          longhorn:
+            type: object
+            additionalProperties: false
+            required: [enabled, replicas]
+            properties:
+              enabled:
+                type: boolean
+              replicas:
+                type: integer
+                minimum: 1
+                maximum: 3
+          objectStorage:
+            type: object
+            additionalProperties: false
+            required: [required]
+            properties:
+              required:
+                description: External S3-compatible storage is mandatory at bootstrap (SPEC §29).
+                const: true
+$defs:
+  quantity:
+    type: string
+    pattern: '^[1-9][0-9]*(Mi|Gi|Ti)$'
+  metadata:
+    type: object
+    additionalProperties: false
+    required: [name]
+    properties:
+      name:
+        type: string
+        pattern: '^[a-z][a-z0-9-]{1,61}[a-z0-9]$'
+      labels:
+        type: object
+        propertyNames:
+          pattern: '^([a-z0-9.-]+/)?[A-Za-z0-9._-]{1,63}$'
+        additionalProperties:
+          type: string
+          maxLength: 63
+      annotations:
+        type: object
+        additionalProperties:
+          type: string
+  nodeShape:
+    type: object
+    additionalProperties: false
+    required: [cpu, memory, storage]
+    properties:
+      cpu:
+        description: Minimum logical CPUs (vCPU / hardware threads as reported by `nproc`).
+        type: integer
+        minimum: 1
+        maximum: 256
+      memory:
+        $ref: '#/$defs/quantity'
+      storage:
+        type: object
+        additionalProperties: false
+        required: [size, class]
+        properties:
+          size:
+            $ref: '#/$defs/quantity'
+          class:
+            description: Ordering nvme > ssd. `hdd` is never acceptable for a substrate.
+            enum: [ssd, nvme]
+  execution:
+    type: object
+    additionalProperties: false
+    required: [maximumConcurrentAgents, maximumConcurrentCIPipelines]
+    properties:
+      maximumConcurrentAgents:
+        type: integer
+        minimum: 0
+        maximum: 64
+      maximumConcurrentCIPipelines:
+        type: integer
+        minimum: 0
+        maximum: 64
+examples:
+  # SPEC §11 canonical manifest, verbatim.
+  - apiVersion: strange.company/v1alpha1
+    kind: BootstrapSubstrate
+    metadata:
+      name: self-hosting-minimum
+    spec:
+      nodes:
+        count: 1
+        minimumSupportedPerNode:
+          cpu: 4
+          memory: 12Gi
+          storage:
+            size: 100Gi
+            class: ssd
+        constrainedLowerBoundPerNode:
+          cpu: 4
+          memory: 8Gi
+          storage:
+            size: 100Gi
+            class: ssd
+        preferredPerNode:
+          cpu: 4
+          memory: 12Gi
+          storage:
+            size: 200Gi
+            class: nvme
+      kubernetes:
+        distribution: k3s
+        servers: 1
+        datastore: embedded-etcd
+      execution:
+        maximumConcurrentAgents: 1
+        maximumConcurrentCIPipelines: 1
+      storage:
+        cnpg:
+          instances: 1
+          storageClass: local
+        longhorn:
+          enabled: true
+          replicas: 1
+        objectStorage:
+          required: true
+  # CI lab substrate (plan 05 §14.6); refused for paid providers.
+  - apiVersion: strange.company/v1alpha1
+    kind: BootstrapSubstrate
+    metadata:
+      name: lab-small
+      labels:
+        strange.company/lab: "true"
+    spec:
+      nodes:
+        count: 1
+        minimumSupportedPerNode:
+          cpu: 2
+          memory: 4Gi
+          storage:
+            size: 20Gi
+            class: ssd
+      kubernetes:
+        distribution: k3s
+        servers: 1
+        datastore: embedded-etcd
+      execution:
+        maximumConcurrentAgents: 0
+        maximumConcurrentCIPipelines: 0
+      storage:
+        cnpg:
+          instances: 1
+          storageClass: local
+        longhorn:
+          enabled: true
+          replicas: 1
+        objectStorage:
+          required: true
+x-invalid-examples:
+  - reason: kind must be BootstrapSubstrate (a ClusterProfile cannot be used for a fresh install)
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: ClusterProfile
+      metadata: {name: self-hosting-minimum}
+      spec:
+        nodes: {count: 1, minimumSupportedPerNode: {cpu: 4, memory: 12Gi, storage: {size: 100Gi, class: ssd}}, constrainedLowerBoundPerNode: {cpu: 4, memory: 8Gi, storage: {size: 100Gi, class: ssd}}}
+        kubernetes: {distribution: k3s, servers: 1, datastore: embedded-etcd}
+        execution: {maximumConcurrentAgents: 1, maximumConcurrentCIPipelines: 1}
+        storage: {cnpg: {instances: 1, storageClass: local}, longhorn: {enabled: true, replicas: 1}, objectStorage: {required: true}}
+  - reason: decimal unit "8GB" is not a Kubernetes binary quantity
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: BootstrapSubstrate
+      metadata: {name: self-hosting-minimum}
+      spec:
+        nodes: {count: 1, minimumSupportedPerNode: {cpu: 4, memory: 8GB, storage: {size: 100Gi, class: ssd}}}
+        kubernetes: {distribution: k3s, servers: 1, datastore: embedded-etcd}
+        execution: {maximumConcurrentAgents: 1, maximumConcurrentCIPipelines: 1}
+        storage: {cnpg: {instances: 1, storageClass: local}, longhorn: {enabled: true, replicas: 1}, objectStorage: {required: true}}
+  - reason: SPEC §16 requires embedded etcd from the first node; sqlite is forbidden
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: BootstrapSubstrate
+      metadata: {name: self-hosting-minimum}
+      spec:
+        nodes: {count: 1, minimumSupportedPerNode: {cpu: 4, memory: 12Gi, storage: {size: 100Gi, class: ssd}}, constrainedLowerBoundPerNode: {cpu: 4, memory: 8Gi, storage: {size: 100Gi, class: ssd}}}
+        kubernetes: {distribution: k3s, servers: 1, datastore: sqlite}
+        execution: {maximumConcurrentAgents: 1, maximumConcurrentCIPipelines: 1}
+        storage: {cnpg: {instances: 1, storageClass: local}, longhorn: {enabled: true, replicas: 1}, objectStorage: {required: true}}
+  - reason: two etcd servers cannot form a fault-tolerant quorum
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: BootstrapSubstrate
+      metadata: {name: two-node}
+      spec:
+        nodes: {count: 2, minimumSupportedPerNode: {cpu: 4, memory: 12Gi, storage: {size: 100Gi, class: ssd}}, constrainedLowerBoundPerNode: {cpu: 4, memory: 8Gi, storage: {size: 100Gi, class: ssd}}}
+        kubernetes: {distribution: k3s, servers: 2, datastore: embedded-etcd}
+        execution: {maximumConcurrentAgents: 1, maximumConcurrentCIPipelines: 1}
+        storage: {cnpg: {instances: 1, storageClass: local}, longhorn: {enabled: true, replicas: 1}, objectStorage: {required: true}}
+  - reason: object storage cannot be optional (SPEC §29)
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: BootstrapSubstrate
+      metadata: {name: self-hosting-minimum}
+      spec:
+        nodes: {count: 1, minimumSupportedPerNode: {cpu: 4, memory: 12Gi, storage: {size: 100Gi, class: ssd}}, constrainedLowerBoundPerNode: {cpu: 4, memory: 8Gi, storage: {size: 100Gi, class: ssd}}}
+        kubernetes: {distribution: k3s, servers: 1, datastore: embedded-etcd}
+        execution: {maximumConcurrentAgents: 1, maximumConcurrentCIPipelines: 1}
+        storage: {cnpg: {instances: 1, storageClass: local}, longhorn: {enabled: true, replicas: 1}, objectStorage: {required: false}}
+  - reason: hdd storage class is never acceptable
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: BootstrapSubstrate
+      metadata: {name: slow}
+      spec:
+        nodes: {count: 1, minimumSupportedPerNode: {cpu: 4, memory: 8Gi, storage: {size: 100Gi, class: hdd}}}
+        kubernetes: {distribution: k3s, servers: 1, datastore: embedded-etcd}
+        execution: {maximumConcurrentAgents: 1, maximumConcurrentCIPipelines: 1}
+        storage: {cnpg: {instances: 1, storageClass: local}, longhorn: {enabled: true, replicas: 1}, objectStorage: {required: true}}
+  - reason: unknown field (closed object)
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: BootstrapSubstrate
+      metadata: {name: self-hosting-minimum}
+      spec:
+        nodes: {count: 1, minimumSupportedPerNode: {cpu: 4, memory: 12Gi, storage: {size: 100Gi, class: ssd}}, constrainedLowerBoundPerNode: {cpu: 4, memory: 8Gi, storage: {size: 100Gi, class: ssd}}}
+        kubernetes: {distribution: k3s, servers: 1, datastore: embedded-etcd}
+        execution: {maximumConcurrentAgents: 1, maximumConcurrentCIPipelines: 1}
+        storage: {cnpg: {instances: 1, storageClass: local}, longhorn: {enabled: true, replicas: 1}, objectStorage: {required: true}}
+        gpu: true

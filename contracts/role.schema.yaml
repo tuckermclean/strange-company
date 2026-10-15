@@ -1,0 +1,334 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://strange.company/contracts/role/v1alpha1
+title: RoleDefinition
+description: |
+  A worker role definition (SPEC §65): instructions, context projection, allowed actions,
+  expected output, default model tier and verification expectations. One file per role in
+  `policy/roles/<name>.yaml` of the `strange-company` repository (owning plan 25). Role and
+  harness are independent (SPEC §65); the role lists which registry harnesses it permits.
+
+  Which task states a role may be dispatched from is NOT defined here; that gate is the
+  authoritative state machine (`contracts/state-machine.yaml`, plan 29). Repository
+  `.strange-company/roles/<name>.md` files may *add* instructions; they cannot change any
+  other field (ADR-0017: repository policy tightens, never loosens).
+
+  Glob tokens in `diffRules`: `@testPaths` expands to `RepositoryPolicy.testPaths`;
+  `@fixturePaths`, `@testInfraPaths` and `@stubPaths` expand to the matching RepositoryPolicy
+  path sets (plan 22; stub hunks must also pass the declared-stub check, ADR-0352);
+  `@protectedPaths` to the merged protected-path set, and `@protectedTests` to the paths in
+  the task's protected acceptance-test manifest (plan 22). Expansion happens in the Runner
+  against the base-revision policy.
+type: object
+additionalProperties: false
+required: [apiVersion, kind, metadata, spec]
+properties:
+  apiVersion:
+    const: strange.company/v1alpha1
+  kind:
+    const: RoleDefinition
+  metadata:
+    type: object
+    additionalProperties: false
+    required: [name]
+    properties:
+      name:
+        type: string
+        enum: [researcher, planner, tester, implementer, reviewer]
+  spec:
+    type: object
+    additionalProperties: false
+    required: [description, instructions, forgeAccess, allowedHarnesses, defaultModelTier, allowedModelTiers, defaultProfile, allowedProfiles, accounting, diffRules, contextProjection, expectedOutput, verification]
+    properties:
+      description:
+        type: string
+        maxLength: 500
+      instructions:
+        description: Markdown role instructions placed in the role_instructions context section. Reinforces policy; never the sole enforcement (SPEC §4.7).
+        type: string
+        minLength: 50
+        maxLength: 16384
+      forgeAccess:
+        description: "`write` = write deploy key and push to agent/<task-id>; `read` = read-only deploy key; `none` = no clone."
+        type: string
+        enum: [none, read, write]
+      allowedHarnesses:
+        type: array
+        minItems: 1
+        uniqueItems: true
+        items:
+          type: string
+          pattern: "^(?!hermes$)[a-z][a-z0-9-]{1,40}$"
+      defaultModelTier:
+        $ref: "#/$defs/Tier"
+      allowedModelTiers:
+        type: array
+        minItems: 1
+        uniqueItems: true
+        items:
+          $ref: "#/$defs/Tier"
+      defaultProfile:
+        type: string
+        pattern: "^[a-z][a-z0-9-]{0,30}$"
+      allowedProfiles:
+        type: array
+        minItems: 1
+        uniqueItems: true
+        items:
+          type: string
+          pattern: "^[a-z][a-z0-9-]{0,30}$"
+      toolPolicy:
+        description: |
+          Per-adapter narrowing of the harness registry tool defaults (plan 25 §9.3, plan 28 §9.1).
+          Effective allowed tools = registry `defaults.allowedTools` ∩ `allowedTools` (when given);
+          effective disallowed tools = registry `defaults.disallowedTools` ∪ `disallowedTools`.
+          A role can therefore only narrow, never widen, what a harness may do.
+        type: object
+        propertyNames:
+          enum: [claude-code, codex, opencode, fake]
+        additionalProperties:
+          type: object
+          additionalProperties: false
+          properties:
+            allowedTools:
+              type: array
+              items: {type: string, maxLength: 120}
+            disallowedTools:
+              type: array
+              items: {type: string, maxLength: 120}
+      accounting:
+        description: TDD-phase tag stamped into the gateway token for cost aggregation (SPEC §82).
+        type: object
+        additionalProperties: false
+        required: [firstAttemptPhase, retryPhase]
+        properties:
+          firstAttemptPhase:
+            $ref: "#/$defs/Phase"
+          retryPhase:
+            $ref: "#/$defs/Phase"
+      diffRules:
+        type: object
+        additionalProperties: false
+        required: [mode, maxFilesChanged, maxDiffBytes]
+        properties:
+          mode:
+            description: "`none` = the execution must not push any commit; `allowlist` = every changed path must match `allow` and none may match `deny`; `denylist` = no changed path may match `deny`."
+            type: string
+            enum: [none, allowlist, denylist]
+          allow:
+            type: array
+            items:
+              $ref: "#/$defs/GlobOrToken"
+          deny:
+            type: array
+            items:
+              $ref: "#/$defs/GlobOrToken"
+          maxFilesChanged:
+            type: integer
+            minimum: 0
+            maximum: 2000
+          maxDiffBytes:
+            type: integer
+            minimum: 0
+            maximum: 10485760
+          allowDeletions:
+            description: Whether files existing at the start commit may be deleted.
+            type: boolean
+            default: false
+        allOf:
+          - if: {properties: {mode: {const: allowlist}}}
+            then: {required: [allow]}
+          - if: {properties: {mode: {const: none}}}
+            then: {properties: {maxFilesChanged: {const: 0}, maxDiffBytes: {const: 0}}}
+      contextProjection:
+        type: object
+        additionalProperties: false
+        required: [include, forbid, maxTotalBytes]
+        properties:
+          include:
+            type: array
+            minItems: 1
+            uniqueItems: true
+            items:
+              $ref: "https://strange.company/contracts/context/v1alpha1#/$defs/SectionKind"
+          forbid:
+            description: Kinds that must never reach this role. The compiler fails the dispatch (CONTEXT_PROJECTION_VIOLATION) if a forbidden kind would be emitted, e.g. via a context_ref that resolves to it.
+            type: array
+            uniqueItems: true
+            items:
+              $ref: "https://strange.company/contracts/context/v1alpha1#/$defs/SectionKind"
+          maxTotalBytes:
+            type: integer
+            minimum: 4096
+            maximum: 1048576
+          sectionBudgets:
+            type: object
+            propertyNames:
+              $ref: "https://strange.company/contracts/context/v1alpha1#/$defs/SectionKind"
+            additionalProperties:
+              type: integer
+              minimum: 0
+              maximum: 262144
+      expectedOutput:
+        type: object
+        additionalProperties: false
+        required: [allowedResultStates, commitRequiredOnCompleted, roleOutput]
+        properties:
+          allowedResultStates:
+            type: array
+            minItems: 1
+            uniqueItems: true
+            items:
+              type: string
+              enum: [completed, failed, blocked, test_spec_conflict, already_satisfied]
+          commitRequiredOnCompleted:
+            type: boolean
+          roleOutput:
+            description: Which `role_output` variant of worker-result.schema.yaml a completed result must carry.
+            type: string
+            enum: [research_report, plan, tester, implementer, reviewer]
+      verification:
+        type: object
+        additionalProperties: false
+        required: [triggers]
+        properties:
+          triggers:
+            description: Verification the Runner triggers after accepting a completed result (plan 22).
+            type: string
+            enum: [none, red, green]
+          expectations:
+            type: array
+            maxItems: 20
+            items:
+              type: string
+              maxLength: 300
+$defs:
+  Tier:
+    type: string
+    enum: [clerical, bargain, standard, frontier]
+  Phase:
+    type: string
+    enum: [specification, test_authoring, implementation, green_retry, review]
+  GlobOrToken:
+    type: string
+    pattern: "^(@testPaths|@fixturePaths|@testInfraPaths|@stubPaths|@protectedPaths|@protectedTests|(?!/)[A-Za-z0-9._@+*?{},/\\[\\]-]{1,200})$"
+examples:
+  - apiVersion: strange.company/v1alpha1
+    kind: RoleDefinition
+    metadata:
+      name: tester
+    spec:
+      description: Turns acceptance criteria into executable failing tests before implementation (SPEC §48–§49).
+      instructions: |
+        You are the tester. Write tests that fail because the behavior described by the
+        acceptance criteria is absent. Map each test to an AC id in a comment `// AC-n`.
+        Do not implement the behavior. Do not change files outside the test paths.
+        If the behavior already appears to exist, still write the tests; trusted CI decides.
+      forgeAccess: write
+      allowedHarnesses: [claude, codex, opencode, fake-red-valid, fake-red-broken-test, fake-already-satisfied, fake-success]
+      defaultModelTier: standard
+      allowedModelTiers: [bargain, standard, frontier]
+      defaultProfile: tests
+      allowedProfiles: [tiny, tests, implementation]
+      accounting:
+        firstAttemptPhase: test_authoring
+        retryPhase: test_authoring
+      diffRules:
+        mode: allowlist
+        allow: ["@testPaths", "@fixturePaths", "@testInfraPaths", "@stubPaths"]
+        deny: ["@protectedPaths"]
+        maxFilesChanged: 40
+        maxDiffBytes: 262144
+        allowDeletions: false
+      contextProjection:
+        include: [company_rules, repository_context, agents_md, architecture, decisions, role_instructions, task_spec, acceptance_criteria, validation_rules, context_files, research_reports, prior_attempt_evidence, conflict_decision, orchestrator_notes]
+        forbid: [implementation_diff, implementer_handoff, green_evidence, conflict_report, reviewer_findings]
+        maxTotalBytes: 262144
+        sectionBudgets:
+          context_files: 131072
+          orchestrator_notes: 4096
+      expectedOutput:
+        allowedResultStates: [completed, failed, blocked, already_satisfied]
+        commitRequiredOnCompleted: true
+        roleOutput: tester
+      verification:
+        triggers: red
+        expectations:
+          - At least one new requirement-specific assertion fails on the base code (SPEC §50).
+x-invalid-examples:
+  - reason: Role that may be dispatched with arbitrary resources (unknown field).
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: RoleDefinition
+      metadata: {name: tester}
+      spec:
+        description: x
+        instructions: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        forgeAccess: write
+        allowedHarnesses: [claude]
+        defaultModelTier: standard
+        allowedModelTiers: [standard]
+        defaultProfile: tests
+        allowedProfiles: [tests]
+        resources: {limits: {memory: 64Gi}}
+        accounting: {firstAttemptPhase: test_authoring, retryPhase: test_authoring}
+        diffRules: {mode: allowlist, allow: ["@testPaths"], maxFilesChanged: 40, maxDiffBytes: 1000}
+        contextProjection: {include: [task_spec], forbid: [], maxTotalBytes: 65536}
+        expectedOutput: {allowedResultStates: [completed], commitRequiredOnCompleted: true, roleOutput: tester}
+        verification: {triggers: red}
+  - reason: Unknown role name.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: RoleDefinition
+      metadata: {name: deployer}
+      spec:
+        description: x
+        instructions: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        forgeAccess: write
+        allowedHarnesses: [claude]
+        defaultModelTier: standard
+        allowedModelTiers: [standard]
+        defaultProfile: tests
+        allowedProfiles: [tests]
+        accounting: {firstAttemptPhase: implementation, retryPhase: green_retry}
+        diffRules: {mode: denylist, deny: ["@protectedPaths"], maxFilesChanged: 40, maxDiffBytes: 1000}
+        contextProjection: {include: [task_spec], forbid: [], maxTotalBytes: 65536}
+        expectedOutput: {allowedResultStates: [completed], commitRequiredOnCompleted: true, roleOutput: implementer}
+        verification: {triggers: green}
+  - reason: Read-only role (diff mode none) that nonetheless allows changed files.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: RoleDefinition
+      metadata: {name: reviewer}
+      spec:
+        description: x
+        instructions: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        forgeAccess: read
+        allowedHarnesses: [claude]
+        defaultModelTier: standard
+        allowedModelTiers: [standard]
+        defaultProfile: reasoning
+        allowedProfiles: [reasoning]
+        accounting: {firstAttemptPhase: review, retryPhase: review}
+        diffRules: {mode: none, maxFilesChanged: 5, maxDiffBytes: 1000}
+        contextProjection: {include: [task_spec], forbid: [], maxTotalBytes: 65536}
+        expectedOutput: {allowedResultStates: [completed], commitRequiredOnCompleted: false, roleOutput: reviewer}
+        verification: {triggers: none}
+  - reason: Unknown context section kind in projection.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: RoleDefinition
+      metadata: {name: implementer}
+      spec:
+        description: x
+        instructions: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        forgeAccess: write
+        allowedHarnesses: [claude]
+        defaultModelTier: bargain
+        allowedModelTiers: [bargain]
+        defaultProfile: implementation
+        allowedProfiles: [implementation]
+        accounting: {firstAttemptPhase: implementation, retryPhase: green_retry}
+        diffRules: {mode: denylist, deny: ["@protectedPaths", "@protectedTests"], maxFilesChanged: 40, maxDiffBytes: 1000}
+        contextProjection: {include: [task_spec, full_hermes_history], forbid: [], maxTotalBytes: 65536}
+        expectedOutput: {allowedResultStates: [completed], commitRequiredOnCompleted: true, roleOutput: implementer}
+        verification: {triggers: green}

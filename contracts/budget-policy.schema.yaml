@@ -1,0 +1,426 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://strange.company/contracts/budget-policy/v1alpha1
+title: BudgetPolicy
+description: |
+  Economic circuit breakers and emergency stop (SPEC §81, §97; owning plan 33).
+  File `policy/budgets.yaml` in the `strange-company` repository, delivered to the Runner
+  and the Model Gateway as a Flux-generated ConfigMap (D-17).
+
+  Money is a USD decimal string with at most 6 fractional digits (converted to integer
+  micro-USD on load); floats are forbidden. All calendar periods (hour/day/month) are UTC.
+
+  Enforcement points (plan 33 §7): the Gateway enforces `perRequest`, `perExecution`
+  (cost, tokens, requests, concurrency), `perTask.maxCostUsd`, `providers`, `global`,
+  `orchestration` and `emergencyStop` per request via atomic reservations; the Runner
+  enforces `perTask.maxAttempts`, `perExecution.maxWallTimeSeconds` (Job deadline),
+  `dispatch.minimumHeadroomUsd` and `emergencyStop` at dispatch.
+
+  Fail-closed rules: a provider routed by ModelRouting with no entry in `providers` is
+  unusable (SC_BUDGET_UNDEFINED); an invalid file is rejected as a whole and the
+  last-known-good policy is kept (alert GatewayPolicyInvalid); if no valid policy was
+  ever loaded the Gateway is not ready.
+
+  Load-time invariants beyond this schema: `warnPercents` strictly ascending;
+  `perRequest.maxCostUsd` <= `perExecution.maxCostUsd` <= `perTask.maxCostUsd`;
+  every provider key names a provider in ModelRouting; `dispatch.minimumHeadroomUsd`
+  values <= `perExecution.maxCostUsd`. Cross-file invariants (plan 33 §9.2, review COST-2/8):
+  for every enabled production model routable in a tier, the worst case at its full
+  `contextWindowTokens` with the injected output cap (plus the enforced `maxReasoningTokens`
+  where the output cap does not cover reasoning), priced at the highest applicable rates, is <= `perRequest.maxCostUsd` and <=
+  `dispatch.minimumHeadroomUsd[tier]`; `perTask.maxAttempts` (and every repository
+  override) >= the sum of the tests and implementation ladder rungs + the review and
+  consecutive-infrastructure retry limits of plan 29.
+type: object
+additionalProperties: false
+required: [apiVersion, kind, metadata, spec]
+properties:
+  apiVersion:
+    const: strange.company/v1alpha1
+  kind:
+    const: BudgetPolicy
+  metadata:
+    type: object
+    additionalProperties: false
+    required: [name]
+    properties:
+      name:
+        type: string
+        pattern: "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
+  spec:
+    type: object
+    additionalProperties: false
+    required: [currency, calendarTimezone, perRequest, perExecution, perTask, providers, global, orchestration, thresholds, dispatch, anomaly, emergencyStop]
+    properties:
+      currency:
+        const: USD
+      calendarTimezone:
+        description: Budget periods are UTC in MVP.
+        const: UTC
+      perRequest:
+        type: object
+        additionalProperties: false
+        required: [maxCostUsd, maxOutputTokens, maxRequestBodyBytes]
+        properties:
+          maxCostUsd:
+            description: |
+              HARD ceiling on the cost of one provider request (SPEC §81, CD-28). A request is admitted
+              only if its provable worst-case cost (input bound of the family's `inputBound`, enforced
+              output and reasoning caps, highest applicable rates) is <= this value; otherwise
+              SC_REQUEST_COST_CAP. The reservation equals that worst case, so neither the request nor any
+              scope can overshoot except through a recorded BOUND_VIOLATION (plan 53 §14.4a).
+            $ref: "#/$defs/Money"
+          maxOutputTokens:
+            description: Ceiling on the requested output cap; larger requests are denied (SC_MAX_TOKENS_EXCEEDS_POLICY); absent caps are injected as min(this, model maxOutputTokens).
+            type: integer
+            minimum: 256
+            maximum: 1000000
+          maxRequestBodyBytes:
+            type: integer
+            minimum: 1048576
+            maximum: 67108864
+      perExecution:
+        type: object
+        additionalProperties: false
+        required: [maxCostUsd, maxTotalTokens, maxRequests, maxWallTimeSeconds, maxConcurrentRequests]
+        properties:
+          maxCostUsd:
+            $ref: "#/$defs/Money"
+          maxTotalTokens:
+            description: Uncached input + cache-write + output + reasoning tokens across the execution. Cache READS are excluded (they dominate agentic harness traffic and are cheap; review COST-2).
+            type: integer
+            minimum: 1000
+          maxRequests:
+            type: integer
+            minimum: 1
+            maximum: 100000
+          maxWallTimeSeconds:
+            description: Upper bound on the Job deadline; the Runner uses min(resource-profile deadline, this).
+            type: integer
+            minimum: 300
+            maximum: 21600
+          maxConcurrentRequests:
+            type: integer
+            minimum: 1
+            maximum: 64
+          maxCountTokensPerMinute:
+            description: Per-token rate limit on the non-billable `count_tokens` route (plan 53 §7.1, review BUD-B1). Default 60.
+            type: integer
+            minimum: 1
+            maximum: 600
+            default: 60
+      perTask:
+        type: object
+        additionalProperties: false
+        required: [maxCostUsd, maxAttempts]
+        properties:
+          maxCostUsd:
+            $ref: "#/$defs/Money"
+          maxAttempts:
+            description: Cost-safety ceiling on executions per task across all roles; the effective limit is min(this, plan 29 retry policy).
+            type: integer
+            minimum: 1
+            maximum: 50
+      providers:
+        description: Per-provider calendar budgets keyed by ModelRouting provider id.
+        type: object
+        minProperties: 1
+        propertyNames:
+          type: string
+          pattern: "^[a-z][a-z0-9-]{0,31}$"
+        additionalProperties:
+          type: object
+          additionalProperties: false
+          required: [dailyUsd, monthlyUsd]
+          properties:
+            dailyUsd:
+              $ref: "#/$defs/Money"
+            monthlyUsd:
+              $ref: "#/$defs/Money"
+      global:
+        type: object
+        additionalProperties: false
+        required: [hourlyUsd, dailyUsd, monthlyUsd]
+        properties:
+          hourlyUsd:
+            $ref: "#/$defs/Money"
+          dailyUsd:
+            $ref: "#/$defs/Money"
+          monthlyUsd:
+            $ref: "#/$defs/Money"
+      orchestration:
+        description: Hermes/orchestration budget (token_kind orchestrator).
+        type: object
+        additionalProperties: false
+        required: [dailyUsd, monthlyUsd]
+        properties:
+          dailyUsd:
+            $ref: "#/$defs/Money"
+          monthlyUsd:
+            $ref: "#/$defs/Money"
+      thresholds:
+        type: object
+        additionalProperties: false
+        required: [warnPercents]
+        properties:
+          warnPercents:
+            description: Settled-spend percentages that raise BudgetThresholdReached; 100 % is always BudgetExhausted.
+            type: array
+            minItems: 1
+            maxItems: 4
+            uniqueItems: true
+            items:
+              type: integer
+              minimum: 1
+              maximum: 99
+      dispatch:
+        type: object
+        additionalProperties: false
+        required: [minimumHeadroomUsd]
+        properties:
+          minimumHeadroomUsd:
+            description: Remaining headroom (limit - spent - reserved) required in every applicable scope before the Runner dispatches, keyed by effective tier.
+            type: object
+            additionalProperties: false
+            required: [clerical, bargain, standard, frontier]
+            properties:
+              clerical:
+                $ref: "#/$defs/Money"
+              bargain:
+                $ref: "#/$defs/Money"
+              standard:
+                $ref: "#/$defs/Money"
+              frontier:
+                $ref: "#/$defs/Money"
+      anomaly:
+        description: Rate-of-spend detection (alert AnomalousModelSpend), exported as gauges for Prometheus rules.
+        type: object
+        additionalProperties: false
+        required: [windowMinutes, baselineDays, baselineQuantile, multiplier, minimumSpendUsd, absoluteWindowCapUsd]
+        properties:
+          windowMinutes:
+            type: integer
+            enum: [5, 10, 15, 30, 60]
+          baselineDays:
+            type: integer
+            minimum: 1
+            maximum: 30
+          baselineQuantile:
+            type: number
+            enum: [0.5, 0.9, 0.95, 0.99]
+          multiplier:
+            type: integer
+            minimum: 2
+            maximum: 20
+          minimumSpendUsd:
+            $ref: "#/$defs/Money"
+          absoluteWindowCapUsd:
+            $ref: "#/$defs/Money"
+          autoStop:
+            description: |
+              When true (default), the Gateway leader engages an emergency stop at level `workers`
+              (DB source, actor `budget:anomaly`) when trailing `windowMinutes` spend (settled +
+              open reservations) exceeds `absoluteWindowCapUsd`, evaluated from `sc-pg` every 30 s,
+              independent of Prometheus (plan 33 §14.8, review BUD-B8). Release is human-only.
+            type: boolean
+            default: true
+      repositories:
+        description: |
+          Optional per-repository task-budget overrides (plan 33 §9.1a), keyed by managed
+          repository `owner/name`. Platform policy, so values may be higher or lower than
+          `perTask`. Precedence: human task override > repository override > perTask.
+          Load-time invariant: each maxCostUsd <= global.monthlyUsd.
+        type: object
+        propertyNames:
+          type: string
+          pattern: "^[A-Za-z0-9_.-]{1,64}/[A-Za-z0-9_.-]{1,100}$"
+        additionalProperties:
+          type: object
+          additionalProperties: false
+          required: [perTask]
+          properties:
+            perTask:
+              type: object
+              additionalProperties: false
+              minProperties: 1
+              properties:
+                maxCostUsd:
+                  $ref: "#/$defs/Money"
+                maxAttempts:
+                  type: integer
+                  minimum: 1
+                  maximum: 50
+      emergencyStop:
+        description: Git (slow-path) emergency-stop source. Effective level = max of all sources (plan 33 §14.6).
+        type: object
+        additionalProperties: false
+        required: [level]
+        properties:
+          level:
+            type: string
+            enum: [none, workers, all]
+          reason:
+            type: string
+            maxLength: 500
+        if:
+          properties:
+            level:
+              enum: [workers, all]
+        then:
+          required: [reason]
+          properties:
+            reason:
+              minLength: 5
+$defs:
+  Money:
+    type: string
+    pattern: "^(0|[1-9][0-9]{0,5})(\\.[0-9]{1,6})?$"
+examples:
+  # Example 1 mirrors the shipped `policy/budgets.yaml` of plan 33 §9.1 (normative there).
+  - apiVersion: strange.company/v1alpha1
+    kind: BudgetPolicy
+    metadata:
+      name: default
+    spec:
+      currency: USD
+      calendarTimezone: UTC
+      perRequest:
+        maxCostUsd: "3.00"
+        maxOutputTokens: 32000
+        maxRequestBodyBytes: 8388608
+      perExecution:
+        maxCostUsd: "8.00"
+        maxTotalTokens: 10000000
+        maxRequests: 1000
+        maxWallTimeSeconds: 3600
+        maxConcurrentRequests: 4
+        maxCountTokensPerMinute: 60
+      perTask:
+        maxCostUsd: "20.00"
+        maxAttempts: 15
+      providers:
+        anthropic: {dailyUsd: "30.00", monthlyUsd: "250.00"}
+        deepseek: {dailyUsd: "10.00", monthlyUsd: "80.00"}
+        fake: {dailyUsd: "1000.00", monthlyUsd: "10000.00"}
+      global:
+        hourlyUsd: "20.00"
+        dailyUsd: "60.00"
+        monthlyUsd: "300.00"
+      orchestration:
+        dailyUsd: "10.00"
+        monthlyUsd: "120.00"
+      thresholds:
+        warnPercents: [50, 80]
+      dispatch:
+        minimumHeadroomUsd:
+          clerical: "0.50"
+          bargain: "0.50"
+          standard: "1.50"
+          frontier: "3.00"
+      anomaly:
+        windowMinutes: 15
+        baselineDays: 7
+        baselineQuantile: 0.95
+        multiplier: 4
+        minimumSpendUsd: "0.50"
+        absoluteWindowCapUsd: "8.00"
+        autoStop: true
+      repositories:
+        sc-e2e/fake-target: {perTask: {maxCostUsd: "5.00"}}
+      emergencyStop:
+        level: none
+  # Example 2: a small DeepSeek-only installation during a slow-path stop (illustrative).
+  - apiVersion: strange.company/v1alpha1
+    kind: BudgetPolicy
+    metadata:
+      name: default
+    spec:
+      currency: USD
+      calendarTimezone: UTC
+      perRequest: {maxCostUsd: "2.00", maxOutputTokens: 32000, maxRequestBodyBytes: 33554432}
+      perExecution: {maxCostUsd: "3.00", maxTotalTokens: 5000000, maxRequests: 500, maxWallTimeSeconds: 2700, maxConcurrentRequests: 4}
+      perTask: {maxCostUsd: "10.00", maxAttempts: 6}
+      providers:
+        deepseek: {dailyUsd: "5.00", monthlyUsd: "50.00"}
+      global: {hourlyUsd: "3.00", dailyUsd: "5.00", monthlyUsd: "50.00"}
+      orchestration: {dailyUsd: "1.00", monthlyUsd: "15.00"}
+      thresholds: {warnPercents: [50, 80]}
+      dispatch: {minimumHeadroomUsd: {clerical: "0.05", bargain: "0.25", standard: "1.00", frontier: "2.00"}}
+      anomaly: {windowMinutes: 15, baselineDays: 7, baselineQuantile: 0.95, multiplier: 4, minimumSpendUsd: "0.25", absoluteWindowCapUsd: "3.00"}
+      emergencyStop:
+        level: workers
+        reason: "Slow-path stop committed by PR #212 pending provider invoice review."
+x-invalid-examples:
+  - reason: Float money values.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: BudgetPolicy
+      metadata: {name: default}
+      spec:
+        currency: USD
+        calendarTimezone: UTC
+        perRequest: {maxCostUsd: 5.0, maxOutputTokens: 64000, maxRequestBodyBytes: 33554432}
+        perExecution: {maxCostUsd: "8.00", maxTotalTokens: 20000000, maxRequests: 1500, maxWallTimeSeconds: 3600, maxConcurrentRequests: 8}
+        perTask: {maxCostUsd: "25.00", maxAttempts: 10}
+        providers: {anthropic: {dailyUsd: "40.00", monthlyUsd: "400.00"}}
+        global: {hourlyUsd: "15.00", dailyUsd: "50.00", monthlyUsd: "500.00"}
+        orchestration: {dailyUsd: "5.00", monthlyUsd: "60.00"}
+        thresholds: {warnPercents: [50, 80]}
+        dispatch: {minimumHeadroomUsd: {clerical: "0.10", bargain: "0.50", standard: "2.00", frontier: "5.00"}}
+        anomaly: {windowMinutes: 15, baselineDays: 7, baselineQuantile: 0.95, multiplier: 4, minimumSpendUsd: "0.50", absoluteWindowCapUsd: "10.00"}
+        emergencyStop: {level: none}
+  - reason: Emergency stop engaged without a reason, and an unknown level.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: BudgetPolicy
+      metadata: {name: default}
+      spec:
+        currency: USD
+        calendarTimezone: UTC
+        perRequest: {maxCostUsd: "5.00", maxOutputTokens: 64000, maxRequestBodyBytes: 33554432}
+        perExecution: {maxCostUsd: "8.00", maxTotalTokens: 20000000, maxRequests: 1500, maxWallTimeSeconds: 3600, maxConcurrentRequests: 8}
+        perTask: {maxCostUsd: "25.00", maxAttempts: 10}
+        providers: {anthropic: {dailyUsd: "40.00", monthlyUsd: "400.00"}}
+        global: {hourlyUsd: "15.00", dailyUsd: "50.00", monthlyUsd: "500.00"}
+        orchestration: {dailyUsd: "5.00", monthlyUsd: "60.00"}
+        thresholds: {warnPercents: [50, 80]}
+        dispatch: {minimumHeadroomUsd: {clerical: "0.10", bargain: "0.50", standard: "2.00", frontier: "5.00"}}
+        anomaly: {windowMinutes: 15, baselineDays: 7, baselineQuantile: 0.95, multiplier: 4, minimumSpendUsd: "0.50", absoluteWindowCapUsd: "10.00"}
+        emergencyStop: {level: hard}
+  - reason: Missing global monthly budget and non-UTC calendar.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: BudgetPolicy
+      metadata: {name: default}
+      spec:
+        currency: USD
+        calendarTimezone: Europe/Paris
+        perRequest: {maxCostUsd: "5.00", maxOutputTokens: 64000, maxRequestBodyBytes: 33554432}
+        perExecution: {maxCostUsd: "8.00", maxTotalTokens: 20000000, maxRequests: 1500, maxWallTimeSeconds: 3600, maxConcurrentRequests: 8}
+        perTask: {maxCostUsd: "25.00", maxAttempts: 10}
+        providers: {anthropic: {dailyUsd: "40.00", monthlyUsd: "400.00"}}
+        global: {hourlyUsd: "15.00", dailyUsd: "50.00"}
+        orchestration: {dailyUsd: "5.00", monthlyUsd: "60.00"}
+        thresholds: {warnPercents: [50, 80]}
+        dispatch: {minimumHeadroomUsd: {clerical: "0.10", bargain: "0.50", standard: "2.00", frontier: "5.00"}}
+        anomaly: {windowMinutes: 15, baselineDays: 7, baselineQuantile: 0.95, multiplier: 4, minimumSpendUsd: "0.50", absoluteWindowCapUsd: "10.00"}
+        emergencyStop: {level: none}
+  - reason: Repository override with an empty perTask block and a repository key that is not owner/name.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: BudgetPolicy
+      metadata: {name: default}
+      spec:
+        currency: USD
+        calendarTimezone: UTC
+        perRequest: {maxCostUsd: "5.00", maxOutputTokens: 64000, maxRequestBodyBytes: 33554432}
+        perExecution: {maxCostUsd: "8.00", maxTotalTokens: 20000000, maxRequests: 1500, maxWallTimeSeconds: 3600, maxConcurrentRequests: 8}
+        perTask: {maxCostUsd: "25.00", maxAttempts: 10}
+        providers: {anthropic: {dailyUsd: "40.00", monthlyUsd: "400.00"}}
+        global: {hourlyUsd: "15.00", dailyUsd: "50.00", monthlyUsd: "500.00"}
+        orchestration: {dailyUsd: "5.00", monthlyUsd: "60.00"}
+        thresholds: {warnPercents: [50, 80]}
+        dispatch: {minimumHeadroomUsd: {clerical: "0.10", bargain: "0.50", standard: "2.00", frontier: "5.00"}}
+        anomaly: {windowMinutes: 15, baselineDays: 7, baselineQuantile: 0.95, multiplier: 4, minimumSpendUsd: "0.50", absoluteWindowCapUsd: "10.00"}
+        repositories:
+          fake-target: {perTask: {}}
+        emergencyStop: {level: none}

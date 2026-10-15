@@ -1,0 +1,1142 @@
+openapi: 3.1.0
+jsonSchemaDialect: https://json-schema.org/draft/2020-12/schema
+info:
+  title: Strange Company Agent Runner internal API
+  version: v1alpha1
+  summary: Transport-independent application interface of the Agent Runner (SPEC §61). Owning plan 26.
+  description: |
+    The Runner core is a service layer; this HTTP API and the MCP surface
+    (`mcp-surface.schema.yaml`) are two thin adapters over it (SPEC §61: "not inseparably tied
+    to MCP transport"). Request and response bodies reuse the MCP tool schemas by `$id`, so the
+    two surfaces cannot drift.
+
+    The Runner serves four listeners. Each caller class can reach only its own listener
+    (NetworkPolicy, plan 36) and each listener accepts only its own credential:
+
+    | Listener | Bind | Paths | Caller | Credential |
+    |---|---|---|---|---|
+    | `api` | 127.0.0.1:8080 (loopback; reachable only via `kubectl port-forward`) | `/v1/tasks*`, `/v1/executions*`, `/v1/admin/*`, `/v1/policy/*` | human operators and the toolbox CLIs | `SC-RUNNER-ADMIN` bearer `scadm_<kid>.<secret>`: per-operator credentials (actor `human:<login>`) or the single break-glass credential (actor `breakglass:runner-admin`). The actor is derived from the credential's key id, never from a header (CD-30); a request carrying `X-SC-Actor` is rejected with 400 `VALIDATION_FAILED`. Mutating calls carry `X-SC-Reason` |
+    | `mcp` | 0.0.0.0:8081 | `/mcp` | Hermes (namespace `hermes`) | `SC-RUNNER-HERMES` bearer |
+    | `worker` | 0.0.0.0:8082 | `/v1/worker/*` | the `sc-worker` container of worker pods (namespace `agent-jobs`) | `SC-WORKER-TASK-TOKEN` with `token_use: runner`, `aud: [sc-agent-runner-worker]` (`contracts/task-token.schema.yaml`) |
+    | `hooks` | 0.0.0.0:8083 | `/v1/hooks/forgejo`; `/v1/ci/intents*` | Forgejo webhook deliveries (namespace `forgejo`); the Woodpecker configuration extension `sc-ci-config` (namespace `woodpecker`, plan 20) | HMAC-SHA256 `X-Forgejo-Signature` with `SC-RUNNER-WEBHOOK`; `SC-CI-INTENTS` bearer for `/v1/ci/intents*` |
+    | `ops` (container port named `metrics`, CD-02) | 0.0.0.0:8090 | `/healthz`, `/readyz`, `/metrics` | kubelet probes, Prometheus (`monitoring`) | none (no sensitive data) |
+
+    Every mutating request is idempotent: `Idempotency-Key` header (8–128 chars of
+    `[A-Za-z0-9_.:-]`) on `api`, `idempotency_key` field on MCP. Same key and same canonical body
+    returns the stored response with `idempotent_replay: true`; same key and a different body
+    returns 409 `IDEMPOTENCY_CONFLICT`. Keys are retained 7 days.
+
+    Error bodies are `ToolError` from the MCP contract. HTTP status mapping is listed beside each
+    code in `mcp-surface.schema.yaml#/$defs/ErrorCode`.
+  license:
+    name: GNU Affero General Public License v3.0 or later
+    identifier: AGPL-3.0-or-later
+servers:
+  - url: http://127.0.0.1:18080
+    description: "`api` listener through `kubectl -n strange-company port-forward deploy/agent-runner 18080:8080`"
+  - url: http://agent-runner.strange-company.svc:8082
+    description: "`worker` listener (from agent-jobs)"
+  - url: http://agent-runner.strange-company.svc:8083
+    description: "`hooks` listener (from forgejo)"
+  - url: http://agent-runner.strange-company.svc:8090
+    description: "`ops` listener"
+security:
+  - adminBearer: []
+tags:
+  - name: tasks
+  - name: executions
+  - name: admin
+  - name: worker
+  - name: ops
+paths:
+  /v1/tasks:
+    post:
+      tags: [tasks]
+      operationId: createTask
+      summary: Create a task from an embedded definition and dispatch its first execution (agent_start with `task`).
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/Reason"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "https://strange.company/contracts/mcp-surface/v1alpha1#/$defs/AgentStartInput"
+                - required: [task]
+      responses:
+        "201":
+          description: Task created in SPECIFIED and an execution queued (the task then follows the state machine, e.g. TEST_AUTHORING).
+          content:
+            application/json:
+              schema: {$ref: "https://strange.company/contracts/mcp-surface/v1alpha1#/$defs/AgentStartOutput"}
+        "200":
+          description: Idempotent replay of a previous identical request.
+          content:
+            application/json:
+              schema: {$ref: "https://strange.company/contracts/mcp-surface/v1alpha1#/$defs/AgentStartOutput"}
+        default:
+          $ref: "#/components/responses/Error"
+    get:
+      tags: [tasks]
+      operationId: listTasks
+      summary: List tasks (agent_list).
+      parameters:
+        - {name: state, in: query, schema: {type: array, items: {$ref: "https://strange.company/contracts/mcp-surface/v1alpha1#/$defs/TaskState"}}, style: form, explode: true}
+        - {name: repository, in: query, schema: {$ref: "https://strange.company/contracts/mcp-surface/v1alpha1#/$defs/Repo"}}
+        - {name: role, in: query, schema: {$ref: "https://strange.company/contracts/mcp-surface/v1alpha1#/$defs/Role"}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 50}}
+        - {name: cursor, in: query, schema: {type: string, pattern: "^[A-Za-z0-9_-]{1,200}$"}}
+        - {name: updated_since, in: query, description: "Reserved for R02 (plan 46); returns 501 NOT_IMPLEMENTED until then.", schema: {type: string, format: date-time}}
+        - {name: blocked_reason, in: query, description: "Only tasks in BLOCKED with this blocked_reason (plan 29/33), e.g. emergency_stop, budget_window_exhausted.", schema: {type: string, pattern: "^[a-z][a-z_]{2,40}$"}}
+      responses:
+        "200":
+          description: Page of tasks.
+          content:
+            application/json:
+              schema: {$ref: "https://strange.company/contracts/mcp-surface/v1alpha1#/$defs/AgentListOutput"}
+        default:
+          $ref: "#/components/responses/Error"
+  /v1/tasks/{task_id}:
+    parameters:
+      - $ref: "#/components/parameters/TaskId"
+    get:
+      tags: [tasks]
+      operationId: getTask
+      summary: Task status (agent_status).
+      responses:
+        "200":
+          description: Task status.
+          content:
+            application/json:
+              schema: {$ref: "https://strange.company/contracts/mcp-surface/v1alpha1#/$defs/TaskStatus"}
+        default:
+          $ref: "#/components/responses/Error"
+  /v1/tasks/{task_id}/executions:
+    parameters:
+      - $ref: "#/components/parameters/TaskId"
+    post:
+      tags: [executions]
+      operationId: startExecution
+      summary: Dispatch one execution of a role on an existing task (agent_start with `task_id`).
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/Reason"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "https://strange.company/contracts/mcp-surface/v1alpha1#/$defs/AgentStartInput"
+                - required: [task_id]
+      responses:
+        "202":
+          description: Execution queued.
+          content:
+            application/json:
+              schema: {$ref: "https://strange.company/contracts/mcp-surface/v1alpha1#/$defs/AgentStartOutput"}
+        "200":
+          description: Idempotent replay.
+          content:
+            application/json:
+              schema: {$ref: "https://strange.company/contracts/mcp-surface/v1alpha1#/$defs/AgentStartOutput"}
+        default:
+          $ref: "#/components/responses/Error"
+    get:
+      tags: [executions]
+      operationId: listExecutions
+      summary: All executions of the task, newest first.
+      responses:
+        "200":
+          description: Executions.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [executions]
+                properties:
+                  executions:
+                    type: array
+                    items: {$ref: "https://strange.company/contracts/mcp-surface/v1alpha1#/$defs/ExecutionSummary"}
+        default:
+          $ref: "#/components/responses/Error"
+  /v1/tasks/{task_id}/cancel:
+    parameters:
+      - $ref: "#/components/parameters/TaskId"
+    post:
+      tags: [tasks]
+      operationId: cancelTask
+      summary: Cancel the task or hand it to a human (agent_cancel).
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/Reason"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CancelBody"
+      responses:
+        "200":
+          description: Cancelled or escalated.
+          content:
+            application/json:
+              schema: {$ref: "https://strange.company/contracts/mcp-surface/v1alpha1#/$defs/AgentCancelOutput"}
+        default:
+          $ref: "#/components/responses/Error"
+  /v1/tasks/{task_id}/logs:
+    parameters:
+      - $ref: "#/components/parameters/TaskId"
+    get:
+      tags: [tasks]
+      operationId: getTaskLogs
+      summary: Bounded scrubbed log tail (agent_logs).
+      parameters:
+        - {name: execution_id, in: query, schema: {$ref: "https://strange.company/contracts/mcp-surface/v1alpha1#/$defs/ExecutionId"}}
+        - {name: tail_lines, in: query, schema: {type: integer, minimum: 1, maximum: 500, default: 200}}
+      responses:
+        "200":
+          description: Log tail.
+          content:
+            application/json:
+              schema: {$ref: "https://strange.company/contracts/mcp-surface/v1alpha1#/$defs/AgentLogsOutput"}
+        default:
+          $ref: "#/components/responses/Error"
+  /v1/tasks/{task_id}/result:
+    parameters:
+      - $ref: "#/components/parameters/TaskId"
+    get:
+      tags: [tasks]
+      operationId: getTaskResult
+      summary: Runner verdict and sanitized worker result (agent_result).
+      parameters:
+        - {name: execution_id, in: query, schema: {$ref: "https://strange.company/contracts/mcp-surface/v1alpha1#/$defs/ExecutionId"}}
+      responses:
+        "200":
+          description: Result.
+          content:
+            application/json:
+              schema: {$ref: "https://strange.company/contracts/mcp-surface/v1alpha1#/$defs/AgentResultOutput"}
+        default:
+          $ref: "#/components/responses/Error"
+  /v1/tasks/{task_id}/transitions:
+    parameters:
+      - $ref: "#/components/parameters/TaskId"
+    get:
+      tags: [tasks]
+      operationId: listTransitions
+      summary: Full transition history (SPEC §73).
+      responses:
+        "200":
+          description: History, oldest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [transitions]
+                properties:
+                  transitions:
+                    type: array
+                    items: {$ref: "https://strange.company/contracts/mcp-surface/v1alpha1#/$defs/Transition"}
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      tags: [admin]
+      operationId: humanTransition
+      summary: Human-only transition (e.g. BLOCKED -> SPECIFIED, NEEDS_HUMAN -> DONE, approve a TEST_SPEC_CONFLICT decision). Only transitions whose actor class is `human` in plan 29's state machine are accepted.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/Reason"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/HumanTransitionBody"}
+      responses:
+        "200":
+          description: Transition recorded.
+          content:
+            application/json:
+              schema: {$ref: "https://strange.company/contracts/mcp-surface/v1alpha1#/$defs/TaskStatus"}
+        default:
+          $ref: "#/components/responses/Error"
+  /v1/executions/{execution_id}/quarantine:
+    parameters:
+      - $ref: "#/components/parameters/ExecutionId"
+    post:
+      tags: [admin]
+      operationId: quarantineExecution
+      summary: Kill a worker, revoke its task token, gateway token and deploy key, and preserve evidence (procedures/quarantine-worker.md).
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/Reason"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reason]
+              properties:
+                reason: {type: string, minLength: 10, maxLength: 1000}
+                quarantine_branch:
+                  description: Also rename/delete refs the execution touched (default true).
+                  type: boolean
+                  default: true
+      responses:
+        "200":
+          description: Quarantine complete.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/QuarantineReport"}
+        default:
+          $ref: "#/components/responses/Error"
+  /v1/executions/{execution_id}/reingest:
+    parameters:
+      - $ref: "#/components/parameters/ExecutionId"
+    post:
+      tags: [admin]
+      operationId: reingestExecutionResult
+      summary: Break-glass re-ingestion of the stored result object (S3 evidence `results/<task>/<execution>/result.json`) after an sc-pg PITR lost the ingestion (plan 29 Q7, `stuck-task-recovery.md`). If a judged-facts snapshot exists for the execution (plan 26 §14.4 judge phase), the verdict is re-applied from it without re-deriving Git facts; otherwise the full ingestion of plan 26 §14.4 runs under the execution's recorded policy revision and records `facts_rederived_at`. Idempotent per (execution, result digest).
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/Reason"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reason]
+              properties:
+                reason: {type: string, minLength: 10, maxLength: 1000}
+                expected_result_sha256: {type: string, pattern: "^sha256:[a-f0-9]{64}$"}
+      responses:
+        "200":
+          description: Result re-ingested (or already ingested with the same digest).
+          content:
+            application/json:
+              schema: {$ref: "https://strange.company/contracts/mcp-surface/v1alpha1#/$defs/AgentResultOutput"}
+        default:
+          $ref: "#/components/responses/Error"
+  /v1/admin/emergency-stop:
+    get:
+      tags: [admin]
+      operationId: getEmergencyStop
+      summary: Emergency-stop state, i.e. the DB source, every other source (Git policy, Kubernetes ConfigMap `sc-emergency-stop`), the effective level and the Gateway's reported effective level (semantics owned by plan 33).
+      responses:
+        "200":
+          description: State.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/EmergencyStopState"}
+        default:
+          $ref: "#/components/responses/Error"
+    put:
+      tags: [admin]
+      operationId: setEmergencyStop
+      summary: Set the DB source of the emergency stop (ADR-0452). The Runner appends a row to `ledger.emergency_stop_events` and applies its own part (dispatch halt, cancellation of queued/running executions at `workers`/`all`). The Gateway reads the DB source directly; there is no Gateway admin endpoint. The response reports the effective level over all three sources (plan 33).
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/Reason"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [level, reason]
+              properties:
+                level: {$ref: "#/components/schemas/EmergencyStopLevel"}
+                reason: {type: string, minLength: 10, maxLength: 1000}
+      responses:
+        "200":
+          description: Applied.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/EmergencyStopState"}
+        default:
+          $ref: "#/components/responses/Error"
+  /v1/admin/budget-scopes/{scope_key}:
+    parameters:
+      - name: scope_key
+        in: path
+        required: true
+        description: Only `task:sc-<n>` keys are accepted (plan 33 §14.11); any other key returns 400 VALIDATION_FAILED.
+        schema: {type: string, pattern: "^[a-z][a-z-]{1,30}:[A-Za-z0-9_.:-]{1,80}$"}
+    put:
+      tags: [admin]
+      operationId: overrideBudgetScope
+      summary: Human override of a task budget limit. Writes `ledger.budget_limit_overrides`, updates the scope row (`limit_source = override:<id>`) and raises `SCRunnerAdminAccess`.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/Reason"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [limit_usd, reason]
+              properties:
+                limit_usd: {type: string, pattern: "^[0-9]{1,9}(\\.[0-9]{1,6})?$"}
+                reason: {type: string, minLength: 10, maxLength: 1000}
+      responses:
+        "200":
+          description: Override applied.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [scope_key, limit_usd, limit_source, override_id]
+                properties:
+                  scope_key: {type: string}
+                  limit_usd: {type: string}
+                  limit_source: {type: string, pattern: "^override:[0-9]+$"}
+                  override_id: {type: integer, minimum: 1}
+        default:
+          $ref: "#/components/responses/Error"
+  /v1/admin/hermes-credentials:rotate:
+    post:
+      tags: [admin]
+      operationId: rotateHermesCredentials
+      summary: Force rotation of Runner-managed Hermes credentials (ADR-0401). Re-renders Secret `hermes/hermes-managed-env`, restarts Hermes, and revokes the previous credentials after the overlap or immediately.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/Reason"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [credentials, revoke_previous, reason]
+              properties:
+                credentials:
+                  type: array
+                  minItems: 1
+                  uniqueItems: true
+                  items: {type: string, enum: [gateway_token, mcp_token, api_server_key]}
+                revoke_previous: {type: string, enum: [after_overlap, immediately]}
+                reason: {type: string, minLength: 10, maxLength: 1000}
+      responses:
+        "200":
+          description: Rotation performed (Secret written, Hermes restart requested).
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [rotated, managed_revision]
+                properties:
+                  rotated:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required: [credential, new_id, previous_id, previous_revoked_at]
+                      properties:
+                        credential: {type: string, enum: [gateway_token, mcp_token, api_server_key]}
+                        new_id: {description: "jti (gateway token) or sha256 prefix (static bearers)", type: string, maxLength: 80}
+                        previous_id: {type: [string, "null"], maxLength: 80}
+                        previous_revoked_at: {description: "Instant at which the previous credential stops working (now for `immediately`).", type: [string, "null"], format: date-time}
+                  managed_revision: {type: string, pattern: "^sha256:[a-f0-9]{64}$"}
+        default:
+          $ref: "#/components/responses/Error"
+  /v1/admin/model-quarantine/{provider}/{model}:acknowledge:
+    parameters:
+      - {name: provider, in: path, required: true, schema: {type: string, pattern: "^[a-z][a-z0-9-]{1,30}$"}}
+      - {name: model, in: path, required: true, schema: {type: string, pattern: "^[A-Za-z0-9._:-]{1,120}$"}}
+    post:
+      tags: [admin]
+      operationId: acknowledgeModelQuarantine
+      summary: Human acknowledgement that lifts the Gateway's `BOUND_VIOLATION` quarantine of a (provider, model) (plan 53 §14, CD-28) after the bound, caps or price card were corrected by PR. Sets `ledger.model_quarantine.acknowledged_at/by` (actor and key id from the admin credential, CD-30) and raises `SCRunnerAdminAccess`. 404 if no unacknowledged quarantine row exists; repeated calls are idempotent by key.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/Reason"
+      responses:
+        "200":
+          description: Quarantine acknowledged; new requests for the model are no longer denied `SC_MODEL_QUARANTINED`.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [provider, model, quarantined_since, acknowledged_at, acknowledged_by]
+                properties:
+                  provider: {type: string}
+                  model: {type: string}
+                  quarantined_since: {type: string, format: date-time}
+                  acknowledged_at: {type: string, format: date-time}
+                  acknowledged_by: {type: string, pattern: "^(human:[A-Za-z0-9_.-]{1,64}|breakglass:runner-admin)$"}
+        default:
+          $ref: "#/components/responses/Error"
+  /v1/admin/whoami:
+    get:
+      tags: [admin]
+      operationId: adminWhoami
+      summary: Identity bound to the presented admin credential (key id, actor, kind, expiry). Used by `sc-bootstrap access` to verify a newly issued credential.
+      responses:
+        "200":
+          description: Credential identity.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AdminCredential"}
+        default:
+          $ref: "#/components/responses/Error"
+  /v1/admin/credentials/{kid}:revoke:
+    parameters:
+      - {name: kid, in: path, required: true, schema: {type: string, pattern: "^[a-z2-7]{12}$"}}
+    post:
+      tags: [admin]
+      operationId: revokeAdminCredential
+      summary: Immediate revocation of an admin credential (CD-30). Effective for the next request (sticky DB deny row, independent of the Git-delivered registry). Callable by any valid admin credential, including the one being revoked. Raises `SCRunnerAdminAccess`.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/Reason"
+      responses:
+        "200":
+          description: Revoked (or already revoked).
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AdminCredential"}
+        default:
+          $ref: "#/components/responses/Error"
+  /v1/admin/gateway-tokens:verify:
+    post:
+      tags: [admin]
+      operationId: mintVerifyGatewayToken
+      summary: Mint a short-lived verification gateway token for `./bootstrap verify` and Gateway smoke checks (plan 50, plan 53 Q4; review RA-8). Synthetic task `sc-0`, execution `sc-0-x<n>`, role `tester`, harness `fake-success`, `allowed_models` limited to the test-only `fake` provider unless `provider` names an enabled production provider for a one-request smoke, budget scope `execution:sc-0-x<n>` with the given cap. Lifetime ≤ 600 s; revoked automatically at expiry or by the next call. Raises `SCRunnerAdminAccess`.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/Reason"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reason]
+              properties:
+                provider: {type: string, pattern: "^[a-z][a-z0-9-]{1,30}$", default: fake}
+                max_usd: {type: string, pattern: "^[0-9]{1,3}(\\.[0-9]{1,6})?$", default: "0.05"}
+                ttl_seconds: {type: integer, minimum: 30, maximum: 600, default: 300}
+                reason: {type: string, minLength: 10, maxLength: 1000}
+      responses:
+        "200":
+          description: Token minted and registered in `ledger.gateway_tokens`. The token value is returned once and never stored.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [token, jti, expires_at, base_url]
+                properties:
+                  token: {type: string, maxLength: 4096}
+                  jti: {type: string, pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"}
+                  expires_at: {type: string, format: date-time}
+                  base_url: {type: string, maxLength: 200}
+        default:
+          $ref: "#/components/responses/Error"
+  /v1/admin/hermes-credentials:revoke:
+    post:
+      tags: [admin]
+      operationId: revokeHermesCredentials
+      summary: Containment for a misbehaving or compromised Hermes (review RA-10). Revokes the MCP bearer, the Hermes gateway token and the API key immediately, sets `hermes_disabled` in `sc-pg` (the ensure loop stops re-rendering `hermes-managed-env`, the `mcp` listener rejects every bearer with 401), and deletes the Secret's credential values. Re-enabling is a separate human call.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/Reason"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reason]
+              properties:
+                reason: {type: string, minLength: 10, maxLength: 1000}
+      responses:
+        "200":
+          description: Revoked; Hermes is disabled.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/HermesCredentialState"}
+        default:
+          $ref: "#/components/responses/Error"
+  /v1/admin/hermes-credentials:enable:
+    post:
+      tags: [admin]
+      operationId: enableHermesCredentials
+      summary: Clear `hermes_disabled`; the Runner mints fresh credentials, renders `hermes-managed-env` and restarts Hermes.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/Reason"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reason]
+              properties:
+                reason: {type: string, minLength: 10, maxLength: 1000}
+      responses:
+        "200":
+          description: Enabled with fresh credentials.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/HermesCredentialState"}
+        default:
+          $ref: "#/components/responses/Error"
+  /v1/admin/ledger/adjustments:
+    post:
+      tags: [admin]
+      operationId: createLedgerAdjustment
+      summary: Record an operator cost adjustment (plan 32 §20, plan 33 §20), e.g. spend lost to an sc-pg PITR. Inserts `ledger.cost_adjustments` and updates the matching provider/global month (and day) scope `spent` columns in one transaction.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/Reason"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [period, provider, delta_usd, reason]
+              properties:
+                period: {type: string, pattern: "^[0-9]{4}-[0-9]{2}(-[0-9]{2})?$"}
+                provider: {type: string, pattern: "^[a-z][a-z0-9-]{1,30}$"}
+                delta_usd: {type: string, pattern: "^-?[0-9]{1,9}(\\.[0-9]{1,6})?$"}
+                reason: {type: string, minLength: 10, maxLength: 1000}
+      responses:
+        "200":
+          description: Adjustment recorded.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [adjustment_id, period, provider, delta_micro_usd]
+                properties:
+                  adjustment_id: {type: integer, minimum: 1}
+                  period: {type: string}
+                  provider: {type: string}
+                  delta_micro_usd: {type: integer}
+        default:
+          $ref: "#/components/responses/Error"
+  /v1/policy/status:
+    get:
+      tags: [admin]
+      operationId: getPolicyStatus
+      summary: Loaded policy revision, commit, per-file digests and the last load error.
+      responses:
+        "200":
+          description: Policy status.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/PolicyStatus"}
+        default:
+          $ref: "#/components/responses/Error"
+  /v1/worker/packet:
+    get:
+      tags: [worker]
+      operationId: getWorkerPacket
+      summary: The task packet for the token's execution. Allowed while the execution is STARTING or RUNNING; the first call moves STARTING -> RUNNING.
+      security:
+        - workerToken: []
+      responses:
+        "200":
+          description: Packet.
+          content:
+            application/json:
+              schema: {$ref: "https://strange.company/contracts/worker-input/v1alpha1"}
+        default:
+          $ref: "#/components/responses/Error"
+  /v1/worker/heartbeat:
+    post:
+      tags: [worker]
+      operationId: postWorkerHeartbeat
+      summary: Liveness and phase report every heartbeat_interval_seconds; the response carries cancellation.
+      security:
+        - workerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [execution_id, phase, at]
+              properties:
+                execution_id: {$ref: "https://strange.company/contracts/mcp-surface/v1alpha1#/$defs/ExecutionId"}
+                phase: {type: string, enum: [starting, cloning, materializing, harness, validating, committing, pushing, reporting]}
+                at: {type: string, format: date-time}
+                redactions: {type: integer, minimum: 0}
+      responses:
+        "200":
+          description: Acknowledged.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [cancel_requested, deadline_at]
+                properties:
+                  cancel_requested: {type: boolean}
+                  deadline_at: {type: string, format: date-time}
+        default:
+          $ref: "#/components/responses/Error"
+  /v1/worker/result:
+    post:
+      tags: [worker]
+      operationId: postWorkerResult
+      summary: Submit the structured result. Exactly one result per execution; an identical resubmission returns the stored receipt.
+      security:
+        - workerToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "https://strange.company/contracts/worker-result/v1alpha1"}
+      responses:
+        "202":
+          description: Result stored; ingestion (Git verification, secret scan, transitions) proceeds asynchronously.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ResultReceipt"}
+        "200":
+          description: Identical resubmission (replay).
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ResultReceipt"}
+        "409":
+          description: A different result was already stored for this execution.
+          content:
+            application/json:
+              schema: {$ref: "https://strange.company/contracts/mcp-surface/v1alpha1#/$defs/ToolError"}
+        "422":
+          description: Schema-invalid result (RESULT_SCHEMA_INVALID). Stored as evidence; the execution fails.
+          content:
+            application/json:
+              schema: {$ref: "https://strange.company/contracts/mcp-surface/v1alpha1#/$defs/ToolError"}
+        default:
+          $ref: "#/components/responses/Error"
+  /v1/hooks/forgejo:
+    post:
+      tags: [worker]
+      operationId: forgejoWebhook
+      summary: Forgejo push / pull_request / pull_request_review events for managed repositories. Used for ref auditing (ADR-0007) and PR-head invalidation (ADR-0019). Events are hints; the Runner re-reads authoritative state from the Forgejo API before acting.
+      security: []
+      parameters:
+        - {name: X-Forgejo-Event, in: header, required: true, schema: {type: string, enum: [push, pull_request, pull_request_review, delete, create]}}
+        - {name: X-Forgejo-Delivery, in: header, required: true, schema: {type: string, maxLength: 64}}
+        - {name: X-Forgejo-Signature, in: header, required: true, description: hex HMAC-SHA256 of the raw body keyed with SC-RUNNER-WEBHOOK (verify header name against the pinned Forgejo version), schema: {type: string, pattern: "^[a-f0-9]{64}$"}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              description: Forgejo webhook payload (upstream format; only fields named in plan 26 are read).
+              type: object
+      responses:
+        "204":
+          description: Accepted (or ignored as duplicate delivery).
+        "401":
+          description: Signature invalid.
+  /v1/ci/intents:
+    get:
+      tags: [worker]
+      operationId: lookupVerificationIntent
+      summary: Verification-intent lookup by the Woodpecker configuration extension (ADR-0302, plan 20 §7.3). Returns the unexpired intent matching all three keys.
+      security:
+        - ciIntentsBearer: []
+      parameters:
+        - {name: repo, in: query, required: true, schema: {$ref: "https://strange.company/contracts/mcp-surface/v1alpha1#/$defs/Repo"}}
+        - {name: branch, in: query, required: true, schema: {type: string, pattern: "^agent/sc-[0-9]+$"}}
+        - {name: commit, in: query, required: true, schema: {type: string, pattern: "^[a-f0-9]{40}$"}}
+      responses:
+        "200":
+          description: Matching unexpired intent.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/VerificationIntent"}
+        "404":
+          description: No unexpired intent matches.
+        "401":
+          description: Missing or wrong SC-CI-INTENTS bearer.
+  /v1/ci/push-records:
+    get:
+      tags: [worker]
+      operationId: getPushRecord
+      summary: Read-only Forgejo push record for a ref (review SEC-1), for `sc-ci-config` / `sc-release` to confirm that a release tag was pushed by an allowed identity before any release credential is used.
+      security:
+        - ciIntentsBearer: []
+      parameters:
+        - {name: repo, in: query, required: true, schema: {$ref: "https://strange.company/contracts/mcp-surface/v1alpha1#/$defs/Repo"}}
+        - {name: ref, in: query, required: true, schema: {type: string, pattern: "^refs/(heads|tags)/[A-Za-z0-9._/-]{1,200}$"}}
+      responses:
+        "200":
+          description: Latest push record of the ref.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [repository, ref, after, pusher_login, pusher_kind, received_at]
+                properties:
+                  repository: {type: string}
+                  ref: {type: string}
+                  before: {type: [string, "null"], pattern: "^[a-f0-9]{40}$"}
+                  after: {type: string, pattern: "^[a-f0-9]{40}$"}
+                  pusher_login: {type: string, maxLength: 100}
+                  pusher_kind: {type: string, enum: [human, bot, deploy_key, unknown]}
+                  received_at: {type: string, format: date-time}
+        "404":
+          description: No push record for the ref.
+        "401":
+          description: Missing or wrong SC-CI-INTENTS bearer.
+  /v1/ci/intents/{intent_id}/served:
+    parameters:
+      - {name: intent_id, in: path, required: true, schema: {type: string, pattern: "^vi_[0-9a-z]{26}$"}}
+    post:
+      tags: [worker]
+      operationId: attestIntentServed
+      summary: The configuration extension attests which configuration it served for the intent. Idempotent; a second call with different content returns 409. The Runner re-computes `config_sha256` itself (identity check I5).
+      security:
+        - ciIntentsBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [config_revision, config_sha256, workflow_names, served_at]
+              properties:
+                config_revision: {type: string, pattern: "^[a-f0-9]{40}$"}
+                config_sha256: {type: string, pattern: "^[a-f0-9]{64}$"}
+                workflow_names:
+                  type: array
+                  minItems: 1
+                  maxItems: 20
+                  items: {type: string, pattern: "^[a-z][a-z0-9_-]{0,40}$"}
+                served_at: {type: string, format: date-time}
+      responses:
+        "204":
+          description: Attestation recorded (or identical replay).
+        "404":
+          description: Unknown or expired intent.
+        "409":
+          description: A different attestation was already recorded.
+        "401":
+          description: Missing or wrong SC-CI-INTENTS bearer.
+  /healthz:
+    get:
+      tags: [ops]
+      operationId: healthz
+      security: []
+      summary: Process liveness (no dependency checks).
+      responses:
+        "200":
+          description: Alive.
+          content:
+            text/plain:
+              schema: {type: string, const: ok}
+  /readyz:
+    get:
+      tags: [ops]
+      operationId: readyz
+      security: []
+      summary: Ready when migrations are applied, sc-pg is reachable and a policy revision (current or last-known-good) is loaded. Policy failure does NOT make the pod unready (reads must keep working); it makes dispatch fail with POLICY_UNAVAILABLE.
+      responses:
+        "200":
+          description: Ready.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Readiness"}
+        "503":
+          description: Not ready.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Readiness"}
+  /metrics:
+    get:
+      tags: [ops]
+      operationId: metrics
+      security: []
+      summary: Prometheus exposition (low-cardinality; no task ids as labels, SPEC §91).
+      responses:
+        "200":
+          description: Metrics.
+          content:
+            text/plain:
+              schema: {type: string}
+components:
+  securitySchemes:
+    adminBearer:
+      type: http
+      scheme: bearer
+      description: SC-RUNNER-ADMIN admin credential `scadm_<kid>.<secret>` (plan 26 §10, CD-30). The key id selects a registered credential (per-operator, actor `human:<login>`, or the break-glass credential, actor `breakglass:runner-admin`); the Runner compares sha256(secret) in constant time and rejects revoked or expired keys. Valid only on the loopback `api` listener.
+    hermesBearer:
+      type: http
+      scheme: bearer
+      description: SC-RUNNER-HERMES; valid only on the `mcp` listener.
+    ciIntentsBearer:
+      type: http
+      scheme: bearer
+      description: SC-CI-INTENTS (plan 20); valid only on the `hooks` listener for `/v1/ci/intents*`.
+    workerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWS (EdDSA, typ sc-task+jwt, aud sc-agent-runner-worker)
+      description: SC-WORKER-TASK-TOKEN with `token_use` runner, bound to one execution; claims per contracts/task-token.schema.yaml; valid only on the `worker` listener. The `egress` token of the same execution is rejected (401). After a result is received the runner token is accepted only on `POST /v1/worker/result` (idempotent replay of the same digest) until ingestion completes or deadline + startup grace, then revoked.
+  parameters:
+    TaskId:
+      name: task_id
+      in: path
+      required: true
+      schema: {$ref: "https://strange.company/contracts/mcp-surface/v1alpha1#/$defs/TaskId"}
+    ExecutionId:
+      name: execution_id
+      in: path
+      required: true
+      schema: {$ref: "https://strange.company/contracts/mcp-surface/v1alpha1#/$defs/ExecutionId"}
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: {$ref: "https://strange.company/contracts/mcp-surface/v1alpha1#/$defs/IdempotencyKey"}
+    Reason:
+      name: X-SC-Reason
+      in: header
+      required: true
+      description: Caller-supplied justification recorded in the admin audit row (and as the transition reason where the body has none). The actor is NOT a header; it is the identity bound to the credential's key id (CD-30). Any request carrying `X-SC-Actor` is rejected with 400 VALIDATION_FAILED.
+      schema: {type: string, minLength: 10, maxLength: 500}
+  responses:
+    Error:
+      description: Error (see ErrorCode for the status mapping).
+      content:
+        application/json:
+          schema: {$ref: "https://strange.company/contracts/mcp-surface/v1alpha1#/$defs/ToolError"}
+  schemas:
+    CancelBody:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason: {type: string, minLength: 10, maxLength: 1000}
+        disposition: {type: string, enum: [cancelled, needs_human], default: cancelled}
+    HumanTransitionBody:
+      type: object
+      additionalProperties: false
+      required: [expected_from, to, reason]
+      properties:
+        expected_from:
+          description: Optimistic-concurrency guard; 409 INVALID_STATE if the task is no longer in this state.
+          $ref: "https://strange.company/contracts/mcp-surface/v1alpha1#/$defs/TaskState"
+        to: {$ref: "https://strange.company/contracts/mcp-surface/v1alpha1#/$defs/TaskState"}
+        reason: {type: string, minLength: 10, maxLength: 1000}
+        decision:
+          description: "The human command (plan 29 §7.3/§7.4; the same command set as `/sc` comments, ADR-0350) with optional args and structured payload (e.g. the TEST_SPEC_CONFLICT approval). Command semantics and payload schemas are owned by plans 29 and 21."
+          type: object
+          additionalProperties: false
+          required: [command]
+          properties:
+            command: {type: string, pattern: "^[a-z][a-z0-9-]{1,40}$"}
+            args:
+              type: array
+              maxItems: 10
+              items: {type: string, maxLength: 200}
+            payload: {type: object}
+    QuarantineReport:
+      type: object
+      additionalProperties: false
+      required: [execution_id, task_state, steps]
+      properties:
+        execution_id: {$ref: "https://strange.company/contracts/mcp-surface/v1alpha1#/$defs/ExecutionId"}
+        task_state: {$ref: "https://strange.company/contracts/mcp-surface/v1alpha1#/$defs/TaskState"}
+        steps:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [step, status]
+            properties:
+              step: {type: string, enum: [revoke_gateway_token, revoke_task_token, delete_deploy_key, capture_logs, capture_pod_spec, capture_ref_snapshot, quarantine_refs, delete_foreign_tags, delete_job, delete_secret, raise_alert]}
+              status: {type: string, enum: [done, already_done, failed, skipped]}
+              detail: {type: string, maxLength: 500}
+        evidence_prefix:
+          description: Object-storage prefix holding preserved evidence, e.g. s3://<prefix>-evidence/quarantine/sc-184-x3/.
+          type: string
+    EmergencyStopLevel:
+      description: Levels as defined by plan 33 / ADR-0452. A dispatch-only pause is not a level; it is the Runner config `runner.dispatchPaused`.
+      type: string
+      enum: [none, workers, all]
+    EmergencyStopState:
+      type: object
+      additionalProperties: false
+      required: [level, effective_level, sources, set_at, set_by, runner_applied, dispatch_paused]
+      properties:
+        level:
+          description: The DB source level (last `ledger.emergency_stop_events` row).
+          $ref: "#/components/schemas/EmergencyStopLevel"
+        effective_level:
+          description: max(db, git, k8s, degraded) as computed by the Runner (ADR-0452).
+          $ref: "#/components/schemas/EmergencyStopLevel"
+        sources:
+          type: object
+          additionalProperties: false
+          required: [db, git, k8s, degraded]
+          properties:
+            db: {$ref: "#/components/schemas/EmergencyStopLevel"}
+            git: {$ref: "#/components/schemas/EmergencyStopLevel"}
+            k8s:
+              type: object
+              additionalProperties: false
+              required: [level]
+              properties:
+                level: {$ref: "#/components/schemas/EmergencyStopLevel"}
+                last_read_ok_at: {type: [string, "null"], format: date-time}
+            degraded:
+              description: True when the Kubernetes source has not been read for 60 s (counts as `workers`).
+              type: boolean
+        set_at: {type: string, format: date-time}
+        set_by: {type: string, pattern: "^(runner|migration|human:[A-Za-z0-9_.-]{1,64}|breakglass:runner-admin|budget:[a-z0-9_:-]{1,80})$"}
+        reason: {type: string, maxLength: 1000}
+        runner_applied:
+          description: The Runner halted dispatch and cancelled executions for the effective level.
+          type: boolean
+        gateway_effective_level:
+          description: Effective level reported by the Gateway status endpoint (`GET :9090/sc/v1/status`); null if unreachable.
+          oneOf:
+            - $ref: "#/components/schemas/EmergencyStopLevel"
+            - type: "null"
+        dispatch_paused:
+          description: Value of the Runner config `runner.dispatchPaused` (dispatch-only pause, ADR-0554).
+          type: boolean
+    PolicyStatus:
+      type: object
+      additionalProperties: false
+      required: [status, revision, loaded_at, files]
+      properties:
+        status:
+          description: "`ok`: current revision loaded; `degraded`: newest revision invalid, last-known-good in force and dispatch disabled; `unavailable`: no valid revision ever loaded."
+          type: string
+          enum: [ok, degraded, unavailable]
+        revision: {type: string, pattern: "^sha256:[a-f0-9]{64}$"}
+        commit:
+          oneOf:
+            - {type: string, pattern: "^[a-f0-9]{40}$"}
+            - {type: "null"}
+        loaded_at: {type: string, format: date-time}
+        last_error: {type: string, maxLength: 4000}
+        rejected_revision: {type: string, pattern: "^sha256:[a-f0-9]{64}$"}
+        files:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [path, kind, digest]
+            properties:
+              path: {type: string}
+              kind: {type: string}
+              digest: {type: string, pattern: "^sha256:[a-f0-9]{64}$"}
+    AdminCredential:
+      type: object
+      additionalProperties: false
+      required: [kid, actor, kind, created_at]
+      properties:
+        kid: {type: string, pattern: "^[a-z2-7]{12}$"}
+        actor: {type: string, pattern: "^(human:[A-Za-z0-9_.-]{1,64}|breakglass:runner-admin)$"}
+        kind: {type: string, enum: [operator, breakglass]}
+        created_at: {type: string, format: date-time}
+        expires_at: {type: [string, "null"], format: date-time}
+        revoked_at: {type: [string, "null"], format: date-time}
+    HermesCredentialState:
+      type: object
+      additionalProperties: false
+      required: [hermes_disabled, changed_at, changed_by]
+      properties:
+        hermes_disabled: {type: boolean}
+        changed_at: {type: string, format: date-time}
+        changed_by: {type: string, pattern: "^(human:[A-Za-z0-9_.-]{1,64}|breakglass:runner-admin)$"}
+        managed_revision: {type: [string, "null"], pattern: "^sha256:[a-f0-9]{64}$"}
+    VerificationIntent:
+      description: Verification intent (ADR-0302). Expires 15 minutes after creation.
+      type: object
+      additionalProperties: false
+      required: [intent_id, task_id, execution_id, phase, subject, target_branch, base_sha, expected_sha, nonce, expires_at, baseline]
+      properties:
+        intent_id: {type: string, pattern: "^vi_[0-9a-z]{26}$"}
+        task_id: {$ref: "https://strange.company/contracts/mcp-surface/v1alpha1#/$defs/TaskId"}
+        execution_id: {$ref: "https://strange.company/contracts/mcp-surface/v1alpha1#/$defs/ExecutionId"}
+        phase: {type: string, enum: [red, green]}
+        subject:
+          description: What is verified (plan 20 SC_SUBJECT); `judge` for verification-first judge phases.
+          type: string
+          enum: [tests, judge]
+        red_sha:
+          description: The generation's red commit; GREEN only (isolation run and RED replay, plan 22). Null for RED.
+          type: [string, "null"]
+          pattern: "^[a-f0-9]{40}$"
+        protected_tests:
+          description: Protected acceptance tests for GREEN (plan 22 manifest); empty for RED. Injected as SC_PROTECTED_TESTS (≤ 64 KiB).
+          type: array
+          maxItems: 2000
+          items:
+            type: object
+            additionalProperties: false
+            required: [kind, id]
+            properties:
+              kind: {type: string, enum: [change, preservation, other]}
+              id: {type: string, minLength: 1, maxLength: 400}
+        baseline:
+          description: Whether the verifier runs the baseline (base revision) pass (plan 20 SC_BASELINE).
+          type: string
+          enum: [run, skip]
+        target_branch:
+          description: Protected branch the task targets (review TDD-10); sc-ci-config checks that base_sha is an ancestor of this branch's head, not of the default branch.
+          type: string
+          pattern: "^(?!agent/)[A-Za-z0-9._/-]{1,200}$"
+        base_sha: {type: string, pattern: "^[a-f0-9]{40}$"}
+        expected_sha: {type: string, pattern: "^[a-f0-9]{40}$"}
+        nonce: {type: string, pattern: "^[a-f0-9]{32}$"}
+        expires_at: {type: string, format: date-time}
+    ResultReceipt:
+      type: object
+      additionalProperties: false
+      required: [execution_id, received_at, result_digest, replay]
+      properties:
+        execution_id: {$ref: "https://strange.company/contracts/mcp-surface/v1alpha1#/$defs/ExecutionId"}
+        received_at: {type: string, format: date-time}
+        result_digest: {type: string, pattern: "^sha256:[a-f0-9]{64}$"}
+        replay: {type: boolean}
+    Readiness:
+      type: object
+      additionalProperties: false
+      required: [ready, checks]
+      properties:
+        ready: {type: boolean}
+        leader: {type: boolean}
+        checks:
+          type: object
+          additionalProperties: false
+          required: [database, migrations, policy]
+          properties:
+            database: {type: string, enum: [ok, failing]}
+            migrations: {type: string, enum: [ok, pending, failing]}
+            policy: {type: string, enum: [ok, degraded, unavailable]}

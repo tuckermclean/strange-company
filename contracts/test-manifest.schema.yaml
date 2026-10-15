@@ -1,0 +1,305 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://strange.company/contracts/test-manifest/v1alpha1
+title: TestManifest
+description: |
+  The protected acceptance-test manifest of one task generation (SPEC §53, §102, §106;
+  owning plan 22 §14.5). It is created by the **Runner** (never by a worker or by CI) when
+  a generation's RED (or judge validation) is classified valid, from:
+  - Git facts read by the Runner through the Forgejo API (changed paths and blob SHAs of
+    `generation_start_commit..test_commit`);
+  - the classified `red-result` (new and modified test IDs, statuses);
+  - the tester's declared AC mapping (worker-result `role_output.ac_mapping`), normalized to
+    report test IDs;
+  - the merged repository policy at the base commit (test paths, discovery protection).
+
+  It is stored in S3 `evidence/<task>/manifest/g<n>.json`, its digest is recorded on the
+  generation, and it is immutable. A corrected test (approved TEST_SPEC_CONFLICT) produces
+  the next generation's manifest with `supersedes` pointing here; this one is retained.
+
+  Every later check uses it: implementer ingestion (`TEST_TAMPER`), GREEN classification
+  (`tamper_detected`, manifest tests must pass) and merge-time facts (plan 22 §14.9).
+type: object
+additionalProperties: false
+required: [schema_version, kind, task_id, generation, ac_version, created_at, repository, base_commit, generation_start_commit, test_commit, red_evidence_digest, files, tests, ac_mapping, stubs, discovery_protection, test_paths, digest]
+properties:
+  schema_version:
+    const: v1alpha1
+  kind:
+    description: "`test` for test-first generations; `judge` for verification-first judge manifests (files = judge artifact files; tests = judge check IDs)."
+    type: string
+    enum: [test, judge]
+  task_id:
+    type: string
+    pattern: "^sc-[0-9]+$"
+  generation:
+    type: integer
+    minimum: 1
+  ac_version:
+    type: integer
+    minimum: 1
+  created_at:
+    type: string
+    format: date-time
+  repository:
+    type: string
+    pattern: "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+  base_commit:
+    $ref: "#/$defs/GitSha"
+  generation_start_commit:
+    $ref: "#/$defs/GitSha"
+  test_commit:
+    description: The RED-verified commit (or the approved judge commit).
+    $ref: "#/$defs/GitSha"
+  red_evidence_digest:
+    $ref: "#/$defs/Sha256"
+  policy_revision:
+    $ref: "#/$defs/Sha256"
+  files:
+    description: Every path added or modified in base..test_commit that is protected for the implementer. Deleting, renaming or changing any of them later is TEST_TAMPER.
+    type: array
+    minItems: 1
+    maxItems: 500
+    items:
+      type: object
+      additionalProperties: false
+      required: [path, blob_sha, class, change]
+      properties:
+        path: {$ref: "#/$defs/RepoPath"}
+        blob_sha:
+          description: Git blob object id at test_commit (SHA-1 or SHA-256 object format).
+          $ref: "#/$defs/ObjectId"
+        class:
+          type: string
+          enum: [test, fixture, test_infra, judge]
+        change:
+          type: string
+          enum: [added, modified]
+  tests:
+    description: Test IDs protected by this manifest. Each must be discovered, executed, not skipped and passing at GREEN.
+    type: array
+    minItems: 1
+    maxItems: 1000
+    items:
+      type: object
+      additionalProperties: false
+      required: [id, suite, kind, ac_ids, red_status]
+      properties:
+        id: {$ref: "#/$defs/TestId"}
+        suite:
+          type: string
+          pattern: "^[a-z][a-z0-9-]{0,40}$"
+        kind:
+          description: "`new` = absent at base; `modified` = existed and passed at base, its file changed in the red range."
+          type: string
+          enum: [new, modified]
+        ac_ids:
+          description: Empty only for undeclared new tests (still protected).
+          type: array
+          items: {$ref: "#/$defs/AcId"}
+        red_status:
+          type: string
+          enum: [failed_assertion, stub_unimplemented, passed]
+  ac_mapping:
+    type: array
+    minItems: 1
+    maxItems: 50
+    items:
+      type: object
+      additionalProperties: false
+      required: [ac_id, kind, tests]
+      properties:
+        ac_id: {$ref: "#/$defs/AcId"}
+        kind: {type: string, enum: [change, preservation]}
+        tests:
+          type: array
+          minItems: 1
+          items: {$ref: "#/$defs/TestId"}
+  stubs:
+    description: Declared not-implemented stubs added by the tester in non-test source (ADR-0352). The implementer must replace every one; a remaining marker fails GREEN.
+    type: array
+    maxItems: 100
+    items:
+      type: object
+      additionalProperties: false
+      required: [path, symbol, marker, shape, ac_ids]
+      properties:
+        path: {$ref: "#/$defs/RepoPath"}
+        symbol:
+          type: string
+          maxLength: 200
+        marker:
+          description: The exact marker comment text, e.g. `SC-STUB(sc-184 AC-1)`.
+          type: string
+          pattern: "^SC-STUB\\(sc-[0-9]+( AC-[1-9][0-9]{0,2})+\\)$"
+        shape:
+          type: string
+          enum: [zero_value, panic]
+        language:
+          type: string
+          maxLength: 30
+        ac_ids:
+          type: array
+          minItems: 1
+          items: {$ref: "#/$defs/AcId"}
+  discovery_protection:
+    description: Test-discovery configuration snapshot at test_commit (plan 22 §14.6). Whole files must keep their blob (or stay absent); semantic keys must keep their value.
+    type: object
+    additionalProperties: false
+    required: [whole_files, semantic_keys]
+    properties:
+      whole_files:
+        type: array
+        maxItems: 200
+        items:
+          type: object
+          additionalProperties: false
+          required: [path, blob_sha]
+          properties:
+            path: {$ref: "#/$defs/RepoPath"}
+            blob_sha:
+              description: Null when the file is absent (it must stay absent).
+              oneOf: [{$ref: "#/$defs/ObjectId"}, {type: "null"}]
+      semantic_keys:
+        type: array
+        maxItems: 200
+        items:
+          type: object
+          additionalProperties: false
+          required: [path, key, value_sha256]
+          properties:
+            path: {$ref: "#/$defs/RepoPath"}
+            key:
+              description: Dotted key or TOML table path inside a mixed-content file, e.g. `scripts.test` in package.json or `tool.pytest.ini_options` in pyproject.toml.
+              type: string
+              maxLength: 200
+            value_sha256:
+              description: sha256 of the canonical JSON of the key's value; null when the key is absent (it must stay absent).
+              oneOf: [{$ref: "#/$defs/Sha256"}, {type: "null"}]
+  test_paths:
+    description: The merged testPaths, fixturePaths and testInfraPaths globs at the base commit (for audit).
+    type: object
+    additionalProperties: false
+    required: [test, fixture, test_infra]
+    properties:
+      test: {type: array, items: {type: string, maxLength: 200}}
+      fixture: {type: array, items: {type: string, maxLength: 200}}
+      test_infra: {type: array, items: {type: string, maxLength: 200}}
+  supersedes:
+    type: object
+    additionalProperties: false
+    required: [generation, digest, reason]
+    properties:
+      generation: {type: integer, minimum: 1}
+      digest: {$ref: "#/$defs/Sha256"}
+      reason: {type: string, enum: [test_change_approved, strengthened, respec]}
+  digest:
+    description: sha256 of the canonical JSON of this document with `digest` removed.
+    $ref: "#/$defs/Sha256"
+$defs:
+  GitSha: {type: string, pattern: "^[a-f0-9]{40}$"}
+  ObjectId: {type: string, pattern: "^([a-f0-9]{40}|[a-f0-9]{64})$"}
+  Sha256: {type: string, pattern: "^sha256:[a-f0-9]{64}$"}
+  AcId: {type: string, pattern: "^AC-[1-9][0-9]{0,2}$"}
+  RepoPath:
+    type: string
+    pattern: "^(?!/)(?!.*(^|/)\\.\\.(/|$))[A-Za-z0-9._@+/-]{1,400}$"
+  TestId:
+    description: "Normalized test identity `<suite>::<adapter-specific id>` (plan 22 §14.1), e.g. `unit::example.com/x/httpx.TestRedirect307PreservesMethod` or `unit::tests/test_redirect.py::test_307_method`."
+    type: string
+    pattern: "^[a-z][a-z0-9-]{0,40}::[^\\s].{0,498}$"
+examples:
+  - schema_version: v1alpha1
+    kind: test
+    task_id: sc-184
+    generation: 1
+    ac_version: 1
+    created_at: "2026-10-13T12:20:01Z"
+    repository: projects/example
+    base_commit: 0123456789abcdef0123456789abcdef01234567
+    generation_start_commit: 0123456789abcdef0123456789abcdef01234567
+    test_commit: 89abcdef0123456789abcdef0123456789abcdef
+    red_evidence_digest: "sha256:abababababababababababababababababababababababababababababababab"
+    policy_revision: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    files:
+      - {path: internal/httpx/redirect_test.go, blob_sha: 3b18e512dba79e4c8300dd08aeb37f8e728b8dad, class: test, change: added}
+      - {path: internal/httpx/testdata/body.txt, blob_sha: 9daeafb9864cf43055ae93beb0afd6c7d144bfa4, class: fixture, change: added}
+    tests:
+      - {id: "unit::example.com/x/internal/httpx.TestRedirect307PreservesMethod", suite: unit, kind: new, ac_ids: [AC-1], red_status: failed_assertion}
+      - {id: "unit::example.com/x/internal/httpx.TestRedirect307PreservesBody", suite: unit, kind: new, ac_ids: [AC-2], red_status: stub_unimplemented}
+      - {id: "unit::example.com/x/internal/httpx.TestRedirect302Unchanged", suite: unit, kind: new, ac_ids: [AC-3], red_status: passed}
+    ac_mapping:
+      - {ac_id: AC-1, kind: change, tests: ["unit::example.com/x/internal/httpx.TestRedirect307PreservesMethod"]}
+      - {ac_id: AC-2, kind: change, tests: ["unit::example.com/x/internal/httpx.TestRedirect307PreservesBody"]}
+      - {ac_id: AC-3, kind: preservation, tests: ["unit::example.com/x/internal/httpx.TestRedirect302Unchanged"]}
+    stubs:
+      - {path: internal/httpx/body.go, symbol: replayBody, marker: "SC-STUB(sc-184 AC-2)", shape: zero_value, language: go, ac_ids: [AC-2]}
+    discovery_protection:
+      whole_files:
+        - {path: .golangci.yaml, blob_sha: 1f2e3d4c5b6a79881f2e3d4c5b6a79881f2e3d4c}
+      semantic_keys: []
+    test_paths:
+      test: ["**/*_test.go"]
+      fixture: ["**/testdata/**"]
+      test_infra: ["internal/testutil/**"]
+    digest: "sha256:efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef"
+x-invalid-examples:
+  - reason: A manifest without any protected file.
+    value:
+      schema_version: v1alpha1
+      kind: test
+      task_id: sc-1
+      generation: 1
+      ac_version: 1
+      created_at: "2026-10-13T12:20:01Z"
+      repository: a/b
+      base_commit: 0123456789abcdef0123456789abcdef01234567
+      generation_start_commit: 0123456789abcdef0123456789abcdef01234567
+      test_commit: 89abcdef0123456789abcdef0123456789abcdef
+      red_evidence_digest: "sha256:abababababababababababababababababababababababababababababababab"
+      files: []
+      tests: [{id: "unit::a.TestX", suite: unit, kind: new, ac_ids: [AC-1], red_status: failed_assertion}]
+      ac_mapping: [{ac_id: AC-1, kind: change, tests: ["unit::a.TestX"]}]
+      stubs: []
+      discovery_protection: {whole_files: [], semantic_keys: []}
+      test_paths: {test: ["**/*_test.go"], fixture: [], test_infra: []}
+      digest: "sha256:efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef"
+  - reason: A protected test whose RED status was an error (errors are never valid RED evidence).
+    value:
+      schema_version: v1alpha1
+      kind: test
+      task_id: sc-1
+      generation: 1
+      ac_version: 1
+      created_at: "2026-10-13T12:20:01Z"
+      repository: a/b
+      base_commit: 0123456789abcdef0123456789abcdef01234567
+      generation_start_commit: 0123456789abcdef0123456789abcdef01234567
+      test_commit: 89abcdef0123456789abcdef0123456789abcdef
+      red_evidence_digest: "sha256:abababababababababababababababababababababababababababababababab"
+      files: [{path: a_test.go, blob_sha: 3b18e512dba79e4c8300dd08aeb37f8e728b8dad, class: test, change: added}]
+      tests: [{id: "unit::a.TestX", suite: unit, kind: new, ac_ids: [AC-1], red_status: failed_error}]
+      ac_mapping: [{ac_id: AC-1, kind: change, tests: ["unit::a.TestX"]}]
+      stubs: []
+      discovery_protection: {whole_files: [], semantic_keys: []}
+      test_paths: {test: ["**/*_test.go"], fixture: [], test_infra: []}
+      digest: "sha256:efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef"
+  - reason: A stub without the required SC-STUB marker format.
+    value:
+      schema_version: v1alpha1
+      kind: test
+      task_id: sc-1
+      generation: 1
+      ac_version: 1
+      created_at: "2026-10-13T12:20:01Z"
+      repository: a/b
+      base_commit: 0123456789abcdef0123456789abcdef01234567
+      generation_start_commit: 0123456789abcdef0123456789abcdef01234567
+      test_commit: 89abcdef0123456789abcdef0123456789abcdef
+      red_evidence_digest: "sha256:abababababababababababababababababababababababababababababababab"
+      files: [{path: a_test.go, blob_sha: 3b18e512dba79e4c8300dd08aeb37f8e728b8dad, class: test, change: added}]
+      tests: [{id: "unit::a.TestX", suite: unit, kind: new, ac_ids: [AC-1], red_status: failed_assertion}]
+      ac_mapping: [{ac_id: AC-1, kind: change, tests: ["unit::a.TestX"]}]
+      stubs: [{path: a.go, symbol: X, marker: "TODO implement", shape: zero_value, ac_ids: [AC-1]}]
+      discovery_protection: {whole_files: [], semantic_keys: []}
+      test_paths: {test: ["**/*_test.go"], fixture: [], test_infra: []}
+      digest: "sha256:efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef"

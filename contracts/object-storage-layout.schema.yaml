@@ -1,0 +1,1658 @@
+# Contract owned by plan 14: the schema of infra/objstore/buckets.yaml (ObjectStorageLayout). Validated by F02.
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://strange.company/contracts/object-storage-layout/v1alpha1
+title: ObjectStorageLayout
+description: 'Authoritative object-storage bucket set (plan 14 §9.1, ADR-0204) as stored in `infra/objstore/buckets.yaml`. Consumed by the OpenTofu storage module
+  (bucket creation, versioning, Object Lock, lifecycle), by `sc-bootstrap` (capability suite, credential minting), by F11 `retention-consistency` (against plan 43)
+  and, rendered into ConfigMap `dr-tests/objstore-expected`, by the daily `objstore-audit`. Bucket names are `<S3_BUCKET_PREFIX>-<purpose>`. Config manifest: camelCase
+  fields.'
+type: object
+additionalProperties: false
+required: [apiVersion, kind, metadata, spec]
+properties:
+  apiVersion: {const: strange.company/v1alpha1}
+  kind: {const: ObjectStorageLayout}
+  metadata:
+    type: object
+    additionalProperties: false
+    required: [name]
+    properties:
+      name: {type: string, pattern: '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$'}
+  spec:
+    type: object
+    additionalProperties: false
+    required: [defaults, buckets]
+    properties:
+      defaults:
+        type: object
+        additionalProperties: false
+        required: [versioning, blockPublicAccess, abortIncompleteMultipartDays]
+        properties:
+          versioning: {description: '14-R-1: every bucket is versioned.', const: Enabled}
+          blockPublicAccess: {const: true}
+          abortIncompleteMultipartDays: {type: integer, minimum: 1, maximum: 30}
+          serverSideEncryption:
+            enum: [provider-default, AES256]
+            default: provider-default
+      buckets:
+        description: Keyed by purpose. All ten purposes are required (the authoritative set) and no others are allowed.
+        type: object
+        additionalProperties: false
+        required: [tofu-state, recovery, bootstrap-seed, pg-backups, longhorn-backups, etcd-snapshots, forgejo-objects, repo-backups, evidence, telemetry]
+        properties:
+          tofu-state: {$ref: '#/$defs/bucket'}
+          recovery: {$ref: '#/$defs/bucket'}
+          bootstrap-seed: {$ref: '#/$defs/bucket'}
+          pg-backups: {$ref: '#/$defs/bucket'}
+          longhorn-backups: {$ref: '#/$defs/bucket'}
+          etcd-snapshots: {$ref: '#/$defs/bucket'}
+          forgejo-objects: {$ref: '#/$defs/bucket'}
+          repo-backups: {$ref: '#/$defs/bucket'}
+          evidence: {$ref: '#/$defs/bucket'}
+          telemetry: {$ref: '#/$defs/bucket'}
+$defs:
+  bucket:
+    type: object
+    additionalProperties: false
+    required: [description, systemOfRecord, backupStream, sharedModeProtection, inClusterWriters, offClusterWriters, readers, objectLock, lifecycle]
+    properties:
+      description: {type: string, minLength: 3, maxLength: 300}
+      systemOfRecord: {description: true if this bucket holds the authoritative copy of some register item (plan 11)., type: boolean}
+      backupStream: {description: true for buckets written by in-cluster credentials that hold backups; subject to 14-R-2 protection levels., type: boolean}
+      sharedModeProtection:
+        description: 'How the bucket is protected when the cluster holds the account key (shared mode, 14-R-2a): compliance-lock (Object Lock COMPLIANCE), separate-account
+          (bucket lives in the state account), none-accepted (reconstructible or best-effort data only).'
+        enum: [compliance-lock, separate-account, none-accepted]
+      inClusterWriters:
+        type: array
+        items:
+          type: string
+          enum: [admin, tofu-state, tofu-state-ro, recovery, recovery-reader, seed-write, seed-read, pg-backups-forgejo-pg, pg-backups-authentik-pg, pg-backups-woodpecker-pg,
+            pg-backups-sc-pg, longhorn-backups, etcd-snapshots, forgejo-objects, repo-backups, evidence, telemetry-debug, dr-tests-results, dr-tests-reader, objstore-audit,
+            telemetry, drill-reader, capsule-writer]
+        uniqueItems: true
+      offClusterWriters:
+        type: array
+        items:
+          type: string
+          enum: [admin, tofu-state, tofu-state-ro, recovery, recovery-reader, seed-write, seed-read, pg-backups-forgejo-pg, pg-backups-authentik-pg, pg-backups-woodpecker-pg,
+            pg-backups-sc-pg, longhorn-backups, etcd-snapshots, forgejo-objects, repo-backups, evidence, telemetry-debug, dr-tests-results, dr-tests-reader, objstore-audit,
+            telemetry, drill-reader, capsule-writer]
+        uniqueItems: true
+      readers:
+        type: array
+        items:
+          type: string
+          enum: [admin, tofu-state, tofu-state-ro, recovery, recovery-reader, seed-write, seed-read, pg-backups-forgejo-pg, pg-backups-authentik-pg, pg-backups-woodpecker-pg,
+            pg-backups-sc-pg, longhorn-backups, etcd-snapshots, forgejo-objects, repo-backups, evidence, telemetry-debug, dr-tests-results, dr-tests-reader, objstore-audit,
+            telemetry, drill-reader, capsule-writer]
+        uniqueItems: true
+      objectLock: {$ref: '#/$defs/objectLock'}
+      lifecycle:
+        type: array
+        minItems: 1
+        items: {$ref: '#/$defs/lifecycleRule'}
+    allOf:
+    - if:
+        properties:
+          backupStream: {const: true}
+      then:
+        properties:
+          inClusterWriters: {minItems: 1}
+          objectLock:
+            properties:
+              enabled: {const: true}
+    - description: Systems of record must be protected in shared mode (STO-2).
+      if:
+        properties:
+          systemOfRecord: {const: true}
+      then:
+        properties:
+          sharedModeProtection:
+            enum: [compliance-lock, separate-account]
+    - description: compliance-lock needs a lock in shared mode.
+      if:
+        properties:
+          sharedModeProtection: {const: compliance-lock}
+      then:
+        properties:
+          objectLock:
+            anyOf:
+            - properties:
+                enabled: {const: true}
+              required: [enabled]
+            - properties:
+                enabledInSharedMode: {const: true}
+              required: [enabledInSharedMode]
+    - description: Every bucket keeps a noncurrent-version rule (bounded history, plan 43).
+      properties:
+        lifecycle:
+          contains:
+            required: [noncurrentDays]
+            not:
+              required: [prefix]
+    - description: In-cluster writers never include operator-only instances.
+      properties:
+        inClusterWriters:
+          items:
+            not:
+              enum: [admin, tofu-state, recovery, seed-write, drill-reader]
+  objectLock:
+    type: object
+    additionalProperties: false
+    required: [enabled]
+    properties:
+      enabled: {type: boolean}
+      defaultRetentionDays: {type: integer, minimum: 1, maximum: 3650}
+      modeWhenScoped:
+        enum: [GOVERNANCE, COMPLIANCE]
+        default: GOVERNANCE
+      modeWhenShared: {const: COMPLIANCE, default: COMPLIANCE}
+      enabledInSharedMode: {description: 'Lock only when S3_CREDENTIAL_MODE=shared (14-R-2a), e.g. forgejo-objects, evidence.', type: boolean}
+      sharedModeRetentionDays: {type: integer, minimum: 1, maximum: 3650}
+    if:
+      properties:
+        enabled: {const: true}
+    then:
+      required: [defaultRetentionDays]
+    else:
+      not:
+        anyOf:
+        - required: [defaultRetentionDays]
+        - required: [modeWhenScoped]
+        - required: [modeWhenShared]
+    dependentRequired:
+      enabledInSharedMode: [sharedModeRetentionDays]
+      sharedModeRetentionDays: [enabledInSharedMode]
+  lifecycleRule:
+    type: object
+    additionalProperties: false
+    required: [id]
+    properties:
+      id: {type: string, pattern: '^[a-z][a-z0-9-]{0,62}$'}
+      prefix: {description: 'Key prefix filter (literal S3 prefix); absent = whole bucket. `{cluster}` is replaced by the cluster name at render time. Usually ends
+          with ''/''; a partial last segment (e.g. `{cluster}/capsule/2`, matching capsule ids that start with the year but not `LATEST.json`) is allowed.', type: string,
+        pattern: '^([A-Za-z0-9._*{}-]+/)+[A-Za-z0-9._*{}-]*$'}
+      currentDays: {description: Expire current versions after N days (creates a delete marker on versioned buckets)., type: integer, minimum: 1, maximum: 3650}
+      noncurrentDays: {description: Permanently delete noncurrent versions N days after they became noncurrent., type: integer, minimum: 1, maximum: 3650}
+      newerNoncurrentVersions: {description: Keep at least this many newest noncurrent versions per key (provider support tested by OC-06)., type: integer, minimum: 1,
+        maximum: 1000}
+      retentionRef: {description: Plan 43 register row this rule enforces (F11 retention-consistency)., type: string, pattern: '^R-[0-9]{2}[a-z]?$'}
+    anyOf:
+    - required: [currentDays]
+    - required: [noncurrentDays]
+examples:
+- apiVersion: strange.company/v1alpha1
+  kind: ObjectStorageLayout
+  metadata: {name: strange-company}
+  spec:
+    defaults: {versioning: Enabled, blockPublicAccess: true, abortIncompleteMultipartDays: 7, serverSideEncryption: provider-default}
+    buckets:
+      tofu-state:
+        description: OpenTofu state, bootstrap journal, run logs, off-cluster restore-test results
+        systemOfRecord: true
+        backupStream: false
+        sharedModeProtection: separate-account
+        inClusterWriters: []
+        offClusterWriters: [admin, tofu-state]
+        readers: [tofu-state-ro, objstore-audit]
+        objectLock: {enabled: false}
+        lifecycle:
+        - {id: noncurrent, noncurrentDays: 365, newerNoncurrentVersions: 100, retentionRef: R-29}
+        - {id: runs, prefix: '{cluster}/runs/', currentDays: 180, retentionRef: R-29}
+        - {id: conformance, prefix: '{cluster}/conformance/', currentDays: 1, noncurrentDays: 1, retentionRef: R-29}
+      recovery:
+        description: Passphrase-encrypted recovery bundles, manifests, attestations; bootstrap capsule (CD-33, 35-day per-object retention set by capsule-writer)
+        systemOfRecord: true
+        backupStream: false
+        sharedModeProtection: separate-account
+        inClusterWriters: [capsule-writer]
+        offClusterWriters: [recovery]
+        readers: [recovery-reader, objstore-audit]
+        objectLock: {enabled: true, defaultRetentionDays: 365, modeWhenScoped: GOVERNANCE, modeWhenShared: COMPLIANCE}
+        lifecycle:
+        - {id: capsule-expiry, prefix: '{cluster}/capsule/2', currentDays: 100, noncurrentDays: 1, retentionRef: R-47}
+        - {id: noncurrent, noncurrentDays: 3650, retentionRef: R-32}
+      bootstrap-seed:
+        description: Seed snapshots and control-transfer reports
+        systemOfRecord: false
+        backupStream: false
+        sharedModeProtection: none-accepted
+        inClusterWriters: []
+        offClusterWriters: [seed-write]
+        readers: [seed-read, objstore-audit]
+        objectLock: {enabled: false}
+        lifecycle:
+        - {id: noncurrent, noncurrentDays: 30, retentionRef: R-31}
+      pg-backups:
+        description: CNPG base backups and WAL for all four clusters
+        systemOfRecord: true
+        backupStream: true
+        sharedModeProtection: compliance-lock
+        inClusterWriters: [pg-backups-forgejo-pg, pg-backups-authentik-pg, pg-backups-woodpecker-pg, pg-backups-sc-pg]
+        offClusterWriters: []
+        readers: [dr-tests-reader, drill-reader, objstore-audit]
+        objectLock: {enabled: true, defaultRetentionDays: 14}
+        lifecycle:
+        - {id: noncurrent, noncurrentDays: 14, retentionRef: R-14}
+      longhorn-backups:
+        description: Longhorn backup target
+        systemOfRecord: true
+        backupStream: true
+        sharedModeProtection: compliance-lock
+        inClusterWriters: [longhorn-backups]
+        offClusterWriters: []
+        readers: [dr-tests-reader, drill-reader, objstore-audit]
+        objectLock: {enabled: true, defaultRetentionDays: 14}
+        lifecycle:
+        - {id: noncurrent, noncurrentDays: 14, retentionRef: R-13b}
+      etcd-snapshots:
+        description: k3s etcd snapshots (recovery accelerator)
+        systemOfRecord: true
+        backupStream: true
+        sharedModeProtection: compliance-lock
+        inClusterWriters: [etcd-snapshots]
+        offClusterWriters: []
+        readers: [dr-tests-reader, drill-reader, objstore-audit]
+        objectLock: {enabled: true, defaultRetentionDays: 7}
+        lifecycle:
+        - {id: stale-nodes, currentDays: 60, retentionRef: R-16}
+        - {id: noncurrent, noncurrentDays: 30, retentionRef: R-16}
+      forgejo-objects:
+        description: Forgejo LFS, attachments, packages and OCI blobs, avatars, repository archives
+        systemOfRecord: true
+        backupStream: false
+        sharedModeProtection: compliance-lock
+        inClusterWriters: [forgejo-objects]
+        offClusterWriters: []
+        readers: [dr-tests-reader, drill-reader, objstore-audit]
+        objectLock: {enabled: false, enabledInSharedMode: true, sharedModeRetentionDays: 14}
+        lifecycle:
+        - {id: noncurrent, noncurrentDays: 30, retentionRef: R-41}
+      repo-backups:
+        description: Repository bundle chains and metadata exports
+        systemOfRecord: true
+        backupStream: true
+        sharedModeProtection: compliance-lock
+        inClusterWriters: [repo-backups]
+        offClusterWriters: []
+        readers: [dr-tests-reader, drill-reader, objstore-audit]
+        objectLock: {enabled: true, defaultRetentionDays: 14}
+        lifecycle:
+        - {id: weekly, prefix: git/weekly/, currentDays: 56, retentionRef: R-17}
+        - {id: monthly, prefix: git/monthly/, currentDays: 400, retentionRef: R-17}
+        - {id: meta, prefix: meta/, currentDays: 56, retentionRef: R-17}
+        - {id: noncurrent, noncurrentDays: 14, retentionRef: R-17}
+      evidence:
+        description: RED/GREEN evidence, worker logs, results, context packets, restore-test results, canary, telemetry debug captures
+        systemOfRecord: true
+        backupStream: false
+        sharedModeProtection: compliance-lock
+        inClusterWriters: [evidence, dr-tests-results, telemetry-debug]
+        offClusterWriters: []
+        readers: [objstore-audit]
+        objectLock: {enabled: false, enabledInSharedMode: true, sharedModeRetentionDays: 14}
+        lifecycle:
+        - {id: logs, prefix: logs/, currentDays: 90, retentionRef: R-04}
+        - {id: context, prefix: context/, currentDays: 180, retentionRef: R-42}
+        - {id: quarantine, prefix: quarantine/, currentDays: 90, retentionRef: R-43}
+        - {id: restore-tests, prefix: restore-tests/, currentDays: 400, retentionRef: R-12}
+        - {id: canary, prefix: canary/, currentDays: 1, retentionRef: R-44}
+        - {id: checks, prefix: checks/, currentDays: 400, retentionRef: R-12}
+        - {id: telemetry-debug, prefix: telemetry-debug/, currentDays: 7, noncurrentDays: 1, retentionRef: R-45}
+        - {id: noncurrent, noncurrentDays: 30, retentionRef: R-11}
+      telemetry:
+        description: Loki chunks and index, Tempo blocks (small-ha)
+        systemOfRecord: false
+        backupStream: false
+        sharedModeProtection: none-accepted
+        inClusterWriters: [telemetry]
+        offClusterWriters: []
+        readers: [objstore-audit]
+        objectLock: {enabled: false}
+        lifecycle:
+        - {id: loki, prefix: loki/, currentDays: 35, retentionRef: R-02}
+        - {id: tempo, prefix: tempo/, currentDays: 21, retentionRef: R-03}
+        - {id: noncurrent, noncurrentDays: 1, retentionRef: R-02}
+x-invalid-examples:
+- reason: The authoritative set requires all ten buckets; `telemetry` is missing.
+  value:
+    apiVersion: strange.company/v1alpha1
+    kind: ObjectStorageLayout
+    metadata: {name: strange-company}
+    spec:
+      defaults: {versioning: Enabled, blockPublicAccess: true, abortIncompleteMultipartDays: 7, serverSideEncryption: provider-default}
+      buckets:
+        tofu-state:
+          description: OpenTofu state, bootstrap journal, run logs, off-cluster restore-test results
+          systemOfRecord: true
+          backupStream: false
+          sharedModeProtection: separate-account
+          inClusterWriters: []
+          offClusterWriters: [admin, tofu-state]
+          readers: [tofu-state-ro, objstore-audit]
+          objectLock: {enabled: false}
+          lifecycle:
+          - {id: noncurrent, noncurrentDays: 365, newerNoncurrentVersions: 100, retentionRef: R-29}
+          - {id: runs, prefix: '{cluster}/runs/', currentDays: 180, retentionRef: R-29}
+          - {id: conformance, prefix: '{cluster}/conformance/', currentDays: 1, noncurrentDays: 1, retentionRef: R-29}
+        recovery:
+          description: Passphrase-encrypted recovery bundles, manifests, attestations; bootstrap capsule (CD-33, 35-day per-object retention set by capsule-writer)
+          systemOfRecord: true
+          backupStream: false
+          sharedModeProtection: separate-account
+          inClusterWriters: [capsule-writer]
+          offClusterWriters: [recovery]
+          readers: [recovery-reader, objstore-audit]
+          objectLock: {enabled: true, defaultRetentionDays: 365, modeWhenScoped: GOVERNANCE, modeWhenShared: COMPLIANCE}
+          lifecycle:
+          - {id: capsule-expiry, prefix: '{cluster}/capsule/2', currentDays: 100, noncurrentDays: 1, retentionRef: R-47}
+          - {id: noncurrent, noncurrentDays: 3650, retentionRef: R-32}
+        bootstrap-seed:
+          description: Seed snapshots and control-transfer reports
+          systemOfRecord: false
+          backupStream: false
+          sharedModeProtection: none-accepted
+          inClusterWriters: []
+          offClusterWriters: [seed-write]
+          readers: [seed-read, objstore-audit]
+          objectLock: {enabled: false}
+          lifecycle:
+          - {id: noncurrent, noncurrentDays: 30, retentionRef: R-31}
+        pg-backups:
+          description: CNPG base backups and WAL for all four clusters
+          systemOfRecord: true
+          backupStream: true
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [pg-backups-forgejo-pg, pg-backups-authentik-pg, pg-backups-woodpecker-pg, pg-backups-sc-pg]
+          offClusterWriters: []
+          readers: [dr-tests-reader, drill-reader, objstore-audit]
+          objectLock: {enabled: true, defaultRetentionDays: 14}
+          lifecycle:
+          - {id: noncurrent, noncurrentDays: 14, retentionRef: R-14}
+        longhorn-backups:
+          description: Longhorn backup target
+          systemOfRecord: true
+          backupStream: true
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [longhorn-backups]
+          offClusterWriters: []
+          readers: [dr-tests-reader, drill-reader, objstore-audit]
+          objectLock: {enabled: true, defaultRetentionDays: 14}
+          lifecycle:
+          - {id: noncurrent, noncurrentDays: 14, retentionRef: R-13b}
+        etcd-snapshots:
+          description: k3s etcd snapshots (recovery accelerator)
+          systemOfRecord: true
+          backupStream: true
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [etcd-snapshots]
+          offClusterWriters: []
+          readers: [dr-tests-reader, drill-reader, objstore-audit]
+          objectLock: {enabled: true, defaultRetentionDays: 7}
+          lifecycle:
+          - {id: stale-nodes, currentDays: 60, retentionRef: R-16}
+          - {id: noncurrent, noncurrentDays: 30, retentionRef: R-16}
+        forgejo-objects:
+          description: Forgejo LFS, attachments, packages and OCI blobs, avatars, repository archives
+          systemOfRecord: true
+          backupStream: false
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [forgejo-objects]
+          offClusterWriters: []
+          readers: [dr-tests-reader, drill-reader, objstore-audit]
+          objectLock: {enabled: false, enabledInSharedMode: true, sharedModeRetentionDays: 14}
+          lifecycle:
+          - {id: noncurrent, noncurrentDays: 30, retentionRef: R-41}
+        repo-backups:
+          description: Repository bundle chains and metadata exports
+          systemOfRecord: true
+          backupStream: true
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [repo-backups]
+          offClusterWriters: []
+          readers: [dr-tests-reader, drill-reader, objstore-audit]
+          objectLock: {enabled: true, defaultRetentionDays: 14}
+          lifecycle:
+          - {id: weekly, prefix: git/weekly/, currentDays: 56, retentionRef: R-17}
+          - {id: monthly, prefix: git/monthly/, currentDays: 400, retentionRef: R-17}
+          - {id: meta, prefix: meta/, currentDays: 56, retentionRef: R-17}
+          - {id: noncurrent, noncurrentDays: 14, retentionRef: R-17}
+        evidence:
+          description: RED/GREEN evidence, worker logs, results, context packets, restore-test results, canary, telemetry debug captures
+          systemOfRecord: true
+          backupStream: false
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [evidence, dr-tests-results, telemetry-debug]
+          offClusterWriters: []
+          readers: [objstore-audit]
+          objectLock: {enabled: false, enabledInSharedMode: true, sharedModeRetentionDays: 14}
+          lifecycle:
+          - {id: logs, prefix: logs/, currentDays: 90, retentionRef: R-04}
+          - {id: context, prefix: context/, currentDays: 180, retentionRef: R-42}
+          - {id: quarantine, prefix: quarantine/, currentDays: 90, retentionRef: R-43}
+          - {id: restore-tests, prefix: restore-tests/, currentDays: 400, retentionRef: R-12}
+          - {id: canary, prefix: canary/, currentDays: 1, retentionRef: R-44}
+          - {id: checks, prefix: checks/, currentDays: 400, retentionRef: R-12}
+          - {id: telemetry-debug, prefix: telemetry-debug/, currentDays: 7, noncurrentDays: 1, retentionRef: R-45}
+          - {id: noncurrent, noncurrentDays: 30, retentionRef: R-11}
+- reason: Versioning must be Enabled (14-R-1).
+  value:
+    apiVersion: strange.company/v1alpha1
+    kind: ObjectStorageLayout
+    metadata: {name: strange-company}
+    spec:
+      defaults: {versioning: Suspended, blockPublicAccess: true, abortIncompleteMultipartDays: 7, serverSideEncryption: provider-default}
+      buckets:
+        tofu-state:
+          description: OpenTofu state, bootstrap journal, run logs, off-cluster restore-test results
+          systemOfRecord: true
+          backupStream: false
+          sharedModeProtection: separate-account
+          inClusterWriters: []
+          offClusterWriters: [admin, tofu-state]
+          readers: [tofu-state-ro, objstore-audit]
+          objectLock: {enabled: false}
+          lifecycle:
+          - {id: noncurrent, noncurrentDays: 365, newerNoncurrentVersions: 100, retentionRef: R-29}
+          - {id: runs, prefix: '{cluster}/runs/', currentDays: 180, retentionRef: R-29}
+          - {id: conformance, prefix: '{cluster}/conformance/', currentDays: 1, noncurrentDays: 1, retentionRef: R-29}
+        recovery:
+          description: Passphrase-encrypted recovery bundles, manifests, attestations; bootstrap capsule (CD-33, 35-day per-object retention set by capsule-writer)
+          systemOfRecord: true
+          backupStream: false
+          sharedModeProtection: separate-account
+          inClusterWriters: [capsule-writer]
+          offClusterWriters: [recovery]
+          readers: [recovery-reader, objstore-audit]
+          objectLock: {enabled: true, defaultRetentionDays: 365, modeWhenScoped: GOVERNANCE, modeWhenShared: COMPLIANCE}
+          lifecycle:
+          - {id: capsule-expiry, prefix: '{cluster}/capsule/2', currentDays: 100, noncurrentDays: 1, retentionRef: R-47}
+          - {id: noncurrent, noncurrentDays: 3650, retentionRef: R-32}
+        bootstrap-seed:
+          description: Seed snapshots and control-transfer reports
+          systemOfRecord: false
+          backupStream: false
+          sharedModeProtection: none-accepted
+          inClusterWriters: []
+          offClusterWriters: [seed-write]
+          readers: [seed-read, objstore-audit]
+          objectLock: {enabled: false}
+          lifecycle:
+          - {id: noncurrent, noncurrentDays: 30, retentionRef: R-31}
+        pg-backups:
+          description: CNPG base backups and WAL for all four clusters
+          systemOfRecord: true
+          backupStream: true
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [pg-backups-forgejo-pg, pg-backups-authentik-pg, pg-backups-woodpecker-pg, pg-backups-sc-pg]
+          offClusterWriters: []
+          readers: [dr-tests-reader, drill-reader, objstore-audit]
+          objectLock: {enabled: true, defaultRetentionDays: 14}
+          lifecycle:
+          - {id: noncurrent, noncurrentDays: 14, retentionRef: R-14}
+        longhorn-backups:
+          description: Longhorn backup target
+          systemOfRecord: true
+          backupStream: true
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [longhorn-backups]
+          offClusterWriters: []
+          readers: [dr-tests-reader, drill-reader, objstore-audit]
+          objectLock: {enabled: true, defaultRetentionDays: 14}
+          lifecycle:
+          - {id: noncurrent, noncurrentDays: 14, retentionRef: R-13b}
+        etcd-snapshots:
+          description: k3s etcd snapshots (recovery accelerator)
+          systemOfRecord: true
+          backupStream: true
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [etcd-snapshots]
+          offClusterWriters: []
+          readers: [dr-tests-reader, drill-reader, objstore-audit]
+          objectLock: {enabled: true, defaultRetentionDays: 7}
+          lifecycle:
+          - {id: stale-nodes, currentDays: 60, retentionRef: R-16}
+          - {id: noncurrent, noncurrentDays: 30, retentionRef: R-16}
+        forgejo-objects:
+          description: Forgejo LFS, attachments, packages and OCI blobs, avatars, repository archives
+          systemOfRecord: true
+          backupStream: false
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [forgejo-objects]
+          offClusterWriters: []
+          readers: [dr-tests-reader, drill-reader, objstore-audit]
+          objectLock: {enabled: false, enabledInSharedMode: true, sharedModeRetentionDays: 14}
+          lifecycle:
+          - {id: noncurrent, noncurrentDays: 30, retentionRef: R-41}
+        repo-backups:
+          description: Repository bundle chains and metadata exports
+          systemOfRecord: true
+          backupStream: true
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [repo-backups]
+          offClusterWriters: []
+          readers: [dr-tests-reader, drill-reader, objstore-audit]
+          objectLock: {enabled: true, defaultRetentionDays: 14}
+          lifecycle:
+          - {id: weekly, prefix: git/weekly/, currentDays: 56, retentionRef: R-17}
+          - {id: monthly, prefix: git/monthly/, currentDays: 400, retentionRef: R-17}
+          - {id: meta, prefix: meta/, currentDays: 56, retentionRef: R-17}
+          - {id: noncurrent, noncurrentDays: 14, retentionRef: R-17}
+        evidence:
+          description: RED/GREEN evidence, worker logs, results, context packets, restore-test results, canary, telemetry debug captures
+          systemOfRecord: true
+          backupStream: false
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [evidence, dr-tests-results, telemetry-debug]
+          offClusterWriters: []
+          readers: [objstore-audit]
+          objectLock: {enabled: false, enabledInSharedMode: true, sharedModeRetentionDays: 14}
+          lifecycle:
+          - {id: logs, prefix: logs/, currentDays: 90, retentionRef: R-04}
+          - {id: context, prefix: context/, currentDays: 180, retentionRef: R-42}
+          - {id: quarantine, prefix: quarantine/, currentDays: 90, retentionRef: R-43}
+          - {id: restore-tests, prefix: restore-tests/, currentDays: 400, retentionRef: R-12}
+          - {id: canary, prefix: canary/, currentDays: 1, retentionRef: R-44}
+          - {id: checks, prefix: checks/, currentDays: 400, retentionRef: R-12}
+          - {id: telemetry-debug, prefix: telemetry-debug/, currentDays: 7, noncurrentDays: 1, retentionRef: R-45}
+          - {id: noncurrent, noncurrentDays: 30, retentionRef: R-11}
+        telemetry:
+          description: Loki chunks and index, Tempo blocks (small-ha)
+          systemOfRecord: false
+          backupStream: false
+          sharedModeProtection: none-accepted
+          inClusterWriters: [telemetry]
+          offClusterWriters: []
+          readers: [objstore-audit]
+          objectLock: {enabled: false}
+          lifecycle:
+          - {id: loki, prefix: loki/, currentDays: 35, retentionRef: R-02}
+          - {id: tempo, prefix: tempo/, currentDays: 21, retentionRef: R-03}
+          - {id: noncurrent, noncurrentDays: 1, retentionRef: R-02}
+- reason: Unknown bucket purpose (the set is closed).
+  value:
+    apiVersion: strange.company/v1alpha1
+    kind: ObjectStorageLayout
+    metadata: {name: strange-company}
+    spec:
+      defaults: {versioning: Enabled, blockPublicAccess: true, abortIncompleteMultipartDays: 7, serverSideEncryption: provider-default}
+      buckets:
+        tofu-state:
+          description: OpenTofu state, bootstrap journal, run logs, off-cluster restore-test results
+          systemOfRecord: true
+          backupStream: false
+          sharedModeProtection: separate-account
+          inClusterWriters: []
+          offClusterWriters: [admin, tofu-state]
+          readers: [tofu-state-ro, objstore-audit]
+          objectLock: {enabled: false}
+          lifecycle:
+          - {id: noncurrent, noncurrentDays: 365, newerNoncurrentVersions: 100, retentionRef: R-29}
+          - {id: runs, prefix: '{cluster}/runs/', currentDays: 180, retentionRef: R-29}
+          - {id: conformance, prefix: '{cluster}/conformance/', currentDays: 1, noncurrentDays: 1, retentionRef: R-29}
+        recovery:
+          description: Passphrase-encrypted recovery bundles, manifests, attestations; bootstrap capsule (CD-33, 35-day per-object retention set by capsule-writer)
+          systemOfRecord: true
+          backupStream: false
+          sharedModeProtection: separate-account
+          inClusterWriters: [capsule-writer]
+          offClusterWriters: [recovery]
+          readers: [recovery-reader, objstore-audit]
+          objectLock: {enabled: true, defaultRetentionDays: 365, modeWhenScoped: GOVERNANCE, modeWhenShared: COMPLIANCE}
+          lifecycle:
+          - {id: capsule-expiry, prefix: '{cluster}/capsule/2', currentDays: 100, noncurrentDays: 1, retentionRef: R-47}
+          - {id: noncurrent, noncurrentDays: 3650, retentionRef: R-32}
+        bootstrap-seed:
+          description: Seed snapshots and control-transfer reports
+          systemOfRecord: false
+          backupStream: false
+          sharedModeProtection: none-accepted
+          inClusterWriters: []
+          offClusterWriters: [seed-write]
+          readers: [seed-read, objstore-audit]
+          objectLock: {enabled: false}
+          lifecycle:
+          - {id: noncurrent, noncurrentDays: 30, retentionRef: R-31}
+        pg-backups:
+          description: CNPG base backups and WAL for all four clusters
+          systemOfRecord: true
+          backupStream: true
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [pg-backups-forgejo-pg, pg-backups-authentik-pg, pg-backups-woodpecker-pg, pg-backups-sc-pg]
+          offClusterWriters: []
+          readers: [dr-tests-reader, drill-reader, objstore-audit]
+          objectLock: {enabled: true, defaultRetentionDays: 14}
+          lifecycle:
+          - {id: noncurrent, noncurrentDays: 14, retentionRef: R-14}
+        longhorn-backups:
+          description: Longhorn backup target
+          systemOfRecord: true
+          backupStream: true
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [longhorn-backups]
+          offClusterWriters: []
+          readers: [dr-tests-reader, drill-reader, objstore-audit]
+          objectLock: {enabled: true, defaultRetentionDays: 14}
+          lifecycle:
+          - {id: noncurrent, noncurrentDays: 14, retentionRef: R-13b}
+        etcd-snapshots:
+          description: k3s etcd snapshots (recovery accelerator)
+          systemOfRecord: true
+          backupStream: true
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [etcd-snapshots]
+          offClusterWriters: []
+          readers: [dr-tests-reader, drill-reader, objstore-audit]
+          objectLock: {enabled: true, defaultRetentionDays: 7}
+          lifecycle:
+          - {id: stale-nodes, currentDays: 60, retentionRef: R-16}
+          - {id: noncurrent, noncurrentDays: 30, retentionRef: R-16}
+        forgejo-objects:
+          description: Forgejo LFS, attachments, packages and OCI blobs, avatars, repository archives
+          systemOfRecord: true
+          backupStream: false
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [forgejo-objects]
+          offClusterWriters: []
+          readers: [dr-tests-reader, drill-reader, objstore-audit]
+          objectLock: {enabled: false, enabledInSharedMode: true, sharedModeRetentionDays: 14}
+          lifecycle:
+          - {id: noncurrent, noncurrentDays: 30, retentionRef: R-41}
+        repo-backups:
+          description: Repository bundle chains and metadata exports
+          systemOfRecord: true
+          backupStream: true
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [repo-backups]
+          offClusterWriters: []
+          readers: [dr-tests-reader, drill-reader, objstore-audit]
+          objectLock: {enabled: true, defaultRetentionDays: 14}
+          lifecycle:
+          - {id: weekly, prefix: git/weekly/, currentDays: 56, retentionRef: R-17}
+          - {id: monthly, prefix: git/monthly/, currentDays: 400, retentionRef: R-17}
+          - {id: meta, prefix: meta/, currentDays: 56, retentionRef: R-17}
+          - {id: noncurrent, noncurrentDays: 14, retentionRef: R-17}
+        evidence:
+          description: RED/GREEN evidence, worker logs, results, context packets, restore-test results, canary, telemetry debug captures
+          systemOfRecord: true
+          backupStream: false
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [evidence, dr-tests-results, telemetry-debug]
+          offClusterWriters: []
+          readers: [objstore-audit]
+          objectLock: {enabled: false, enabledInSharedMode: true, sharedModeRetentionDays: 14}
+          lifecycle:
+          - {id: logs, prefix: logs/, currentDays: 90, retentionRef: R-04}
+          - {id: context, prefix: context/, currentDays: 180, retentionRef: R-42}
+          - {id: quarantine, prefix: quarantine/, currentDays: 90, retentionRef: R-43}
+          - {id: restore-tests, prefix: restore-tests/, currentDays: 400, retentionRef: R-12}
+          - {id: canary, prefix: canary/, currentDays: 1, retentionRef: R-44}
+          - {id: checks, prefix: checks/, currentDays: 400, retentionRef: R-12}
+          - {id: telemetry-debug, prefix: telemetry-debug/, currentDays: 7, noncurrentDays: 1, retentionRef: R-45}
+          - {id: noncurrent, noncurrentDays: 30, retentionRef: R-11}
+        telemetry:
+          description: Loki chunks and index, Tempo blocks (small-ha)
+          systemOfRecord: false
+          backupStream: false
+          sharedModeProtection: none-accepted
+          inClusterWriters: [telemetry]
+          offClusterWriters: []
+          readers: [objstore-audit]
+          objectLock: {enabled: false}
+          lifecycle:
+          - {id: loki, prefix: loki/, currentDays: 35, retentionRef: R-02}
+          - {id: tempo, prefix: tempo/, currentDays: 21, retentionRef: R-03}
+          - {id: noncurrent, noncurrentDays: 1, retentionRef: R-02}
+        scratch:
+          description: Loki chunks and index, Tempo blocks (small-ha)
+          systemOfRecord: false
+          backupStream: false
+          sharedModeProtection: none-accepted
+          inClusterWriters: [telemetry]
+          offClusterWriters: []
+          readers: [objstore-audit]
+          objectLock: {enabled: false}
+          lifecycle:
+          - {id: loki, prefix: loki/, currentDays: 35, retentionRef: R-02}
+          - {id: tempo, prefix: tempo/, currentDays: 21, retentionRef: R-03}
+          - {id: noncurrent, noncurrentDays: 1, retentionRef: R-02}
+- reason: A backup-stream bucket must have Object Lock enabled in the layout (protection decided per provider by OC-16).
+  value:
+    apiVersion: strange.company/v1alpha1
+    kind: ObjectStorageLayout
+    metadata: {name: strange-company}
+    spec:
+      defaults: {versioning: Enabled, blockPublicAccess: true, abortIncompleteMultipartDays: 7, serverSideEncryption: provider-default}
+      buckets:
+        tofu-state:
+          description: OpenTofu state, bootstrap journal, run logs, off-cluster restore-test results
+          systemOfRecord: true
+          backupStream: false
+          sharedModeProtection: separate-account
+          inClusterWriters: []
+          offClusterWriters: [admin, tofu-state]
+          readers: [tofu-state-ro, objstore-audit]
+          objectLock: {enabled: false}
+          lifecycle:
+          - {id: noncurrent, noncurrentDays: 365, newerNoncurrentVersions: 100, retentionRef: R-29}
+          - {id: runs, prefix: '{cluster}/runs/', currentDays: 180, retentionRef: R-29}
+          - {id: conformance, prefix: '{cluster}/conformance/', currentDays: 1, noncurrentDays: 1, retentionRef: R-29}
+        recovery:
+          description: Passphrase-encrypted recovery bundles, manifests, attestations; bootstrap capsule (CD-33, 35-day per-object retention set by capsule-writer)
+          systemOfRecord: true
+          backupStream: false
+          sharedModeProtection: separate-account
+          inClusterWriters: [capsule-writer]
+          offClusterWriters: [recovery]
+          readers: [recovery-reader, objstore-audit]
+          objectLock: {enabled: true, defaultRetentionDays: 365, modeWhenScoped: GOVERNANCE, modeWhenShared: COMPLIANCE}
+          lifecycle:
+          - {id: capsule-expiry, prefix: '{cluster}/capsule/2', currentDays: 100, noncurrentDays: 1, retentionRef: R-47}
+          - {id: noncurrent, noncurrentDays: 3650, retentionRef: R-32}
+        bootstrap-seed:
+          description: Seed snapshots and control-transfer reports
+          systemOfRecord: false
+          backupStream: false
+          sharedModeProtection: none-accepted
+          inClusterWriters: []
+          offClusterWriters: [seed-write]
+          readers: [seed-read, objstore-audit]
+          objectLock: {enabled: false}
+          lifecycle:
+          - {id: noncurrent, noncurrentDays: 30, retentionRef: R-31}
+        pg-backups:
+          description: CNPG base backups and WAL for all four clusters
+          systemOfRecord: true
+          backupStream: true
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [pg-backups-forgejo-pg, pg-backups-authentik-pg, pg-backups-woodpecker-pg, pg-backups-sc-pg]
+          offClusterWriters: []
+          readers: [dr-tests-reader, drill-reader, objstore-audit]
+          objectLock: {enabled: false}
+          lifecycle:
+          - {id: noncurrent, noncurrentDays: 14, retentionRef: R-14}
+        longhorn-backups:
+          description: Longhorn backup target
+          systemOfRecord: true
+          backupStream: true
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [longhorn-backups]
+          offClusterWriters: []
+          readers: [dr-tests-reader, drill-reader, objstore-audit]
+          objectLock: {enabled: true, defaultRetentionDays: 14}
+          lifecycle:
+          - {id: noncurrent, noncurrentDays: 14, retentionRef: R-13b}
+        etcd-snapshots:
+          description: k3s etcd snapshots (recovery accelerator)
+          systemOfRecord: true
+          backupStream: true
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [etcd-snapshots]
+          offClusterWriters: []
+          readers: [dr-tests-reader, drill-reader, objstore-audit]
+          objectLock: {enabled: true, defaultRetentionDays: 7}
+          lifecycle:
+          - {id: stale-nodes, currentDays: 60, retentionRef: R-16}
+          - {id: noncurrent, noncurrentDays: 30, retentionRef: R-16}
+        forgejo-objects:
+          description: Forgejo LFS, attachments, packages and OCI blobs, avatars, repository archives
+          systemOfRecord: true
+          backupStream: false
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [forgejo-objects]
+          offClusterWriters: []
+          readers: [dr-tests-reader, drill-reader, objstore-audit]
+          objectLock: {enabled: false, enabledInSharedMode: true, sharedModeRetentionDays: 14}
+          lifecycle:
+          - {id: noncurrent, noncurrentDays: 30, retentionRef: R-41}
+        repo-backups:
+          description: Repository bundle chains and metadata exports
+          systemOfRecord: true
+          backupStream: true
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [repo-backups]
+          offClusterWriters: []
+          readers: [dr-tests-reader, drill-reader, objstore-audit]
+          objectLock: {enabled: true, defaultRetentionDays: 14}
+          lifecycle:
+          - {id: weekly, prefix: git/weekly/, currentDays: 56, retentionRef: R-17}
+          - {id: monthly, prefix: git/monthly/, currentDays: 400, retentionRef: R-17}
+          - {id: meta, prefix: meta/, currentDays: 56, retentionRef: R-17}
+          - {id: noncurrent, noncurrentDays: 14, retentionRef: R-17}
+        evidence:
+          description: RED/GREEN evidence, worker logs, results, context packets, restore-test results, canary, telemetry debug captures
+          systemOfRecord: true
+          backupStream: false
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [evidence, dr-tests-results, telemetry-debug]
+          offClusterWriters: []
+          readers: [objstore-audit]
+          objectLock: {enabled: false, enabledInSharedMode: true, sharedModeRetentionDays: 14}
+          lifecycle:
+          - {id: logs, prefix: logs/, currentDays: 90, retentionRef: R-04}
+          - {id: context, prefix: context/, currentDays: 180, retentionRef: R-42}
+          - {id: quarantine, prefix: quarantine/, currentDays: 90, retentionRef: R-43}
+          - {id: restore-tests, prefix: restore-tests/, currentDays: 400, retentionRef: R-12}
+          - {id: canary, prefix: canary/, currentDays: 1, retentionRef: R-44}
+          - {id: checks, prefix: checks/, currentDays: 400, retentionRef: R-12}
+          - {id: telemetry-debug, prefix: telemetry-debug/, currentDays: 7, noncurrentDays: 1, retentionRef: R-45}
+          - {id: noncurrent, noncurrentDays: 30, retentionRef: R-11}
+        telemetry:
+          description: Loki chunks and index, Tempo blocks (small-ha)
+          systemOfRecord: false
+          backupStream: false
+          sharedModeProtection: none-accepted
+          inClusterWriters: [telemetry]
+          offClusterWriters: []
+          readers: [objstore-audit]
+          objectLock: {enabled: false}
+          lifecycle:
+          - {id: loki, prefix: loki/, currentDays: 35, retentionRef: R-02}
+          - {id: tempo, prefix: tempo/, currentDays: 21, retentionRef: R-03}
+          - {id: noncurrent, noncurrentDays: 1, retentionRef: R-02}
+- reason: A lifecycle rule must expire something (currentDays or noncurrentDays).
+  value:
+    apiVersion: strange.company/v1alpha1
+    kind: ObjectStorageLayout
+    metadata: {name: strange-company}
+    spec:
+      defaults: {versioning: Enabled, blockPublicAccess: true, abortIncompleteMultipartDays: 7, serverSideEncryption: provider-default}
+      buckets:
+        tofu-state:
+          description: OpenTofu state, bootstrap journal, run logs, off-cluster restore-test results
+          systemOfRecord: true
+          backupStream: false
+          sharedModeProtection: separate-account
+          inClusterWriters: []
+          offClusterWriters: [admin, tofu-state]
+          readers: [tofu-state-ro, objstore-audit]
+          objectLock: {enabled: false}
+          lifecycle:
+          - {id: noncurrent, noncurrentDays: 365, newerNoncurrentVersions: 100, retentionRef: R-29}
+          - {id: runs, prefix: '{cluster}/runs/', currentDays: 180, retentionRef: R-29}
+          - {id: conformance, prefix: '{cluster}/conformance/', currentDays: 1, noncurrentDays: 1, retentionRef: R-29}
+        recovery:
+          description: Passphrase-encrypted recovery bundles, manifests, attestations; bootstrap capsule (CD-33, 35-day per-object retention set by capsule-writer)
+          systemOfRecord: true
+          backupStream: false
+          sharedModeProtection: separate-account
+          inClusterWriters: [capsule-writer]
+          offClusterWriters: [recovery]
+          readers: [recovery-reader, objstore-audit]
+          objectLock: {enabled: true, defaultRetentionDays: 365, modeWhenScoped: GOVERNANCE, modeWhenShared: COMPLIANCE}
+          lifecycle:
+          - {id: capsule-expiry, prefix: '{cluster}/capsule/2', currentDays: 100, noncurrentDays: 1, retentionRef: R-47}
+          - {id: noncurrent, noncurrentDays: 3650, retentionRef: R-32}
+        bootstrap-seed:
+          description: Seed snapshots and control-transfer reports
+          systemOfRecord: false
+          backupStream: false
+          sharedModeProtection: none-accepted
+          inClusterWriters: []
+          offClusterWriters: [seed-write]
+          readers: [seed-read, objstore-audit]
+          objectLock: {enabled: false}
+          lifecycle:
+          - {id: noncurrent, noncurrentDays: 30, retentionRef: R-31}
+        pg-backups:
+          description: CNPG base backups and WAL for all four clusters
+          systemOfRecord: true
+          backupStream: true
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [pg-backups-forgejo-pg, pg-backups-authentik-pg, pg-backups-woodpecker-pg, pg-backups-sc-pg]
+          offClusterWriters: []
+          readers: [dr-tests-reader, drill-reader, objstore-audit]
+          objectLock: {enabled: true, defaultRetentionDays: 14}
+          lifecycle:
+          - {id: noncurrent, noncurrentDays: 14, retentionRef: R-14}
+        longhorn-backups:
+          description: Longhorn backup target
+          systemOfRecord: true
+          backupStream: true
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [longhorn-backups]
+          offClusterWriters: []
+          readers: [dr-tests-reader, drill-reader, objstore-audit]
+          objectLock: {enabled: true, defaultRetentionDays: 14}
+          lifecycle:
+          - {id: noncurrent, noncurrentDays: 14, retentionRef: R-13b}
+        etcd-snapshots:
+          description: k3s etcd snapshots (recovery accelerator)
+          systemOfRecord: true
+          backupStream: true
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [etcd-snapshots]
+          offClusterWriters: []
+          readers: [dr-tests-reader, drill-reader, objstore-audit]
+          objectLock: {enabled: true, defaultRetentionDays: 7}
+          lifecycle:
+          - {id: stale-nodes, currentDays: 60, retentionRef: R-16}
+          - {id: noncurrent, noncurrentDays: 30, retentionRef: R-16}
+        forgejo-objects:
+          description: Forgejo LFS, attachments, packages and OCI blobs, avatars, repository archives
+          systemOfRecord: true
+          backupStream: false
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [forgejo-objects]
+          offClusterWriters: []
+          readers: [dr-tests-reader, drill-reader, objstore-audit]
+          objectLock: {enabled: false, enabledInSharedMode: true, sharedModeRetentionDays: 14}
+          lifecycle:
+          - {id: noncurrent, noncurrentDays: 30, retentionRef: R-41}
+        repo-backups:
+          description: Repository bundle chains and metadata exports
+          systemOfRecord: true
+          backupStream: true
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [repo-backups]
+          offClusterWriters: []
+          readers: [dr-tests-reader, drill-reader, objstore-audit]
+          objectLock: {enabled: true, defaultRetentionDays: 14}
+          lifecycle:
+          - {id: weekly, prefix: git/weekly/, currentDays: 56, retentionRef: R-17}
+          - {id: monthly, prefix: git/monthly/, currentDays: 400, retentionRef: R-17}
+          - {id: meta, prefix: meta/, currentDays: 56, retentionRef: R-17}
+          - {id: noncurrent, noncurrentDays: 14, retentionRef: R-17}
+          - {id: empty, prefix: tmp/}
+        evidence:
+          description: RED/GREEN evidence, worker logs, results, context packets, restore-test results, canary, telemetry debug captures
+          systemOfRecord: true
+          backupStream: false
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [evidence, dr-tests-results, telemetry-debug]
+          offClusterWriters: []
+          readers: [objstore-audit]
+          objectLock: {enabled: false, enabledInSharedMode: true, sharedModeRetentionDays: 14}
+          lifecycle:
+          - {id: logs, prefix: logs/, currentDays: 90, retentionRef: R-04}
+          - {id: context, prefix: context/, currentDays: 180, retentionRef: R-42}
+          - {id: quarantine, prefix: quarantine/, currentDays: 90, retentionRef: R-43}
+          - {id: restore-tests, prefix: restore-tests/, currentDays: 400, retentionRef: R-12}
+          - {id: canary, prefix: canary/, currentDays: 1, retentionRef: R-44}
+          - {id: checks, prefix: checks/, currentDays: 400, retentionRef: R-12}
+          - {id: telemetry-debug, prefix: telemetry-debug/, currentDays: 7, noncurrentDays: 1, retentionRef: R-45}
+          - {id: noncurrent, noncurrentDays: 30, retentionRef: R-11}
+        telemetry:
+          description: Loki chunks and index, Tempo blocks (small-ha)
+          systemOfRecord: false
+          backupStream: false
+          sharedModeProtection: none-accepted
+          inClusterWriters: [telemetry]
+          offClusterWriters: []
+          readers: [objstore-audit]
+          objectLock: {enabled: false}
+          lifecycle:
+          - {id: loki, prefix: loki/, currentDays: 35, retentionRef: R-02}
+          - {id: tempo, prefix: tempo/, currentDays: 21, retentionRef: R-03}
+          - {id: noncurrent, noncurrentDays: 1, retentionRef: R-02}
+- reason: Every bucket needs a bucket-wide noncurrent-version rule.
+  value:
+    apiVersion: strange.company/v1alpha1
+    kind: ObjectStorageLayout
+    metadata: {name: strange-company}
+    spec:
+      defaults: {versioning: Enabled, blockPublicAccess: true, abortIncompleteMultipartDays: 7, serverSideEncryption: provider-default}
+      buckets:
+        tofu-state:
+          description: OpenTofu state, bootstrap journal, run logs, off-cluster restore-test results
+          systemOfRecord: true
+          backupStream: false
+          sharedModeProtection: separate-account
+          inClusterWriters: []
+          offClusterWriters: [admin, tofu-state]
+          readers: [tofu-state-ro, objstore-audit]
+          objectLock: {enabled: false}
+          lifecycle:
+          - {id: noncurrent, noncurrentDays: 365, newerNoncurrentVersions: 100, retentionRef: R-29}
+          - {id: runs, prefix: '{cluster}/runs/', currentDays: 180, retentionRef: R-29}
+          - {id: conformance, prefix: '{cluster}/conformance/', currentDays: 1, noncurrentDays: 1, retentionRef: R-29}
+        recovery:
+          description: Passphrase-encrypted recovery bundles, manifests, attestations; bootstrap capsule (CD-33, 35-day per-object retention set by capsule-writer)
+          systemOfRecord: true
+          backupStream: false
+          sharedModeProtection: separate-account
+          inClusterWriters: [capsule-writer]
+          offClusterWriters: [recovery]
+          readers: [recovery-reader, objstore-audit]
+          objectLock: {enabled: true, defaultRetentionDays: 365, modeWhenScoped: GOVERNANCE, modeWhenShared: COMPLIANCE}
+          lifecycle:
+          - {id: capsule-expiry, prefix: '{cluster}/capsule/2', currentDays: 100, noncurrentDays: 1, retentionRef: R-47}
+          - {id: noncurrent, noncurrentDays: 3650, retentionRef: R-32}
+        bootstrap-seed:
+          description: Seed snapshots and control-transfer reports
+          systemOfRecord: false
+          backupStream: false
+          sharedModeProtection: none-accepted
+          inClusterWriters: []
+          offClusterWriters: [seed-write]
+          readers: [seed-read, objstore-audit]
+          objectLock: {enabled: false}
+          lifecycle:
+          - {id: noncurrent, noncurrentDays: 30, retentionRef: R-31}
+        pg-backups:
+          description: CNPG base backups and WAL for all four clusters
+          systemOfRecord: true
+          backupStream: true
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [pg-backups-forgejo-pg, pg-backups-authentik-pg, pg-backups-woodpecker-pg, pg-backups-sc-pg]
+          offClusterWriters: []
+          readers: [dr-tests-reader, drill-reader, objstore-audit]
+          objectLock: {enabled: true, defaultRetentionDays: 14}
+          lifecycle:
+          - {id: noncurrent, noncurrentDays: 14, retentionRef: R-14}
+        longhorn-backups:
+          description: Longhorn backup target
+          systemOfRecord: true
+          backupStream: true
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [longhorn-backups]
+          offClusterWriters: []
+          readers: [dr-tests-reader, drill-reader, objstore-audit]
+          objectLock: {enabled: true, defaultRetentionDays: 14}
+          lifecycle:
+          - {id: noncurrent, noncurrentDays: 14, retentionRef: R-13b}
+        etcd-snapshots:
+          description: k3s etcd snapshots (recovery accelerator)
+          systemOfRecord: true
+          backupStream: true
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [etcd-snapshots]
+          offClusterWriters: []
+          readers: [dr-tests-reader, drill-reader, objstore-audit]
+          objectLock: {enabled: true, defaultRetentionDays: 7}
+          lifecycle:
+          - {id: stale-nodes, currentDays: 60, retentionRef: R-16}
+          - {id: noncurrent, noncurrentDays: 30, retentionRef: R-16}
+        forgejo-objects:
+          description: Forgejo LFS, attachments, packages and OCI blobs, avatars, repository archives
+          systemOfRecord: true
+          backupStream: false
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [forgejo-objects]
+          offClusterWriters: []
+          readers: [dr-tests-reader, drill-reader, objstore-audit]
+          objectLock: {enabled: false, enabledInSharedMode: true, sharedModeRetentionDays: 14}
+          lifecycle:
+          - {id: repo-archive, prefix: repo-archive/, currentDays: 1}
+        repo-backups:
+          description: Repository bundle chains and metadata exports
+          systemOfRecord: true
+          backupStream: true
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [repo-backups]
+          offClusterWriters: []
+          readers: [dr-tests-reader, drill-reader, objstore-audit]
+          objectLock: {enabled: true, defaultRetentionDays: 14}
+          lifecycle:
+          - {id: weekly, prefix: git/weekly/, currentDays: 56, retentionRef: R-17}
+          - {id: monthly, prefix: git/monthly/, currentDays: 400, retentionRef: R-17}
+          - {id: meta, prefix: meta/, currentDays: 56, retentionRef: R-17}
+          - {id: noncurrent, noncurrentDays: 14, retentionRef: R-17}
+        evidence:
+          description: RED/GREEN evidence, worker logs, results, context packets, restore-test results, canary, telemetry debug captures
+          systemOfRecord: true
+          backupStream: false
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [evidence, dr-tests-results, telemetry-debug]
+          offClusterWriters: []
+          readers: [objstore-audit]
+          objectLock: {enabled: false, enabledInSharedMode: true, sharedModeRetentionDays: 14}
+          lifecycle:
+          - {id: logs, prefix: logs/, currentDays: 90, retentionRef: R-04}
+          - {id: context, prefix: context/, currentDays: 180, retentionRef: R-42}
+          - {id: quarantine, prefix: quarantine/, currentDays: 90, retentionRef: R-43}
+          - {id: restore-tests, prefix: restore-tests/, currentDays: 400, retentionRef: R-12}
+          - {id: canary, prefix: canary/, currentDays: 1, retentionRef: R-44}
+          - {id: checks, prefix: checks/, currentDays: 400, retentionRef: R-12}
+          - {id: telemetry-debug, prefix: telemetry-debug/, currentDays: 7, noncurrentDays: 1, retentionRef: R-45}
+          - {id: noncurrent, noncurrentDays: 30, retentionRef: R-11}
+        telemetry:
+          description: Loki chunks and index, Tempo blocks (small-ha)
+          systemOfRecord: false
+          backupStream: false
+          sharedModeProtection: none-accepted
+          inClusterWriters: [telemetry]
+          offClusterWriters: []
+          readers: [objstore-audit]
+          objectLock: {enabled: false}
+          lifecycle:
+          - {id: loki, prefix: loki/, currentDays: 35, retentionRef: R-02}
+          - {id: tempo, prefix: tempo/, currentDays: 21, retentionRef: R-03}
+          - {id: noncurrent, noncurrentDays: 1, retentionRef: R-02}
+- reason: An operator-only credential (admin) must never be an in-cluster writer.
+  value:
+    apiVersion: strange.company/v1alpha1
+    kind: ObjectStorageLayout
+    metadata: {name: strange-company}
+    spec:
+      defaults: {versioning: Enabled, blockPublicAccess: true, abortIncompleteMultipartDays: 7, serverSideEncryption: provider-default}
+      buckets:
+        tofu-state:
+          description: OpenTofu state, bootstrap journal, run logs, off-cluster restore-test results
+          systemOfRecord: true
+          backupStream: false
+          sharedModeProtection: separate-account
+          inClusterWriters: []
+          offClusterWriters: [admin, tofu-state]
+          readers: [tofu-state-ro, objstore-audit]
+          objectLock: {enabled: false}
+          lifecycle:
+          - {id: noncurrent, noncurrentDays: 365, newerNoncurrentVersions: 100, retentionRef: R-29}
+          - {id: runs, prefix: '{cluster}/runs/', currentDays: 180, retentionRef: R-29}
+          - {id: conformance, prefix: '{cluster}/conformance/', currentDays: 1, noncurrentDays: 1, retentionRef: R-29}
+        recovery:
+          description: Passphrase-encrypted recovery bundles, manifests, attestations; bootstrap capsule (CD-33, 35-day per-object retention set by capsule-writer)
+          systemOfRecord: true
+          backupStream: false
+          sharedModeProtection: separate-account
+          inClusterWriters: [capsule-writer]
+          offClusterWriters: [recovery]
+          readers: [recovery-reader, objstore-audit]
+          objectLock: {enabled: true, defaultRetentionDays: 365, modeWhenScoped: GOVERNANCE, modeWhenShared: COMPLIANCE}
+          lifecycle:
+          - {id: capsule-expiry, prefix: '{cluster}/capsule/2', currentDays: 100, noncurrentDays: 1, retentionRef: R-47}
+          - {id: noncurrent, noncurrentDays: 3650, retentionRef: R-32}
+        bootstrap-seed:
+          description: Seed snapshots and control-transfer reports
+          systemOfRecord: false
+          backupStream: false
+          sharedModeProtection: none-accepted
+          inClusterWriters: []
+          offClusterWriters: [seed-write]
+          readers: [seed-read, objstore-audit]
+          objectLock: {enabled: false}
+          lifecycle:
+          - {id: noncurrent, noncurrentDays: 30, retentionRef: R-31}
+        pg-backups:
+          description: CNPG base backups and WAL for all four clusters
+          systemOfRecord: true
+          backupStream: true
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [pg-backups-forgejo-pg, pg-backups-authentik-pg, pg-backups-woodpecker-pg, pg-backups-sc-pg]
+          offClusterWriters: []
+          readers: [dr-tests-reader, drill-reader, objstore-audit]
+          objectLock: {enabled: true, defaultRetentionDays: 14}
+          lifecycle:
+          - {id: noncurrent, noncurrentDays: 14, retentionRef: R-14}
+        longhorn-backups:
+          description: Longhorn backup target
+          systemOfRecord: true
+          backupStream: true
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [longhorn-backups]
+          offClusterWriters: []
+          readers: [dr-tests-reader, drill-reader, objstore-audit]
+          objectLock: {enabled: true, defaultRetentionDays: 14}
+          lifecycle:
+          - {id: noncurrent, noncurrentDays: 14, retentionRef: R-13b}
+        etcd-snapshots:
+          description: k3s etcd snapshots (recovery accelerator)
+          systemOfRecord: true
+          backupStream: true
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [etcd-snapshots]
+          offClusterWriters: []
+          readers: [dr-tests-reader, drill-reader, objstore-audit]
+          objectLock: {enabled: true, defaultRetentionDays: 7}
+          lifecycle:
+          - {id: stale-nodes, currentDays: 60, retentionRef: R-16}
+          - {id: noncurrent, noncurrentDays: 30, retentionRef: R-16}
+        forgejo-objects:
+          description: Forgejo LFS, attachments, packages and OCI blobs, avatars, repository archives
+          systemOfRecord: true
+          backupStream: false
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [forgejo-objects]
+          offClusterWriters: []
+          readers: [dr-tests-reader, drill-reader, objstore-audit]
+          objectLock: {enabled: false, enabledInSharedMode: true, sharedModeRetentionDays: 14}
+          lifecycle:
+          - {id: noncurrent, noncurrentDays: 30, retentionRef: R-41}
+        repo-backups:
+          description: Repository bundle chains and metadata exports
+          systemOfRecord: true
+          backupStream: true
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [repo-backups]
+          offClusterWriters: []
+          readers: [dr-tests-reader, drill-reader, objstore-audit]
+          objectLock: {enabled: true, defaultRetentionDays: 14}
+          lifecycle:
+          - {id: weekly, prefix: git/weekly/, currentDays: 56, retentionRef: R-17}
+          - {id: monthly, prefix: git/monthly/, currentDays: 400, retentionRef: R-17}
+          - {id: meta, prefix: meta/, currentDays: 56, retentionRef: R-17}
+          - {id: noncurrent, noncurrentDays: 14, retentionRef: R-17}
+        evidence:
+          description: RED/GREEN evidence, worker logs, results, context packets, restore-test results, canary, telemetry debug captures
+          systemOfRecord: true
+          backupStream: false
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [evidence, dr-tests-results, telemetry-debug, admin]
+          offClusterWriters: []
+          readers: [objstore-audit]
+          objectLock: {enabled: false, enabledInSharedMode: true, sharedModeRetentionDays: 14}
+          lifecycle:
+          - {id: logs, prefix: logs/, currentDays: 90, retentionRef: R-04}
+          - {id: context, prefix: context/, currentDays: 180, retentionRef: R-42}
+          - {id: quarantine, prefix: quarantine/, currentDays: 90, retentionRef: R-43}
+          - {id: restore-tests, prefix: restore-tests/, currentDays: 400, retentionRef: R-12}
+          - {id: canary, prefix: canary/, currentDays: 1, retentionRef: R-44}
+          - {id: checks, prefix: checks/, currentDays: 400, retentionRef: R-12}
+          - {id: telemetry-debug, prefix: telemetry-debug/, currentDays: 7, noncurrentDays: 1, retentionRef: R-45}
+          - {id: noncurrent, noncurrentDays: 30, retentionRef: R-11}
+        telemetry:
+          description: Loki chunks and index, Tempo blocks (small-ha)
+          systemOfRecord: false
+          backupStream: false
+          sharedModeProtection: none-accepted
+          inClusterWriters: [telemetry]
+          offClusterWriters: []
+          readers: [objstore-audit]
+          objectLock: {enabled: false}
+          lifecycle:
+          - {id: loki, prefix: loki/, currentDays: 35, retentionRef: R-02}
+          - {id: tempo, prefix: tempo/, currentDays: 21, retentionRef: R-03}
+          - {id: noncurrent, noncurrentDays: 1, retentionRef: R-02}
+- reason: Object Lock retention days are meaningless when the lock is disabled.
+  value:
+    apiVersion: strange.company/v1alpha1
+    kind: ObjectStorageLayout
+    metadata: {name: strange-company}
+    spec:
+      defaults: {versioning: Enabled, blockPublicAccess: true, abortIncompleteMultipartDays: 7, serverSideEncryption: provider-default}
+      buckets:
+        tofu-state:
+          description: OpenTofu state, bootstrap journal, run logs, off-cluster restore-test results
+          systemOfRecord: true
+          backupStream: false
+          sharedModeProtection: separate-account
+          inClusterWriters: []
+          offClusterWriters: [admin, tofu-state]
+          readers: [tofu-state-ro, objstore-audit]
+          objectLock: {enabled: false}
+          lifecycle:
+          - {id: noncurrent, noncurrentDays: 365, newerNoncurrentVersions: 100, retentionRef: R-29}
+          - {id: runs, prefix: '{cluster}/runs/', currentDays: 180, retentionRef: R-29}
+          - {id: conformance, prefix: '{cluster}/conformance/', currentDays: 1, noncurrentDays: 1, retentionRef: R-29}
+        recovery:
+          description: Passphrase-encrypted recovery bundles, manifests, attestations; bootstrap capsule (CD-33, 35-day per-object retention set by capsule-writer)
+          systemOfRecord: true
+          backupStream: false
+          sharedModeProtection: separate-account
+          inClusterWriters: [capsule-writer]
+          offClusterWriters: [recovery]
+          readers: [recovery-reader, objstore-audit]
+          objectLock: {enabled: true, defaultRetentionDays: 365, modeWhenScoped: GOVERNANCE, modeWhenShared: COMPLIANCE}
+          lifecycle:
+          - {id: capsule-expiry, prefix: '{cluster}/capsule/2', currentDays: 100, noncurrentDays: 1, retentionRef: R-47}
+          - {id: noncurrent, noncurrentDays: 3650, retentionRef: R-32}
+        bootstrap-seed:
+          description: Seed snapshots and control-transfer reports
+          systemOfRecord: false
+          backupStream: false
+          sharedModeProtection: none-accepted
+          inClusterWriters: []
+          offClusterWriters: [seed-write]
+          readers: [seed-read, objstore-audit]
+          objectLock: {enabled: false}
+          lifecycle:
+          - {id: noncurrent, noncurrentDays: 30, retentionRef: R-31}
+        pg-backups:
+          description: CNPG base backups and WAL for all four clusters
+          systemOfRecord: true
+          backupStream: true
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [pg-backups-forgejo-pg, pg-backups-authentik-pg, pg-backups-woodpecker-pg, pg-backups-sc-pg]
+          offClusterWriters: []
+          readers: [dr-tests-reader, drill-reader, objstore-audit]
+          objectLock: {enabled: true, defaultRetentionDays: 14}
+          lifecycle:
+          - {id: noncurrent, noncurrentDays: 14, retentionRef: R-14}
+        longhorn-backups:
+          description: Longhorn backup target
+          systemOfRecord: true
+          backupStream: true
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [longhorn-backups]
+          offClusterWriters: []
+          readers: [dr-tests-reader, drill-reader, objstore-audit]
+          objectLock: {enabled: true, defaultRetentionDays: 14}
+          lifecycle:
+          - {id: noncurrent, noncurrentDays: 14, retentionRef: R-13b}
+        etcd-snapshots:
+          description: k3s etcd snapshots (recovery accelerator)
+          systemOfRecord: true
+          backupStream: true
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [etcd-snapshots]
+          offClusterWriters: []
+          readers: [dr-tests-reader, drill-reader, objstore-audit]
+          objectLock: {enabled: true, defaultRetentionDays: 7}
+          lifecycle:
+          - {id: stale-nodes, currentDays: 60, retentionRef: R-16}
+          - {id: noncurrent, noncurrentDays: 30, retentionRef: R-16}
+        forgejo-objects:
+          description: Forgejo LFS, attachments, packages and OCI blobs, avatars, repository archives
+          systemOfRecord: true
+          backupStream: false
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [forgejo-objects]
+          offClusterWriters: []
+          readers: [dr-tests-reader, drill-reader, objstore-audit]
+          objectLock: {enabled: false, enabledInSharedMode: true, sharedModeRetentionDays: 14}
+          lifecycle:
+          - {id: noncurrent, noncurrentDays: 30, retentionRef: R-41}
+        repo-backups:
+          description: Repository bundle chains and metadata exports
+          systemOfRecord: true
+          backupStream: true
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [repo-backups]
+          offClusterWriters: []
+          readers: [dr-tests-reader, drill-reader, objstore-audit]
+          objectLock: {enabled: true, defaultRetentionDays: 14}
+          lifecycle:
+          - {id: weekly, prefix: git/weekly/, currentDays: 56, retentionRef: R-17}
+          - {id: monthly, prefix: git/monthly/, currentDays: 400, retentionRef: R-17}
+          - {id: meta, prefix: meta/, currentDays: 56, retentionRef: R-17}
+          - {id: noncurrent, noncurrentDays: 14, retentionRef: R-17}
+        evidence:
+          description: RED/GREEN evidence, worker logs, results, context packets, restore-test results, canary, telemetry debug captures
+          systemOfRecord: true
+          backupStream: false
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [evidence, dr-tests-results, telemetry-debug]
+          offClusterWriters: []
+          readers: [objstore-audit]
+          objectLock: {enabled: false, enabledInSharedMode: true, sharedModeRetentionDays: 14}
+          lifecycle:
+          - {id: logs, prefix: logs/, currentDays: 90, retentionRef: R-04}
+          - {id: context, prefix: context/, currentDays: 180, retentionRef: R-42}
+          - {id: quarantine, prefix: quarantine/, currentDays: 90, retentionRef: R-43}
+          - {id: restore-tests, prefix: restore-tests/, currentDays: 400, retentionRef: R-12}
+          - {id: canary, prefix: canary/, currentDays: 1, retentionRef: R-44}
+          - {id: checks, prefix: checks/, currentDays: 400, retentionRef: R-12}
+          - {id: telemetry-debug, prefix: telemetry-debug/, currentDays: 7, noncurrentDays: 1, retentionRef: R-45}
+          - {id: noncurrent, noncurrentDays: 30, retentionRef: R-11}
+        telemetry:
+          description: Loki chunks and index, Tempo blocks (small-ha)
+          systemOfRecord: false
+          backupStream: false
+          sharedModeProtection: none-accepted
+          inClusterWriters: [telemetry]
+          offClusterWriters: []
+          readers: [objstore-audit]
+          objectLock: {enabled: false, defaultRetentionDays: 7}
+          lifecycle:
+          - {id: loki, prefix: loki/, currentDays: 35, retentionRef: R-02}
+          - {id: tempo, prefix: tempo/, currentDays: 21, retentionRef: R-03}
+          - {id: noncurrent, noncurrentDays: 1, retentionRef: R-02}
+- reason: A system of record cannot be left unprotected in shared mode (STO-2).
+  value:
+    apiVersion: strange.company/v1alpha1
+    kind: ObjectStorageLayout
+    metadata: {name: strange-company}
+    spec:
+      defaults: {versioning: Enabled, blockPublicAccess: true, abortIncompleteMultipartDays: 7, serverSideEncryption: provider-default}
+      buckets:
+        tofu-state:
+          description: OpenTofu state, bootstrap journal, run logs, off-cluster restore-test results
+          systemOfRecord: true
+          backupStream: false
+          sharedModeProtection: none-accepted
+          inClusterWriters: []
+          offClusterWriters: [admin, tofu-state]
+          readers: [tofu-state-ro, objstore-audit]
+          objectLock: {enabled: false}
+          lifecycle:
+          - {id: noncurrent, noncurrentDays: 365, newerNoncurrentVersions: 100, retentionRef: R-29}
+          - {id: runs, prefix: '{cluster}/runs/', currentDays: 180, retentionRef: R-29}
+          - {id: conformance, prefix: '{cluster}/conformance/', currentDays: 1, noncurrentDays: 1, retentionRef: R-29}
+        recovery:
+          description: Passphrase-encrypted recovery bundles, manifests, attestations; bootstrap capsule (CD-33, 35-day per-object retention set by capsule-writer)
+          systemOfRecord: true
+          backupStream: false
+          sharedModeProtection: separate-account
+          inClusterWriters: [capsule-writer]
+          offClusterWriters: [recovery]
+          readers: [recovery-reader, objstore-audit]
+          objectLock: {enabled: true, defaultRetentionDays: 365, modeWhenScoped: GOVERNANCE, modeWhenShared: COMPLIANCE}
+          lifecycle:
+          - {id: capsule-expiry, prefix: '{cluster}/capsule/2', currentDays: 100, noncurrentDays: 1, retentionRef: R-47}
+          - {id: noncurrent, noncurrentDays: 3650, retentionRef: R-32}
+        bootstrap-seed:
+          description: Seed snapshots and control-transfer reports
+          systemOfRecord: false
+          backupStream: false
+          sharedModeProtection: none-accepted
+          inClusterWriters: []
+          offClusterWriters: [seed-write]
+          readers: [seed-read, objstore-audit]
+          objectLock: {enabled: false}
+          lifecycle:
+          - {id: noncurrent, noncurrentDays: 30, retentionRef: R-31}
+        pg-backups:
+          description: CNPG base backups and WAL for all four clusters
+          systemOfRecord: true
+          backupStream: true
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [pg-backups-forgejo-pg, pg-backups-authentik-pg, pg-backups-woodpecker-pg, pg-backups-sc-pg]
+          offClusterWriters: []
+          readers: [dr-tests-reader, drill-reader, objstore-audit]
+          objectLock: {enabled: true, defaultRetentionDays: 14}
+          lifecycle:
+          - {id: noncurrent, noncurrentDays: 14, retentionRef: R-14}
+        longhorn-backups:
+          description: Longhorn backup target
+          systemOfRecord: true
+          backupStream: true
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [longhorn-backups]
+          offClusterWriters: []
+          readers: [dr-tests-reader, drill-reader, objstore-audit]
+          objectLock: {enabled: true, defaultRetentionDays: 14}
+          lifecycle:
+          - {id: noncurrent, noncurrentDays: 14, retentionRef: R-13b}
+        etcd-snapshots:
+          description: k3s etcd snapshots (recovery accelerator)
+          systemOfRecord: true
+          backupStream: true
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [etcd-snapshots]
+          offClusterWriters: []
+          readers: [dr-tests-reader, drill-reader, objstore-audit]
+          objectLock: {enabled: true, defaultRetentionDays: 7}
+          lifecycle:
+          - {id: stale-nodes, currentDays: 60, retentionRef: R-16}
+          - {id: noncurrent, noncurrentDays: 30, retentionRef: R-16}
+        forgejo-objects:
+          description: Forgejo LFS, attachments, packages and OCI blobs, avatars, repository archives
+          systemOfRecord: true
+          backupStream: false
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [forgejo-objects]
+          offClusterWriters: []
+          readers: [dr-tests-reader, drill-reader, objstore-audit]
+          objectLock: {enabled: false, enabledInSharedMode: true, sharedModeRetentionDays: 14}
+          lifecycle:
+          - {id: noncurrent, noncurrentDays: 30, retentionRef: R-41}
+        repo-backups:
+          description: Repository bundle chains and metadata exports
+          systemOfRecord: true
+          backupStream: true
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [repo-backups]
+          offClusterWriters: []
+          readers: [dr-tests-reader, drill-reader, objstore-audit]
+          objectLock: {enabled: true, defaultRetentionDays: 14}
+          lifecycle:
+          - {id: weekly, prefix: git/weekly/, currentDays: 56, retentionRef: R-17}
+          - {id: monthly, prefix: git/monthly/, currentDays: 400, retentionRef: R-17}
+          - {id: meta, prefix: meta/, currentDays: 56, retentionRef: R-17}
+          - {id: noncurrent, noncurrentDays: 14, retentionRef: R-17}
+        evidence:
+          description: RED/GREEN evidence, worker logs, results, context packets, restore-test results, canary, telemetry debug captures
+          systemOfRecord: true
+          backupStream: false
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [evidence, dr-tests-results, telemetry-debug]
+          offClusterWriters: []
+          readers: [objstore-audit]
+          objectLock: {enabled: false, enabledInSharedMode: true, sharedModeRetentionDays: 14}
+          lifecycle:
+          - {id: logs, prefix: logs/, currentDays: 90, retentionRef: R-04}
+          - {id: context, prefix: context/, currentDays: 180, retentionRef: R-42}
+          - {id: quarantine, prefix: quarantine/, currentDays: 90, retentionRef: R-43}
+          - {id: restore-tests, prefix: restore-tests/, currentDays: 400, retentionRef: R-12}
+          - {id: canary, prefix: canary/, currentDays: 1, retentionRef: R-44}
+          - {id: checks, prefix: checks/, currentDays: 400, retentionRef: R-12}
+          - {id: telemetry-debug, prefix: telemetry-debug/, currentDays: 7, noncurrentDays: 1, retentionRef: R-45}
+          - {id: noncurrent, noncurrentDays: 30, retentionRef: R-11}
+        telemetry:
+          description: Loki chunks and index, Tempo blocks (small-ha)
+          systemOfRecord: false
+          backupStream: false
+          sharedModeProtection: none-accepted
+          inClusterWriters: [telemetry]
+          offClusterWriters: []
+          readers: [objstore-audit]
+          objectLock: {enabled: false}
+          lifecycle:
+          - {id: loki, prefix: loki/, currentDays: 35, retentionRef: R-02}
+          - {id: tempo, prefix: tempo/, currentDays: 21, retentionRef: R-03}
+          - {id: noncurrent, noncurrentDays: 1, retentionRef: R-02}
+- reason: compliance-lock in shared mode requires a lock (always or enabledInSharedMode).
+  value:
+    apiVersion: strange.company/v1alpha1
+    kind: ObjectStorageLayout
+    metadata: {name: strange-company}
+    spec:
+      defaults: {versioning: Enabled, blockPublicAccess: true, abortIncompleteMultipartDays: 7, serverSideEncryption: provider-default}
+      buckets:
+        tofu-state:
+          description: OpenTofu state, bootstrap journal, run logs, off-cluster restore-test results
+          systemOfRecord: true
+          backupStream: false
+          sharedModeProtection: separate-account
+          inClusterWriters: []
+          offClusterWriters: [admin, tofu-state]
+          readers: [tofu-state-ro, objstore-audit]
+          objectLock: {enabled: false}
+          lifecycle:
+          - {id: noncurrent, noncurrentDays: 365, newerNoncurrentVersions: 100, retentionRef: R-29}
+          - {id: runs, prefix: '{cluster}/runs/', currentDays: 180, retentionRef: R-29}
+          - {id: conformance, prefix: '{cluster}/conformance/', currentDays: 1, noncurrentDays: 1, retentionRef: R-29}
+        recovery:
+          description: Passphrase-encrypted recovery bundles, manifests, attestations; bootstrap capsule (CD-33, 35-day per-object retention set by capsule-writer)
+          systemOfRecord: true
+          backupStream: false
+          sharedModeProtection: separate-account
+          inClusterWriters: [capsule-writer]
+          offClusterWriters: [recovery]
+          readers: [recovery-reader, objstore-audit]
+          objectLock: {enabled: true, defaultRetentionDays: 365, modeWhenScoped: GOVERNANCE, modeWhenShared: COMPLIANCE}
+          lifecycle:
+          - {id: capsule-expiry, prefix: '{cluster}/capsule/2', currentDays: 100, noncurrentDays: 1, retentionRef: R-47}
+          - {id: noncurrent, noncurrentDays: 3650, retentionRef: R-32}
+        bootstrap-seed:
+          description: Seed snapshots and control-transfer reports
+          systemOfRecord: false
+          backupStream: false
+          sharedModeProtection: none-accepted
+          inClusterWriters: []
+          offClusterWriters: [seed-write]
+          readers: [seed-read, objstore-audit]
+          objectLock: {enabled: false}
+          lifecycle:
+          - {id: noncurrent, noncurrentDays: 30, retentionRef: R-31}
+        pg-backups:
+          description: CNPG base backups and WAL for all four clusters
+          systemOfRecord: true
+          backupStream: true
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [pg-backups-forgejo-pg, pg-backups-authentik-pg, pg-backups-woodpecker-pg, pg-backups-sc-pg]
+          offClusterWriters: []
+          readers: [dr-tests-reader, drill-reader, objstore-audit]
+          objectLock: {enabled: true, defaultRetentionDays: 14}
+          lifecycle:
+          - {id: noncurrent, noncurrentDays: 14, retentionRef: R-14}
+        longhorn-backups:
+          description: Longhorn backup target
+          systemOfRecord: true
+          backupStream: true
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [longhorn-backups]
+          offClusterWriters: []
+          readers: [dr-tests-reader, drill-reader, objstore-audit]
+          objectLock: {enabled: true, defaultRetentionDays: 14}
+          lifecycle:
+          - {id: noncurrent, noncurrentDays: 14, retentionRef: R-13b}
+        etcd-snapshots:
+          description: k3s etcd snapshots (recovery accelerator)
+          systemOfRecord: true
+          backupStream: true
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [etcd-snapshots]
+          offClusterWriters: []
+          readers: [dr-tests-reader, drill-reader, objstore-audit]
+          objectLock: {enabled: true, defaultRetentionDays: 7}
+          lifecycle:
+          - {id: stale-nodes, currentDays: 60, retentionRef: R-16}
+          - {id: noncurrent, noncurrentDays: 30, retentionRef: R-16}
+        forgejo-objects:
+          description: Forgejo LFS, attachments, packages and OCI blobs, avatars, repository archives
+          systemOfRecord: true
+          backupStream: false
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [forgejo-objects]
+          offClusterWriters: []
+          readers: [dr-tests-reader, drill-reader, objstore-audit]
+          objectLock: {enabled: false, enabledInSharedMode: true, sharedModeRetentionDays: 14}
+          lifecycle:
+          - {id: noncurrent, noncurrentDays: 30, retentionRef: R-41}
+        repo-backups:
+          description: Repository bundle chains and metadata exports
+          systemOfRecord: true
+          backupStream: true
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [repo-backups]
+          offClusterWriters: []
+          readers: [dr-tests-reader, drill-reader, objstore-audit]
+          objectLock: {enabled: true, defaultRetentionDays: 14}
+          lifecycle:
+          - {id: weekly, prefix: git/weekly/, currentDays: 56, retentionRef: R-17}
+          - {id: monthly, prefix: git/monthly/, currentDays: 400, retentionRef: R-17}
+          - {id: meta, prefix: meta/, currentDays: 56, retentionRef: R-17}
+          - {id: noncurrent, noncurrentDays: 14, retentionRef: R-17}
+        evidence:
+          description: RED/GREEN evidence, worker logs, results, context packets, restore-test results, canary, telemetry debug captures
+          systemOfRecord: true
+          backupStream: false
+          sharedModeProtection: compliance-lock
+          inClusterWriters: [evidence, dr-tests-results, telemetry-debug]
+          offClusterWriters: []
+          readers: [objstore-audit]
+          objectLock: {enabled: false}
+          lifecycle:
+          - {id: logs, prefix: logs/, currentDays: 90, retentionRef: R-04}
+          - {id: context, prefix: context/, currentDays: 180, retentionRef: R-42}
+          - {id: quarantine, prefix: quarantine/, currentDays: 90, retentionRef: R-43}
+          - {id: restore-tests, prefix: restore-tests/, currentDays: 400, retentionRef: R-12}
+          - {id: canary, prefix: canary/, currentDays: 1, retentionRef: R-44}
+          - {id: checks, prefix: checks/, currentDays: 400, retentionRef: R-12}
+          - {id: telemetry-debug, prefix: telemetry-debug/, currentDays: 7, noncurrentDays: 1, retentionRef: R-45}
+          - {id: noncurrent, noncurrentDays: 30, retentionRef: R-11}
+        telemetry:
+          description: Loki chunks and index, Tempo blocks (small-ha)
+          systemOfRecord: false
+          backupStream: false
+          sharedModeProtection: none-accepted
+          inClusterWriters: [telemetry]
+          offClusterWriters: []
+          readers: [objstore-audit]
+          objectLock: {enabled: false}
+          lifecycle:
+          - {id: loki, prefix: loki/, currentDays: 35, retentionRef: R-02}
+          - {id: tempo, prefix: tempo/, currentDays: 21, retentionRef: R-03}
+          - {id: noncurrent, noncurrentDays: 1, retentionRef: R-02}

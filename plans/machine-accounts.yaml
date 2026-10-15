@@ -1,0 +1,32 @@
+# Machine-account privilege matrix (Stage 0; CD-38, CD-40, second external review of PR #138).
+# Authoritative summary of what each Forgejo machine account may do. Plan 16 owns the
+# accounts (forge/forge.yaml, contracts/forge-configuration.schema.yaml); plan 34 owns the
+# threat analysis. The Stage-0 validator (C16) checks this file against the
+# forge-configuration contract's canonical example and against the prose of every plan,
+# ADR and procedure: a sentence claiming that an account holds repository admin fails
+# unless this matrix gives that account `repoRole: admin`.
+apiVersion: strange.company/v1alpha1
+kind: MachineAccountPrivileges
+spec:
+  # Highest repository role across all organizations. `admin` is allowed only for the
+  # accounts listed in adminExceptions.
+  accounts:
+    - {name: sc-runner,          repoRole: write, canApprove: false, canMerge: false, purpose: "Runner: PRs, statuses, labels, issues, agent branches", credential: "SC-FORGEJO-BOT-TOKENS/sc-runner (Runner main container)", plan: "26"}
+    - {name: sc-keys,            repoRole: admin, canApprove: false, canMerge: false, purpose: "create and delete per-execution deploy keys only", credential: "SC-FORGEJO-BOT-TOKENS/sc-keys (Runner key-broker container only)", plan: "26"}
+    - {name: sc-woodpecker,      repoRole: write, canApprove: false, canMerge: false, purpose: "Woodpecker forge integration (OAuth): repository activation, CI statuses", credential: "SC-WOODPECKER-* (Woodpecker server)", plan: "20"}
+    - {name: sc-renovate,        repoRole: write, canApprove: false, canMerge: false, purpose: "dependency update branches renovate/*", credential: "SC-FORGEJO-BOT-TOKENS/sc-renovate", plan: "23"}
+    - {name: sc-release,         repoRole: write, canApprove: false, canMerge: false, purpose: "release branches and v* tags (P11)", credential: "SC-FORGEJO-BOT-TOKENS/sc-release", plan: "23"}
+    - {name: sc-gc,              repoRole: write, canApprove: false, canMerge: false, purpose: "package cleanup (packages unit only)", credential: "SC-FORGEJO-BOT-TOKENS/sc-gc", plan: "43"}
+    - {name: sc-backup,          repoRole: read,  canApprove: false, canMerge: false, purpose: "repository bundle backups", credential: "SC-FORGEJO-BOT-TOKENS/sc-backup", plan: "44"}
+    - {name: sc-ci-config,       repoRole: read,  canApprove: false, canMerge: false, purpose: "trusted CI configuration extension reads", credential: "SC-FORGEJO-BOT-TOKENS/sc-ci-config", plan: "20"}
+    - {name: sc-registry-reader, repoRole: read,  canApprove: false, canMerge: false, purpose: "node image pulls from the internal registry (P11)", credential: "SC-FORGEJO-BOT-TOKENS/sc-registry-reader", plan: "23"}
+  adminExceptions:
+    - {name: sc-keys, decision: CD-40, residual: R-16-1, reason: "Forgejo v15 requires repository admin to manage deploy keys (verify at the baseline)"}
+  # Admin teams that must have no members in steady state (transient membership only).
+  transientAdminTeams:
+    - {team: sc-ci-activation, account: sc-woodpecker, window: "ci-init W03 repository activation (plan 20 R-20-1)"}
+  # Team that alone may approve and merge on protected branches; no machine account may be a member.
+  humanOnlyTeams: [sc-mergers]
+  # Bootstrap identity outside the bot list: Forgejo site admin during bootstrap only; its
+  # password is retired by `forge finalize` (plan 16) and it is never whitelisted on protected branches.
+  bootstrapAdmin: sc-admin

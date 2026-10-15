@@ -1,0 +1,796 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://strange.company/contracts/telemetry/v1alpha1
+title: TelemetryConventions
+description: |
+  Strange Company telemetry conventions (SPEC §93, §94; plan 40, plan 41).
+  A document validated by this schema is one of three things:
+
+  1. `signal: span`: one finished span as Strange Company code emits it. The
+     contract tests in plans 26, 27, 53 and 40 capture spans with an in-memory
+     exporter, serialize each one to this JSON shape and validate it. The same
+     allowlist is compiled into the OpenTelemetry Collector `redaction`
+     processor's `allowed_keys` (defense in depth, plan 40 §8).
+  2. `signal: log`: one structured log line written to stdout by a Strange
+     Company service (plan 41 §8.1). It is validated in unit tests through a
+     log-capture hook.
+  3. `kind: TelemetryDebugGrant`: a version-controlled, time-limited grant
+     that enables verbose content capture for one scope (SPEC §94 "explicit
+     debugging configuration and retention limits"). File:
+     `policy/telemetry-debug/<name>.yaml`. That path is protected (ADR-0008),
+     so a grant needs a human-reviewed PR. Loader invariants beyond this
+     schema: `expiresAt - createdAt <= 24h`; at most 3 active grants; grants
+     whose `expiresAt` has passed are ignored and reported by
+     `sc_telemetry_debug_grants_active`. Captured content never enters the
+     telemetry pipeline: it is written to S3 `evidence/telemetry-debug/<grant>/`
+     with object expiry `retentionDays` (plan 40 §9.5).
+
+  Privacy model (SPEC §94):
+  - Attribute *keys* are closed per signal (allowlist). Unknown keys are
+    contract violations in tests and are dropped by the Collector.
+  - Keys matching `x-forbidden-attribute-patterns` are always rejected, even
+    if a future allowlist edit adds them. They are the blocklist of last resort.
+  - Attribute *values* are bounded (`maxLength` 256 unless stated otherwise).
+    No value may be a prompt, completion, source text, environment variable,
+    command line or command output. Secret-shaped values are replaced by the
+    Collector (`x-secret-value-patterns`) and counted in
+    `sc_span_redactions_total`.
+  - High-cardinality identifiers (task, execution, commit, provider request
+    ID) are ALLOWED on spans and logs, which are not metrics. The spanmetrics
+    connector never uses them as dimensions (plan 40 §8.4).
+type: object
+oneOf:
+  - $ref: "#/$defs/SpanRecord"
+  - $ref: "#/$defs/LogRecord"
+  - $ref: "#/$defs/TelemetryDebugGrant"
+x-forbidden-attribute-patterns:
+  - "(?i)(^|[._])(prompt|prompts|completion|completions|messages|content|body|bodies|stdout|stderr|env|environment|headers?|authorization|cookie|cookies|password|passwd|secret|secrets|token|api_key|apikey|credential|credentials|private_key|command_line|command_args|full_command|bash_command|tool_input|tool_parameters|tool_output|diff|patch|source_code)($|[._])"
+  - "^gen_ai\\.(prompt|completion|input\\.messages|output\\.messages|system_instructions|tool\\.call\\.arguments|tool\\.call\\.result)"
+  - "^http\\.(request|response)\\.(header|body)"
+  - "^url\\.(full|query|original)$"
+  - "^db\\.(statement|query\\.text)$"
+  - "^process\\.(command|command_line|command_args|environment_variable)"
+  - "^exception\\.(message|stacktrace)$"
+  - "^user\\.(email|account_uuid|account_id|full_name)$"
+x-secret-value-patterns:
+  - "sk-ant-[A-Za-z0-9_-]{20,}"
+  - "sk-[A-Za-z0-9_-]{20,}"
+  - "gh[pousr]_[A-Za-z0-9]{30,}"
+  - "github_pat_[A-Za-z0-9_]{40,}"
+  - "AKIA[0-9A-Z]{16}"
+  - "AGE-SECRET-KEY-1[0-9A-Z]{50,}"
+  - "-----BEGIN [A-Z ]*PRIVATE KEY-----"
+  - "eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}"
+  - "xox[baprs]-[A-Za-z0-9-]{10,}"
+$defs:
+  ShortString:
+    type: string
+    maxLength: 256
+  Code:
+    description: Machine code; lowercase, bounded vocabulary.
+    type: string
+    pattern: "^[a-z0-9_.:-]{1,64}$"
+  TaskId:
+    type: string
+    pattern: "^sc-[0-9]+$"
+  ExecutionId:
+    type: string
+    pattern: "^sc-[0-9]+-x[0-9]+$"
+  HexId32:
+    type: string
+    pattern: "^[0-9a-f]{32}$"
+  HexId16:
+    type: string
+    pattern: "^[0-9a-f]{16}$"
+  Sha:
+    type: string
+    pattern: "^[0-9a-f]{40}([0-9a-f]{24})?$"
+  Role:
+    type: string
+    enum: [researcher, planner, tester, implementer, reviewer]
+  Phase:
+    type: string
+    enum: [specification, test_authoring, red_verification, implementation, green_retry, review, research, orchestration, other]
+  Repository:
+    type: string
+    pattern: "^[A-Za-z0-9_.-]{1,64}/[A-Za-z0-9_.-]{1,100}$"
+  TaskState:
+    type: string
+    enum: [SPECIFIED, TEST_AUTHORING, RED_VERIFYING, RED_VERIFIED, TEST_NEEDS_WORK, ALREADY_SATISFIED, NEEDS_INVESTIGATION, TEST_SPEC_CONFLICT, IMPLEMENTING, GREEN_VERIFYING, GREEN_VERIFIED, REVIEW, CHANGES_REQUESTED, DONE, NEEDS_HUMAN, BLOCKED, CANCELLED]
+  ExecutionState:
+    type: string
+    enum: [QUEUED, STARTING, RUNNING, SUCCEEDED, FAILED, CANCELLED, TIMED_OUT]
+  FailureClass:
+    type: string
+    enum: [none, merit, infrastructure, policy, budget]
+  ResourceAttributes:
+    type: object
+    additionalProperties: false
+    required: [service.name]
+    propertyNames:
+      not:
+        pattern: "(?i)(^|[._])(prompt|completion|content|body|env|environment|token|secret|password|command_line)($|[._])"
+    properties:
+      service.name:
+        type: string
+        enum: [agent-runner, model-gateway, sc-worker, sc-verify, sc-bootstrap]
+      service.version:
+        $ref: "#/$defs/ShortString"
+      service.namespace:
+        const: strange-company
+      service.instance.id:
+        $ref: "#/$defs/ShortString"
+      sc.installation:
+        type: string
+        pattern: "^[a-z0-9-]{1,32}$"
+      k8s.namespace.name:
+        type: string
+        pattern: "^[a-z0-9-]{1,63}$"
+      k8s.pod.name:
+        type: string
+        pattern: "^[a-z0-9.-]{1,253}$"
+      k8s.node.name:
+        type: string
+        pattern: "^[a-z0-9.-]{1,253}$"
+      k8s.job.name:
+        type: string
+        pattern: "^[a-z0-9.-]{1,63}$"
+      telemetry.sdk.name:
+        $ref: "#/$defs/ShortString"
+      telemetry.sdk.language:
+        $ref: "#/$defs/ShortString"
+      telemetry.sdk.version:
+        $ref: "#/$defs/ShortString"
+  SpanAttributes:
+    description: Closed union of every allowed span attribute key. Per-span requirements are in SpanRecord.allOf.
+    type: object
+    additionalProperties: false
+    properties:
+      sc.task_id: {$ref: "#/$defs/TaskId"}
+      sc.execution_id: {$ref: "#/$defs/ExecutionId"}
+      sc.attempt: {type: integer, minimum: 1, maximum: 100}
+      sc.repository: {$ref: "#/$defs/Repository"}
+      sc.role: {$ref: "#/$defs/Role"}
+      sc.harness: {$ref: "#/$defs/Code"}
+      sc.profile: {$ref: "#/$defs/Code"}
+      sc.phase: {$ref: "#/$defs/Phase"}
+      sc.model_tier: {type: string, enum: [clerical, bargain, standard, frontier]}
+      sc.verification_mode: {type: string, enum: [test-first, verification-first]}
+      sc.task.anchor: {const: true}
+      sc.task.state: {$ref: "#/$defs/TaskState"}
+      sc.transition.from: {$ref: "#/$defs/TaskState"}
+      sc.transition.to: {$ref: "#/$defs/TaskState"}
+      sc.transition.actor_kind: {type: string, enum: [runner, ci, human, hermes, policy]}
+      sc.transition.reason_code: {$ref: "#/$defs/Code"}
+      sc.execution.state: {$ref: "#/$defs/ExecutionState"}
+      sc.failure_class: {$ref: "#/$defs/FailureClass"}
+      sc.commit_sha: {$ref: "#/$defs/Sha"}
+      sc.base_sha: {$ref: "#/$defs/Sha"}
+      sc.verification.phase: {type: string, enum: [red, green]}
+      sc.verification.pipeline_number: {type: integer, minimum: 1}
+      sc.verification.classification:
+        type: string
+        enum: [red_valid, red_invalid, already_satisfied, green_pass, green_fail, infra_error, timeout, evidence_rejected]
+      sc.tool.name:
+        type: string
+        pattern: "^[A-Za-z0-9_.:-]{1,64}$"
+      sc.tool.status: {type: string, enum: [ok, error, denied]}
+      sc.test.command_id: {$ref: "#/$defs/Code"}
+      sc.test.result: {type: string, enum: [pass, fail, error, timeout]}
+      sc.test.exit_code: {type: integer, minimum: -255, maximum: 255}
+      sc.test.passed: {type: integer, minimum: 0}
+      sc.test.failed: {type: integer, minimum: 0}
+      sc.test.skipped: {type: integer, minimum: 0}
+      sc.worker.step_result: {type: string, enum: [ok, error, timeout]}
+      gen_ai.operation.name: {type: string, enum: [chat, text_completion, embeddings, generate_content]}
+      gen_ai.provider.name: {$ref: "#/$defs/Code"}
+      gen_ai.request.model: {type: string, pattern: "^[A-Za-z0-9_.:/@-]{1,128}$"}
+      gen_ai.response.model: {type: string, pattern: "^[A-Za-z0-9_.:/@-]{1,128}$"}
+      gen_ai.request.max_tokens: {type: integer, minimum: 0}
+      gen_ai.usage.input_tokens: {type: integer, minimum: 0}
+      gen_ai.usage.output_tokens: {type: integer, minimum: 0}
+      gen_ai.response.finish_reasons:
+        type: array
+        maxItems: 8
+        items: {$ref: "#/$defs/Code"}
+      sc.usage.cached_input_tokens: {type: integer, minimum: 0}
+      sc.usage.cache_write_tokens: {type: integer, minimum: 0}
+      sc.usage.reasoning_tokens: {type: integer, minimum: 0}
+      sc.usage.status: {type: string, enum: [reported, estimated, unknown, not_billable]}
+      sc.routing.requested_tier: {type: string, enum: [clerical, bargain, standard, frontier]}
+      sc.routing.effective_tier: {type: string, enum: [clerical, bargain, standard, frontier]}
+      sc.routing.tier_source: {type: string, enum: [role_default, requested, escalated, repository_capped]}
+      sc.routing.candidate_index: {type: integer, minimum: 0, maximum: 31}
+      sc.routing.fallback: {type: boolean}
+      sc.routing.result: {$ref: "#/$defs/Code"}
+      sc.estop.level: {type: string, enum: [none, workers, all]}
+      sc.estop.source: {type: string, enum: [api, db, git, k8s, degraded]}
+      sc.estop.cancelled_executions: {type: integer, minimum: 0}
+      sc.cost.total_micro_usd: {type: integer, minimum: 0}
+      sc.token_kind: {type: string, enum: [execution, orchestrator]}
+      sc.gateway.denial_code: {type: string, pattern: "^SC_[A-Z_]{2,40}$"}
+      sc.cost.status: {type: string, enum: [priced, unpriced, unknown_usage]}
+      sc.cost_record_id: {type: string, pattern: "^[0-9a-f-]{36}$"}
+      sc.provider_request_id: {type: string, pattern: "^[A-Za-z0-9_.:-]{1,128}$"}
+      sc.gateway.outcome:
+        type: string
+        enum: [ok, upstream_error, denied_budget, denied_estop, denied_unpriced, denied_auth, denied_model, client_cancel]
+      sc.model.mismatch: {type: boolean}
+      sc.stream: {type: boolean}
+      sc.mcp.tool: {type: string, enum: [agent_start, agent_status, agent_logs, agent_result, agent_cancel, agent_list]}
+      http.request.method: {type: string, enum: [GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS]}
+      http.route: {type: string, pattern: "^/[A-Za-z0-9_{}/.:-]{0,127}$"}
+      http.response.status_code: {type: integer, minimum: 100, maximum: 599}
+      error.type: {$ref: "#/$defs/Code"}
+      exception.type: {type: string, pattern: "^[A-Za-z0-9_.*/:-]{1,128}$"}
+      server.address: {type: string, pattern: "^[A-Za-z0-9.-]{1,253}$"}
+      network.protocol.version: {type: string, pattern: "^[0-9.]{1,8}$"}
+  SpanEvent:
+    type: object
+    additionalProperties: false
+    required: [name, time_unix_nano]
+    properties:
+      name:
+        type: string
+        enum: [sc.retry, sc.deadline_exceeded, sc.cancel_requested, sc.policy_violation, exception]
+      time_unix_nano:
+        type: integer
+        minimum: 0
+      attributes:
+        $ref: "#/$defs/SpanAttributes"
+  SpanRecord:
+    type: object
+    additionalProperties: false
+    required: [signal, name, kind, trace_id, span_id, start_time_unix_nano, end_time_unix_nano, status, resource, attributes]
+    properties:
+      signal:
+        const: span
+      name:
+        type: string
+        enum:
+          - sc.task
+          - sc.task.transition
+          - sc.task.completed
+          - sc.execution
+          - sc.execution.dispatch
+          - sc.execution.ingest
+          - sc.verification
+          - sc.worker.run
+          - sc.worker.clone
+          - sc.worker.checkout
+          - sc.worker.push
+          - sc.worker.report
+          - sc.harness.session
+          - sc.tool.action
+          - sc.test.invocation
+          - sc.model.invocation
+          - sc.gateway.reserve
+          - sc.gateway.upstream
+          - sc.gateway.settle
+          - sc.runner.api
+          - sc.runner.mcp
+          - sc.routing.resolve
+          - sc.estop.apply
+      kind:
+        type: string
+        enum: [internal, server, client, producer, consumer]
+      trace_id:
+        $ref: "#/$defs/HexId32"
+      span_id:
+        $ref: "#/$defs/HexId16"
+      parent_span_id:
+        $ref: "#/$defs/HexId16"
+      start_time_unix_nano:
+        type: integer
+        minimum: 0
+      end_time_unix_nano:
+        type: integer
+        minimum: 0
+      status:
+        type: object
+        additionalProperties: false
+        required: [code]
+        properties:
+          code:
+            type: string
+            enum: [unset, ok, error]
+          message:
+            description: Bounded machine code only; never free text from inputs.
+            $ref: "#/$defs/Code"
+      resource:
+        type: object
+        additionalProperties: false
+        required: [attributes]
+        properties:
+          attributes:
+            $ref: "#/$defs/ResourceAttributes"
+      attributes:
+        $ref: "#/$defs/SpanAttributes"
+      events:
+        type: array
+        maxItems: 32
+        items:
+          $ref: "#/$defs/SpanEvent"
+      links:
+        type: array
+        maxItems: 8
+        items:
+          type: object
+          additionalProperties: false
+          required: [trace_id, span_id]
+          properties:
+            trace_id: {$ref: "#/$defs/HexId32"}
+            span_id: {$ref: "#/$defs/HexId16"}
+    allOf:
+      - if: {properties: {name: {const: sc.task}}}
+        then:
+          required: [signal]
+          properties:
+            attributes:
+              required: [sc.task_id, sc.repository, sc.verification_mode, sc.task.anchor, sc.task.state]
+            parent_span_id: false
+      - if: {properties: {name: {const: sc.task.transition}}}
+        then:
+          required: [parent_span_id]
+          properties:
+            attributes:
+              required: [sc.task_id, sc.transition.from, sc.transition.to, sc.transition.actor_kind, sc.transition.reason_code]
+      - if: {properties: {name: {const: sc.task.completed}}}
+        then:
+          required: [parent_span_id]
+          properties:
+            attributes:
+              required: [sc.task_id, sc.task.state]
+      - if: {properties: {name: {const: sc.execution}}}
+        then:
+          required: [parent_span_id]
+          properties:
+            attributes:
+              required: [sc.task_id, sc.execution_id, sc.attempt, sc.role, sc.harness, sc.profile, sc.phase, sc.execution.state, sc.failure_class]
+      - if: {properties: {name: {const: sc.verification}}}
+        then:
+          required: [parent_span_id]
+          properties:
+            attributes:
+              required: [sc.task_id, sc.verification.phase, sc.commit_sha, sc.verification.classification]
+      - if: {properties: {name: {enum: [sc.worker.run, sc.worker.clone, sc.worker.checkout, sc.worker.push, sc.worker.report, sc.harness.session]}}}
+        then:
+          required: [parent_span_id]
+          properties:
+            attributes:
+              required: [sc.task_id, sc.execution_id, sc.role, sc.harness]
+      - if: {properties: {name: {const: sc.tool.action}}}
+        then:
+          required: [parent_span_id]
+          properties:
+            attributes:
+              required: [sc.task_id, sc.execution_id, sc.tool.name, sc.tool.status]
+      - if: {properties: {name: {const: sc.test.invocation}}}
+        then:
+          required: [parent_span_id]
+          properties:
+            attributes:
+              required: [sc.task_id, sc.execution_id, sc.test.command_id, sc.test.result, sc.test.exit_code]
+      - if: {properties: {name: {const: sc.model.invocation}}}
+        then:
+          properties:
+            kind: {const: server}
+            attributes:
+              required: [gen_ai.operation.name, gen_ai.provider.name, gen_ai.request.model, sc.gateway.outcome, sc.token_kind, sc.phase, sc.cost.status, sc.usage.status]
+      - if: {properties: {name: {enum: [sc.gateway.reserve, sc.gateway.upstream, sc.gateway.settle]}}}
+        then:
+          required: [parent_span_id]
+      - if: {properties: {name: {enum: [sc.execution.dispatch, sc.execution.ingest]}}}
+        then:
+          required: [parent_span_id]
+          properties:
+            attributes:
+              required: [sc.task_id, sc.execution_id]
+      - if: {properties: {name: {const: sc.runner.api}}}
+        then:
+          properties:
+            kind: {const: server}
+            attributes:
+              required: [http.request.method, http.route, http.response.status_code]
+      - if: {properties: {name: {const: sc.routing.resolve}}}
+        then:
+          properties:
+            attributes:
+              required: [sc.role, sc.harness, sc.routing.requested_tier, sc.routing.tier_source, sc.routing.result]
+      - if: {properties: {name: {const: sc.estop.apply}}}
+        then:
+          properties:
+            attributes:
+              required: [sc.estop.level, sc.estop.source]
+      - if: {properties: {name: {const: sc.runner.mcp}}}
+        then:
+          properties:
+            kind: {const: server}
+            attributes:
+              required: [sc.mcp.tool]
+  LogRecord:
+    type: object
+    additionalProperties: false
+    required: [signal, ts, level, service, event, msg]
+    properties:
+      signal:
+        const: log
+      ts:
+        type: string
+        pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?Z$"
+      level:
+        type: string
+        enum: [debug, info, warn, error]
+      service:
+        type: string
+        enum: [agent-runner, model-gateway, sc-worker, sc-verify, sc-bootstrap]
+      event:
+        description: Dotted machine event code, e.g. `task.transition`, `gateway.request.denied`.
+        type: string
+        pattern: "^[a-z][a-z0-9_]*(\\.[a-z0-9_]+){1,4}$"
+      msg:
+        description: A constant human message per event. Variable data goes in fields, never interpolated input.
+        type: string
+        maxLength: 256
+      trace_id: {$ref: "#/$defs/HexId32"}
+      span_id: {$ref: "#/$defs/HexId16"}
+      task_id: {$ref: "#/$defs/TaskId"}
+      execution_id: {$ref: "#/$defs/ExecutionId"}
+      attempt: {type: integer, minimum: 1, maximum: 100}
+      repository: {$ref: "#/$defs/Repository"}
+      role: {$ref: "#/$defs/Role"}
+      harness: {$ref: "#/$defs/Code"}
+      provider: {$ref: "#/$defs/Code"}
+      model: {type: string, pattern: "^[A-Za-z0-9_.:/@-]{1,128}$"}
+      from_state: {$ref: "#/$defs/TaskState"}
+      to_state: {$ref: "#/$defs/TaskState"}
+      reason_code: {$ref: "#/$defs/Code"}
+      failure_class: {$ref: "#/$defs/FailureClass"}
+      outcome: {$ref: "#/$defs/Code"}
+      error_type: {$ref: "#/$defs/Code"}
+      http_route: {type: string, pattern: "^/[A-Za-z0-9_{}/.:-]{0,127}$"}
+      status_code: {type: integer, minimum: 100, maximum: 599}
+      duration_ms: {type: integer, minimum: 0}
+      cost_usd: {type: number, minimum: 0}
+      commit_sha: {$ref: "#/$defs/Sha"}
+      policy_revision: {$ref: "#/$defs/Sha"}
+      component: {$ref: "#/$defs/Code"}
+      count: {type: integer, minimum: 0}
+  TelemetryDebugGrant:
+    type: object
+    additionalProperties: false
+    required: [apiVersion, kind, metadata, spec]
+    properties:
+      apiVersion:
+        const: strange.company/v1alpha1
+      kind:
+        const: TelemetryDebugGrant
+      metadata:
+        type: object
+        additionalProperties: false
+        required: [name]
+        properties:
+          name:
+            type: string
+            pattern: "^dbg-[0-9]{8}-[a-z0-9-]{1,40}$"
+      spec:
+        type: object
+        additionalProperties: false
+        required: [scope, capture, reason, approvedBy, createdAt, expiresAt, retentionDays]
+        properties:
+          scope:
+            type: object
+            additionalProperties: false
+            required: [kind, id]
+            properties:
+              kind:
+                type: string
+                enum: [task, execution, service]
+              id:
+                type: string
+                pattern: "^(sc-[0-9]+|sc-[0-9]+-x[0-9]+|agent-runner|model-gateway|sc-worker)$"
+          capture:
+            type: array
+            minItems: 1
+            uniqueItems: true
+            items:
+              type: string
+              enum: [prompts, completions, tool_io, command_output, exception_messages]
+          reason:
+            type: string
+            minLength: 10
+            maxLength: 500
+          approvedBy:
+            type: string
+            pattern: "^[A-Za-z0-9_.-]{1,64}$"
+          createdAt:
+            type: string
+            format: date-time
+          expiresAt:
+            type: string
+            format: date-time
+          retentionDays:
+            type: integer
+            minimum: 1
+            maximum: 7
+    allOf:
+      - if:
+          properties:
+            spec:
+              properties:
+                scope:
+                  properties:
+                    kind: {const: task}
+        then:
+          properties:
+            spec:
+              properties:
+                scope:
+                  properties:
+                    id: {pattern: "^sc-[0-9]+$"}
+      - if:
+          properties:
+            spec:
+              properties:
+                scope:
+                  properties:
+                    kind: {const: execution}
+        then:
+          properties:
+            spec:
+              properties:
+                scope:
+                  properties:
+                    id: {pattern: "^sc-[0-9]+-x[0-9]+$"}
+      - if:
+          properties:
+            spec:
+              properties:
+                scope:
+                  properties:
+                    kind: {const: service}
+        then:
+          properties:
+            spec:
+              properties:
+                scope:
+                  properties:
+                    id: {enum: [agent-runner, model-gateway, sc-worker]}
+examples:
+  - signal: span
+    name: sc.model.invocation
+    kind: server
+    trace_id: 4bf92f3577b34da6a3ce929d0e0e4736
+    span_id: 00f067aa0ba902b7
+    parent_span_id: a3ce929d0e0e4736
+    start_time_unix_nano: 1760350500000000000
+    end_time_unix_nano: 1760350504200000000
+    status: {code: ok}
+    resource:
+      attributes:
+        service.name: model-gateway
+        service.namespace: strange-company
+        sc.installation: prod
+    attributes:
+      sc.task_id: sc-184
+      sc.execution_id: sc-184-x3
+      sc.attempt: 2
+      sc.role: implementer
+      sc.harness: claude
+      sc.phase: implementation
+      gen_ai.operation.name: chat
+      gen_ai.provider.name: anthropic
+      gen_ai.request.model: claude-sonnet-4-6
+      gen_ai.response.model: claude-sonnet-4-6
+      gen_ai.usage.input_tokens: 12034
+      gen_ai.usage.output_tokens: 812
+      sc.usage.cached_input_tokens: 9000
+      sc.usage.status: reported
+      sc.cost.total_micro_usd: 21300
+      sc.token_kind: execution
+      sc.cost.status: priced
+      sc.gateway.outcome: ok
+      sc.model.mismatch: false
+      sc.stream: true
+  - signal: span
+    name: sc.tool.action
+    kind: internal
+    trace_id: 4bf92f3577b34da6a3ce929d0e0e4736
+    span_id: 1111aaaa2222bbbb
+    parent_span_id: 3333cccc4444dddd
+    start_time_unix_nano: 1760350510000000000
+    end_time_unix_nano: 1760350511500000000
+    status: {code: ok}
+    resource:
+      attributes:
+        service.name: sc-worker
+        k8s.namespace.name: agent-jobs
+        k8s.pod.name: sc-184-x3-7hq2k
+    attributes:
+      sc.task_id: sc-184
+      sc.execution_id: sc-184-x3
+      sc.role: implementer
+      sc.harness: claude
+      sc.tool.name: Bash
+      sc.tool.status: ok
+  - signal: span
+    name: sc.task
+    kind: internal
+    trace_id: 4bf92f3577b34da6a3ce929d0e0e4736
+    span_id: a3ce929d0e0e4736
+    start_time_unix_nano: 1760350000000000000
+    end_time_unix_nano: 1760350000000000000
+    status: {code: unset}
+    resource:
+      attributes:
+        service.name: agent-runner
+    attributes:
+      sc.task_id: sc-184
+      sc.repository: projects/example-service
+      sc.verification_mode: test-first
+      sc.task.anchor: true
+      sc.task.state: SPECIFIED
+  - signal: span
+    name: sc.routing.resolve
+    kind: internal
+    trace_id: 4bf92f3577b34da6a3ce929d0e0e4736
+    span_id: 5555eeee6666ffff
+    parent_span_id: 3333cccc4444dddd
+    start_time_unix_nano: 1760350400000000000
+    end_time_unix_nano: 1760350400004000000
+    status: {code: ok}
+    resource: {attributes: {service.name: agent-runner}}
+    attributes:
+      sc.task_id: sc-184
+      sc.execution_id: sc-184-x3
+      sc.role: implementer
+      sc.harness: claude
+      sc.routing.requested_tier: bargain
+      sc.routing.effective_tier: standard
+      sc.routing.tier_source: escalated
+      sc.routing.candidate_index: 0
+      sc.routing.fallback: false
+      sc.routing.result: ok
+  - signal: log
+    ts: "2026-10-13T10:15:00.123Z"
+    level: info
+    service: agent-runner
+    event: task.transition
+    msg: task state changed
+    trace_id: 4bf92f3577b34da6a3ce929d0e0e4736
+    task_id: sc-184
+    from_state: RED_VERIFYING
+    to_state: RED_VERIFIED
+    reason_code: red_valid
+  - apiVersion: strange.company/v1alpha1
+    kind: TelemetryDebugGrant
+    metadata:
+      name: dbg-20261013-gateway-anthropic-stream-parse
+    spec:
+      scope: {kind: execution, id: sc-184-x3}
+      capture: [completions]
+      reason: Investigate unparseable streaming usage events (SCModelUsageUnknown) for one execution.
+      approvedBy: alice
+      createdAt: "2026-10-13T10:00:00Z"
+      expiresAt: "2026-10-13T22:00:00Z"
+      retentionDays: 3
+x-invalid-examples:
+  - reason: span carries a prompt attribute (forbidden content)
+    value:
+      signal: span
+      name: sc.model.invocation
+      kind: server
+      trace_id: 4bf92f3577b34da6a3ce929d0e0e4736
+      span_id: 00f067aa0ba902b7
+      start_time_unix_nano: 1
+      end_time_unix_nano: 2
+      status: {code: ok}
+      resource: {attributes: {service.name: model-gateway}}
+      attributes:
+        gen_ai.operation.name: chat
+        gen_ai.provider.name: anthropic
+        gen_ai.request.model: claude-sonnet-4-6
+        sc.gateway.outcome: ok
+        sc.harness: claude
+        sc.role: implementer
+        sc.phase: implementation
+        sc.token_kind: execution
+        sc.cost.status: priced
+        sc.usage.status: reported
+        gen_ai.prompt: "write me a function that..."
+  - reason: tool span carries the full bash command
+    value:
+      signal: span
+      name: sc.tool.action
+      kind: internal
+      trace_id: 4bf92f3577b34da6a3ce929d0e0e4736
+      span_id: 1111aaaa2222bbbb
+      parent_span_id: 3333cccc4444dddd
+      start_time_unix_nano: 1
+      end_time_unix_nano: 2
+      status: {code: ok}
+      resource: {attributes: {service.name: sc-worker}}
+      attributes:
+        sc.task_id: sc-184
+        sc.execution_id: sc-184-x3
+        sc.role: implementer
+        sc.harness: claude
+        sc.tool.name: Bash
+        sc.tool.status: ok
+        sc.tool.full_command: "curl -H 'Authorization: Bearer ...'"
+  - reason: execution span missing its parent (must hang under the task anchor)
+    value:
+      signal: span
+      name: sc.execution
+      kind: internal
+      trace_id: 4bf92f3577b34da6a3ce929d0e0e4736
+      span_id: 3333cccc4444dddd
+      start_time_unix_nano: 1
+      end_time_unix_nano: 2
+      status: {code: ok}
+      resource: {attributes: {service.name: agent-runner}}
+      attributes:
+        sc.task_id: sc-184
+        sc.execution_id: sc-184-x3
+        sc.attempt: 1
+        sc.role: tester
+        sc.harness: fake
+        sc.profile: tests
+        sc.phase: test_authoring
+        sc.execution.state: SUCCEEDED
+        sc.failure_class: none
+  - reason: log line with an unknown free-form field containing environment data
+    value:
+      signal: log
+      ts: "2026-10-13T10:15:00Z"
+      level: error
+      service: model-gateway
+      event: gateway.upstream.error
+      msg: upstream failed
+      env: "ANTHROPIC_API_KEY=sk-ant-..."
+  - reason: model invocation span carries cost as a float USD value (ADR-0450 requires integer micro-USD)
+    value:
+      signal: span
+      name: sc.model.invocation
+      kind: server
+      trace_id: 4bf92f3577b34da6a3ce929d0e0e4736
+      span_id: 00f067aa0ba902b7
+      start_time_unix_nano: 1
+      end_time_unix_nano: 2
+      status: {code: ok}
+      resource: {attributes: {service.name: model-gateway}}
+      attributes:
+        gen_ai.operation.name: chat
+        gen_ai.provider.name: anthropic
+        gen_ai.request.model: claude-sonnet-4-6
+        sc.gateway.outcome: ok
+        sc.token_kind: execution
+        sc.phase: implementation
+        sc.cost.status: priced
+        sc.usage.status: reported
+        sc.cost.total_usd: 0.0213
+  - reason: debug grant retention beyond 7 days
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: TelemetryDebugGrant
+      metadata: {name: dbg-20261013-x}
+      spec:
+        scope: {kind: service, id: model-gateway}
+        capture: [prompts]
+        reason: long investigation window
+        approvedBy: alice
+        createdAt: "2026-10-13T10:00:00Z"
+        expiresAt: "2026-10-13T20:00:00Z"
+        retentionDays: 30
+  - reason: debug grant scope kind/id mismatch
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: TelemetryDebugGrant
+      metadata: {name: dbg-20261013-y}
+      spec:
+        scope: {kind: task, id: model-gateway}
+        capture: [prompts]
+        reason: mismatched scope test
+        approvedBy: alice
+        createdAt: "2026-10-13T10:00:00Z"
+        expiresAt: "2026-10-13T20:00:00Z"
+        retentionDays: 1

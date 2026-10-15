@@ -1,0 +1,493 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://strange.company/contracts/harness/v1alpha1
+title: HarnessRegistry
+description: |
+  The allowlisted harness registry (SPEC §63, §64, §103). File `policy/harnesses.yaml`
+  (owning plan 28). A harness is a digest-pinned container image that contains the
+  Strange Company worker adapter `sc-worker` plus one coding-agent CLI (or the
+  deterministic fake). Harness and model are separate concepts: a harness declares the
+  provider API families it can speak; the model is chosen by routing (plan 31) and
+  reaches the provider only through the Model Gateway (ADR-0004).
+
+  Hermes may name a harness in `agent_start`; it can never name an image (SPEC §62).
+  The Runner rejects names that are absent, disabled, or not allowed for the role
+  (`HARNESS_NOT_ALLOWED`). The name `hermes` is reserved for Hermes' own Gateway
+  accounting identity and MUST NOT appear as a registry entry.
+
+  Invariants enforced by the policy loader (F04) beyond this schema:
+  - every `supportedRoles` entry names a role defined in `policy/roles/*.yaml`;
+  - every `adapter: fake` entry has a `fake` block and every other adapter has none;
+  - `stage: test-only` entries are dispatchable only to repositories listed in
+    `spec.testRepositories` (fixture repositories used by C10 / plan 46);
+  - `image` digests are unique per (adapter, cliVersion) and appear in the
+    admission parameter list rendered for the agent-jobs VAP (plan 37, plan 54).
+type: object
+additionalProperties: false
+required: [apiVersion, kind, metadata, spec]
+properties:
+  apiVersion:
+    const: strange.company/v1alpha1
+  kind:
+    const: HarnessRegistry
+  metadata:
+    type: object
+    additionalProperties: false
+    required: [name]
+    properties:
+      name:
+        type: string
+        pattern: "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
+  spec:
+    type: object
+    additionalProperties: false
+    required: [harnesses]
+    properties:
+      testRepositories:
+        description: "Repositories (owner/name) to which `stage: test-only` harnesses may be dispatched."
+        type: array
+        uniqueItems: true
+        items:
+          type: string
+          pattern: "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+      harnesses:
+        type: object
+        minProperties: 1
+        propertyNames:
+          pattern: "^(?!hermes$)[a-z][a-z0-9-]{1,40}$"
+        additionalProperties:
+          $ref: "#/$defs/Harness"
+$defs:
+  ImageRef:
+    description: Digest-pinned image reference. Tags are forbidden (SPEC §63).
+    type: string
+    pattern: "^[a-z0-9.-]+(:[0-9]+)?(/[a-z0-9._-]+)+@sha256:[a-f0-9]{64}$"
+  Role:
+    type: string
+    enum: [researcher, planner, tester, implementer, reviewer]
+  ApiFamily:
+    description: Provider wire protocol the harness speaks; each maps to one Gateway route family (plan 53).
+    type: string
+    enum: [anthropic-messages, openai-responses, openai-chat-completions, google-generative, fake]
+  Harness:
+    type: object
+    additionalProperties: false
+    required: [displayName, adapter, image, cliVersion, apiFamilies, supportedRoles, gateway, capabilities, signature, enabled, stage]
+    properties:
+      displayName:
+        type: string
+        maxLength: 80
+      adapter:
+        description: The sc-worker adapter implementation that drives this harness (plan 28 §adapter interface).
+        type: string
+        enum: [claude-code, codex, opencode, fake]
+      image:
+        $ref: "#/$defs/ImageRef"
+      cliVersion:
+        description: Exact pinned version of the harness CLI inside the image (verified at build and by the R01 smoke test).
+        type: string
+        pattern: "^[0-9A-Za-z][0-9A-Za-z.+-]{0,40}$"
+      apiFamilies:
+        type: array
+        minItems: 1
+        uniqueItems: true
+        items:
+          $ref: "#/$defs/ApiFamily"
+      supportedRoles:
+        type: array
+        minItems: 1
+        uniqueItems: true
+        items:
+          $ref: "#/$defs/Role"
+      gateway:
+        description: How sc-worker points this harness at the Model Gateway without exposing provider keys.
+        type: object
+        additionalProperties: false
+        required: [baseUrlEnv, tokenDelivery]
+        properties:
+          baseUrlEnv:
+            description: Environment variable(s) set to the Gateway route base URL, keyed by API family.
+            type: object
+            minProperties: 1
+            propertyNames:
+              $ref: "#/$defs/ApiFamily"
+            additionalProperties:
+              type: string
+              pattern: "^[A-Z][A-Z0-9_]{1,63}$"
+          tokenDelivery:
+            description: |
+              How the gateway token reaches the CLI. `env` = an API-key environment variable
+              set only in the harness child process (never in the pod spec); `config-file` = written
+              by sc-worker into a 0600 file under $HOME that the CLI reads.
+            type: object
+            additionalProperties: false
+            required: [mode]
+            properties:
+              mode:
+                type: string
+                enum: [env, config-file]
+              envVar:
+                type: string
+                pattern: "^[A-Z][A-Z0-9_]{1,63}$"
+              configPath:
+                description: Path relative to $HOME.
+                type: string
+                pattern: "^[A-Za-z0-9._/-]{1,120}$"
+            allOf:
+              - if: {properties: {mode: {const: env}}}
+                then: {required: [envVar]}
+              - if: {properties: {mode: {const: config-file}}}
+                then: {required: [configPath]}
+      capabilities:
+        type: object
+        additionalProperties: false
+        required: [terminalResultEvent, permissionDenialReport, toolAllowlist, ignoresRepoConfig]
+        properties:
+          terminalResultEvent:
+            description: The CLI emits a structured terminal event carrying success/failure (L-2).
+            type: boolean
+          permissionDenialReport:
+            description: Attempted forbidden actions are reported structurally (e.g. Claude Code permission_denials).
+            type: boolean
+          toolAllowlist:
+            description: The CLI supports restricting tools to an allowlist.
+            type: boolean
+          ignoresRepoConfig:
+            description: |
+              The adapter can start the CLI so that it does NOT load hooks, settings, MCP servers or
+              instruction files from repository content (L-2 injection surface). Required for
+              production harnesses (loader rule: stage production => true).
+            type: boolean
+          reportsUsage:
+            description: Harness self-reports usage. Informational cross-check only; accounting is the Gateway's (ADR-0004).
+            type: boolean
+      defaults:
+        description: Adapter defaults; the role and profile may tighten them but never loosen them.
+        type: object
+        additionalProperties: false
+        properties:
+          permissionMode:
+            type: string
+            enum: [dontAsk, acceptEdits, default, plan, workspace-write, read-only]
+          allowedTools:
+            type: array
+            items:
+              type: string
+              maxLength: 120
+          disallowedTools:
+            type: array
+            items:
+              type: string
+              maxLength: 120
+          extraArgs:
+            description: Fixed additional CLI flags (reviewed in Git). Never derived from task input.
+            type: array
+            items:
+              type: string
+              pattern: "^--?[a-z][a-z0-9-]*(=[^\\s]*)?$"
+          environment:
+            description: |
+              Non-secret environment for the harness child process (telemetry opt-outs, plan 40 §9.4).
+              Content-capturing or redirecting telemetry variables are forbidden (SPEC §94):
+              `OTEL_LOG_USER_PROMPTS`, `OTEL_LOG_TOOL_DETAILS`, `OTEL_EXPORTER_OTLP_*ENDPOINT`
+              (sc-worker sets its own exporter), and `CLAUDE_CODE_ENABLE_TELEMETRY` other than `0`.
+            type: object
+            propertyNames:
+              pattern: "^[A-Z][A-Z0-9_]{1,63}$"
+              not:
+                enum: [OTEL_LOG_USER_PROMPTS, OTEL_LOG_TOOL_DETAILS, OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_EXPORTER_OTLP_TRACES_ENDPOINT, OTEL_EXPORTER_OTLP_LOGS_ENDPOINT]
+            properties:
+              CLAUDE_CODE_ENABLE_TELEMETRY: {const: "0"}
+            additionalProperties:
+              type: string
+              maxLength: 512
+      fake:
+        description: Present only for adapter `fake`. Selects a deterministic scenario (plan 28 §fake harness).
+        type: object
+        additionalProperties: false
+        required: [scenario]
+        properties:
+          scenario:
+            type: string
+            enum:
+              - success
+              - failure
+              - timeout
+              - deadline-exceeded
+              - blocked
+              - push
+              - push-no-result
+              - malformed-result
+              - malformed-handoff
+              - malformed-stream
+              - claim-missing
+              - red-valid
+              - red-broken-test
+              - already-satisfied
+              - test-spec-conflict
+              - green-after-retry
+              - test-tamper
+              - test-delete
+              - protected-path-edit
+              - push-other-branch
+              - secret-in-handoff
+              - over-budget
+              - spend-loop
+              - model-switch
+              - tester-touches-implementation
+              - ignore-cancel
+              - large-diff
+              - not-descendant
+              - wrong-commit-claim
+              - green
+              - red-compile-error
+              - red-with-stub
+              - red-valid-v2
+              - test-skip
+              - discovery-config-edit
+              - test-env-detection
+              - review-approve
+              - review-request-changes
+              - review-reject
+              - adjudicate-test-valid
+              - adjudicate-test-invalid
+              - judge-docs
+              - produce-docs
+              - permission-denial
+              - multi-commit
+              - forge-then-push
+              - golden-update
+              - test-helper-weaken
+              - new-test-monkeypatch
+              - nested-module-hide
+              - phase-conditional-test
+          disableWorkerTimeout:
+            description: Test-only hook so the Job deadline path (TIMED_OUT) can be exercised. Loader rejects it unless stage is test-only.
+            type: boolean
+            default: false
+      signature:
+        description: Supply-chain verification reference (plan 23). The Runner refuses to dispatch an image whose signature record is absent from the promotion log.
+        type: object
+        additionalProperties: false
+        required: [keyRef, required]
+        properties:
+          keyRef:
+            description: Identifier of the cosign public key or keyless identity policy defined by plan 23.
+            type: string
+            pattern: "^[a-z0-9][a-z0-9:/._-]{2,120}$"
+          required:
+            type: boolean
+      enabled:
+        type: boolean
+      stage:
+        type: string
+        enum: [production, test-only]
+examples:
+  - apiVersion: strange.company/v1alpha1
+    kind: HarnessRegistry
+    metadata:
+      name: default
+    spec:
+      testRepositories: [sc-e2e/fake-target]
+      harnesses:
+        claude:
+          displayName: Claude Code
+          adapter: claude-code
+          image: git.example.org/strange-company/harness-claude-code@sha256:1111111111111111111111111111111111111111111111111111111111111111
+          cliVersion: 2.1.290
+          apiFamilies: [anthropic-messages]
+          supportedRoles: [researcher, planner, tester, implementer, reviewer]
+          gateway:
+            baseUrlEnv:
+              anthropic-messages: ANTHROPIC_BASE_URL
+            tokenDelivery:
+              mode: env
+              envVar: ANTHROPIC_API_KEY
+          capabilities:
+            terminalResultEvent: true
+            permissionDenialReport: true
+            toolAllowlist: true
+            ignoresRepoConfig: true
+            reportsUsage: true
+          defaults:
+            permissionMode: dontAsk
+            allowedTools: [Read, Edit, Write, Glob, Grep, "Bash(go test *)", "Bash(go build *)", "Bash(git status)", "Bash(git diff *)"]
+            disallowedTools: [WebFetch, WebSearch, "mcp__*", "Bash(git push *)", "Bash(git commit *)", "Bash(curl *)"]
+            extraArgs: [--bare, --strict-mcp-config, --no-session-persistence]
+            environment:
+              CLAUDE_CODE_ENABLE_TELEMETRY: "0"
+              DISABLE_TELEMETRY: "1"
+              DISABLE_ERROR_REPORTING: "1"
+              CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+              DISABLE_AUTOUPDATER: "1"
+          signature:
+            keyRef: cosign:strange-company/release
+            required: true
+          enabled: true
+          stage: production
+        codex:
+          displayName: OpenAI Codex CLI
+          adapter: codex
+          image: git.example.org/strange-company/harness-codex@sha256:2222222222222222222222222222222222222222222222222222222222222222
+          cliVersion: 0.149.1
+          apiFamilies: [openai-responses]
+          supportedRoles: [tester, implementer, reviewer]
+          gateway:
+            baseUrlEnv:
+              openai-responses: SC_CODEX_BASE_URL
+            tokenDelivery:
+              mode: env
+              envVar: SC_GATEWAY_API_KEY
+          capabilities:
+            terminalResultEvent: true
+            permissionDenialReport: false
+            toolAllowlist: false
+            ignoresRepoConfig: true
+            reportsUsage: true
+          signature:
+            keyRef: cosign:strange-company/release
+            required: true
+          enabled: false
+          stage: production
+        fake-red-valid:
+          displayName: Fake harness, scenario red-valid
+          adapter: fake
+          image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+          cliVersion: 0.1.0
+          apiFamilies: [fake]
+          supportedRoles: [tester]
+          gateway:
+            baseUrlEnv:
+              fake: SC_FAKE_GATEWAY_URL
+            tokenDelivery:
+              mode: env
+              envVar: SC_FAKE_GATEWAY_TOKEN
+          capabilities:
+            terminalResultEvent: true
+            permissionDenialReport: false
+            toolAllowlist: false
+            ignoresRepoConfig: true
+          fake:
+            scenario: red-valid
+          signature:
+            keyRef: cosign:strange-company/release
+            required: true
+          enabled: true
+          stage: test-only
+x-invalid-examples:
+  - reason: Content-capturing harness telemetry enabled (OTEL_LOG_USER_PROMPTS, CLAUDE_CODE_ENABLE_TELEMETRY=1; SPEC §94, plan 40 §9.4).
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: HarnessRegistry
+      metadata: {name: default}
+      spec:
+        harnesses:
+          claude:
+            displayName: Claude Code
+            adapter: claude-code
+            image: git.example.org/strange-company/harness-claude-code@sha256:1111111111111111111111111111111111111111111111111111111111111111
+            cliVersion: 2.1.290
+            apiFamilies: [anthropic-messages]
+            supportedRoles: [implementer]
+            gateway: {baseUrlEnv: {anthropic-messages: ANTHROPIC_BASE_URL}, tokenDelivery: {mode: env, envVar: ANTHROPIC_API_KEY}}
+            capabilities: {terminalResultEvent: true, permissionDenialReport: true, toolAllowlist: true, ignoresRepoConfig: true}
+            defaults: {environment: {CLAUDE_CODE_ENABLE_TELEMETRY: "1", OTEL_LOG_USER_PROMPTS: "1"}}
+            signature: {keyRef: cosign:strange-company/release, required: true}
+            enabled: true
+            stage: production
+  - reason: Tag-pinned image instead of digest-pinned (SPEC §63).
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: HarnessRegistry
+      metadata: {name: default}
+      spec:
+        harnesses:
+          claude:
+            displayName: Claude Code
+            adapter: claude-code
+            image: git.example.org/strange-company/harness-claude-code:latest
+            cliVersion: 2.1.290
+            apiFamilies: [anthropic-messages]
+            supportedRoles: [implementer]
+            gateway: {baseUrlEnv: {anthropic-messages: ANTHROPIC_BASE_URL}, tokenDelivery: {mode: env, envVar: ANTHROPIC_API_KEY}}
+            capabilities: {terminalResultEvent: true, permissionDenialReport: true, toolAllowlist: true, ignoresRepoConfig: true}
+            signature: {keyRef: cosign:strange-company/release, required: true}
+            enabled: true
+            stage: production
+  - reason: Reserved harness name `hermes`.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: HarnessRegistry
+      metadata: {name: default}
+      spec:
+        harnesses:
+          hermes:
+            displayName: Hermes
+            adapter: claude-code
+            image: git.example.org/strange-company/harness-claude-code@sha256:1111111111111111111111111111111111111111111111111111111111111111
+            cliVersion: 2.1.290
+            apiFamilies: [anthropic-messages]
+            supportedRoles: [implementer]
+            gateway: {baseUrlEnv: {anthropic-messages: ANTHROPIC_BASE_URL}, tokenDelivery: {mode: env, envVar: ANTHROPIC_API_KEY}}
+            capabilities: {terminalResultEvent: true, permissionDenialReport: true, toolAllowlist: true, ignoresRepoConfig: true}
+            signature: {keyRef: cosign:strange-company/release, required: true}
+            enabled: true
+            stage: production
+  - reason: Harness carries a provider credential class/secret reference; workers never receive provider keys (ADR-0004).
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: HarnessRegistry
+      metadata: {name: default}
+      spec:
+        harnesses:
+          claude:
+            displayName: Claude Code
+            adapter: claude-code
+            image: git.example.org/strange-company/harness-claude-code@sha256:1111111111111111111111111111111111111111111111111111111111111111
+            cliVersion: 2.1.290
+            apiFamilies: [anthropic-messages]
+            supportedRoles: [implementer]
+            credentialSecret: anthropic-api-key
+            gateway: {baseUrlEnv: {anthropic-messages: ANTHROPIC_BASE_URL}, tokenDelivery: {mode: env, envVar: ANTHROPIC_API_KEY}}
+            capabilities: {terminalResultEvent: true, permissionDenialReport: true, toolAllowlist: true, ignoresRepoConfig: true}
+            signature: {keyRef: cosign:strange-company/release, required: true}
+            enabled: true
+            stage: production
+  - reason: Unknown fake scenario.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: HarnessRegistry
+      metadata: {name: default}
+      spec:
+        harnesses:
+          fake-chaos:
+            displayName: Fake
+            adapter: fake
+            image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+            cliVersion: 0.1.0
+            apiFamilies: [fake]
+            supportedRoles: [tester]
+            gateway: {baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}, tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}}
+            capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+            fake: {scenario: chaos-monkey}
+            signature: {keyRef: cosign:strange-company/release, required: true}
+            enabled: true
+            stage: test-only
+  - reason: tokenDelivery mode env without envVar.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: HarnessRegistry
+      metadata: {name: default}
+      spec:
+        harnesses:
+          claude:
+            displayName: Claude Code
+            adapter: claude-code
+            image: git.example.org/strange-company/harness-claude-code@sha256:1111111111111111111111111111111111111111111111111111111111111111
+            cliVersion: 2.1.290
+            apiFamilies: [anthropic-messages]
+            supportedRoles: [implementer]
+            gateway: {baseUrlEnv: {anthropic-messages: ANTHROPIC_BASE_URL}, tokenDelivery: {mode: env}}
+            capabilities: {terminalResultEvent: true, permissionDenialReport: true, toolAllowlist: true, ignoresRepoConfig: true}
+            signature: {keyRef: cosign:strange-company/release, required: true}
+            enabled: true
+            stage: production

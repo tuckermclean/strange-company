@@ -1,0 +1,256 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://strange.company/contracts/repo-policy/v1alpha1
+title: RepositoryPolicy
+description: |
+  `.strange-company/policy.yaml` of a managed repository, kind `RepositoryPolicy`
+  (SPEC §4.7, §42, §46, §53; owning plan 22; ADR-0017). Read from the task's base commit.
+
+  It does two things:
+  1. **Defines repository facts** the platform cannot know: which globs are tests,
+     fixtures, minimal test infrastructure and stub-capable source (`testPaths`,
+     `fixturePaths`, `testInfraPaths`, `stubPaths`). These are definitions, not
+     loosening; they are bounded by loader rules (plan 22 §9.5): no glob may be `**`,
+     `*` or match a protected path, and `testPaths` is required for test-first tasks.
+  2. **Tightens platform policy** (`policy/verification.yaml`, `policy/model-routing.yaml`).
+     The merge function (plan 22 §9.4) applies, per field: allow-lists → intersection;
+     protected/denied sets → union; maxima → min; minima → max; durations → min;
+     ordered enums → stricter value (`deny` > `flag`, `human` > `adjudicator`/`auto`).
+     A value that would loosen platform policy makes the whole file invalid
+     (`POLICY_LOOSENING`); the task is refused at creation (`VALIDATION_FAILED`,
+     `details.allowed = ["POLICY_LOOSENING:<json pointer>"]`). Silent clamping never
+     happens.
+
+  `spec.modelRouting` embeds plan 31's tighten-only `RepositoryRoutingOverride`.
+type: object
+additionalProperties: false
+required: [apiVersion, kind, metadata, spec]
+properties:
+  apiVersion:
+    const: strange.company/v1alpha1
+  kind:
+    const: RepositoryPolicy
+  metadata:
+    type: object
+    additionalProperties: false
+    required: [name]
+    properties:
+      name: {type: string, pattern: "^[A-Za-z0-9_.-]{1,100}$"}
+  spec:
+    type: object
+    additionalProperties: false
+    required: [testPaths]
+    properties:
+      testPaths:
+        description: Test sources. The tester's red commit may touch only these, fixturePaths, testInfraPaths and well-formed stubs in stubPaths.
+        $ref: "#/$defs/DefinitionGlobs"
+      fixturePaths:
+        $ref: "#/$defs/DefinitionGlobs"
+      testInfraPaths:
+        description: Minimal test infrastructure (helpers, fakes) the tester may add or change (SPEC §49).
+        $ref: "#/$defs/DefinitionGlobs"
+      stubPaths:
+        description: Non-test source where declared stubs may be added (ADR-0352). Default when absent - no stubs allowed.
+        $ref: "#/$defs/DefinitionGlobs"
+      protectedPaths:
+        description: Added to the platform protected set (union).
+        $ref: "#/$defs/GlobList"
+      protectedBranches:
+        $ref: "#/$defs/GlobList"
+      discoveryConfig:
+        description: Additions to platform discovery protection (union).
+        type: object
+        additionalProperties: false
+        properties:
+          wholeFiles: {$ref: "#/$defs/GlobList"}
+          semanticKeys:
+            type: array
+            maxItems: 50
+            items:
+              type: object
+              additionalProperties: false
+              required: [path, keys]
+              properties:
+                path: {$ref: "#/$defs/Glob"}
+                format: {type: string, enum: [json, toml, yaml, ini]}
+                keys: {type: array, minItems: 1, items: {type: string, maxLength: 200}}
+      staticChecks:
+        description: Additional patterns (union) per check and language.
+        type: object
+        additionalProperties: false
+        properties:
+          skipMarkers: {$ref: "#/$defs/PatternsByLanguage"}
+          testEnvDetection: {$ref: "#/$defs/PatternsByLanguage"}
+          unconditionalFailure: {$ref: "#/$defs/PatternsByLanguage"}
+      testProtection:
+        type: object
+        additionalProperties: false
+        properties:
+          existingTestModification: {const: deny}
+      verification:
+        type: object
+        additionalProperties: false
+        properties:
+          allowedExemptionClasses:
+            description: Subset of platform classes usable in this repository (intersection). Absent or empty = none, test-first only (fail closed, TDD-12).
+            type: array
+            uniqueItems: true
+            items: {type: string, pattern: "^[a-z][a-z0-9-]{1,40}$"}
+          requireHumanApproval:
+            description: Classes whose approval becomes human here (tightening `auto`).
+            type: array
+            uniqueItems: true
+            items: {type: string, pattern: "^[a-z][a-z0-9-]{1,40}$"}
+          stubPanicLanguages:
+            description: Subset (intersection) of platform allowPanicStubsFor.
+            type: array
+            items: {type: string, enum: [go, python, javascript, typescript, rust, java, kotlin, csharp]}
+      task:
+        type: object
+        additionalProperties: false
+        properties:
+          maxBaseLag:
+            description: Shorter only (min with platform spec.task.maxBaseLag).
+            type: object
+            additionalProperties: false
+            properties:
+              commits: {type: integer, minimum: 0, maximum: 200}
+              age: {type: string, pattern: "^[0-9]+(s|m|h)$"}
+      retry:
+        description: Lower bounds only (min with platform).
+        type: object
+        additionalProperties: false
+        properties:
+          maxAutonomousAttempts: {type: integer, minimum: 1, maximum: 20}
+          maxTesterAttempts: {type: integer, minimum: 1, maximum: 10}
+          maxReviewExecutions: {type: integer, minimum: 1, maximum: 10}
+          maxAuxiliaryExecutions: {type: integer, minimum: 0, maximum: 30}
+      watchdog:
+        description: Shorter durations only.
+        type: object
+        additionalProperties: false
+        properties:
+          groups:
+            type: object
+            propertyNames:
+              enum: [specified, noExecution, verification, hermesWait, investigation, awaitingMerge, needsHuman, approval]
+            additionalProperties:
+              type: object
+              additionalProperties: false
+              properties:
+                alertAfter: {type: string, pattern: "^[0-9]+(s|m|h)$"}
+                escalateAfter: {type: string, pattern: "^[0-9]+(s|m|h)$"}
+      testSpecConflict:
+        type: object
+        additionalProperties: false
+        properties:
+          resolutionApproval: {const: human}
+          maxConflictsPerTask: {type: integer, minimum: 1, maximum: 5}
+      merge:
+        type: object
+        additionalProperties: false
+        properties:
+          humanApprovalsRequired:
+            description: Raised only (max with platform).
+            type: integer
+            minimum: 0
+            maximum: 5
+          elevatedPaths:
+            description: Paths whose change needs `spec.merge.elevatedApprovals` human approvals on the head before `strange-company/review` can be success (code that judges future work, TDD-15). Union with platform.
+            type: array
+            items: {$ref: "#/$defs/Glob"}
+          additionalStatusContexts:
+            description: Extra required contexts (union), e.g. the repository's own Woodpecker workflow.
+            type: array
+            items: {type: string, maxLength: 120}
+      diffLimits:
+        description: Per-role lower limits (min with role.schema diffRules).
+        type: object
+        propertyNames: {enum: [tester, implementer]}
+        additionalProperties:
+          type: object
+          additionalProperties: false
+          properties:
+            maxFilesChanged: {type: integer, minimum: 1, maximum: 2000}
+            maxDiffBytes: {type: integer, minimum: 1, maximum: 10485760}
+      humanAuthority:
+        type: object
+        additionalProperties: false
+        properties:
+          forgejoTeams:
+            description: Narrowing (intersection with platform teams).
+            type: array
+            minItems: 1
+            items: {type: string, pattern: "^[A-Za-z0-9_.-]{1,64}$"}
+          machineAccounts:
+            description: Extension (union).
+            type: array
+            items: {type: string, pattern: "^[A-Za-z0-9_.-]{1,64}$"}
+      modelRouting:
+        $ref: "https://strange.company/contracts/model-routing/v1alpha1#/$defs/RepositoryRoutingOverride"
+$defs:
+  Glob: {type: string, pattern: "^(?!/)[A-Za-z0-9._@+*?{},/\\[\\]-]{1,200}$"}
+  GlobList:
+    type: array
+    maxItems: 200
+    items: {$ref: "#/$defs/Glob"}
+  DefinitionGlobs:
+    description: Repository-defined globs; catch-alls are rejected.
+    type: array
+    maxItems: 100
+    items:
+      allOf:
+        - $ref: "#/$defs/Glob"
+        - not: {enum: ["**", "*", "**/*", "./**", "**/**"]}
+  PatternsByLanguage:
+    type: object
+    propertyNames: {enum: [go, python, javascript, typescript, rust, java, kotlin, csharp, shell, any]}
+    additionalProperties:
+      type: array
+      maxItems: 50
+      items: {type: string, minLength: 2, maxLength: 300}
+examples:
+  - apiVersion: strange.company/v1alpha1
+    kind: RepositoryPolicy
+    metadata: {name: strange-company}
+    spec:
+      testPaths: ["**/*_test.go", "test/integration/**", "src/**/testdata/**"]
+      fixturePaths: ["**/testdata/**"]
+      testInfraPaths: ["src/internal/testutil/**"]
+      stubPaths: ["src/**/*.go"]
+      protectedPaths: ["Makefile", "mk/**", "toolbox/**", "gitops/clusters/*/flux-system/**", "test/e2e/**"]
+      discoveryConfig:
+        wholeFiles: ["Makefile", "mk/**"]
+      verification:
+        allowedExemptionClasses: [documentation-only, research, infrastructure-config]
+        requireHumanApproval: [documentation-only]
+      retry: {maxAutonomousAttempts: 5}
+      merge:
+        humanApprovalsRequired: 1
+        elevatedPaths: ["src/internal/verify/**", "src/internal/statemachine/**", "src/internal/policy/**", "src/cmd/sc-verify/**", "src/cmd/sc-ci-config/**", "src/internal/runner/**", "src/internal/forge/**", "src/cmd/agent-runner/**", "src/cmd/sc-worker/**", "src/internal/gateway/**", "src/internal/ledger/**", "src/cmd/model-gateway/**", "src/internal/jobbuilder/**", "src/internal/scrub/**", "src/internal/lint/**", "src/cmd/sc-gitops/**", "src/cmd/egress-proxy/**", "src/cmd/sc-release/**", "src/cmd/sc-e2e/**"]
+      modelRouting:
+        maxTier: frontier
+x-invalid-examples:
+  - reason: A catch-all test path would let the tester's red commit contain anything.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: RepositoryPolicy
+      metadata: {name: x}
+      spec: {testPaths: ["**"]}
+  - reason: Delegating corrected-test approval to the adjudicator loosens platform policy.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: RepositoryPolicy
+      metadata: {name: x}
+      spec: {testPaths: ["tests/**"], testSpecConflict: {resolutionApproval: adjudicator}}
+  - reason: Existing-test modification cannot be loosened to flag.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: RepositoryPolicy
+      metadata: {name: x}
+      spec: {testPaths: ["tests/**"], testProtection: {existingTestModification: flag}}
+  - reason: Missing testPaths.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: RepositoryPolicy
+      metadata: {name: x}
+      spec: {protectedPaths: ["docs/**"]}

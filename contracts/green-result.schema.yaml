@@ -1,0 +1,354 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://strange.company/contracts/green-result/v1alpha1
+title: GreenResult
+description: |
+  GREEN verification evidence (SPEC §53, §54, §102; owning plan 22; ADR-0008, ADR-0302).
+  Same two-stage model as `red-result.schema.yaml`:
+
+  - `stage: observed`: written by `sc-verify run` (phase `green`) at the implementation
+    head. It contains suite runs, per-test outcomes for every non-passing test, every
+    skipped test and every test named in `SC_PROTECTED_TESTS` (the manifest test IDs the
+    Runner passes through the verification intent, plan 20 §8.4), plus the results of the
+    repository's required checks (lint, build, type check).
+  - `stage: classified`: written by the Runner. It adds the manifest check (blob SHAs read
+    from Forgejo at the head), the implementation-diff static checks (skip markers,
+    test-environment detection, discovery configuration, stub replacement, test literal
+    leakage) and the classification (plan 22 §14.6).
+
+  Verification-first judging (state JUDGING) uses this document with `subject: judge`.
+type: object
+additionalProperties: false
+required: [schema_version, document, stage, observed]
+properties:
+  schema_version:
+    const: v1alpha1
+  document:
+    const: green-result
+  stage:
+    type: string
+    enum: [observed, classified]
+  observed:
+    $ref: "#/$defs/GreenObservation"
+  integrity:
+    $ref: "#/$defs/Integrity"
+  classification:
+    $ref: "#/$defs/GreenClassification"
+  pipeline:
+    $ref: "https://strange.company/contracts/red-result/v1alpha1#/$defs/PipelineIdentity"
+allOf:
+  - if: {properties: {stage: {const: classified}}}
+    then: {required: [integrity, classification, pipeline]}
+  - if: {properties: {stage: {const: observed}}}
+    then:
+      not:
+        anyOf:
+          - required: [classification]
+          - required: [integrity]
+$defs:
+  GitSha: {type: string, pattern: "^[a-f0-9]{40}$"}
+  ObjectId: {type: string, pattern: "^([a-f0-9]{40}|[a-f0-9]{64})$"}
+  Sha256: {type: string, pattern: "^sha256:[a-f0-9]{64}$"}
+  RepoPath:
+    type: string
+    pattern: "^(?!/)(?!.*(^|/)\\.\\.(/|$))[A-Za-z0-9._@+/-]{1,400}$"
+  TestId:
+    type: string
+    pattern: "^[a-z][a-z0-9-]{0,40}::[^\\s].{0,498}$"
+  CheckRun:
+    type: object
+    additionalProperties: false
+    required: [name, exit_code, duration_ms, timed_out, required]
+    properties:
+      name: {type: string, pattern: "^[a-z][a-z0-9-]{0,40}$"}
+      argv_sha256: {$ref: "#/$defs/Sha256"}
+      exit_code: {type: integer}
+      duration_ms: {type: integer, minimum: 0}
+      timed_out: {type: boolean}
+      required: {type: boolean}
+      output_tail: {type: string, maxLength: 4096}
+  GreenObservation:
+    type: object
+    additionalProperties: false
+    required: [task_id, repository, phase, subject, intent_id, base_sha, head_sha, verifier, validation_blob, toolchain_image, runs, checks, tests, tests_truncated, observed_at]
+    properties:
+      task_id: {type: string, pattern: "^sc-[0-9]+$"}
+      repository: {type: string, pattern: "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"}
+      phase: {const: green}
+      subject: {type: string, enum: [tests, judge]}
+      intent_id: {type: string, maxLength: 64}
+      base_sha: {$ref: "#/$defs/GitSha"}
+      head_sha: {$ref: "#/$defs/GitSha"}
+      verifier:
+        type: object
+        additionalProperties: false
+        required: [version, binary_sha256]
+        properties:
+          version: {type: string, maxLength: 40}
+          binary_sha256: {$ref: "#/$defs/Sha256"}
+      validation_blob: {$ref: "#/$defs/ObjectId"}
+      toolchain_image:
+        type: string
+        pattern: "^[a-z0-9.-]+(:[0-9]+)?/[a-z0-9._/-]+@sha256:[a-f0-9]{64}$"
+      runs:
+        type: array
+        minItems: 1
+        maxItems: 40
+        items: {$ref: "https://strange.company/contracts/red-result/v1alpha1#/$defs/RunSummary"}
+      checks:
+        type: array
+        maxItems: 20
+        items: {$ref: "#/$defs/CheckRun"}
+      tests:
+        description: Every non-passing or skipped test and every protected test ID (status_base omitted).
+        type: array
+        maxItems: 2000
+        items: {$ref: "https://strange.company/contracts/red-result/v1alpha1#/$defs/TestObservation"}
+      tests_truncated: {type: boolean}
+      test_id_sets:
+        description: Full head sets (present, skipped) for the full-baseline comparison G5b.
+        type: object
+        additionalProperties: false
+        properties:
+          head_present: {$ref: "https://strange.company/contracts/red-result/v1alpha1#/$defs/TestIdSet"}
+          head_skipped: {$ref: "https://strange.company/contracts/red-result/v1alpha1#/$defs/TestIdSet"}
+      isolation:
+        description: G4b protected isolation run - manifest tests re-run in a tree equal to head minus every test-, fixture- or test-infra-classified file added after the red commit, with discovery whole-files at their manifest values (TDD-2).
+        type: object
+        additionalProperties: false
+        required: [removed_files, removed_files_sha256, tests]
+        properties:
+          removed_files: {type: integer, minimum: 0}
+          removed_files_sha256: {type: string, pattern: "^[a-f0-9]{64}$"}
+          tests:
+            type: array
+            items:
+              type: object
+              additionalProperties: false
+              required: [id, status]
+              properties:
+                id: {$ref: "#/$defs/TestId"}
+                status: {$ref: "https://strange.company/contracts/red-result/v1alpha1#/$defs/TestStatus"}
+      red_replay:
+        description: G9 - change-criterion manifest tests run against an export of the red commit (no .git) in the GREEN environment (TDD-3).
+        type: object
+        additionalProperties: false
+        required: [red_commit, tests]
+        properties:
+          red_commit: {$ref: "#/$defs/GitSha"}
+          tests:
+            type: array
+            items:
+              type: object
+              additionalProperties: false
+              required: [id, status]
+              properties:
+                id: {$ref: "#/$defs/TestId"}
+                status: {$ref: "https://strange.company/contracts/red-result/v1alpha1#/$defs/TestStatus"}
+      repeats:
+        $ref: "https://strange.company/contracts/red-result/v1alpha1#/$defs/Repeats"
+      judge_checks:
+        type: array
+        maxItems: 200
+        items:
+          type: object
+          additionalProperties: false
+          required: [id, status]
+          properties:
+            id: {type: string, maxLength: 120}
+            status: {type: string, enum: [pass, fail, error]}
+            detail: {type: string, maxLength: 500}
+      observed_at: {type: string, format: date-time}
+  Integrity:
+    description: Facts the Runner derived itself (Forgejo) for red_commit..head and the manifest.
+    type: object
+    additionalProperties: false
+    required: [generation, red_commit, head_descends_from_red, manifest_digest, manifest_files, protected_tests_missing, discovery_changes, static_findings, stubs_remaining, foreign_commits]
+    properties:
+      generation: {type: integer, minimum: 1}
+      red_commit: {$ref: "#/$defs/GitSha"}
+      head_descends_from_red: {type: boolean}
+      manifest_digest: {$ref: "#/$defs/Sha256"}
+      manifest_files:
+        type: array
+        items:
+          type: object
+          additionalProperties: false
+          required: [path, expected_blob, status]
+          properties:
+            path: {$ref: "#/$defs/RepoPath"}
+            expected_blob: {$ref: "#/$defs/ObjectId"}
+            actual_blob:
+              oneOf: [{$ref: "#/$defs/ObjectId"}, {type: "null"}]
+            status: {type: string, enum: [intact, modified, deleted, renamed]}
+      protected_tests_missing:
+        description: Manifest test IDs absent from the head run.
+        type: array
+        items: {$ref: "#/$defs/TestId"}
+      discovery_changes:
+        type: array
+        items:
+          type: object
+          additionalProperties: false
+          required: [path, kind]
+          properties:
+            path: {$ref: "#/$defs/RepoPath"}
+            key: {type: string, maxLength: 200}
+            kind: {type: string, enum: [whole_file_changed, semantic_key_changed]}
+      static_findings:
+        type: array
+        maxItems: 200
+        items:
+          type: object
+          additionalProperties: false
+          required: [code, path, severity]
+          properties:
+            code: {type: string, enum: [skip_marker_added, test_env_detection, test_file_deleted, test_file_renamed, existing_test_modified, protected_path_changed, test_literal_leakage, conditional_mock, test_dependency_changed, new_discovery_file, new_test_file_init_hook, environment_dependence]}
+            path: {$ref: "#/$defs/RepoPath"}
+            line: {type: integer, minimum: 1}
+            severity: {type: string, enum: [violation, warning]}
+            detail: {type: string, maxLength: 300}
+      stubs_remaining:
+        type: array
+        items: {type: string, maxLength: 200}
+      foreign_commits:
+        description: Commits in red_commit..head whose SHA is neither a recorded accepted result commit of this task nor a recorded human_commit (/sc accept-external-commit). Trailers are never used (TDD-9).
+        type: array
+        items: {$ref: "#/$defs/GitSha"}
+  GreenClassification:
+    type: object
+    additionalProperties: false
+    required: [outcome, reasons, computed_by, computed_at, policy_revision, verifier_lib_version]
+    properties:
+      outcome:
+        type: string
+        enum: [green_pass, green_fail, tamper_detected, judging_pass, judging_fail]
+      reasons:
+        type: array
+        items:
+          type: string
+          enum:
+            - pipeline_identity_failed
+            - validation_config_mismatch
+            - not_descendant_of_red
+            - protected_test_failing
+            - protected_test_skipped
+            - protected_test_missing
+            - existing_test_failing
+            - new_skip_vs_base
+            - required_check_failed
+            - build_failed
+            - suite_timed_out
+            - report_missing
+            - stub_not_replaced
+            - manifest_file_changed
+            - discovery_config_changed
+            - skip_marker_added
+            - test_env_detection
+            - test_file_deleted
+            - existing_test_modified
+            - foreign_commit
+            - judge_check_failed
+            - judge_artifact_changed
+            - tests_truncated
+            - protected_pass_depends_on_new_test_files
+            - red_not_reproducible
+            - nondeterministic_test
+            - preexisting_test_removed
+            - test_dependency_changed
+            - not_task_pull_request
+            - marker_conditional
+      warnings:
+        type: array
+        items: {type: string, maxLength: 300}
+      computed_by: {const: runner}
+      computed_at: {type: string, format: date-time}
+      policy_revision: {$ref: "#/$defs/Sha256"}
+      verifier_lib_version: {type: string, maxLength: 40}
+examples:
+  - schema_version: v1alpha1
+    document: green-result
+    stage: classified
+    observed:
+      task_id: sc-184
+      repository: projects/example
+      phase: green
+      subject: tests
+      intent_id: vi-9b21
+      base_sha: 0123456789abcdef0123456789abcdef01234567
+      head_sha: fedcba9876543210fedcba9876543210fedcba98
+      verifier: {version: 0.1.0, binary_sha256: "sha256:5555555555555555555555555555555555555555555555555555555555555555"}
+      validation_blob: 7d1a0c3e9b2f4a6c8e0d1f3a5b7c9e1d3f5a7b9c
+      toolchain_image: "git.example.org/strange-company/ci@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+      runs:
+        - {tree: head, commit: fedcba9876543210fedcba9876543210fedcba98, suite: unit, adapter: go-test-json, exit_code: 0, duration_ms: 44000, timed_out: false, build_failed: false, report_found: true, counts: {total: 215, passed: 213, failed_assertion: 0, failed_error: 0, stub_unimplemented: 0, skipped: 2}}
+      checks:
+        - {name: lint, exit_code: 0, duration_ms: 20000, timed_out: false, required: true}
+      tests:
+        - {id: "unit::example.com/x/internal/httpx.TestRedirect307PreservesMethod", suite: unit, status_head: passed}
+        - {id: "unit::example.com/x/internal/httpx.TestRedirect307PreservesBody", suite: unit, status_head: passed}
+      tests_truncated: false
+      observed_at: "2026-10-13T12:59:30Z"
+    integrity:
+      generation: 1
+      red_commit: 89abcdef0123456789abcdef0123456789abcdef
+      head_descends_from_red: true
+      manifest_digest: "sha256:efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef"
+      manifest_files:
+        - {path: internal/httpx/redirect_test.go, expected_blob: 3b18e512dba79e4c8300dd08aeb37f8e728b8dad, actual_blob: 3b18e512dba79e4c8300dd08aeb37f8e728b8dad, status: intact}
+      protected_tests_missing: []
+      discovery_changes: []
+      static_findings: []
+      stubs_remaining: []
+      foreign_commits: []
+    pipeline: {number: 431, intent_id: vi-9b21, created_by: sc-runner, config_revision: 0123456789abcdef0123456789abcdef01234567, config_sha256: "7777777777777777777777777777777777777777777777777777777777777777", evidence_sha256: "9999999999999999999999999999999999999999999999999999999999999999"}
+    classification:
+      outcome: green_pass
+      reasons: []
+      computed_by: runner
+      computed_at: "2026-10-13T13:00:00Z"
+      policy_revision: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      verifier_lib_version: 0.1.0
+x-invalid-examples:
+  - reason: Observed (CI-written) document carrying integrity facts and a verdict.
+    value:
+      schema_version: v1alpha1
+      document: green-result
+      stage: observed
+      observed:
+        task_id: sc-1
+        repository: a/b
+        phase: green
+        subject: tests
+        intent_id: vi-1
+        base_sha: 0123456789abcdef0123456789abcdef01234567
+        head_sha: fedcba9876543210fedcba9876543210fedcba98
+        verifier: {version: 0.1.0, binary_sha256: "sha256:5555555555555555555555555555555555555555555555555555555555555555"}
+        validation_blob: 7d1a0c3e9b2f4a6c8e0d1f3a5b7c9e1d3f5a7b9c
+        toolchain_image: "git.example.org/strange-company/ci@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+        runs: [{tree: head, commit: fedcba9876543210fedcba9876543210fedcba98, suite: unit, adapter: go-test-json, exit_code: 0, duration_ms: 1, timed_out: false, build_failed: false, report_found: true, counts: {total: 1, passed: 1, failed_assertion: 0, failed_error: 0, stub_unimplemented: 0, skipped: 0}}]
+        checks: []
+        tests: []
+        tests_truncated: false
+        observed_at: "2026-10-13T12:59:30Z"
+      classification: {outcome: green_pass, reasons: [], computed_by: runner, computed_at: "2026-10-13T13:00:00Z", policy_revision: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", verifier_lib_version: 0.1.0}
+  - reason: Phase mismatch (a RED observation submitted as GREEN evidence).
+    value:
+      schema_version: v1alpha1
+      document: green-result
+      stage: observed
+      observed:
+        task_id: sc-1
+        repository: a/b
+        phase: red
+        subject: tests
+        intent_id: vi-1
+        base_sha: 0123456789abcdef0123456789abcdef01234567
+        head_sha: fedcba9876543210fedcba9876543210fedcba98
+        verifier: {version: 0.1.0, binary_sha256: "sha256:5555555555555555555555555555555555555555555555555555555555555555"}
+        validation_blob: 7d1a0c3e9b2f4a6c8e0d1f3a5b7c9e1d3f5a7b9c
+        toolchain_image: "git.example.org/strange-company/ci@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+        runs: [{tree: head, commit: fedcba9876543210fedcba9876543210fedcba98, suite: unit, adapter: go-test-json, exit_code: 0, duration_ms: 1, timed_out: false, build_failed: false, report_found: true, counts: {total: 1, passed: 1, failed_assertion: 0, failed_error: 0, stub_unimplemented: 0, skipped: 0}}]
+        checks: []
+        tests: []
+        tests_truncated: false
+        observed_at: "2026-10-13T12:59:30Z"

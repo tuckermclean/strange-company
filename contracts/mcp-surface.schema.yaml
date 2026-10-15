@@ -1,0 +1,763 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://strange.company/contracts/mcp-surface/v1alpha1
+title: RunnerMcpSurface
+description: |
+  The Hermes-facing MCP surface of the Agent Runner (SPEC §59, §60, §62; SI-02). Owning plan 26.
+
+  Transport: MCP streamable HTTP at `http://agent-runner.strange-company.svc:8081/mcp`
+  (listener `mcp`), bearer-authenticated with SC-RUNNER-HERMES. Protocol revisions
+  2025-06-18 through 2026-07-28 are accepted (the Runner uses the official MCP Go SDK and
+  negotiates; upstream Hermes currently performs the `initialize` handshake). Tools are
+  stateless: no tool depends on an MCP session.
+
+  Tools: agent_start, agent_status, agent_logs, agent_result, agent_cancel, agent_list.
+  There are deliberately no tools for transitions, policy, admin, Kubernetes, secrets or
+  evidence mutation; the surface is substantially narrower than the internal API (SPEC §60).
+
+  `x-mcp-tools` lists each tool with its input schema, output schema and error codes; the MCP
+  server publishes exactly these `inputSchema`/`outputSchema` values in `tools/list`.
+  The root schema validates one *invocation record* `{tool, input, output | error}`; contract
+  tests (F02, C08) use it to check request/response pairs.
+
+  Errors are returned as an MCP tool result with `isError: true` whose structured content is
+  `$defs/ToolError`. The same codes and HTTP mappings are used by the internal API
+  (`runner-api.openapi.yaml`).
+
+  Task workflow state names are owned by plan 29 (`contracts/state-machine.yaml`); this
+  contract constrains them by pattern and the Runner validates them against the loaded state
+  machine. Execution states are the fixed set of master plan §7.
+x-mcp-tools:
+  - name: agent_start
+    description: Create a task from an embedded definition (task enters SPECIFIED) and/or dispatch one worker execution for a role on an existing task. Policy resolves image, namespace, ServiceAccount, Secrets, resources and model.
+    inputSchema: {$ref: "#/$defs/AgentStartInput"}
+    outputSchema: {$ref: "#/$defs/AgentStartOutput"}
+    errors: [UNAUTHENTICATED, VALIDATION_FAILED, FORBIDDEN_FIELD, IDEMPOTENCY_CONFLICT, REPOSITORY_NOT_MANAGED, BASE_REF_NOT_FOUND, BASE_REF_NOT_ALLOWED, TASK_NOT_FOUND, TASK_TERMINAL, ROLE_NOT_ALLOWED, HARNESS_NOT_ALLOWED, PROFILE_NOT_ALLOWED, MODEL_TIER_NOT_ALLOWED, MODEL_NOT_ALLOWED, ROUTING_UNRESOLVABLE, EXEMPTION_NOT_ALLOWED, GATE_NOT_SATISFIED, ALREADY_RUNNING, ATTEMPTS_EXHAUSTED, CONTEXT_REF_INVALID, CONTEXT_PROJECTION_VIOLATION, BUDGET_EXCEEDED, EMERGENCY_STOP, CONCURRENCY_LIMIT, POLICY_UNAVAILABLE, DEPENDENCY_UNAVAILABLE, RATE_LIMITED, INTERNAL]
+  - name: agent_status
+    description: Current task state, current/last execution, TDD provenance pointers and allowed next roles.
+    inputSchema: {$ref: "#/$defs/TaskRef"}
+    outputSchema: {$ref: "#/$defs/TaskStatus"}
+    errors: [UNAUTHENTICATED, VALIDATION_FAILED, TASK_NOT_FOUND, RATE_LIMITED, INTERNAL]
+  - name: agent_logs
+    description: Bounded, scrubbed tail of a worker execution's log (live from the pod or archived from object storage).
+    inputSchema: {$ref: "#/$defs/AgentLogsInput"}
+    outputSchema: {$ref: "#/$defs/AgentLogsOutput"}
+    errors: [UNAUTHENTICATED, VALIDATION_FAILED, TASK_NOT_FOUND, EXECUTION_NOT_FOUND, DEPENDENCY_UNAVAILABLE, RATE_LIMITED, INTERNAL]
+  - name: agent_result
+    description: The Runner's verdict on an execution plus the sanitized worker result, handoff and verification evidence summary.
+    inputSchema: {$ref: "#/$defs/AgentResultInput"}
+    outputSchema: {$ref: "#/$defs/AgentResultOutput"}
+    errors: [UNAUTHENTICATED, VALIDATION_FAILED, TASK_NOT_FOUND, EXECUTION_NOT_FOUND, RATE_LIMITED, INTERNAL]
+  - name: agent_cancel
+    description: Cancel a task (or hand it to a human). Active executions are stopped, their credentials revoked and their logs preserved.
+    inputSchema: {$ref: "#/$defs/AgentCancelInput"}
+    outputSchema: {$ref: "#/$defs/AgentCancelOutput"}
+    errors: [UNAUTHENTICATED, VALIDATION_FAILED, IDEMPOTENCY_CONFLICT, TASK_NOT_FOUND, TASK_TERMINAL, INVALID_STATE, RATE_LIMITED, INTERNAL]
+  - name: agent_list
+    description: Page through tasks, filtered by state, repository and role.
+    inputSchema: {$ref: "#/$defs/AgentListInput"}
+    outputSchema: {$ref: "#/$defs/AgentListOutput"}
+    errors: [UNAUTHENTICATED, VALIDATION_FAILED, NOT_IMPLEMENTED, RATE_LIMITED, INTERNAL]
+type: object
+additionalProperties: false
+required: [tool, input]
+properties:
+  tool:
+    type: string
+    enum: [agent_start, agent_status, agent_logs, agent_result, agent_cancel, agent_list]
+  input: true
+  output: true
+  error:
+    $ref: "#/$defs/ToolError"
+oneOf:
+  - required: [output]
+  - required: [error]
+allOf:
+  - if: {properties: {tool: {const: agent_start}}}
+    then: {properties: {input: {$ref: "#/$defs/AgentStartInput"}, output: {$ref: "#/$defs/AgentStartOutput"}}}
+  - if: {properties: {tool: {const: agent_status}}}
+    then: {properties: {input: {$ref: "#/$defs/TaskRef"}, output: {$ref: "#/$defs/TaskStatus"}}}
+  - if: {properties: {tool: {const: agent_logs}}}
+    then: {properties: {input: {$ref: "#/$defs/AgentLogsInput"}, output: {$ref: "#/$defs/AgentLogsOutput"}}}
+  - if: {properties: {tool: {const: agent_result}}}
+    then: {properties: {input: {$ref: "#/$defs/AgentResultInput"}, output: {$ref: "#/$defs/AgentResultOutput"}}}
+  - if: {properties: {tool: {const: agent_cancel}}}
+    then: {properties: {input: {$ref: "#/$defs/AgentCancelInput"}, output: {$ref: "#/$defs/AgentCancelOutput"}}}
+  - if: {properties: {tool: {const: agent_list}}}
+    then: {properties: {input: {$ref: "#/$defs/AgentListInput"}, output: {$ref: "#/$defs/AgentListOutput"}}}
+$defs:
+  TaskId:
+    type: string
+    pattern: "^sc-[0-9]+$"
+  ExecutionId:
+    type: string
+    pattern: "^sc-[0-9]+-x[0-9]+$"
+  Repo:
+    type: string
+    pattern: "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+  GitSha:
+    type: string
+    pattern: "^[a-f0-9]{40}$"
+  AcId:
+    type: string
+    pattern: "^AC-[1-9][0-9]{0,2}$"
+  Role:
+    type: string
+    enum: [researcher, planner, tester, implementer, reviewer]
+  Tier:
+    type: string
+    enum: [clerical, bargain, standard, frontier]
+  TaskState:
+    description: A task workflow state from plan 29's state machine (master plan §7), e.g. SPECIFIED, RED_VERIFIED, NEEDS_HUMAN.
+    type: string
+    pattern: "^[A-Z][A-Z_]{2,40}$"
+  HumanState:
+    type: string
+    enum: [Backlog, Ready, In Progress, Review, Done, Needs Human, Blocked]
+  ExecutionState:
+    type: string
+    enum: [QUEUED, STARTING, RUNNING, SUCCEEDED, FAILED, CANCELLED, TIMED_OUT]
+  FailureClass:
+    type: string
+    enum: [merit, infrastructure, policy, budget]
+  IdempotencyKey:
+    description: Caller-chosen key; the Runner stores (key, sha256(canonical input)) for 7 days.
+    type: string
+    pattern: "^[A-Za-z0-9_.:-]{8,128}$"
+  ContextRef:
+    oneOf:
+      - type: object
+        additionalProperties: false
+        required: [kind, path]
+        properties:
+          kind: {const: repo_path}
+          path:
+            description: File or glob in the task repository, read at the base commit.
+            type: string
+            pattern: "^(?!/)(?!.*(^|/)\\.\\.(/|$))[A-Za-z0-9._@+*?/-]{1,300}$"
+      - type: object
+        additionalProperties: false
+        required: [kind, task_id]
+        properties:
+          kind: {const: task_output}
+          task_id: {$ref: "#/$defs/TaskId"}
+      - type: object
+        additionalProperties: false
+        required: [kind, number]
+        properties:
+          kind: {const: issue}
+          number: {type: integer, minimum: 1}
+  TaskDefinition:
+    description: Embedded task definition (SI-02). Creating it puts the task in SPECIFIED.
+    type: object
+    additionalProperties: false
+    required: [title, objective, repository, base_ref, source, acceptance_criteria, verification]
+    properties:
+      title: {type: string, minLength: 3, maxLength: 200}
+      objective: {type: string, minLength: 10, maxLength: 8000}
+      repository: {$ref: "#/$defs/Repo"}
+      base_ref:
+        description: |
+          The protected `target_branch` itself (default), or a 40-hex commit that is an ancestor of
+          that branch's current tip, at most `spec.task.maxBaseLag` (default 20 commits / 24 h)
+          behind it, and whose `.strange-company/{repo,policy,validation}.yaml` blobs equal the
+          tip's (review RA-1, TDD-10). Tags, `agent/*`, `scratch/*`, `sc-archive/*`,
+          `sc-quarantine/*` and every unprotected branch are rejected with BASE_REF_NOT_ALLOWED,
+          because repository policy and CI configuration are read from the base commit (ADR-0008,
+          ADR-0017). Resolved to an exact commit at creation (SPEC §44).
+        type: string
+        pattern: "^([a-f0-9]{40}|(?!refs/)(?!agent/)(?!scratch/)(?!sc-archive/)(?!sc-quarantine/)[A-Za-z0-9._/-]{1,200})$"
+      target_branch:
+        description: Protected branch the task's PR targets (repository `protectedBranches` ∪ `main`). Default `main`.
+        type: string
+        pattern: "^(?!agent/)[A-Za-z0-9._/-]{1,200}$"
+        default: main
+      source:
+        type: object
+        additionalProperties: false
+        required: [kind]
+        properties:
+          kind: {type: string, enum: [human, forgejo_issue, parent_task, hermes]}
+          ref: {type: string, maxLength: 300}
+          requested_by:
+            description: Human identity as known to Hermes (informational; not an authorization).
+            type: string
+            maxLength: 120
+      acceptance_criteria:
+        description: Stable criteria (SPEC §45). Also validated against acceptance-criteria.schema.yaml (plan 21).
+        type: array
+        minItems: 1
+        maxItems: 50
+        items:
+          type: object
+          additionalProperties: false
+          required: [id, text]
+          properties:
+            id: {$ref: "#/$defs/AcId"}
+            text: {type: string, minLength: 5, maxLength: 2000}
+      verification:
+        type: object
+        additionalProperties: false
+        required: [mode]
+        properties:
+          mode: {type: string, enum: [test-first, verification-first]}
+          exemption_request:
+            description: Requested exemption class; granted only if version-controlled policy allows it (SPEC §46; plan 22).
+            type: object
+            additionalProperties: false
+            required: [class, justification]
+            properties:
+              class: {type: string, pattern: "^[a-z][a-z0-9-]{1,40}$"}
+              justification: {type: string, minLength: 20, maxLength: 2000}
+      constraints:
+        type: array
+        maxItems: 30
+        items: {type: string, maxLength: 1000}
+      parent_task_id: {$ref: "#/$defs/TaskId"}
+      max_attempts:
+        description: May only lower the policy maximum (plan 29).
+        type: integer
+        minimum: 1
+        maximum: 10
+  AgentStartInput:
+    type: object
+    additionalProperties: false
+    required: [idempotency_key, role, harness, profile, model_tier]
+    properties:
+      idempotency_key: {$ref: "#/$defs/IdempotencyKey"}
+      task_id: {$ref: "#/$defs/TaskId"}
+      task: {$ref: "#/$defs/TaskDefinition"}
+      role: {$ref: "#/$defs/Role"}
+      harness:
+        description: Registry name (plan 28). Never an image.
+        type: string
+        pattern: "^[a-z][a-z0-9-]{1,40}$"
+      profile:
+        description: Logical resource profile name (SPEC §83).
+        type: string
+        pattern: "^[a-z][a-z0-9-]{0,30}$"
+      model_tier: {$ref: "#/$defs/Tier"}
+      model:
+        description: Optional concrete model; must be in the routing allowlist for (role, tier) (plan 31).
+        type: string
+        pattern: "^[A-Za-z0-9._:/-]{1,120}$"
+      acceptance_criteria:
+        description: AC ids this execution is scoped to (SPEC §62). Default all.
+        type: array
+        minItems: 1
+        maxItems: 50
+        uniqueItems: true
+        items: {$ref: "#/$defs/AcId"}
+      context_refs:
+        type: array
+        maxItems: 20
+        items: {$ref: "#/$defs/ContextRef"}
+      orchestrator_notes:
+        description: Bounded free text delivered to the worker as a non-authoritative section.
+        type: string
+        maxLength: 4000
+    oneOf:
+      - required: [task_id]
+        not: {required: [task]}
+      - required: [task]
+        not: {required: [task_id]}
+  ResolvedDispatch:
+    type: object
+    additionalProperties: false
+    required: [base_commit, start_commit, branch, harness, harness_image_digest, profile, model_tier, provider, model, policy_revision]
+    properties:
+      base_commit: {$ref: "#/$defs/GitSha"}
+      start_commit: {$ref: "#/$defs/GitSha"}
+      branch: {type: string, pattern: "^agent/sc-[0-9]+$"}
+      harness: {type: string}
+      harness_image_digest: {type: string, pattern: "^sha256:[a-f0-9]{64}$"}
+      profile: {type: string}
+      model_tier: {$ref: "#/$defs/Tier"}
+      provider: {type: string}
+      model: {type: string}
+      policy_revision: {type: string, pattern: "^sha256:[a-f0-9]{64}$"}
+  AgentStartOutput:
+    type: object
+    additionalProperties: false
+    required: [task_id, task_state, created_task, execution_id, execution_state, attempt, resolved, idempotent_replay]
+    properties:
+      task_id: {$ref: "#/$defs/TaskId"}
+      task_state: {$ref: "#/$defs/TaskState"}
+      created_task: {type: boolean}
+      execution_id: {$ref: "#/$defs/ExecutionId"}
+      execution_state: {type: string, enum: [QUEUED, STARTING]}
+      attempt: {type: integer, minimum: 1}
+      queue_position: {type: integer, minimum: 1}
+      resolved: {$ref: "#/$defs/ResolvedDispatch"}
+      idempotent_replay: {type: boolean}
+  TaskRef:
+    type: object
+    additionalProperties: false
+    required: [task_id]
+    properties:
+      task_id: {$ref: "#/$defs/TaskId"}
+  ExecutionSummary:
+    type: object
+    additionalProperties: false
+    required: [execution_id, role, harness, profile, model_tier, attempt, state, queued_at]
+    properties:
+      execution_id: {$ref: "#/$defs/ExecutionId"}
+      role: {$ref: "#/$defs/Role"}
+      harness: {type: string}
+      profile: {type: string}
+      model_tier: {$ref: "#/$defs/Tier"}
+      model: {type: string}
+      attempt: {type: integer, minimum: 1}
+      state: {$ref: "#/$defs/ExecutionState"}
+      failure_class: {$ref: "#/$defs/FailureClass"}
+      failure_code: {type: string, pattern: "^[A-Z][A-Z_]{2,60}$"}
+      queued_at: {type: string, format: date-time}
+      started_at: {type: string, format: date-time}
+      finished_at: {type: string, format: date-time}
+      deadline_at: {type: string, format: date-time}
+      last_heartbeat_at: {type: string, format: date-time}
+      worker_phase: {type: string, enum: [starting, cloning, materializing, harness, validating, committing, pushing, reporting]}
+  Transition:
+    type: object
+    additionalProperties: false
+    required: [at, actor, from, to, reason]
+    properties:
+      at: {type: string, format: date-time}
+      actor:
+        description: "`runner`, `hermes`, `human:<username>` (from a per-operator admin credential or a Forgejo `/sc` command), `breakglass:runner-admin`, `ci:woodpecker/<pipeline>`. Worker results are recorded with actor `runner`, which judges them (plan 29)."
+        type: string
+        pattern: "^(runner|hermes|human:[A-Za-z0-9_.-]{1,64}|breakglass:runner-admin|ci:woodpecker/[0-9]+)$"
+      from: {$ref: "#/$defs/TaskState"}
+      to: {$ref: "#/$defs/TaskState"}
+      reason: {type: string, maxLength: 1000}
+  EvidenceSummary:
+    type: object
+    additionalProperties: false
+    required: [phase, result, pipeline, commit, digest, recorded_at]
+    properties:
+      phase: {type: string, enum: [red, green]}
+      result:
+        description: Classification from red-result / green-result documents (plan 22), e.g. expected_failure, broken_test, unexpected_pass, success, failure.
+        type: string
+        pattern: "^[a-z][a-z_]{2,40}$"
+      pipeline: {type: integer, minimum: 1}
+      commit: {$ref: "#/$defs/GitSha"}
+      digest: {type: string, pattern: "^sha256:[a-f0-9]{64}$"}
+      recorded_at: {type: string, format: date-time}
+  TaskStatus:
+    type: object
+    additionalProperties: false
+    required: [task_id, title, repository, state, human_state, verification_mode, base_commit, attempts, next_allowed_roles, updated_at]
+    properties:
+      task_id: {$ref: "#/$defs/TaskId"}
+      title: {type: string}
+      repository: {$ref: "#/$defs/Repo"}
+      parent_task_id: {$ref: "#/$defs/TaskId"}
+      state: {$ref: "#/$defs/TaskState"}
+      human_state: {$ref: "#/$defs/HumanState"}
+      verification_mode: {type: string, enum: [test-first, verification-first]}
+      exemption: {type: string}
+      base_commit: {$ref: "#/$defs/GitSha"}
+      branch: {type: string, pattern: "^agent/sc-[0-9]+$"}
+      red_commit: {$ref: "#/$defs/GitSha"}
+      implementation_commit: {$ref: "#/$defs/GitSha"}
+      pr_url: {type: string, format: uri}
+      attempts:
+        description: Attempts used per failure class and maximum (lesson L-4; plan 29).
+        type: object
+        additionalProperties: false
+        required: [used, maximum]
+        properties:
+          used: {type: integer, minimum: 0}
+          maximum: {type: integer, minimum: 1}
+          by_class:
+            type: object
+            additionalProperties: false
+            properties:
+              merit: {type: integer, minimum: 0}
+              infrastructure: {type: integer, minimum: 0}
+              policy: {type: integer, minimum: 0}
+              budget: {type: integer, minimum: 0}
+      current_execution: {$ref: "#/$defs/ExecutionSummary"}
+      last_transition: {$ref: "#/$defs/Transition"}
+      evidence:
+        type: array
+        maxItems: 20
+        items: {$ref: "#/$defs/EvidenceSummary"}
+      next_allowed_roles:
+        description: Roles the state machine would accept for agent_start right now.
+        type: array
+        items: {$ref: "#/$defs/Role"}
+      needs_human_reason: {type: string, maxLength: 1000}
+      cost:
+        description: Ledger totals from the Gateway (plan 32). complete=false means the total is a floor (L-3).
+        type: object
+        additionalProperties: false
+        required: [total_usd, complete]
+        properties:
+          total_usd: {type: number, minimum: 0}
+          complete: {type: boolean}
+      updated_at: {type: string, format: date-time}
+  AgentLogsInput:
+    type: object
+    additionalProperties: false
+    required: [task_id]
+    properties:
+      task_id: {$ref: "#/$defs/TaskId"}
+      execution_id: {$ref: "#/$defs/ExecutionId"}
+      tail_lines: {type: integer, minimum: 1, maximum: 500, default: 200}
+  AgentLogsOutput:
+    type: object
+    additionalProperties: false
+    required: [task_id, execution_id, source, truncated, lines, redactions]
+    properties:
+      task_id: {$ref: "#/$defs/TaskId"}
+      execution_id: {$ref: "#/$defs/ExecutionId"}
+      source: {type: string, enum: [live, archived, unavailable]}
+      truncated: {type: boolean}
+      lines:
+        description: At most 500 lines and 64 KiB in total after scrubbing; each line at most 2 KiB.
+        type: array
+        maxItems: 500
+        items: {type: string, maxLength: 2048}
+      redactions: {type: integer, minimum: 0}
+  AgentResultInput:
+    type: object
+    additionalProperties: false
+    required: [task_id]
+    properties:
+      task_id: {$ref: "#/$defs/TaskId"}
+      execution_id:
+        description: Default is the latest execution of the task.
+        $ref: "#/$defs/ExecutionId"
+  Violation:
+    type: object
+    additionalProperties: false
+    required: [code]
+    properties:
+      code:
+        type: string
+        enum: [RESULT_SCHEMA_INVALID, RESULT_IDENTITY_MISMATCH, RESULT_MISSING, BRANCH_MISMATCH, COMMIT_NOT_FOUND, COMMIT_MISMATCH, NOT_DESCENDANT_OF_START, MULTIPLE_COMMITS, PROTECTED_PATH_VIOLATION, ROLE_DIFF_VIOLATION, TEST_TAMPER, DIFF_TOO_LARGE, DELETION_NOT_ALLOWED, SECRET_DETECTED, REF_VIOLATION, PERMISSION_DENIAL, STATE_NOT_ALLOWED_FOR_ROLE]
+      path: {type: string, maxLength: 400}
+      detail: {type: string, maxLength: 1000}
+  AgentResultOutput:
+    type: object
+    additionalProperties: false
+    required: [task_id, execution_id, execution_state, outcome]
+    properties:
+      task_id: {$ref: "#/$defs/TaskId"}
+      execution_id: {$ref: "#/$defs/ExecutionId"}
+      execution_state: {$ref: "#/$defs/ExecutionState"}
+      outcome:
+        description: "`pending` = not yet terminal; `accepted` = result passed ingestion; `rejected` = POLICY_VIOLATION or invalid result; `none` = terminal without a result."
+        type: string
+        enum: [pending, accepted, rejected, none]
+      failure_class: {$ref: "#/$defs/FailureClass"}
+      failure_code: {type: string, pattern: "^[A-Z][A-Z_]{2,60}$"}
+      violations:
+        type: array
+        maxItems: 100
+        items: {$ref: "#/$defs/Violation"}
+      worker_state: {type: string, enum: [completed, failed, blocked, test_spec_conflict, already_satisfied]}
+      summary: {type: string, maxLength: 4000}
+      commit: {$ref: "#/$defs/GitSha"}
+      role_output:
+        description: The role_output block of the worker result (worker-result.schema.yaml), after Runner redaction.
+        type: object
+      handoff:
+        $ref: "https://strange.company/contracts/handoff/v1alpha1"
+      handoff_redacted: {type: boolean}
+      evidence:
+        type: array
+        maxItems: 10
+        items: {$ref: "#/$defs/EvidenceSummary"}
+      task_state_after: {$ref: "#/$defs/TaskState"}
+  AgentCancelInput:
+    type: object
+    additionalProperties: false
+    required: [idempotency_key, task_id, reason]
+    properties:
+      idempotency_key: {$ref: "#/$defs/IdempotencyKey"}
+      task_id: {$ref: "#/$defs/TaskId"}
+      reason: {type: string, minLength: 10, maxLength: 1000}
+      disposition:
+        description: "`cancelled` -> CANCELLED; `needs_human` -> NEEDS_HUMAN (escalation, raises the Needs Human notification)."
+        type: string
+        enum: [cancelled, needs_human]
+        default: cancelled
+  AgentCancelOutput:
+    type: object
+    additionalProperties: false
+    required: [task_id, task_state, stopped_executions, idempotent_replay]
+    properties:
+      task_id: {$ref: "#/$defs/TaskId"}
+      task_state: {$ref: "#/$defs/TaskState"}
+      stopped_executions:
+        type: array
+        items: {$ref: "#/$defs/ExecutionId"}
+      idempotent_replay: {type: boolean}
+  AgentListInput:
+    type: object
+    additionalProperties: false
+    properties:
+      states:
+        type: array
+        maxItems: 20
+        uniqueItems: true
+        items: {$ref: "#/$defs/TaskState"}
+      repository: {$ref: "#/$defs/Repo"}
+      role:
+        description: Filter on the role of the latest execution.
+        $ref: "#/$defs/Role"
+      limit: {type: integer, minimum: 1, maximum: 100, default: 50}
+      cursor:
+        type: string
+        pattern: "^[A-Za-z0-9_-]{1,200}$"
+      updated_since:
+        description: |
+          RFC 3339 timestamp; return only tasks whose updated_at is strictly later, ordered by
+          updated_at ascending. RESERVED for the first self-hosted task (plan 46, R02): until
+          that task's implementation is deployed the Runner MUST return NOT_IMPLEMENTED when
+          this field is present.
+        type: string
+        format: date-time
+  TaskSummary:
+    type: object
+    additionalProperties: false
+    required: [task_id, title, repository, state, human_state, updated_at]
+    properties:
+      task_id: {$ref: "#/$defs/TaskId"}
+      title: {type: string}
+      repository: {$ref: "#/$defs/Repo"}
+      state: {$ref: "#/$defs/TaskState"}
+      human_state: {$ref: "#/$defs/HumanState"}
+      latest_execution_id: {$ref: "#/$defs/ExecutionId"}
+      latest_execution_state: {$ref: "#/$defs/ExecutionState"}
+      latest_role: {$ref: "#/$defs/Role"}
+      updated_at: {type: string, format: date-time}
+  AgentListOutput:
+    type: object
+    additionalProperties: false
+    required: [tasks]
+    properties:
+      tasks:
+        type: array
+        maxItems: 100
+        items: {$ref: "#/$defs/TaskSummary"}
+      next_cursor:
+        type: string
+        pattern: "^[A-Za-z0-9_-]{1,200}$"
+  ErrorCode:
+    type: string
+    enum:
+      - UNAUTHENTICATED          # 401
+      - FORBIDDEN                # 403 caller class may not use this operation
+      - VALIDATION_FAILED        # 400 schema/semantic validation
+      - FORBIDDEN_FIELD          # 400 SPEC §62 field (image, namespace, serviceAccount, secrets, volumes, hostPath, privileged, securityContext, resources, raw YAML)
+      - IDEMPOTENCY_CONFLICT     # 409 same key, different input
+      - REPOSITORY_NOT_MANAGED   # 404
+      - BASE_REF_NOT_FOUND       # 404
+      - BASE_REF_NOT_ALLOWED     # 400 base_ref/target_branch not a protected branch, or a commit not acceptable as base (RA-1)
+      - TASK_NOT_FOUND           # 404
+      - EXECUTION_NOT_FOUND      # 404
+      - TASK_TERMINAL            # 409
+      - INVALID_STATE            # 409 transition not allowed by the state machine
+      - ROLE_NOT_ALLOWED         # 400
+      - HARNESS_NOT_ALLOWED      # 400 absent, disabled, test-only on a non-test repo, or not allowed for the role
+      - PROFILE_NOT_ALLOWED      # 400
+      - MODEL_TIER_NOT_ALLOWED   # 400
+      - MODEL_NOT_ALLOWED        # 400
+      - ROUTING_UNRESOLVABLE     # 409 routing found no eligible model for (role, harness, tier) (plan 31); details.rejected lists candidates
+      - EXEMPTION_NOT_ALLOWED    # 400
+      - GATE_NOT_SATISFIED       # 409 e.g. implementer before RED_VERIFIED (SPEC §52)
+      - ALREADY_RUNNING          # 409 a non-terminal execution exists for the task
+      - ATTEMPTS_EXHAUSTED       # 409
+      - CONTEXT_REF_INVALID      # 400
+      - CONTEXT_PROJECTION_VIOLATION # 400 a context ref would deliver a kind forbidden for the role
+      - BUDGET_EXCEEDED          # 402
+      - EMERGENCY_STOP           # 503
+      - CONCURRENCY_LIMIT        # 429 queue full
+      - POLICY_UNAVAILABLE       # 503 policy failed to load/validate (fail closed)
+      - DEPENDENCY_UNAVAILABLE   # 503 Forgejo / Kubernetes / sc-pg / object storage
+      - RATE_LIMITED             # 429
+      - NOT_IMPLEMENTED          # 501
+      - INTERNAL                 # 500
+  ToolError:
+    type: object
+    additionalProperties: false
+    required: [code, message, retryable]
+    properties:
+      code: {$ref: "#/$defs/ErrorCode"}
+      message: {type: string, maxLength: 1000}
+      retryable: {type: boolean}
+      field:
+        description: JSON pointer of the offending input field, when applicable.
+        type: string
+        maxLength: 200
+      details:
+        type: object
+        additionalProperties: false
+        properties:
+          allowed:
+            description: Allowed values (e.g. harness names for the role).
+            type: array
+            items: {type: string}
+          task_state: {$ref: "#/$defs/TaskState"}
+          retry_after_seconds: {type: integer, minimum: 1}
+          request_id: {type: string, maxLength: 64}
+          rejected:
+            description: ROUTING_UNRESOLVABLE candidate rejections (plan 31).
+            type: array
+            maxItems: 50
+            items:
+              type: object
+              additionalProperties: false
+              required: [model_id, reason]
+              properties:
+                model_id: {type: string, maxLength: 160}
+                reason: {type: string, pattern: "^[a-z][a-z_]{2,40}$"}
+          level:
+            description: EMERGENCY_STOP effective level (plan 33).
+            type: string
+            enum: [workers, all]
+          dispatch_paused:
+            description: EMERGENCY_STOP returned because `runner.dispatchPaused` is true.
+            type: boolean
+examples:
+  - tool: agent_start
+    input:
+      idempotency_key: hermes-2026-10-13-sc-new-0001
+      task:
+        title: Preserve method on HTTP 307
+        objective: Make the HTTP client preserve the request method and body on 307 redirects.
+        repository: projects/example
+        base_ref: main
+        source: {kind: forgejo_issue, ref: "projects/example#184"}
+        acceptance_criteria:
+          - {id: AC-1, text: HTTP 307 preserves the original method.}
+          - {id: AC-2, text: HTTP 307 preserves the request body.}
+        verification: {mode: test-first}
+      role: tester
+      harness: claude
+      profile: tests
+      model_tier: standard
+      context_refs:
+        - {kind: repo_path, path: internal/httpx/client.go}
+      orchestrator_notes: The redirect handling lives in internal/httpx.
+    output:
+      task_id: sc-184
+      task_state: TEST_AUTHORING
+      created_task: true
+      execution_id: sc-184-x1
+      execution_state: QUEUED
+      attempt: 1
+      queue_position: 1
+      resolved:
+        base_commit: 0123456789abcdef0123456789abcdef01234567
+        start_commit: 0123456789abcdef0123456789abcdef01234567
+        branch: agent/sc-184
+        harness: claude
+        harness_image_digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+        profile: tests
+        model_tier: standard
+        provider: anthropic
+        model: claude-sonnet-5
+        policy_revision: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      idempotent_replay: false
+  - tool: agent_start
+    input:
+      idempotency_key: hermes-2026-10-13-sc-184-impl-1
+      task_id: sc-184
+      role: implementer
+      harness: claude
+      profile: implementation
+      model_tier: bargain
+    error:
+      code: GATE_NOT_SATISFIED
+      message: implementer requires task state RED_VERIFIED; current state is RED_VERIFYING
+      retryable: true
+      details: {task_state: RED_VERIFYING}
+  - tool: agent_status
+    input: {task_id: sc-184}
+    output:
+      task_id: sc-184
+      title: Preserve method on HTTP 307
+      repository: projects/example
+      state: RED_VERIFIED
+      human_state: In Progress
+      verification_mode: test-first
+      base_commit: 0123456789abcdef0123456789abcdef01234567
+      branch: agent/sc-184
+      red_commit: 89abcdef0123456789abcdef0123456789abcdef
+      attempts: {used: 1, maximum: 5, by_class: {merit: 0, infrastructure: 0, policy: 0, budget: 0}}
+      last_transition: {at: "2026-10-13T12:20:00Z", actor: "ci:woodpecker/412", from: RED_VERIFYING, to: RED_VERIFIED, reason: "expected_failure on AC-1 and AC-2"}
+      evidence:
+        - {phase: red, result: expected_failure, pipeline: 412, commit: 89abcdef0123456789abcdef0123456789abcdef, digest: "sha256:abababababababababababababababababababababababababababababababab", recorded_at: "2026-10-13T12:20:00Z"}
+      next_allowed_roles: [implementer, reviewer]
+      cost: {total_usd: 0.21, complete: true}
+      updated_at: "2026-10-13T12:20:00Z"
+  - tool: agent_list
+    input: {updated_since: "2026-10-13T00:00:00Z"}
+    error: {code: NOT_IMPLEMENTED, message: updated_since is reserved for the first self-hosted task, retryable: false, field: /updated_since}
+x-invalid-examples:
+  - reason: base_ref names a Runner quarantine tag (trust anchor would be attacker-controlled; RA-1).
+    value:
+      tool: agent_start
+      input:
+        idempotency_key: hermes-bad-base-0001
+        task:
+          title: Bad base
+          objective: Try to anchor policy on a quarantined commit.
+          repository: projects/example
+          base_ref: sc-quarantine/sc-170-x2
+          source: {kind: hermes}
+          acceptance_criteria: [{id: AC-1, text: Something observable.}]
+          verification: {mode: test-first}
+        role: tester
+        harness: claude
+        profile: tests
+        model_tier: standard
+      output:
+        task_id: sc-1
+        task_state: TEST_AUTHORING
+        created_task: true
+        execution_id: sc-1-x1
+        execution_state: QUEUED
+        attempt: 1
+        resolved: {base_commit: 0123456789abcdef0123456789abcdef01234567, start_commit: 0123456789abcdef0123456789abcdef01234567, branch: agent/sc-1, harness: claude, harness_image_digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111", profile: tests, model_tier: standard, provider: anthropic, model: m, policy_revision: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+        idempotent_replay: false
+  - reason: agent_start specifying an image and namespace (SPEC §62).
+    value:
+      tool: agent_start
+      input: {idempotency_key: abcdefgh1234, task_id: sc-1, role: implementer, harness: claude, profile: implementation, model_tier: bargain, image: "evil/image:latest", namespace: kube-system}
+      error: {code: FORBIDDEN_FIELD, message: x, retryable: false}
+  - reason: agent_start with both task_id and an embedded task.
+    value:
+      tool: agent_start
+      input:
+        idempotency_key: abcdefgh1234
+        task_id: sc-1
+        task: {title: abc, objective: abcdefghijk, repository: a/b, base_ref: main, source: {kind: human}, acceptance_criteria: [{id: AC-1, text: abcde}], verification: {mode: test-first}}
+        role: tester
+        harness: claude
+        profile: tests
+        model_tier: standard
+      error: {code: VALIDATION_FAILED, message: x, retryable: false}
+  - reason: agent_start with raw resource values instead of a profile name.
+    value:
+      tool: agent_start
+      input: {idempotency_key: abcdefgh1234, task_id: sc-1, role: implementer, harness: claude, profile: implementation, model_tier: bargain, resources: {limits: {memory: 64Gi}}}
+      error: {code: FORBIDDEN_FIELD, message: x, retryable: false}
+  - reason: agent_logs tail beyond the bound.
+    value:
+      tool: agent_logs
+      input: {task_id: sc-1, tail_lines: 100000}
+      error: {code: VALIDATION_FAILED, message: x, retryable: false}
+  - reason: Invocation record with neither output nor error.
+    value:
+      tool: agent_status
+      input: {task_id: sc-1}
+  - reason: Unknown tool (no admin tools on the MCP surface).
+    value:
+      tool: agent_transition
+      input: {task_id: sc-1, to: DONE}
+      output: {}

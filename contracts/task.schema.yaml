@@ -1,0 +1,894 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://strange.company/contracts/task/v1alpha1
+title: TaskRecord
+description: |
+  The durable task record held by the Agent Runner in `sc-pg` (SPEC §73, §56, §101; owning
+  plan 29). This document is the canonical JSON projection of the `runner.tasks` row plus
+  its child rows (criteria versions, generations, conflicts, reviews, transitions). It is
+  returned by `GET /v1/tasks/{id}?view=record` (plan 26) and used by contract tests and
+  the bypass/recovery procedures.
+
+  Field mapping to SPEC §73: id=`task_id`; title; repository; source; acceptance criteria=
+  `acceptance_criteria`; verification mode=`verification.mode`; state; claimed_by;
+  parent_task=`parent_task_id`; role/harness/model/profile=`current_execution` (latest);
+  attempt/maximum attempts=`attempts`; test execution, red commit, red evidence,
+  implementation execution, implementation commit, green evidence=`tdd` (SPEC §56) with
+  per-generation detail; branch; PR=`pull_request`; artifacts; test results=`test_results`;
+  handoff=`latest_handoff`; created_at; updated_at; history.
+
+  Every transition row records timestamp, actor, old state, new state and reason
+  (SPEC §73) plus event, transition id, policy revision/commit, state-machine revision,
+  execution and evidence references, and the human decision payload where applicable.
+
+  Invariants the Runner enforces beyond this schema (plan 29 §6.2):
+  - `state` and every `history[].to_state` are states of `contracts/state-machine.yaml`
+    at `state_machine_revision`;
+  - at most one execution of the task is non-terminal (partial unique index);
+  - `needs_human` is present iff `state` is NEEDS_HUMAN; `resume_state` is present when
+    `state` is NEEDS_HUMAN or BLOCKED;
+  - history `seq` values are contiguous from 1; `history[-1].to_state == state`;
+  - `tdd` provenance rows are append-only: a superseded generation is never deleted or
+    rewritten, so provenance survives retries, conflicts and squash merges (SPEC §56).
+type: object
+additionalProperties: false
+required:
+  - schema_version
+  - task_id
+  - title
+  - objective
+  - repository
+  - project
+  - source
+  - base_ref
+  - target_branch
+  - base_commit
+  - acceptance_criteria
+  - verification
+  - state
+  - state_entered_at
+  - human_state
+  - claimed_by
+  - attempts
+  - tdd
+  - branch
+  - policy
+  - state_machine_revision
+  - version
+  - created_at
+  - updated_at
+  - history
+properties:
+  schema_version:
+    const: v1alpha1
+  task_id:
+    $ref: "#/$defs/TaskId"
+  title:
+    type: string
+    minLength: 3
+    maxLength: 200
+  objective:
+    type: string
+    minLength: 10
+    maxLength: 8000
+  repository:
+    $ref: "#/$defs/Repo"
+  project:
+    description: From the base-revision RepositoryContext (plan 25); used for cost aggregation.
+    type: string
+    pattern: "^[a-z0-9_][a-z0-9_-]{0,62}$"
+  source:
+    type: object
+    additionalProperties: false
+    required: [kind]
+    properties:
+      kind: {type: string, enum: [human, forgejo_issue, parent_task, hermes]}
+      ref: {type: string, maxLength: 300}
+      requested_by: {type: string, maxLength: 120}
+  constraints:
+    type: array
+    maxItems: 30
+    items: {type: string, maxLength: 1000}
+  base_ref:
+    type: string
+    maxLength: 200
+  target_branch:
+    description: Protected branch the PR targets (the branch base_ref resolved on; default main).
+    type: string
+    maxLength: 200
+  base_commit:
+    $ref: "#/$defs/GitSha"
+  parent_task_id:
+    oneOf:
+      - $ref: "#/$defs/TaskId"
+      - type: "null"
+  children:
+    description: Derived list of child task ids (no DAG scheduling in MVP; plan 29 §14.11).
+    type: array
+    maxItems: 100
+    items: {$ref: "#/$defs/TaskId"}
+  acceptance_criteria:
+    type: object
+    additionalProperties: false
+    required: [current_version, versions]
+    properties:
+      current_version: {type: integer, minimum: 1}
+      versions:
+        type: array
+        minItems: 1
+        maxItems: 50
+        items:
+          $ref: "https://strange.company/contracts/acceptance-criteria/v1alpha1"
+  verification:
+    $ref: "#/$defs/VerificationDecision"
+  state:
+    $ref: "#/$defs/StateName"
+  state_entered_at:
+    type: string
+    format: date-time
+  human_state:
+    $ref: "#/$defs/HumanState"
+  resume_state:
+    description: State a human `unblock`/`retry` resumes into (plan 29 §14.9). Never a held, terminal or execution-required state.
+    $ref: "#/$defs/StateName"
+  needs_human:
+    type: object
+    additionalProperties: false
+    required: [reason, since]
+    properties:
+      reason: {$ref: "#/$defs/NeedsHumanReason"}
+      detail: {type: string, maxLength: 1000}
+      since: {type: string, format: date-time}
+      notified_at: {type: string, format: date-time}
+  blocked:
+    type: object
+    additionalProperties: false
+    required: [by, since, reason, reason_code]
+    properties:
+      by: {$ref: "#/$defs/Actor"}
+      since: {type: string, format: date-time}
+      reason: {type: string, maxLength: 1000}
+      reason_code:
+        description: "`human_hold` (/sc block), `emergency_stop` and `budget_window_exhausted` (Runner, plan 33 §14.5). Exit is human-only in every case."
+        type: string
+        enum: [human_hold, emergency_stop, budget_window_exhausted]
+  claimed_by:
+    description: Holder of the task right now - the active execution, the pending pipeline, or null when the task waits on Hermes or a human. Changed only inside a transition transaction (atomic claim, SPEC §73).
+    oneOf:
+      - type: string
+        pattern: "^(execution:sc-[0-9]+-x[0-9]+|ci:woodpecker/[0-9]+|ci:pending/[0-9a-f-]{36})$"
+      - type: "null"
+  current_execution:
+    description: Latest execution (SPEC §73 role, harness, model, profile, attempt).
+    $ref: "#/$defs/ExecutionRef"
+  attempts:
+    $ref: "#/$defs/Attempts"
+  tdd:
+    $ref: "#/$defs/Tdd"
+  conflicts:
+    type: array
+    maxItems: 20
+    items: {$ref: "#/$defs/Conflict"}
+  reviews:
+    type: array
+    maxItems: 20
+    items: {$ref: "#/$defs/Review"}
+  branch:
+    description: "`agent/<task-id>` (SPEC §100). Null until the first push is accepted."
+    oneOf:
+      - type: string
+        pattern: "^agent/sc-[0-9]+$"
+      - type: "null"
+  pull_request:
+    $ref: "#/$defs/PullRequest"
+  tracking_issue:
+    type: object
+    additionalProperties: false
+    required: [number, url]
+    properties:
+      number: {type: integer, minimum: 1}
+      url: {type: string, format: uri}
+  statuses:
+    description: Last Runner-posted commit statuses (plan 55 §14.5).
+    type: object
+    additionalProperties: false
+    properties:
+      tdd_provenance: {$ref: "#/$defs/StatusPost"}
+      review: {$ref: "#/$defs/StatusPost"}
+  artifacts:
+    type: array
+    maxItems: 500
+    items:
+      type: object
+      additionalProperties: false
+      required: [kind, object_key, sha256]
+      properties:
+        kind: {type: string, enum: [red_evidence, green_evidence, judge_evidence, test_manifest, worker_log, worker_result, context_packet, quarantine, merge_facts]}
+        execution_id: {$ref: "#/$defs/ExecutionId"}
+        object_key: {type: string, maxLength: 500}
+        sha256: {$ref: "#/$defs/Sha256"}
+  test_results:
+    description: Summary counts of the latest RED and GREEN evidence (full documents are artifacts).
+    type: object
+    additionalProperties: false
+    properties:
+      red: {$ref: "#/$defs/TestCounts"}
+      green: {$ref: "#/$defs/TestCounts"}
+  latest_handoff:
+    type: object
+    additionalProperties: false
+    required: [execution_id, digest]
+    properties:
+      execution_id: {$ref: "#/$defs/ExecutionId"}
+      digest: {$ref: "#/$defs/Sha256"}
+      redacted: {type: boolean}
+  policy:
+    description: Platform policy revision and commit in force at creation; each transition records its own.
+    type: object
+    additionalProperties: false
+    required: [revision, commit, repo_policy_blob]
+    properties:
+      revision: {$ref: "#/$defs/Sha256"}
+      commit: {$ref: "#/$defs/GitSha"}
+      repo_policy_blob:
+        description: Git blob SHA of .strange-company/policy.yaml at base_commit (null if absent).
+        oneOf: [{$ref: "#/$defs/GitSha"}, {type: "null"}]
+      repo_validation_blob:
+        oneOf: [{$ref: "#/$defs/GitSha"}, {type: "null"}]
+  state_machine_revision:
+    type: integer
+    minimum: 1
+  trace_id:
+    type: string
+    pattern: "^[a-f0-9]{32}$"
+  version:
+    description: Optimistic-concurrency counter; incremented by every transition.
+    type: integer
+    minimum: 1
+  created_at: {type: string, format: date-time}
+  updated_at: {type: string, format: date-time}
+  closed_at: {type: string, format: date-time}
+  history:
+    type: array
+    minItems: 1
+    items: {$ref: "#/$defs/TransitionRecord"}
+allOf:
+  - if: {properties: {state: {const: NEEDS_HUMAN}}}
+    then: {required: [needs_human, resume_state]}
+  - if: {properties: {state: {const: BLOCKED}}}
+    then: {required: [blocked, resume_state]}
+  - if: {properties: {state: {enum: [DONE, CANCELLED]}}}
+    then: {required: [closed_at]}
+$defs:
+  TaskId: {type: string, pattern: "^sc-[0-9]+$"}
+  ExecutionId: {type: string, pattern: "^sc-[0-9]+-x[0-9]+$"}
+  Repo: {type: string, pattern: "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"}
+  GitSha: {type: string, pattern: "^[a-f0-9]{40}$"}
+  Sha256: {type: string, pattern: "^sha256:[a-f0-9]{64}$"}
+  AcId: {type: string, pattern: "^AC-[1-9][0-9]{0,2}$"}
+  StateName:
+    description: A state of contracts/state-machine.yaml.
+    type: string
+    pattern: "^[A-Z][A-Z_]{2,40}$"
+  HumanState:
+    type: string
+    enum: [Backlog, Ready, In Progress, Review, Done, Needs Human, Blocked]
+  Role:
+    type: string
+    enum: [researcher, planner, tester, implementer, reviewer]
+  Actor:
+    description: "`runner`, `hermes`, `human:<login or operator identity>`, `breakglass:runner-admin` (break-glass admin credential, CD-30), `ci:woodpecker/<pipeline>`. Workers are never actors. Admin-API actors come from the credential, never from a header."
+    type: string
+    pattern: "^(runner|hermes|human:[A-Za-z0-9_.-]{1,64}|breakglass:runner-admin|ci:woodpecker/[0-9]+)$"
+  ActorClass:
+    type: string
+    enum: [runner, ci, hermes, human]
+  FailureClass:
+    type: string
+    enum: [merit, infrastructure, policy, budget]
+  NeedsHumanReason:
+    description: Bounded cause (also the notification.schema.yaml `reason` enum; plan 42 adds the last five).
+    type: string
+    enum:
+      - retries_exhausted
+      - test_spec_conflict
+      - already_satisfied
+      - needs_investigation
+      - policy_violation
+      - budget_exceeded
+      - review_rejected
+      - manual_escalation
+      - infrastructure_exhausted
+      - worker_blocked
+      - merged_without_provenance
+      - external_push
+      - stalled
+      - approval_required
+  ExemptionClass:
+    type: string
+    pattern: "^[a-z][a-z0-9-]{1,40}$"
+  VerificationDecision:
+    type: object
+    additionalProperties: false
+    required: [mode, decided_at, policy_revision]
+    properties:
+      mode: {type: string, enum: [test-first, verification-first]}
+      mode_history:
+        description: Mode changes (only test-first after an exemption denial; tighten-only).
+        type: array
+        items:
+          type: object
+          additionalProperties: false
+          required: [from, to, at, by]
+          properties:
+            from: {type: string, enum: [verification-first]}
+            to: {type: string, enum: [test-first]}
+            at: {type: string, format: date-time}
+            by: {$ref: "#/$defs/Actor"}
+      exemption:
+        type: object
+        additionalProperties: false
+        required: [requested_class, justification, status]
+        properties:
+          requested_class: {$ref: "#/$defs/ExemptionClass"}
+          justification: {type: string, minLength: 20, maxLength: 2000}
+          status: {type: string, enum: [granted, pending_approval, approved, denied]}
+          approval: {type: string, enum: [auto, human]}
+          approved_by: {$ref: "#/$defs/Actor"}
+          approved_at: {type: string, format: date-time}
+          judge:
+            type: object
+            additionalProperties: false
+            required: [kind, source, executor]
+            properties:
+              kind: {type: string, enum: [required-facts, validation-scenario, invariants, benchmark, schema-check, rubric, characterization]}
+              source: {type: string, enum: [artifact, acceptance-criteria]}
+              executor: {type: string, enum: [ci, runner-local, reviewer]}
+          produces_mergeable_change: {type: boolean}
+      decided_at: {type: string, format: date-time}
+      policy_revision: {$ref: "#/$defs/Sha256"}
+    allOf:
+      - if: {properties: {mode: {const: verification-first}}}
+        then: {required: [exemption]}
+  ExecutionRef:
+    type: object
+    additionalProperties: false
+    required: [execution_id, role, harness, profile, model_tier, attempt, state]
+    properties:
+      execution_id: {$ref: "#/$defs/ExecutionId"}
+      role: {$ref: "#/$defs/Role"}
+      kind: {type: string, enum: [producing, reviewing, auxiliary]}
+      harness: {type: string, pattern: "^[a-z][a-z0-9-]{1,40}$"}
+      model: {type: string, maxLength: 160}
+      model_tier: {type: string, enum: [clerical, bargain, standard, frontier]}
+      profile: {type: string, pattern: "^[a-z][a-z0-9-]{0,30}$"}
+      phase: {type: string, enum: [specification, test_authoring, red_verification, implementation, green_retry, review]}
+      attempt: {type: integer, minimum: 1}
+      state: {type: string, enum: [QUEUED, STARTING, RUNNING, SUCCEEDED, FAILED, CANCELLED, TIMED_OUT]}
+      failure_class: {$ref: "#/$defs/FailureClass"}
+      failure_code: {type: string, pattern: "^[A-Z][A-Z_]{2,60}$"}
+      fingerprint: {$ref: "#/$defs/Sha256"}
+      failure_signature: {$ref: "#/$defs/Sha256"}
+  Attempts:
+    description: Retry accounting (SPEC §74, lesson L-4; plan 29 §16).
+    type: object
+    additionalProperties: false
+    required: [autonomous_used, autonomous_max, tester_used, tester_max, by_class, merit_by_generation, consecutive_infrastructure, consecutive_timeouts, reviews_used, auxiliary_used, blocked_results, conflicts_raised]
+    properties:
+      autonomous_used:
+        description: Implementation attempts (implementer or producer executions) dispatched and not refunded (refund on infrastructure-class or shared-budget/emergency-stop endings). SPEC §74 "approximately five autonomous attempts".
+        type: integer
+        minimum: 0
+      autonomous_max: {type: integer, minimum: 1, maximum: 50}
+      tester_used:
+        description: Tester and judge-author executions dispatched and not refunded.
+        type: integer
+        minimum: 0
+      tester_max: {type: integer, minimum: 1, maximum: 20}
+      merit_by_generation:
+        description: Merit-failure counter per (role, generation) - the `M` input of the plan 31 escalation ladder. Keys are `<role>:g<generation>`.
+        type: object
+        propertyNames:
+          pattern: "^(researcher|planner|tester|implementer|reviewer):g[0-9]{1,2}$"
+        additionalProperties: {type: integer, minimum: 0}
+      consecutive_timeouts:
+        description: Consecutive TIMED_OUT executions of the current producing role (infrastructure class, capped by spec.retry.infrastructure.maxConsecutiveTimeouts).
+        type: integer
+        minimum: 0
+      by_class:
+        type: object
+        additionalProperties: false
+        required: [merit, infrastructure, policy, budget]
+        properties:
+          merit: {type: integer, minimum: 0}
+          infrastructure: {type: integer, minimum: 0}
+          policy: {type: integer, minimum: 0}
+          budget: {type: integer, minimum: 0}
+      consecutive_infrastructure: {type: integer, minimum: 0}
+      reviews_used: {type: integer, minimum: 0}
+      auxiliary_used: {type: integer, minimum: 0}
+      blocked_results: {type: integer, minimum: 0}
+      conflicts_raised: {type: integer, minimum: 0}
+      human_grants:
+        type: array
+        items:
+          type: object
+          additionalProperties: false
+          required: [by, at, granted]
+          properties:
+            by: {$ref: "#/$defs/Actor"}
+            at: {type: string, format: date-time}
+            granted: {type: integer, minimum: 1, maximum: 20}
+  Verification:
+    description: One RED / GREEN / judge verification of a generation (pointer to the evidence document).
+    type: object
+    additionalProperties: false
+    required: [phase, commit, result, evidence_digest, recorded_at]
+    properties:
+      phase: {type: string, enum: [red, green, judge_validate, judge]}
+      commit: {$ref: "#/$defs/GitSha"}
+      pipeline: {type: integer, minimum: 1}
+      result:
+        description: Runner classification (red-result / green-result `classification.outcome`).
+        type: string
+        enum: [red_valid, red_invalid, already_satisfied, partially_satisfied, baseline_failing, inconclusive, green_pass, green_fail, tamper_detected, judge_valid, judge_invalid, judging_pass, judging_fail]
+      evidence_digest: {$ref: "#/$defs/Sha256"}
+      object_key: {type: string, maxLength: 500}
+      recorded_at: {type: string, format: date-time}
+  Generation:
+    description: One test (or judge) generation. A new generation starts only through an approved TEST_SPEC_CONFLICT, a strengthening after valid RED, a respecification or an exemption denial; older generations stay as provenance. Provenance columns are set-once (NULL -> value; never value -> other value; plan 29 §6.1).
+    type: object
+    additionalProperties: false
+    required: [generation, kind, status, start_commit, ac_version, started_at, verifications]
+    properties:
+      generation: {type: integer, minimum: 1}
+      kind: {type: string, enum: [test, judge]}
+      status: {type: string, enum: [active, superseded, completed]}
+      start_commit:
+        description: Commit the generation's first tester execution started from (base commit, or the previous generation's red commit).
+        $ref: "#/$defs/GitSha"
+      ac_version: {type: integer, minimum: 1}
+      started_at: {type: string, format: date-time}
+      superseded_reason: {type: string, enum: [test_change_approved, strengthened, respec, exemption_denied]}
+      candidates:
+        description: Every candidate test commit the generation's testers produced, in order (child rows `generation_candidates`; plan 29 §6.1). Only the RED-verified one becomes test_commit.
+        type: array
+        maxItems: 20
+        items:
+          type: object
+          additionalProperties: false
+          required: [commit, execution_id]
+          properties:
+            commit: {$ref: "#/$defs/GitSha"}
+            execution_id: {$ref: "#/$defs/ExecutionId"}
+            red_result: {type: string, maxLength: 40}
+      human_commits:
+        description: External commits a human accepted with /sc accept-external-commit (TDD-9).
+        type: array
+        maxItems: 50
+        items:
+          type: object
+          additionalProperties: false
+          required: [commit, accepted_by, accepted_at]
+          properties:
+            commit: {$ref: "#/$defs/GitSha"}
+            accepted_by: {$ref: "#/$defs/Actor"}
+            accepted_at: {type: string, format: date-time}
+      test_executions:
+        type: array
+        items: {$ref: "#/$defs/ExecutionId"}
+      test_commit:
+        description: The RED-verified (or approved judge) commit of this generation.
+        $ref: "#/$defs/GitSha"
+      candidate_test_commit:
+        description: "Current-pointer column (freely updatable) - the latest row of `candidates`; not provenance by itself."
+        $ref: "#/$defs/GitSha"
+      test_manifest:
+        type: object
+        additionalProperties: false
+        required: [digest, object_key]
+        properties:
+          digest: {$ref: "#/$defs/Sha256"}
+          object_key: {type: string, maxLength: 500}
+      judge_approval:
+        type: object
+        additionalProperties: false
+        required: [mode, at]
+        properties:
+          mode: {type: string, enum: [auto, human]}
+          by: {$ref: "#/$defs/Actor"}
+          at: {type: string, format: date-time}
+      implementation_executions:
+        type: array
+        items: {$ref: "#/$defs/ExecutionId"}
+      implementation_commits:
+        description: Append-only list of accepted implementer/producer result commits of the generation, in order (each also recorded on its execution as result_commit).
+        type: array
+        maxItems: 50
+        items: {$ref: "#/$defs/GitSha"}
+      implementation_commit:
+        description: Set-once - the head accepted by the final review (T041/T042); null before.
+        $ref: "#/$defs/GitSha"
+      verifications:
+        type: array
+        items: {$ref: "#/$defs/Verification"}
+      archive_tag:
+        type: string
+        pattern: "^sc-archive/sc-[0-9]+/[a-z0-9-]+$"
+  Tdd:
+    description: SPEC §56 provenance. Top-level fields mirror the current (or final) generation; `generations` keeps all of them.
+    type: object
+    additionalProperties: false
+    required: [required, current_generation, generations]
+    properties:
+      required:
+        description: true for test-first tasks.
+        type: boolean
+      current_generation: {type: integer, minimum: 0}
+      test_execution:
+        type: object
+        additionalProperties: false
+        required: [id]
+        properties: {id: {$ref: "#/$defs/ExecutionId"}}
+      test_commit: {$ref: "#/$defs/GitSha"}
+      red_verification:
+        type: object
+        additionalProperties: false
+        required: [pipeline, result]
+        properties:
+          pipeline: {type: integer, minimum: 1}
+          result: {type: string, enum: [expected_failure, invalid, already_satisfied, inconclusive]}
+          evidence_digest: {$ref: "#/$defs/Sha256"}
+      implementation_execution:
+        type: object
+        additionalProperties: false
+        required: [id]
+        properties: {id: {$ref: "#/$defs/ExecutionId"}}
+      implementation_commit: {$ref: "#/$defs/GitSha"}
+      green_verification:
+        type: object
+        additionalProperties: false
+        required: [pipeline, result]
+        properties:
+          pipeline: {type: integer, minimum: 1}
+          result: {type: string, enum: [success, failure, tamper_detected]}
+          evidence_digest: {$ref: "#/$defs/Sha256"}
+      generations:
+        type: array
+        maxItems: 20
+        items: {$ref: "#/$defs/Generation"}
+  Conflict:
+    type: object
+    additionalProperties: false
+    required: [conflict_id, generation, raised_by, ac_ids, tests, explanation_digest, raised_at, status, test_change_approved]
+    properties:
+      conflict_id: {type: string, pattern: "^sc-[0-9]+-c[0-9]+$"}
+      generation: {type: integer, minimum: 1}
+      raised_by: {$ref: "#/$defs/ExecutionId"}
+      ac_ids: {type: array, minItems: 1, items: {$ref: "#/$defs/AcId"}}
+      tests: {type: array, minItems: 1, maxItems: 50, items: {type: string, maxLength: 400}}
+      explanation_digest: {$ref: "#/$defs/Sha256"}
+      raised_at: {type: string, format: date-time}
+      adjudications:
+        type: array
+        items:
+          type: object
+          additionalProperties: false
+          required: [execution_id, verdict, at]
+          properties:
+            execution_id: {$ref: "#/$defs/ExecutionId"}
+            verdict: {type: string, enum: [test_valid, test_invalid, spec_ambiguous]}
+            at: {type: string, format: date-time}
+      status: {type: string, enum: [open, change_approved, rejected, superseded]}
+      test_change_approved: {type: boolean}
+      decided_by: {$ref: "#/$defs/Actor"}
+      decided_at: {type: string, format: date-time}
+  Review:
+    type: object
+    additionalProperties: false
+    required: [execution_id, verdict, reviewed_commit, checks, at]
+    properties:
+      execution_id: {$ref: "#/$defs/ExecutionId"}
+      purpose: {type: string, enum: [final_review, test_review, investigation, adjudication]}
+      verdict: {type: string, enum: [accept, changes_requested, reject_bypass]}
+      reviewed_commit: {$ref: "#/$defs/GitSha"}
+      checks:
+        type: object
+        additionalProperties: false
+        properties:
+          red_failed_for_right_reason: {$ref: "#/$defs/CheckResult"}
+          acceptance_tests_intact: {$ref: "#/$defs/CheckResult"}
+          green_not_by_bypass: {$ref: "#/$defs/CheckResult"}
+          all_ac_covered: {$ref: "#/$defs/CheckResult"}
+          no_out_of_scope_changes: {$ref: "#/$defs/CheckResult"}
+      findings_digest: {$ref: "#/$defs/Sha256"}
+      at: {type: string, format: date-time}
+  CheckResult:
+    type: string
+    enum: [pass, fail, unknown]
+  PullRequest:
+    type: object
+    additionalProperties: false
+    required: [number, url, state, head_sha]
+    properties:
+      number: {type: integer, minimum: 1}
+      url: {type: string, format: uri}
+      state: {type: string, enum: [draft, ready, merged, closed]}
+      head_sha: {$ref: "#/$defs/GitSha"}
+      merged_at: {type: string, format: date-time}
+      merge_commit: {$ref: "#/$defs/GitSha"}
+      merged_by: {type: string, maxLength: 64}
+      merge_facts_ok:
+        description: Result of the merge-time re-verification of every SPEC §102 fact (plan 22 §14.9).
+        type: boolean
+  StatusPost:
+    type: object
+    additionalProperties: false
+    required: [state, sha, posted_at]
+    properties:
+      state: {type: string, enum: [pending, success, failure, error]}
+      sha: {$ref: "#/$defs/GitSha"}
+      description: {type: string, maxLength: 140}
+      posted_at: {type: string, format: date-time}
+  TestCounts:
+    type: object
+    additionalProperties: false
+    required: [commit, total, passed, failed, errored, skipped]
+    properties:
+      commit: {$ref: "#/$defs/GitSha"}
+      total: {type: integer, minimum: 0}
+      passed: {type: integer, minimum: 0}
+      failed: {type: integer, minimum: 0}
+      errored: {type: integer, minimum: 0}
+      skipped: {type: integer, minimum: 0}
+  TransitionRecord:
+    type: object
+    additionalProperties: false
+    required: [seq, at, actor, actor_class, from_state, to_state, event, transition_id, reason, policy_revision, state_machine_revision, event_key]
+    properties:
+      seq: {type: integer, minimum: 1}
+      at: {type: string, format: date-time}
+      actor: {$ref: "#/$defs/Actor"}
+      actor_class: {$ref: "#/$defs/ActorClass"}
+      from_state:
+        description: Null only for task creation.
+        oneOf: [{$ref: "#/$defs/StateName"}, {type: "null"}]
+      to_state: {$ref: "#/$defs/StateName"}
+      event: {type: string, pattern: "^[a-z][a-z0-9_]*$"}
+      transition_id: {type: string, pattern: "^T[0-9]{3}$"}
+      reason: {type: string, minLength: 3, maxLength: 1000}
+      reason_code: {$ref: "#/$defs/NeedsHumanReason"}
+      failure_class: {$ref: "#/$defs/FailureClass"}
+      policy_revision: {$ref: "#/$defs/Sha256"}
+      policy_commit:
+        oneOf: [{$ref: "#/$defs/GitSha"}, {type: "null"}]
+      state_machine_revision: {type: integer, minimum: 1}
+      execution_id: {$ref: "#/$defs/ExecutionId"}
+      evidence_digests:
+        type: array
+        maxItems: 10
+        items: {$ref: "#/$defs/Sha256"}
+      event_key:
+        description: Idempotency key of the triggering event (plan 29 §17); unique per task.
+        type: string
+        pattern: "^(mcp|api|result|evidence|forgejo|comment|watchdog|verify-infra|internal):[A-Za-z0-9_.:/-]{1,200}$"
+      decision:
+        description: Structured human decision payload (respec criteria, grant, conflict decision), stored verbatim after validation.
+        type: object
+      attempts_after:
+        type: object
+        additionalProperties: false
+        properties:
+          autonomous_used: {type: integer, minimum: 0}
+          autonomous_max: {type: integer, minimum: 1}
+      credential_kid:
+        description: Key id of the admin credential used (admin-API transitions only, CD-30).
+        type: string
+        maxLength: 64
+      trace_id: {type: string, pattern: "^[a-f0-9]{32}$"}
+examples:
+  - schema_version: v1alpha1
+    task_id: sc-184
+    title: Preserve method on HTTP 307
+    objective: Make the HTTP client preserve the request method and body on 307 redirects.
+    repository: projects/example
+    project: example
+    source: {kind: forgejo_issue, ref: "projects/example#184", requested_by: alice}
+    base_ref: main
+    target_branch: main
+    base_commit: 0123456789abcdef0123456789abcdef01234567
+    parent_task_id: null
+    acceptance_criteria:
+      current_version: 1
+      versions:
+        - task_id: sc-184
+          version: 1
+          status: frozen
+          created_at: "2026-10-13T12:00:00Z"
+          created_by: hermes
+          frozen_at: "2026-10-13T12:00:01Z"
+          criteria:
+            - {id: AC-1, text: HTTP 307 preserves the original method., kind: change}
+            - {id: AC-2, text: HTTP 307 preserves the request body., kind: change}
+          digest: "sha256:0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"
+    verification: {mode: test-first, decided_at: "2026-10-13T12:00:00Z", policy_revision: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+    state: AWAITING_MERGE
+    state_entered_at: "2026-10-13T13:06:30Z"
+    human_state: Review
+    claimed_by: null
+    current_execution: {execution_id: sc-184-x4, role: reviewer, kind: reviewing, harness: claude, model: anthropic/claude-sonnet-5, model_tier: standard, profile: reasoning, phase: review, attempt: 1, state: SUCCEEDED}
+    attempts:
+      autonomous_used: 2
+      autonomous_max: 5
+      tester_used: 1
+      tester_max: 3
+      by_class: {merit: 1, infrastructure: 0, policy: 0, budget: 0}
+      merit_by_generation: {"implementer:g1": 1}
+      consecutive_infrastructure: 0
+      consecutive_timeouts: 0
+      reviews_used: 1
+      auxiliary_used: 0
+      blocked_results: 0
+      conflicts_raised: 0
+    tdd:
+      required: true
+      current_generation: 1
+      test_execution: {id: sc-184-x1}
+      test_commit: 89abcdef0123456789abcdef0123456789abcdef
+      red_verification: {pipeline: 412, result: expected_failure, evidence_digest: "sha256:abababababababababababababababababababababababababababababababab"}
+      implementation_execution: {id: sc-184-x3}
+      implementation_commit: fedcba9876543210fedcba9876543210fedcba98
+      green_verification: {pipeline: 431, result: success, evidence_digest: "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"}
+      generations:
+        - generation: 1
+          kind: test
+          status: active
+          start_commit: 0123456789abcdef0123456789abcdef01234567
+          ac_version: 1
+          started_at: "2026-10-13T12:00:01Z"
+          test_executions: [sc-184-x1]
+          test_commit: 89abcdef0123456789abcdef0123456789abcdef
+          test_manifest: {digest: "sha256:efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef", object_key: "evidence/sc-184/manifest/g1.json"}
+          implementation_executions: [sc-184-x2, sc-184-x3]
+          implementation_commit: fedcba9876543210fedcba9876543210fedcba98
+          verifications:
+            - {phase: red, commit: 89abcdef0123456789abcdef0123456789abcdef, pipeline: 412, result: red_valid, evidence_digest: "sha256:abababababababababababababababababababababababababababababababab", recorded_at: "2026-10-13T12:20:00Z"}
+            - {phase: green, commit: "1111111111111111111111111111111111111111", pipeline: 420, result: green_fail, evidence_digest: "sha256:1212121212121212121212121212121212121212121212121212121212121212", recorded_at: "2026-10-13T12:40:00Z"}
+            - {phase: green, commit: fedcba9876543210fedcba9876543210fedcba98, pipeline: 431, result: green_pass, evidence_digest: "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd", recorded_at: "2026-10-13T13:00:00Z"}
+    reviews:
+      - execution_id: sc-184-x4
+        purpose: final_review
+        verdict: accept
+        reviewed_commit: fedcba9876543210fedcba9876543210fedcba98
+        checks: {red_failed_for_right_reason: pass, acceptance_tests_intact: pass, green_not_by_bypass: pass, all_ac_covered: pass, no_out_of_scope_changes: pass}
+        at: "2026-10-13T13:06:00Z"
+    branch: agent/sc-184
+    pull_request: {number: 57, url: "https://git.example.org/projects/example/pulls/57", state: ready, head_sha: fedcba9876543210fedcba9876543210fedcba98}
+    tracking_issue: {number: 184, url: "https://git.example.org/projects/example/issues/184"}
+    statuses:
+      tdd_provenance: {state: success, sha: fedcba9876543210fedcba9876543210fedcba98, description: "RED 412 valid, GREEN 431 pass, manifest intact", posted_at: "2026-10-13T13:06:30Z"}
+      review: {state: success, sha: fedcba9876543210fedcba9876543210fedcba98, description: "Review sc-184-x4 accepted", posted_at: "2026-10-13T13:06:30Z"}
+    policy: {revision: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", commit: 89abcdef0123456789abcdef0123456789abcdef, repo_policy_blob: null}
+    state_machine_revision: 1
+    trace_id: 4bf92f3577b34da6a3ce929d0e0e4736
+    version: 9
+    created_at: "2026-10-13T12:00:00Z"
+    updated_at: "2026-10-13T13:06:30Z"
+    history:
+      - {seq: 1, at: "2026-10-13T12:00:00Z", actor: hermes, actor_class: hermes, from_state: null, to_state: SPECIFIED, event: task_created, transition_id: T001, reason: created from projects/example#184, policy_revision: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", policy_commit: 89abcdef0123456789abcdef0123456789abcdef, state_machine_revision: 1, event_key: "mcp:hermes-2026-10-13-sc-new-0001"}
+      - {seq: 2, at: "2026-10-13T12:00:01Z", actor: hermes, actor_class: hermes, from_state: SPECIFIED, to_state: TEST_AUTHORING, event: dispatch_tester, transition_id: T010, reason: tester dispatched, policy_revision: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", state_machine_revision: 1, execution_id: sc-184-x1, event_key: "mcp:hermes-2026-10-13-sc-new-0001"}
+      - {seq: 3, at: "2026-10-13T12:10:05Z", actor: runner, actor_class: runner, from_state: TEST_AUTHORING, to_state: RED_VERIFYING, event: tester_result_accepted, transition_id: T014, reason: tester commit accepted, policy_revision: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", state_machine_revision: 1, execution_id: sc-184-x1, event_key: "result:sc-184-x1"}
+      - {seq: 4, at: "2026-10-13T12:20:00Z", actor: "ci:woodpecker/412", actor_class: ci, from_state: RED_VERIFYING, to_state: RED_VERIFIED, event: red_classified, transition_id: T020, reason: red_valid on AC-1 and AC-2, policy_revision: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", state_machine_revision: 1, evidence_digests: ["sha256:abababababababababababababababababababababababababababababababab"], event_key: "evidence:red:412"}
+      - {seq: 5, at: "2026-10-13T12:21:00Z", actor: hermes, actor_class: hermes, from_state: RED_VERIFIED, to_state: IMPLEMENTING, event: dispatch_implementer, transition_id: T030, reason: implementer dispatched, policy_revision: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", state_machine_revision: 1, execution_id: sc-184-x2, event_key: "mcp:hermes-sc-184-impl-1"}
+      - {seq: 6, at: "2026-10-13T12:40:00Z", actor: "ci:woodpecker/420", actor_class: ci, from_state: GREEN_VERIFYING, to_state: RED_VERIFIED, event: green_classified, transition_id: T034, reason: green_fail TestRedirect307PreservesBody, failure_class: merit, policy_revision: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", state_machine_revision: 1, event_key: "evidence:green:420"}
+      - {seq: 7, at: "2026-10-13T13:00:00Z", actor: "ci:woodpecker/431", actor_class: ci, from_state: GREEN_VERIFYING, to_state: GREEN_VERIFIED, event: green_classified, transition_id: T033, reason: green_pass, policy_revision: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", state_machine_revision: 1, event_key: "evidence:green:431"}
+      - {seq: 8, at: "2026-10-13T13:00:30Z", actor: hermes, actor_class: hermes, from_state: GREEN_VERIFIED, to_state: REVIEW, event: dispatch_reviewer, transition_id: T040, reason: reviewer dispatched, policy_revision: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", state_machine_revision: 1, execution_id: sc-184-x4, event_key: "mcp:hermes-sc-184-review-1"}
+      - {seq: 9, at: "2026-10-13T13:06:30Z", actor: runner, actor_class: runner, from_state: REVIEW, to_state: AWAITING_MERGE, event: review_accepted, transition_id: T041, reason: review accepted at head, policy_revision: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", state_machine_revision: 1, execution_id: sc-184-x4, event_key: "result:sc-184-x4"}
+x-invalid-examples:
+  - reason: A worker recorded as a transition actor (workers never transition tasks).
+    value:
+      schema_version: v1alpha1
+      task_id: sc-1
+      title: abc
+      objective: abcdefghijk
+      repository: a/b
+      project: p
+      source: {kind: human}
+      base_ref: main
+      target_branch: main
+      base_commit: 0123456789abcdef0123456789abcdef01234567
+      acceptance_criteria: {current_version: 1, versions: [{version: 1, status: draft, created_at: "2026-10-13T12:00:00Z", created_by: hermes, criteria: [{id: AC-1, text: HTTP 307 preserves the original method., kind: change}], digest: "sha256:0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"}]}
+      verification: {mode: test-first, decided_at: "2026-10-13T12:00:00Z", policy_revision: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+      state: SPECIFIED
+      state_entered_at: "2026-10-13T12:00:00Z"
+      human_state: Ready
+      claimed_by: null
+      attempts: {autonomous_used: 0, autonomous_max: 5, tester_used: 0, tester_max: 3, by_class: {merit: 0, infrastructure: 0, policy: 0, budget: 0}, merit_by_generation: {}, consecutive_infrastructure: 0, consecutive_timeouts: 0, reviews_used: 0, auxiliary_used: 0, blocked_results: 0, conflicts_raised: 0}
+      tdd: {required: true, current_generation: 0, generations: []}
+      branch: null
+      policy: {revision: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", commit: 89abcdef0123456789abcdef0123456789abcdef, repo_policy_blob: null}
+      state_machine_revision: 1
+      version: 1
+      created_at: "2026-10-13T12:00:00Z"
+      updated_at: "2026-10-13T12:00:00Z"
+      history: [{seq: 1, at: "2026-10-13T12:00:00Z", actor: "worker:sc-1-x1", actor_class: hermes, from_state: null, to_state: SPECIFIED, event: task_created, transition_id: T001, reason: created, policy_revision: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", state_machine_revision: 1, event_key: "mcp:abcdefgh"}]
+  - reason: NEEDS_HUMAN without needs_human reason and resume_state.
+    value:
+      schema_version: v1alpha1
+      task_id: sc-1
+      title: abc
+      objective: abcdefghijk
+      repository: a/b
+      project: p
+      source: {kind: human}
+      base_ref: main
+      target_branch: main
+      base_commit: 0123456789abcdef0123456789abcdef01234567
+      acceptance_criteria: {current_version: 1, versions: [{version: 1, status: draft, created_at: "2026-10-13T12:00:00Z", created_by: hermes, criteria: [{id: AC-1, text: HTTP 307 preserves the original method., kind: change}], digest: "sha256:0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"}]}
+      verification: {mode: test-first, decided_at: "2026-10-13T12:00:00Z", policy_revision: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+      state: NEEDS_HUMAN
+      state_entered_at: "2026-10-13T12:00:00Z"
+      human_state: Needs Human
+      claimed_by: null
+      attempts: {autonomous_used: 0, autonomous_max: 5, tester_used: 0, tester_max: 3, by_class: {merit: 0, infrastructure: 0, policy: 0, budget: 0}, merit_by_generation: {}, consecutive_infrastructure: 0, consecutive_timeouts: 0, reviews_used: 0, auxiliary_used: 0, blocked_results: 0, conflicts_raised: 0}
+      tdd: {required: true, current_generation: 0, generations: []}
+      branch: null
+      policy: {revision: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", commit: 89abcdef0123456789abcdef0123456789abcdef, repo_policy_blob: null}
+      state_machine_revision: 1
+      version: 1
+      created_at: "2026-10-13T12:00:00Z"
+      updated_at: "2026-10-13T12:00:00Z"
+      history: [{seq: 1, at: "2026-10-13T12:00:00Z", actor: hermes, actor_class: hermes, from_state: null, to_state: SPECIFIED, event: task_created, transition_id: T001, reason: created, policy_revision: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", state_machine_revision: 1, event_key: "mcp:abcdefgh"}]
+  - reason: Verification-first task without an exemption record.
+    value:
+      schema_version: v1alpha1
+      task_id: sc-1
+      title: abc
+      objective: abcdefghijk
+      repository: a/b
+      project: p
+      source: {kind: human}
+      base_ref: main
+      target_branch: main
+      base_commit: 0123456789abcdef0123456789abcdef01234567
+      acceptance_criteria: {current_version: 1, versions: [{version: 1, status: draft, created_at: "2026-10-13T12:00:00Z", created_by: hermes, criteria: [{id: AC-1, text: HTTP 307 preserves the original method., kind: change}], digest: "sha256:0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"}]}
+      verification: {mode: verification-first, decided_at: "2026-10-13T12:00:00Z", policy_revision: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+      state: SPECIFIED
+      state_entered_at: "2026-10-13T12:00:00Z"
+      human_state: Ready
+      claimed_by: null
+      attempts: {autonomous_used: 0, autonomous_max: 5, tester_used: 0, tester_max: 3, by_class: {merit: 0, infrastructure: 0, policy: 0, budget: 0}, merit_by_generation: {}, consecutive_infrastructure: 0, consecutive_timeouts: 0, reviews_used: 0, auxiliary_used: 0, blocked_results: 0, conflicts_raised: 0}
+      tdd: {required: true, current_generation: 0, generations: []}
+      branch: null
+      policy: {revision: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", commit: 89abcdef0123456789abcdef0123456789abcdef, repo_policy_blob: null}
+      state_machine_revision: 1
+      version: 1
+      created_at: "2026-10-13T12:00:00Z"
+      updated_at: "2026-10-13T12:00:00Z"
+      history: [{seq: 1, at: "2026-10-13T12:00:00Z", actor: hermes, actor_class: hermes, from_state: null, to_state: SPECIFIED, event: task_created, transition_id: T001, reason: created, policy_revision: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", state_machine_revision: 1, event_key: "mcp:abcdefgh"}]
+  - reason: Unknown human-facing state (human states are a closed set).
+    value:
+      schema_version: v1alpha1
+      task_id: sc-1
+      title: abc
+      objective: abcdefghijk
+      repository: a/b
+      project: p
+      source: {kind: human}
+      base_ref: main
+      target_branch: main
+      base_commit: 0123456789abcdef0123456789abcdef01234567
+      acceptance_criteria: {current_version: 1, versions: [{version: 1, status: draft, created_at: "2026-10-13T12:00:00Z", created_by: hermes, criteria: [{id: AC-1, text: HTTP 307 preserves the original method., kind: change}], digest: "sha256:0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"}]}
+      verification: {mode: test-first, decided_at: "2026-10-13T12:00:00Z", policy_revision: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+      state: SPECIFIED
+      state_entered_at: "2026-10-13T12:00:00Z"
+      human_state: Cancelled
+      claimed_by: null
+      attempts: {autonomous_used: 0, autonomous_max: 5, tester_used: 0, tester_max: 3, by_class: {merit: 0, infrastructure: 0, policy: 0, budget: 0}, merit_by_generation: {}, consecutive_infrastructure: 0, consecutive_timeouts: 0, reviews_used: 0, auxiliary_used: 0, blocked_results: 0, conflicts_raised: 0}
+      tdd: {required: true, current_generation: 0, generations: []}
+      branch: null
+      policy: {revision: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", commit: 89abcdef0123456789abcdef0123456789abcdef, repo_policy_blob: null}
+      state_machine_revision: 1
+      version: 1
+      created_at: "2026-10-13T12:00:00Z"
+      updated_at: "2026-10-13T12:00:00Z"
+      history: [{seq: 1, at: "2026-10-13T12:00:00Z", actor: hermes, actor_class: hermes, from_state: null, to_state: SPECIFIED, event: task_created, transition_id: T001, reason: created, policy_revision: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", state_machine_revision: 1, event_key: "mcp:abcdefgh"}]

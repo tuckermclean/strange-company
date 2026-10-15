@@ -1,0 +1,808 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://strange.company/contracts/cost-record/v1alpha1
+title: CostRecord
+description: |
+  One invocation-ledger row = one provider request forwarded by the Model Gateway
+  (SPEC §78, §79; ADR-0004; owning plan 32). Stored immutably in `sc-pg`
+  table `ledger.cost_records`; exported/served with this shape (snake_case).
+
+  Every reservation made by the Gateway ends in exactly one cost-record, written either
+  at settlement or by the reservation-expiry sweeper (`termination: reservation_expired`).
+  Requests denied before forwarding produce no cost-record (they are recorded in
+  `ledger.denials`).
+
+  Money is integer micro-USD (1 USD = 1,000,000). SPEC §79 field mapping:
+  `cost.input_usd` = `cost.input_micro_usd`/1e6, `cost.cache_usd` =
+  `cost.cache_micro_usd`/1e6 (= cache read + cache write), `cost.output_usd` =
+  (`output_micro_usd` + `reasoning_micro_usd`)/1e6, `cost.total_usd` =
+  `total_micro_usd`/1e6; `pricing.*_per_million` = `pricing.*_per_million_micro_usd`/1e6.
+
+  `record_view`:
+  - `stored`: as written by the Gateway. Outcome fields other than `provider_success`,
+    and `pr`, are null because they are not known at request time.
+  - `enriched`: as served by the reporting view `ledger.v_cost_records_enriched`
+    (plan 32 §7), which joins execution/task/PR state (plans 26, 29, 55).
+
+  Usage categories are disjoint (plan 32 §8): `input_tokens` excludes cached and
+  cache-write tokens; `output_tokens` excludes `reasoning_tokens` when the provider
+  reports reasoning separately; `reasoning_tokens: null` means "not reported separately;
+  included in output_tokens". `cache_write_1h_tokens` is a SUBSET of `cache_write_tokens`.
+
+  `budget_charge_micro_usd` is what was charged against budget scopes: equal to
+  `cost.total_micro_usd` when usage is reported and priced; equal to the reservation
+  (`reserved_micro_usd`) when usage is `unknown` or pricing is `unpriced`; worst-case
+  completion of the missing components when `estimated`; 0 when `not_billable`.
+  (Cross-field equalities are enforced by the Gateway and by contract tests, not by
+  this schema.)
+
+  `usage_status: unknown` (review COST-12): `usage` holds the reservation's estimate
+  (input = estimated input, output = the reserved output cap, reasoning = reserved
+  reasoning tokens) and every usage field is listed in `estimated_fields`; when the entry is
+  priced, `cost` is that estimate priced at the reservation's worst-case rates, so
+  `cost.total_micro_usd` = `budget_charge_micro_usd` and report totals are conservative,
+  never 0. `provider_success` is true iff the upstream answered 2xx and the stream reached
+  a terminal event. `service_tier` holds the pricing-enum value after the per-dialect
+  normalization of plan 32 §8 (e.g. OpenAI `default` and Anthropic `standard_only` →
+  `standard`); the raw provider value stays in `usage_raw`.
+type: object
+additionalProperties: false
+required:
+  - schema_version
+  - record_view
+  - record_id
+  - reservation_id
+  - gateway_request_id
+  - gateway_replica
+  - token_jti
+  - token_kind
+  - task_id
+  - execution_id
+  - attempt
+  - worker_id
+  - repository
+  - project
+  - pr
+  - role
+  - harness
+  - phase
+  - tier_requested
+  - tier_effective
+  - provider
+  - api_family
+  - endpoint
+  - model_requested
+  - model_reported
+  - model_mismatch
+  - service_tier
+  - provider_request_id
+  - provider_response_id
+  - streamed
+  - started_at
+  - first_byte_at
+  - finished_at
+  - latency_ms
+  - http_status
+  - termination
+  - usage_status
+  - usage
+  - usage_raw
+  - pricing_status
+  - pricing
+  - cost
+  - reserved_micro_usd
+  - computed_bound
+  - bound_violation
+  - attributed_task_id
+  - budget_charge_micro_usd
+  - budget_scope_keys
+  - policy_revision
+  - outcome
+properties:
+  schema_version:
+    const: 1
+  record_view:
+    type: string
+    enum: [stored, enriched]
+  record_id:
+    $ref: "#/$defs/Uuid"
+  reservation_id:
+    $ref: "#/$defs/Uuid"
+  gateway_request_id:
+    description: Value of the `x-sc-gateway-request-id` response header returned to the caller.
+    type: string
+    pattern: "^gw_[0-9A-Za-z]{20,32}$"
+  gateway_replica:
+    description: Pod name of the Gateway replica that handled the request (or the sweeper).
+    type: string
+    maxLength: 63
+  token_jti:
+    $ref: "#/$defs/Uuid"
+  token_kind:
+    type: string
+    enum: [execution, orchestrator]
+  task_id:
+    type: [string, "null"]
+    pattern: "^sc-[0-9]+$"
+  execution_id:
+    type: [string, "null"]
+    pattern: "^sc-[0-9]+-x[0-9]+$"
+  attempt:
+    type: [integer, "null"]
+    minimum: 1
+  worker_id:
+    type: string
+    maxLength: 63
+  repository:
+    type: [string, "null"]
+    pattern: "^[A-Za-z0-9_.-]{1,64}/[A-Za-z0-9_.-]{1,100}$"
+  project:
+    type: [string, "null"]
+    pattern: "^[a-z0-9_][a-z0-9_-]{0,62}$"
+  pr:
+    description: Forgejo PR number of the task, joined in `enriched` view; null in `stored`.
+    type: [integer, "null"]
+    minimum: 1
+  role:
+    type: string
+    enum: [researcher, planner, tester, implementer, reviewer, orchestrator]
+  harness:
+    type: string
+    pattern: "^[a-z][a-z0-9-]{0,31}$"
+  phase:
+    type: string
+    enum: [specification, test_authoring, red_verification, implementation, green_retry, review, orchestration]
+  tier_requested:
+    oneOf:
+      - $ref: "#/$defs/Tier"
+      - type: "null"
+  tier_effective:
+    oneOf:
+      - $ref: "#/$defs/Tier"
+      - type: "null"
+  provider:
+    type: string
+    pattern: "^[a-z][a-z0-9-]{0,31}$"
+  api_family:
+    type: string
+    enum: [anthropic-messages, openai-responses, openai-chat-completions, google-generative, fake]
+  endpoint:
+    description: Gateway-side endpoint path template that was forwarded.
+    type: string
+    enum: ["/v1/messages", "/v1/responses", "/v1/chat/completions"]
+  model_requested:
+    type: string
+    minLength: 1
+    maxLength: 128
+  model_reported:
+    description: Model string reported by the provider response; null when no response body was parsed. Truncated to 128 chars.
+    type: [string, "null"]
+    maxLength: 128
+  model_mismatch:
+    description: True when model_reported does not match the ModelRouting `responseModelMatch` rules of model_requested (alert ModelMismatch).
+    type: boolean
+  service_tier:
+    description: Service tier reported by the provider (or requested if not reported); `standard` when neither.
+    type: string
+    maxLength: 32
+  provider_request_id:
+    description: Provider request id from response headers (`request-id`, `x-request-id`).
+    type: [string, "null"]
+    maxLength: 128
+  provider_response_id:
+    description: Provider message/response id from the body (e.g. `msg_...`, `resp_...`, `chatcmpl-...`).
+    type: [string, "null"]
+    maxLength: 128
+  streamed:
+    type: boolean
+  started_at:
+    $ref: "#/$defs/Timestamp"
+  first_byte_at:
+    oneOf:
+      - $ref: "#/$defs/Timestamp"
+      - type: "null"
+  finished_at:
+    $ref: "#/$defs/Timestamp"
+  latency_ms:
+    type: integer
+    minimum: 0
+  http_status:
+    description: Upstream HTTP status; null when no response was received.
+    type: [integer, "null"]
+    minimum: 100
+    maximum: 599
+  termination:
+    type: string
+    enum:
+      - completed
+      - upstream_error_response
+      - upstream_stream_error
+      - upstream_unreachable
+      - upstream_timeout
+      - idle_timeout
+      - total_timeout
+      - client_disconnect
+      - emergency_stop_cut
+      - response_too_large
+      - reservation_expired
+  usage_status:
+    type: string
+    enum: [reported, estimated, unknown, not_billable]
+  usage:
+    $ref: "#/$defs/Usage"
+  usage_raw:
+    description: Provider usage object exactly as received (no content fields), for re-derivation. May be pruned to null after 90 days (plan 43).
+    type: [object, "null"]
+  pricing_status:
+    type: string
+    enum: [priced, unpriced, not_applicable]
+  pricing:
+    oneOf:
+      - $ref: "#/$defs/Pricing"
+      - type: "null"
+  cost:
+    oneOf:
+      - $ref: "#/$defs/Cost"
+      - type: "null"
+  reserved_micro_usd:
+    description: The provable worst-case cost admitted for this request (CD-28); equal to the per-request ceiling check's amount.
+    type: integer
+    minimum: 0
+  computed_bound:
+    description: Token bounds the reservation was computed from (plan 53 §14.1 step 6). Null for rows whose request never reached reservation (not used today; reserved for future paths).
+    oneOf:
+      - type: "null"
+      - type: object
+        additionalProperties: false
+        required: [input_tokens, output_tokens, reasoning_tokens]
+        properties:
+          input_tokens: {type: integer, minimum: 0}
+          output_tokens: {type: integer, minimum: 0}
+          reasoning_tokens: {type: integer, minimum: 0}
+  attributed_task_id:
+    description: |
+      Reporting-only attribution hint for orchestrator (Hermes) rows (review BUD-B13): the task the
+      orchestrator said it was working on (header `x-sc-attribute-task`, honoured only for
+      `token_kind: orchestrator` and only if the task exists). Never used for enforcement, budget
+      scopes or security decisions; always null for execution tokens (task_id is authoritative).
+    type: [string, "null"]
+    pattern: "^sc-[0-9]+$"
+  bound_violation:
+    description: |
+      True when provider-reported usage exceeded `computed_bound` (input, or output + reasoning)
+      or the priced cost exceeded `reserved_micro_usd` (CD-28). The row keeps the reported usage
+      and real cost; the Gateway raises SCGatewayBoundViolation and quarantines the (provider,
+      model) until acknowledged (plan 53 §14.4a).
+    type: boolean
+  budget_charge_micro_usd:
+    type: integer
+    minimum: 0
+  budget_scope_keys:
+    description: Every budget scope this request was reserved/charged against.
+    type: array
+    minItems: 1
+    uniqueItems: true
+    items:
+      type: string
+      pattern: "^(execution:sc-[0-9]+-x[0-9]+|task:sc-[0-9]+|orchestration|orchestration-(day|month):[0-9-]+|provider-(day|month):[a-z][a-z0-9-]{0,31}:[0-9-]+|global-(hour|day|month):[0-9T-]+)$"
+  policy_revision:
+    type: string
+    pattern: "^[0-9a-f]{40}$"
+  outcome:
+    $ref: "#/$defs/Outcome"
+allOf:
+  - if:
+      properties:
+        pricing_status:
+          const: priced
+    then:
+      properties:
+        pricing:
+          $ref: "#/$defs/Pricing"
+        cost:
+          $ref: "#/$defs/Cost"
+  - if:
+      properties:
+        pricing_status:
+          const: unpriced
+    then:
+      properties:
+        cost:
+          type: "null"
+  - if:
+      properties:
+        usage_status:
+          const: not_billable
+    then:
+      properties:
+        budget_charge_micro_usd:
+          const: 0
+        pricing_status:
+          const: not_applicable
+        cost:
+          type: "null"
+        pricing:
+          type: "null"
+  - if:
+      properties:
+        record_view:
+          const: stored
+    then:
+      properties:
+        pr:
+          type: "null"
+        outcome:
+          properties:
+            worker_success:
+              type: "null"
+            red_verified:
+              type: "null"
+            green_verified:
+              type: "null"
+            ci_passed:
+              type: "null"
+            review_accepted:
+              type: "null"
+            human_accepted:
+              type: "null"
+  - if:
+      properties:
+        token_kind:
+          const: execution
+    then:
+      properties:
+        task_id:
+          type: string
+        execution_id:
+          type: string
+        attempt:
+          type: integer
+$defs:
+  Uuid:
+    type: string
+    pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+  Timestamp:
+    description: RFC 3339 UTC with millisecond precision.
+    type: string
+    pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,6})?Z$"
+  Tier:
+    type: string
+    enum: [clerical, bargain, standard, frontier]
+  Tokens:
+    type: [integer, "null"]
+    minimum: 0
+  Usage:
+    type: object
+    additionalProperties: false
+    required: [input_tokens, cached_input_tokens, cache_write_tokens, cache_write_1h_tokens, output_tokens, reasoning_tokens, estimated_fields]
+    properties:
+      input_tokens:
+        $ref: "#/$defs/Tokens"
+      cached_input_tokens:
+        $ref: "#/$defs/Tokens"
+      cache_write_tokens:
+        $ref: "#/$defs/Tokens"
+      cache_write_1h_tokens:
+        $ref: "#/$defs/Tokens"
+      output_tokens:
+        $ref: "#/$defs/Tokens"
+      reasoning_tokens:
+        $ref: "#/$defs/Tokens"
+      estimated_fields:
+        description: Usage fields whose value is a Gateway worst-case estimate rather than provider-reported (non-empty iff usage_status is estimated or unknown).
+        type: array
+        uniqueItems: true
+        items:
+          type: string
+          enum: [input_tokens, cached_input_tokens, cache_write_tokens, cache_write_1h_tokens, output_tokens, reasoning_tokens]
+  RateMicro:
+    description: Price in micro-USD per 1,000,000 tokens (e.g. "$3.00/M" = 3000000).
+    type: [integer, "null"]
+    minimum: 0
+  Pricing:
+    type: object
+    additionalProperties: false
+    required:
+      - currency
+      - pricing_version
+      - pricing_digest
+      - pricing_effective_at
+      - time_window
+      - long_context_threshold
+      - input_per_million_micro_usd
+      - cached_input_per_million_micro_usd
+      - cache_write_per_million_micro_usd
+      - cache_write_1h_per_million_micro_usd
+      - output_per_million_micro_usd
+      - reasoning_per_million_micro_usd
+    properties:
+      currency:
+        const: USD
+      pricing_version:
+        description: "`<provider>/<model>[@<serviceTier>]#<entry version>`."
+        type: string
+        maxLength: 200
+      pricing_digest:
+        description: sha256 (hex) of the canonical JSON of the applied pricing entry; key of ledger.pricing_snapshots.
+        type: string
+        pattern: "^[0-9a-f]{64}$"
+      pricing_effective_at:
+        description: The instant used to select the entry and time window (per windowBasis; request_start when no windows).
+        $ref: "#/$defs/Timestamp"
+      time_window:
+        description: Name of the matched time window; null when base rates applied.
+        type: [string, "null"]
+      long_context_threshold:
+        description: aboveInputTokens of the applied long-context tier; null when base rates applied.
+        type: [integer, "null"]
+      input_per_million_micro_usd:
+        $ref: "#/$defs/RateMicro"
+      cached_input_per_million_micro_usd:
+        $ref: "#/$defs/RateMicro"
+      cache_write_per_million_micro_usd:
+        $ref: "#/$defs/RateMicro"
+      cache_write_1h_per_million_micro_usd:
+        $ref: "#/$defs/RateMicro"
+      output_per_million_micro_usd:
+        $ref: "#/$defs/RateMicro"
+      reasoning_per_million_micro_usd:
+        $ref: "#/$defs/RateMicro"
+  Cost:
+    type: object
+    additionalProperties: false
+    required: [input_micro_usd, cache_read_micro_usd, cache_write_micro_usd, cache_micro_usd, output_micro_usd, reasoning_micro_usd, total_micro_usd]
+    properties:
+      input_micro_usd:
+        type: integer
+        minimum: 0
+      cache_read_micro_usd:
+        type: integer
+        minimum: 0
+      cache_write_micro_usd:
+        type: integer
+        minimum: 0
+      cache_micro_usd:
+        description: cache_read + cache_write (SPEC §79 `cache_usd`).
+        type: integer
+        minimum: 0
+      output_micro_usd:
+        type: integer
+        minimum: 0
+      reasoning_micro_usd:
+        type: integer
+        minimum: 0
+      total_micro_usd:
+        type: integer
+        minimum: 0
+  Outcome:
+    type: object
+    additionalProperties: false
+    required: [provider_success, worker_success, red_verified, green_verified, ci_passed, review_accepted, human_accepted]
+    properties:
+      provider_success:
+        description: True iff upstream returned 2xx and the response completed normally.
+        type: boolean
+      worker_success:
+        type: [boolean, "null"]
+      red_verified:
+        type: [boolean, "null"]
+      green_verified:
+        type: [boolean, "null"]
+      ci_passed:
+        type: [boolean, "null"]
+      review_accepted:
+        type: [boolean, "null"]
+      human_accepted:
+        type: [boolean, "null"]
+examples:
+  - schema_version: 1
+    record_view: stored
+    record_id: 0b3c8f0e-6a52-4d1e-9a7b-2c3d4e5f6a7b
+    reservation_id: 7e2d1c0b-9a8f-4e6d-8c5b-4a3f2e1d0c9b
+    gateway_request_id: gw_01JABCDEFGHJKMNPQRSTV
+    gateway_replica: model-gateway-7d9f8c6b5-x2k4p
+    token_jti: 4f1c2a9e-3b7d-4c51-9a0e-6d2f8b7c1e44
+    token_kind: execution
+    task_id: sc-184
+    execution_id: sc-184-x3
+    attempt: 2
+    worker_id: sc-184-x3
+    repository: strange-company/strange-company
+    project: strange-company
+    pr: null
+    role: implementer
+    harness: claude
+    phase: green_retry
+    tier_requested: bargain
+    tier_effective: standard
+    provider: anthropic
+    api_family: anthropic-messages
+    endpoint: /v1/messages
+    model_requested: claude-sonnet-x
+    model_reported: claude-sonnet-x-20260901
+    model_mismatch: false
+    service_tier: standard
+    provider_request_id: req_011CTx9
+    provider_response_id: msg_01XyZ
+    streamed: true
+    started_at: "2026-10-13T10:00:00.120Z"
+    first_byte_at: "2026-10-13T10:00:01.010Z"
+    finished_at: "2026-10-13T10:00:14.870Z"
+    latency_ms: 14750
+    http_status: 200
+    termination: completed
+    usage_status: reported
+    usage:
+      input_tokens: 1200
+      cached_input_tokens: 48000
+      cache_write_tokens: 3000
+      cache_write_1h_tokens: 0
+      output_tokens: 2100
+      reasoning_tokens: null
+      estimated_fields: []
+    usage_raw:
+      input_tokens: 1200
+      cache_read_input_tokens: 48000
+      cache_creation_input_tokens: 3000
+      output_tokens: 2100
+    pricing_status: priced
+    pricing:
+      currency: USD
+      pricing_version: "anthropic/claude-sonnet-x#v2"
+      pricing_digest: 3f5e8a1c0d9b7e6f5a4c3b2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f
+      pricing_effective_at: "2026-10-13T10:00:00.120Z"
+      time_window: null
+      long_context_threshold: null
+      input_per_million_micro_usd: 3000000
+      cached_input_per_million_micro_usd: 300000
+      cache_write_per_million_micro_usd: 3750000
+      cache_write_1h_per_million_micro_usd: 6000000
+      output_per_million_micro_usd: 15000000
+      reasoning_per_million_micro_usd: null
+    cost:
+      input_micro_usd: 3600
+      cache_read_micro_usd: 14400
+      cache_write_micro_usd: 11250
+      cache_micro_usd: 25650
+      output_micro_usd: 31500
+      reasoning_micro_usd: 0
+      total_micro_usd: 60750
+    reserved_micro_usd: 1250000
+    computed_bound: {input_tokens: 120000, output_tokens: 32000, reasoning_tokens: 0}
+    bound_violation: false
+    attributed_task_id: null
+    budget_charge_micro_usd: 60750
+    budget_scope_keys: ["execution:sc-184-x3", "task:sc-184", "provider-day:anthropic:2026-10-13", "provider-month:anthropic:2026-10", "global-hour:2026-10-13T10", "global-day:2026-10-13", "global-month:2026-10"]
+    policy_revision: 0123456789abcdef0123456789abcdef01234567
+    outcome:
+      provider_success: true
+      worker_success: null
+      red_verified: null
+      green_verified: null
+      ci_passed: null
+      review_accepted: null
+      human_accepted: null
+  - schema_version: 1
+    record_view: stored
+    record_id: 1c4d9f1e-7b63-4e2f-8b8c-3d4e5f6a7b8c
+    reservation_id: 8f3e2d1c-0b9a-4f7e-9d6c-5b4a3f2e1d0c
+    gateway_request_id: gw_01JABCDEFGHJKMNPQRSTW
+    gateway_replica: model-gateway-7d9f8c6b5-x2k4p
+    token_jti: 9a7b0c11-2d3e-4f50-8a61-7b8c9d0e1f23
+    token_kind: orchestrator
+    task_id: null
+    execution_id: null
+    attempt: null
+    worker_id: hermes
+    repository: null
+    project: _platform
+    pr: null
+    role: orchestrator
+    harness: hermes
+    phase: orchestration
+    tier_requested: standard
+    tier_effective: standard
+    provider: deepseek
+    api_family: openai-chat-completions
+    endpoint: /v1/chat/completions
+    model_requested: deepseek-v4-pro
+    model_reported: deepseek-v4-pro-exp
+    model_mismatch: true
+    service_tier: standard
+    provider_request_id: null
+    provider_response_id: chatcmpl-9f8e7d
+    streamed: true
+    started_at: "2026-10-13T10:05:00.000Z"
+    first_byte_at: "2026-10-13T10:05:00.900Z"
+    finished_at: "2026-10-13T10:05:03.000Z"
+    latency_ms: 3000
+    http_status: 200
+    termination: completed
+    usage_status: reported
+    usage:
+      input_tokens: 9000
+      cached_input_tokens: 31000
+      cache_write_tokens: 0
+      cache_write_1h_tokens: 0
+      output_tokens: 700
+      reasoning_tokens: 0
+      estimated_fields: []
+    usage_raw:
+      prompt_tokens: 40000
+      prompt_cache_hit_tokens: 31000
+      prompt_cache_miss_tokens: 9000
+      completion_tokens: 700
+    pricing_status: unpriced
+    pricing: null
+    cost: null
+    reserved_micro_usd: 410000
+    computed_bound: {input_tokens: 120000, output_tokens: 32000, reasoning_tokens: 0}
+    bound_violation: false
+    attributed_task_id: null
+    budget_charge_micro_usd: 410000
+    budget_scope_keys: ["orchestration-day:2026-10-13", "orchestration-month:2026-10", "provider-day:deepseek:2026-10-13", "provider-month:deepseek:2026-10", "global-hour:2026-10-13T10", "global-day:2026-10-13", "global-month:2026-10"]
+    policy_revision: 0123456789abcdef0123456789abcdef01234567
+    outcome:
+      provider_success: true
+      worker_success: null
+      red_verified: null
+      green_verified: null
+      ci_passed: null
+      review_accepted: null
+      human_accepted: null
+x-invalid-examples:
+  - reason: Float money and a priced row without a cost object.
+    value:
+      schema_version: 1
+      record_view: stored
+      record_id: 0b3c8f0e-6a52-4d1e-9a7b-2c3d4e5f6a7b
+      reservation_id: 7e2d1c0b-9a8f-4e6d-8c5b-4a3f2e1d0c9b
+      gateway_request_id: gw_01JABCDEFGHJKMNPQRSTV
+      gateway_replica: model-gateway-7d9f8c6b5-x2k4p
+      token_jti: 4f1c2a9e-3b7d-4c51-9a0e-6d2f8b7c1e44
+      token_kind: execution
+      task_id: sc-184
+      execution_id: sc-184-x3
+      attempt: 2
+      worker_id: sc-184-x3
+      repository: strange-company/strange-company
+      project: strange-company
+      pr: null
+      role: implementer
+      harness: claude
+      phase: implementation
+      tier_requested: bargain
+      tier_effective: bargain
+      provider: anthropic
+      api_family: anthropic-messages
+      endpoint: /v1/messages
+      model_requested: claude-sonnet-x
+      model_reported: claude-sonnet-x
+      model_mismatch: false
+      service_tier: standard
+      provider_request_id: null
+      provider_response_id: null
+      streamed: false
+      started_at: "2026-10-13T10:00:00.120Z"
+      first_byte_at: null
+      finished_at: "2026-10-13T10:00:14.870Z"
+      latency_ms: 14750
+      http_status: 200
+      termination: completed
+      usage_status: reported
+      usage: {input_tokens: 1, cached_input_tokens: 0, cache_write_tokens: 0, cache_write_1h_tokens: 0, output_tokens: 1, reasoning_tokens: null, estimated_fields: []}
+      usage_raw: null
+      pricing_status: priced
+      pricing: null
+      cost: null
+      reserved_micro_usd: 0.5
+      computed_bound: {input_tokens: 120000, output_tokens: 32000, reasoning_tokens: 0}
+      bound_violation: false
+      attributed_task_id: null
+      budget_charge_micro_usd: 0
+      budget_scope_keys: ["task:sc-184"]
+      policy_revision: 0123456789abcdef0123456789abcdef01234567
+      outcome: {provider_success: true, worker_success: null, red_verified: null, green_verified: null, ci_passed: null, review_accepted: null, human_accepted: null}
+  - reason: A not_billable row that nevertheless charges the budget.
+    value:
+      schema_version: 1
+      record_view: stored
+      record_id: 0b3c8f0e-6a52-4d1e-9a7b-2c3d4e5f6a7b
+      reservation_id: 7e2d1c0b-9a8f-4e6d-8c5b-4a3f2e1d0c9b
+      gateway_request_id: gw_01JABCDEFGHJKMNPQRSTV
+      gateway_replica: model-gateway-7d9f8c6b5-x2k4p
+      token_jti: 4f1c2a9e-3b7d-4c51-9a0e-6d2f8b7c1e44
+      token_kind: execution
+      task_id: sc-184
+      execution_id: sc-184-x3
+      attempt: 1
+      worker_id: sc-184-x3
+      repository: strange-company/strange-company
+      project: strange-company
+      pr: null
+      role: implementer
+      harness: claude
+      phase: implementation
+      tier_requested: bargain
+      tier_effective: bargain
+      provider: anthropic
+      api_family: anthropic-messages
+      endpoint: /v1/messages
+      model_requested: claude-sonnet-x
+      model_reported: null
+      model_mismatch: false
+      service_tier: standard
+      provider_request_id: req_1
+      provider_response_id: null
+      streamed: false
+      started_at: "2026-10-13T10:00:00.120Z"
+      first_byte_at: "2026-10-13T10:00:00.300Z"
+      finished_at: "2026-10-13T10:00:00.310Z"
+      latency_ms: 190
+      http_status: 429
+      termination: upstream_error_response
+      usage_status: not_billable
+      usage: {input_tokens: 0, cached_input_tokens: 0, cache_write_tokens: 0, cache_write_1h_tokens: 0, output_tokens: 0, reasoning_tokens: null, estimated_fields: []}
+      usage_raw: null
+      pricing_status: not_applicable
+      pricing: null
+      cost: null
+      reserved_micro_usd: 1250000
+      computed_bound: {input_tokens: 120000, output_tokens: 32000, reasoning_tokens: 0}
+      bound_violation: false
+      attributed_task_id: null
+      budget_charge_micro_usd: 1250000
+      budget_scope_keys: ["task:sc-184"]
+      policy_revision: 0123456789abcdef0123456789abcdef01234567
+      outcome: {provider_success: false, worker_success: null, red_verified: null, green_verified: null, ci_passed: null, review_accepted: null, human_accepted: null}
+  - reason: Execution row without task attribution (SPEC §78).
+    value:
+      schema_version: 1
+      record_view: stored
+      record_id: 0b3c8f0e-6a52-4d1e-9a7b-2c3d4e5f6a7b
+      reservation_id: 7e2d1c0b-9a8f-4e6d-8c5b-4a3f2e1d0c9b
+      gateway_request_id: gw_01JABCDEFGHJKMNPQRSTV
+      gateway_replica: model-gateway-7d9f8c6b5-x2k4p
+      token_jti: 4f1c2a9e-3b7d-4c51-9a0e-6d2f8b7c1e44
+      token_kind: execution
+      task_id: null
+      execution_id: null
+      attempt: null
+      worker_id: sc-184-x3
+      repository: null
+      project: null
+      pr: null
+      role: implementer
+      harness: claude
+      phase: implementation
+      tier_requested: null
+      tier_effective: null
+      provider: anthropic
+      api_family: anthropic-messages
+      endpoint: /v1/messages
+      model_requested: claude-sonnet-x
+      model_reported: null
+      model_mismatch: false
+      service_tier: standard
+      provider_request_id: null
+      provider_response_id: null
+      streamed: false
+      started_at: "2026-10-13T10:00:00.120Z"
+      first_byte_at: null
+      finished_at: "2026-10-13T10:00:00.310Z"
+      latency_ms: 190
+      http_status: null
+      termination: upstream_unreachable
+      usage_status: not_billable
+      usage: {input_tokens: 0, cached_input_tokens: 0, cache_write_tokens: 0, cache_write_1h_tokens: 0, output_tokens: 0, reasoning_tokens: null, estimated_fields: []}
+      usage_raw: null
+      pricing_status: not_applicable
+      pricing: null
+      cost: null
+      reserved_micro_usd: 1250000
+      computed_bound: {input_tokens: 120000, output_tokens: 32000, reasoning_tokens: 0}
+      bound_violation: false
+      attributed_task_id: null
+      budget_charge_micro_usd: 0
+      budget_scope_keys: ["global-day:2026-10-13"]
+      policy_revision: 0123456789abcdef0123456789abcdef01234567
+      outcome: {provider_success: false, worker_success: null, red_verified: null, green_verified: null, ci_passed: null, review_accepted: null, human_accepted: null}

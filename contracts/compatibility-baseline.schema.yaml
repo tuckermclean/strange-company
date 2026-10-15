@@ -1,0 +1,169 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://strange.company/contracts/compatibility-baseline/v1alpha1
+title: CompatibilityBaseline
+description: |
+  `plans/compatibility-baseline.yaml`, kind `CompatibilityBaseline` (CD-29, ADR-0022).
+
+  For every third-party component the plans depend on, the file records the exact version or release line
+  the plans were reasoned against, plus the evidence and its date. It supersedes the version "selection
+  rules" in the plans.
+  - Implementation pins a release inside `line`. Patch updates inside the line are free.
+  - A newer minor or major is a plan-amendment task: update this file, re-run the affected plans' `(verify)`
+    acceptance criteria, and review it like an architecture change.
+
+  The Stage-0 validator (tools/stage0/validate.py, C03) checks:
+  - the file parses and validates against this schema, so every entry has the required fields;
+  - every `planRefs` path exists;
+  - component names are unique (JSON Schema cannot express this).
+type: object
+additionalProperties: false
+required: [apiVersion, kind, metadata, spec]
+properties:
+  apiVersion: {const: strange.company/v1alpha1}
+  kind: {const: CompatibilityBaseline}
+  metadata:
+    type: object
+    additionalProperties: false
+    required: [name, checkedAt]
+    properties:
+      name: {type: string, pattern: "^[a-z][a-z0-9-]{0,40}$"}
+      checkedAt:
+        description: Date of the most recent full re-check of the baseline (ISO 8601 date).
+        $ref: "#/$defs/date"
+      decision: {type: string, pattern: "^CD-[0-9]{2,3}$"}
+      adr: {type: string, pattern: "^adr/[0-9]{4}-[a-z0-9-]+\\.md$"}
+  spec:
+    type: object
+    additionalProperties: false
+    required: [components]
+    properties:
+      components:
+        type: array
+        minItems: 1
+        items: {$ref: "#/$defs/component"}
+$defs:
+  date:
+    type: string
+    pattern: "^20[0-9]{2}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$"
+  planRef:
+    description: Repository-relative path of a plan that reasons about the component.
+    type: string
+    pattern: "^plans/([0-9]{2}-[a-z0-9-]+|reference/[a-z0-9-]+)\\.md$"
+  evidence:
+    oneOf:
+      - description: Shorthand when no source substantiates the version. The entry's `notes` must say why.
+        const: unverified
+      - type: object
+        additionalProperties: false
+        required: [status, checked]
+        properties:
+          status: {enum: [verified, unverified]}
+          source:
+            description: Official release page, release feed, package registry or support matrix that was read.
+            type: string
+            pattern: "^https://[^\\s]+$"
+          checked: {$ref: "#/$defs/date"}
+          released: {$ref: "#/$defs/date"}
+        if:
+          properties: {status: {const: verified}}
+        then:
+          required: [source]
+  component:
+    type: object
+    additionalProperties: false
+    required: [name, baselineVersion, line, evidence, planRefs, versionSensitiveAssumptions, notes]
+    properties:
+      name: {type: string, minLength: 1, maxLength: 80}
+      baselineVersion:
+        description: The exact current stable release on the evidence date, or the exact release line.
+        type: string
+        minLength: 1
+        maxLength: 80
+      line:
+        description: The release line inside which updates need no plan amendment (normally the minor, e.g. `3.19.x`).
+        type: string
+        minLength: 1
+        maxLength: 80
+      lineKind:
+        description: |
+          How `line` is cut. Default `minor`.
+          - `major`: only for components that ship a new minor with almost every release. `notes` must give the reason.
+          - `lts`: a vendor long-term-support line.
+          - `distribution`: an operating-system release or a distribution package.
+          - `exact`: a non-semver revision or revision range, such as a protocol revision.
+        enum: [minor, major, lts, distribution, exact]
+        default: minor
+      chart:
+        description: The Helm chart that delivers the component. Any chart version whose appVersion stays in `line` is in-line.
+        type: object
+        additionalProperties: false
+        required: [name, repository, version]
+        properties:
+          name: {type: string, minLength: 1}
+          repository: {type: string, pattern: "^(https|oci)://[^\\s]+$"}
+          version: {type: string, minLength: 1}
+      evidence: {$ref: "#/$defs/evidence"}
+      planRefs:
+        type: array
+        minItems: 1
+        uniqueItems: true
+        items: {$ref: "#/$defs/planRef"}
+      versionSensitiveAssumptions:
+        description: Behaviors the plans rely on that are tied to this version, normally the `(verify)` items near the component's name.
+        type: array
+        items: {type: string, minLength: 1, maxLength: 300}
+      notes: {type: string, minLength: 1}
+examples:
+  - apiVersion: strange.company/v1alpha1
+    kind: CompatibilityBaseline
+    metadata: {name: stage0, checkedAt: "2026-10-14", decision: CD-29, adr: adr/0022-stage0-compatibility-baseline.md}
+    spec:
+      components:
+        - name: Woodpecker server and agent
+          baselineVersion: v3.19.0
+          line: 3.19.x
+          chart: {name: woodpecker, repository: "https://github.com/woodpecker-ci/helm", version: 3.7.5}
+          evidence: {status: verified, source: "https://github.com/woodpecker-ci/woodpecker/releases/tag/v3.19.0", checked: "2026-10-14"}
+          planRefs: [plans/20-woodpecker.md]
+          versionSensitiveAssumptions: [exclusive config extension (ADR-0301)]
+          notes: Chart 3.7.5 ships appVersion 3.19.0.
+        - name: Example tool without a verifiable source
+          baselineVersion: "1.2.3"
+          line: 1.2.x
+          evidence: unverified
+          planRefs: [plans/02-bootstrap-toolbox.md]
+          versionSensitiveAssumptions: []
+          notes: Newest version substantiated by a third-party mirror only; re-check at implementation.
+x-invalid-examples:
+  - reason: An entry without planRefs.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: CompatibilityBaseline
+      metadata: {name: stage0, checkedAt: "2026-10-14"}
+      spec:
+        components:
+          - {name: Flux, baselineVersion: v2.9.6, line: 2.9.x, evidence: {status: verified, source: "https://github.com/fluxcd/flux2/releases/tag/v2.9.6", checked: "2026-10-14"}, versionSensitiveAssumptions: [], notes: x}
+  - reason: Verified evidence without a source URL.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: CompatibilityBaseline
+      metadata: {name: stage0, checkedAt: "2026-10-14"}
+      spec:
+        components:
+          - {name: Flux, baselineVersion: v2.9.6, line: 2.9.x, evidence: {status: verified, checked: "2026-10-14"}, planRefs: [plans/18-flux.md], versionSensitiveAssumptions: [], notes: x}
+  - reason: A planRef that is not a plan path.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: CompatibilityBaseline
+      metadata: {name: stage0, checkedAt: "2026-10-14"}
+      spec:
+        components:
+          - {name: Flux, baselineVersion: v2.9.6, line: 2.9.x, evidence: unverified, planRefs: [plan-18], versionSensitiveAssumptions: [], notes: x}
+  - reason: An unknown lineKind.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: CompatibilityBaseline
+      metadata: {name: stage0, checkedAt: "2026-10-14"}
+      spec:
+        components:
+          - {name: Flux, baselineVersion: v2.9.6, line: latest, lineKind: floating, evidence: unverified, planRefs: [plans/18-flux.md], versionSensitiveAssumptions: [], notes: x}

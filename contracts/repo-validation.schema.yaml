@@ -1,0 +1,221 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://strange.company/contracts/repo-validation/v1alpha1
+title: RepositoryValidation
+description: |
+  `.strange-company/validation.yaml` of a managed repository, kind `RepositoryValidation`
+  (SPEC §42, §50, §54; owning plan 22). It declares how trusted CI runs the repository's
+  tests for RED and GREEN, which other checks GREEN requires, and which advisory local
+  commands workers may run.
+
+  It is read **from the task's base commit** (ADR-0017). `.strange-company/**` is a
+  protected path, so the file at any verified head is byte-identical to the base revision;
+  `sc-verify` reports the blob it read (`validation_blob`) and the Runner compares it.
+
+  Consumers:
+  - `sc-ci-config` (plan 20 §8.4) takes `spec.verification.image` as the image of the
+    `sc-verify` step (must be in `policy/ci.yaml` image allowlist);
+  - `sc-verify run` (plan 22 §14.1) executes every suite whose `phases` contains the
+    current phase and, for GREEN, every check; all argv are executed without a shell;
+  - the Runner copies `spec.local` into the worker packet (`policy.validation_commands`,
+    advisory only, SPEC §36).
+
+  A test-first task requires a valid file with at least one suite whose `phases` include
+  both `red` and `green` (G_REPO_POLICY_VALID). Repositories without one can only take
+  verification-first tasks whose exemption class does not need suites.
+type: object
+additionalProperties: false
+required: [apiVersion, kind, metadata, spec]
+properties:
+  apiVersion:
+    const: strange.company/v1alpha1
+  kind:
+    const: RepositoryValidation
+  metadata:
+    type: object
+    additionalProperties: false
+    required: [name]
+    properties:
+      name: {type: string, pattern: "^[A-Za-z0-9_.-]{1,100}$"}
+  spec:
+    type: object
+    additionalProperties: false
+    required: [verification]
+    properties:
+      verification:
+        type: object
+        additionalProperties: false
+        required: [image, suites]
+        properties:
+          image:
+            description: Digest-pinned toolchain image for the sc-verify step (ADR-0302, plan 20).
+            type: string
+            pattern: "^[a-z0-9.-]+(:[0-9]+)?/[a-z0-9._/-]+@sha256:[a-f0-9]{64}$"
+          suites:
+            type: array
+            minItems: 1
+            maxItems: 10
+            items: {$ref: "#/$defs/Suite"}
+          checks:
+            description: Required non-test validation for GREEN (lint, build, type check, schema). All must exit 0 (SPEC §54 item 3).
+            type: array
+            maxItems: 10
+            items: {$ref: "#/$defs/Check"}
+          protectedTestIds:
+            description: Pre-existing test IDs that must pass at GREEN even if skipped at base would otherwise be tolerated (regression guards).
+            type: array
+            maxItems: 200
+            items: {type: string, pattern: "^[a-z][a-z0-9-]{0,40}::[^\\s].{0,498}$"}
+      local:
+        description: Advisory local validation for workers (never evidence).
+        type: array
+        maxItems: 10
+        items:
+          type: object
+          additionalProperties: false
+          required: [name, argv, timeoutSeconds]
+          properties:
+            name: {type: string, pattern: "^[a-z][a-z0-9-]{0,40}$"}
+            argv: {$ref: "#/$defs/Argv"}
+            timeoutSeconds: {type: integer, minimum: 1, maximum: 1800}
+$defs:
+  Argv:
+    description: Executed without a shell. `{protected_test_packages}` and `{report}` are the only substitutions sc-verify performs.
+    type: array
+    minItems: 1
+    maxItems: 40
+    items: {type: string, minLength: 1, maxLength: 500}
+  RepoPath:
+    type: string
+    pattern: "^(?!/)(?!.*(^|/)\\.\\.(/|$))[A-Za-z0-9._@+/{}-]{1,400}$"
+  Suite:
+    type: object
+    additionalProperties: false
+    required: [name, adapter, language, argv, report, timeoutSeconds, phases]
+    properties:
+      name: {type: string, pattern: "^[a-z][a-z0-9-]{0,40}$"}
+      adapter:
+        description: Result adapter (VerificationPolicy `spec.adapters`).
+        type: string
+        enum: [go-test-json, junit-xml, pytest-junit, jest-junit, vitest-junit, cargo-nextest-junit]
+      language:
+        type: string
+        enum: [go, python, javascript, typescript, rust, java, kotlin, csharp, shell]
+      argv: {$ref: "#/$defs/Argv"}
+      workingDir: {$ref: "#/$defs/RepoPath"}
+      report:
+        type: object
+        additionalProperties: false
+        required: [path]
+        properties:
+          path:
+            description: Report file written by the command (relative to the workspace), or `-` for go-test-json on stdout.
+            oneOf:
+              - const: "-"
+              - $ref: "#/$defs/RepoPath"
+      timeoutSeconds: {type: integer, minimum: 30, maximum: 3600}
+      env:
+        description: Non-secret environment variables (no secret is available to verification pipelines).
+        type: object
+        propertyNames: {pattern: "^[A-Z][A-Z0-9_]{0,63}$"}
+        additionalProperties: {type: string, maxLength: 500}
+      phases:
+        type: array
+        minItems: 1
+        uniqueItems: true
+        items: {type: string, enum: [red, green]}
+      selectArgv:
+        description: Argv appended to run only selected tests (`{test_ids}` is replaced by the adapter-specific selector, e.g. a Go `-run` regex or pytest node ids). Used for repeats, the isolation run and the RED replay (plan 22 §14.1); when absent those runs execute the full suite.
+        type: array
+        maxItems: 10
+        items: {type: string, maxLength: 500}
+      redScope:
+        description: Optional extra argv appended for the RED **head** run (e.g. to the packages of changed test files). Ignored when the red range touches fixturePaths or testInfraPaths (then unscoped, TDD-23). The base run is always the full suite; the full suite always runs at GREEN.
+        type: array
+        maxItems: 10
+        items: {type: string, maxLength: 500}
+  Check:
+    type: object
+    additionalProperties: false
+    required: [name, argv, timeoutSeconds]
+    properties:
+      name: {type: string, pattern: "^[a-z][a-z0-9-]{0,40}$"}
+      toolingFrom:
+        description: "`base` (default, TDD-B5) runs the check from the base worktree (checker and its configuration from trusted code) with `SC_TARGET_TREE` pointing at the head workspace, so the work under test cannot weaken its own checker. `head` must be justified and its argv/config files are then discovery-protected whole files."
+        type: string
+        enum: [base, head]
+        default: base
+      configPaths:
+        description: Tool configuration files the check reads (e.g. `.golangci.yml`, `ruff.toml`, `.eslintrc*`, included `*.mk`). They become discovery-protected whole files for implementers (plan 22 §14.5).
+        type: array
+        maxItems: 50
+        items: {$ref: "#/$defs/RepoPath"}
+      argv: {$ref: "#/$defs/Argv"}
+      timeoutSeconds: {type: integer, minimum: 10, maximum: 3600}
+      env:
+        type: object
+        propertyNames: {pattern: "^[A-Z][A-Z0-9_]{0,63}$"}
+        additionalProperties: {type: string, maxLength: 500}
+examples:
+  - apiVersion: strange.company/v1alpha1
+    kind: RepositoryValidation
+    metadata: {name: strange-company}
+    spec:
+      verification:
+        image: "git.example.org/strange-company/ci@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+        suites:
+          - name: unit
+            adapter: junit-xml
+            language: go
+            argv: [make, test, "JUNIT={report}"]
+            report: {path: out/sc-verify/unit.xml}
+            timeoutSeconds: 1500
+            phases: [red, green]
+            redScope: ["GO_TEST_PKGS={protected_test_packages}"]
+            selectArgv: ["GO_TEST_RUN={test_ids}"]
+        checks:
+          - {name: lint, argv: [make, lint], timeoutSeconds: 900, toolingFrom: base}
+          - {name: contracts, argv: [make, contracts], timeoutSeconds: 600, toolingFrom: base}
+      local:
+        - {name: unit, argv: [make, test], timeoutSeconds: 900}
+  - apiVersion: strange.company/v1alpha1
+    kind: RepositoryValidation
+    metadata: {name: example}
+    spec:
+      verification:
+        image: "registry.example.org/library/python@sha256:7777777777777777777777777777777777777777777777777777777777777777"
+        suites:
+          - name: unit
+            adapter: pytest-junit
+            language: python
+            argv: [python, -m, pytest, -q, "--junitxml={report}", -o, junit_family=xunit2]
+            report: {path: out/sc-verify/pytest.xml}
+            timeoutSeconds: 900
+            phases: [red, green]
+x-invalid-examples:
+  - reason: Toolchain image without a digest.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: RepositoryValidation
+      metadata: {name: x}
+      spec:
+        verification:
+          image: "python:3.13"
+          suites: [{name: unit, adapter: pytest-junit, language: python, argv: [pytest], report: {path: out/r.xml}, timeoutSeconds: 300, phases: [red, green]}]
+  - reason: Shell string instead of an argv array.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: RepositoryValidation
+      metadata: {name: x}
+      spec:
+        verification:
+          image: "registry.example.org/library/python@sha256:7777777777777777777777777777777777777777777777777777777777777777"
+          suites: [{name: unit, adapter: pytest-junit, language: python, argv: "pytest || true", report: {path: out/r.xml}, timeoutSeconds: 300, phases: [red, green]}]
+  - reason: Unknown result adapter.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: RepositoryValidation
+      metadata: {name: x}
+      spec:
+        verification:
+          image: "registry.example.org/library/python@sha256:7777777777777777777777777777777777777777777777777777777777777777"
+          suites: [{name: unit, adapter: exit-code-only, language: python, argv: [pytest], report: {path: out/r.xml}, timeoutSeconds: 300, phases: [red, green]}]

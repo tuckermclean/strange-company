@@ -1,0 +1,110 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://strange.company/contracts/test-quarantine/v1alpha1
+title: TestQuarantine
+description: |
+  `policy/test-quarantine.yaml`, kind `TestQuarantine` (owning plan 52 §9.3). It lists flaky tests that still run, but
+  whose failure does not fail their Make target. The file is a protected path, so agents cannot quarantine tests.
+
+  The schema enforces the static rules:
+  - at most 10 entries (Q1);
+  - `expires` and `added` are dates;
+  - the entry identifies a JUnit test case and an owner;
+  - the issue is a Forgejo issue reference.
+
+  `make quarantine-check` enforces the rest:
+  - `expires - added ≤ maxDays`;
+  - `expires` is not earlier than the HEAD committer date (nightly: wall clock);
+  - no protected acceptance test is quarantined (Q2);
+  - the issue exists (nightly).
+type: object
+additionalProperties: false
+required: [apiVersion, kind, metadata, spec]
+properties:
+  apiVersion: {const: strange.company/v1alpha1}
+  kind: {const: TestQuarantine}
+  metadata:
+    type: object
+    additionalProperties: false
+    required: [name]
+    properties:
+      name: {type: string, pattern: "^[a-z][a-z0-9-]{0,40}$"}
+  spec:
+    type: object
+    additionalProperties: false
+    required: [maxEntries, maxDays, entries]
+    properties:
+      maxEntries: {type: integer, minimum: 0, maximum: 10}
+      maxDays: {type: integer, minimum: 1, maximum: 14}
+      entries:
+        type: array
+        maxItems: 10
+        items:
+          type: object
+          additionalProperties: false
+          required: [id, target, reason, issue, added, expires, owner]
+          properties:
+            id:
+              description: JUnit `classname.name` of the test case.
+              type: string
+              minLength: 3
+              maxLength: 400
+              not:
+                description: Never-quarantinable name patterns (Q2 static subset). Matching is case-sensitive.
+                pattern: "(^|[./])Test(Spec105|Spec106|AC[0-9]|Gate)"
+            target:
+              description: Make target that runs the test (plan 01 catalogue).
+              type: string
+              pattern: "^[a-z][a-z0-9-]{0,40}$"
+            reason: {type: string, minLength: 20, maxLength: 500}
+            issue:
+              type: string
+              pattern: "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+$"
+            added: {type: string, format: date}
+            expires: {type: string, format: date}
+            owner: {type: string, pattern: "^[A-Za-z0-9_.-]{1,40}$"}
+examples:
+  - apiVersion: strange.company/v1alpha1
+    kind: TestQuarantine
+    metadata: {name: strange-company}
+    spec: {maxEntries: 10, maxDays: 14, entries: []}
+  - apiVersion: strange.company/v1alpha1
+    kind: TestQuarantine
+    metadata: {name: strange-company}
+    spec:
+      maxEntries: 10
+      maxDays: 14
+      entries:
+        - id: "strange.company/sc/src/internal/runner/dispatch.TestDispatchRace"
+          target: test
+          reason: "race between informer resync and dispatcher tick; tracked"
+          issue: "strange-company/strange-company#123"
+          added: "2026-10-13"
+          expires: "2026-10-27"
+          owner: "alice"
+x-invalid-examples:
+  - reason: Quarantining a SPEC §106 acceptance test (Q2).
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: TestQuarantine
+      metadata: {name: strange-company}
+      spec:
+        maxEntries: 10
+        maxDays: 14
+        entries:
+          - {id: "strange.company/sc/src/internal/statemachine.TestSpec106ImplementerBlockedBeforeRed", target: test, reason: "fails intermittently on CI runners", issue: "strange-company/strange-company#9", added: "2026-10-13", expires: "2026-10-20", owner: "bob"}
+  - reason: maxDays above the 14-day policy ceiling.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: TestQuarantine
+      metadata: {name: strange-company}
+      spec: {maxEntries: 10, maxDays: 30, entries: []}
+  - reason: An entry without an issue reference.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: TestQuarantine
+      metadata: {name: strange-company}
+      spec:
+        maxEntries: 10
+        maxDays: 14
+        entries:
+          - {id: "pkg.TestX", target: test, reason: "flaky on the small node under load", issue: "", added: "2026-10-13", expires: "2026-10-20", owner: "bob"}
