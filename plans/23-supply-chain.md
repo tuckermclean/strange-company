@@ -39,6 +39,7 @@ Derived requirements:
 - **23-R-5** The release pipeline never holds Kubernetes credentials and never writes `main`; it opens a PR from `promote/<tag>`.
 - **23-R-6** Vulnerability gate: no image is published with a **Critical** vulnerability that has a fixed version available, unless an unexpired waiver covers it.
 - **23-R-7** Every third-party artefact is pinned per plan 01 01-R-2, and updates arrive only as Renovate (or human) PRs; **no automerge** in MVP.
+- **23-R-8** Licence compatibility (operator decision CD-42): Strange Company is licensed **AGPL-3.0-or-later** (`LICENSE`). Every third-party Go module linked into a Strange Company binary must carry a licence that `security/license-policy.yaml` allows; an unknown, unclassifiable or denied licence fails `make licenses-check` (tier V) unless a reviewed exception names that module version (§14.11).
 
 ## 3. Inputs
 
@@ -50,6 +51,7 @@ Derived requirements:
 | Signing keys (public) | `security/cosign/trusted-keys.yaml`, `security/cosign/<key-id>.pub` |
 | Waivers | `security/vuln-waivers.yaml` |
 | Upstream signature policy | `security/upstream-signatures.yaml` |
+| Licence policy | `security/license-policy.yaml` (§9, §14.11) |
 | CI policy | `policy/ci.yaml` (`CIPolicy`, plan 20) incl. `releaseTagPattern`, `offclusterLane` |
 | Release credentials | Woodpecker secrets (§10) |
 | Renovate configuration | `renovate.json5` (repo root) |
@@ -191,6 +193,7 @@ Resolution steps: (1) provenance from `security/attestations/` at `main` (or the
 | `security/cosign/trusted-keys.yaml` | `TrustedSigningKeys`: `keys: [{id, type: key\|keyless, publicKeyFile (key) or issuer + subjectRegex (keyless), scope: installation\|upstream, status: active\|retired\|revoked, notBefore, revokedAt?, reason?}]`; exactly one `active` key with `scope: installation` (after P11); `upstream` entries (keyless GitHub OIDC identity, §14.9) verify images published to GHCR by the upstream project and are accepted only by `verify-running --mode bootstrap` | one key `sc-release-<YYYY>a` | human PR (`security-review`) |
 | `security/release-pushers.yaml` | `ReleasePusherAllowlist` (single source; plans 20 and 55 reference it): `apiVersion: strange.company/v1alpha1`, `kind: ReleasePusherAllowlist`, `spec.teams` (Forgejo `org/team` names whose human members may push release tags), `spec.bots` (account logins), `spec.denyKinds: [deploy_key]` (fixed); matched against the Runner push record's pusher login and kind | `teams: [strange-company/sc-admins, strange-company/engineers]`, `bots: [sc-admin]` | human PR (`security-review`); consumed by `sc-release` self-check, `sc-ci-config` (plan 20) and plan 55 release-provenance |
 | `security/vuln-waivers.yaml` | `VulnerabilityWaivers`: `waivers: [{id (CVE/GHSA), images: [glob], package, reason, approvedBy, created, expires}]`; `expires − created ≤ 30 d` (≤ 90 d with a second approver listed) | empty | human PR |
+| `security/license-policy.yaml` | `LicensePolicy`: `apiVersion: strange.company/v1alpha1`, `kind: LicensePolicy`, `spec.projectLicense: AGPL-3.0-or-later`, `spec.allow: [SPDX id]`, `spec.deny: [SPDX id]`, `spec.exceptions: [{module, version, license, reason, approvedBy, created}]`; an id in neither list fails like a denied one | allow `MIT`, `BSD-2-Clause`, `BSD-3-Clause`, `ISC`, `0BSD`, `Zlib`, `Apache-2.0`, `MPL-2.0`, `CC0-1.0`, `Unlicense`, `LGPL-2.1-or-later`, `LGPL-3.0-or-later`, `GPL-2.0-or-later`, `GPL-3.0-or-later`, `AGPL-3.0-or-later`; deny `GPL-2.0-only`, `LGPL-2.1-only`, `SSPL-1.0`, `BUSL-1.1`, `Elastic-2.0`, `Commons-Clause`, `CC-BY-NC-4.0`, `CC-BY-NC-SA-4.0`; no exceptions | human PR (`security-review`) |
 | `security/upstream-signatures.yaml` | `UpstreamSignaturePolicy`: `publishers: [{repositoryPattern, keyless: {issuer, subjectRegex}} \| {key: <pem file>}]` | Flux controllers, cert-manager, CNPG (verify each publisher's current signing practice at implementation) | human PR |
 | `policy/ci.yaml` (plan 20) `releaseTagPattern` | regex | `^v[0-9]+\.[0-9]+\.[0-9]+(-(rc|resign)\.[0-9]+)?$` | PR |
 | Vulnerability gate severity | `sc-release` flag in `release.yaml` | `CRITICAL`, fixed-only | PR |
@@ -347,6 +350,14 @@ Images that a fresh installation runs **before** its own P11 (toolbox, ci, `sc-c
 - **Credentials:** Woodpecker secrets `sc_capsule_writer`, `sc_capsule_cosign_key`, `sc_capsule_cosign_password` (events `[tag, cron]`, image filter `sc-release`); the self-check for `cron` requires event `cron`, cron name `capsule-refresh`, branch `main` (protected) and the commit equal to the `main` head. This is the only use of the signing key outside tag releases, and it signs only the capsule manifest (no image).
 - **Verification key:** the recovery bundle carries a copy of `security/cosign/trusted-keys.yaml` (`public_files`, plan 35 §14.4), so `./bootstrap recover --from-capsule` verifies `capsule.json.sig` without GitHub.
 
+### 14.11 Licence compliance (CD-42)
+
+- **Scope: linked code.** `make licenses-check` (`sc-lint licenses`) evaluates the module graph of every `src/cmd/*` binary (`go list -deps -json ./src/cmd/...`, standard library excluded). For each module version it reads the licence files from the module cache that `make build` already populated, so the target runs offline. It classifies them with `github.com/google/licensecheck` (compatibility baseline; verify that it classifies every module in the F02 tree, otherwise add an exception and record the gap). A module whose licence text is unrecognised, or whose match coverage is below 90 %, is `NOASSERTION` and fails. A dual-licensed module passes when any one of its licences is allowed.
+- **Why these lists.** Everything allowed can be combined into an AGPL-3.0-or-later work. `GPL-2.0-only` and `LGPL-2.1-only` code cannot be combined under v3 terms. SSPL, BUSL, Elastic and Commons Clause restrict use and are not free-software licences.
+- **Out of scope: aggregated programs.** Container images that ship separate third-party programs beside Strange Company binaries (harness CLIs such as Claude Code, upstream platform images, OS packages) are aggregation under AGPL §5, not linking. They are not gated. `sc-release publish` copies the per-package licence fields of each image's SPDX SBOM into the promotion PR body (§14.3 step 7) so a reviewer sees them.
+- **Changes.** Renovate and human PRs that add or bump a Go module run `licenses-check` inside `verify` like any other tier-V target. An exception is a reviewed PR to `security/license-policy.yaml` naming one module **version**; a later version of the same module is evaluated afresh.
+- This is an engineering check, not legal advice. The operator owns the licence decision (CD-42).
+
 ## 15. Failure modes
 
 | Failure | Detection | Effect | Automated response | Procedure |
@@ -414,6 +425,7 @@ Metrics: KSM CronJob series; release summary attestation per image (`https://str
 
 - **Unit (Go, `sc-release`):** inputs-id computation; Containerfile lint rules (positive/negative fixtures); waiver schema and expiry; trusted-key status handling (active/retired/revoked); offline signature verification with fixture keys; provenance construction (golden JSON); trace resolver with a fake Forgejo and fake Runner; self-check decision table.
 - **Integration (off-cluster lane, tier E, `make e2e-supply-chain`):** k3d with Forgejo (pinned) as registry, a fake Woodpecker environment (env vars), PSA baseline namespace + plan 37 policies: buildah builds a fixture image under admission; `sc-release publish` with a test key pushes and signs; `cosign verify` passes; `verify-promotion` passes on the generated PR tree and fails on tampered copies.
+- **Licence policy (F02):** `sc-lint licenses` unit tests over fixture module caches, one module per outcome: allowed, denied, unknown, low coverage, dual-licensed, excepted version, and excepted module at a different version. Plus a policy-file shape test.
 - **Live (P11):** first real release (§18 step 3) and the checks.
 - No paid model APIs are involved anywhere.
 
@@ -448,6 +460,10 @@ Metrics: KSM CronJob series; release summary attestation per image (`https://str
 - [ ] **23-AC-19** Workspace budget (CD-06): during the `toolbox` build of the first trusted release, the peak `du -sx /woodpecker` (sampled every 10 s by the build step and printed as a final `workspace-peak-bytes=<n>` line in the step log, which `publish` copies into the release summary attestation) is ≤ 9 GiB, and the workflow's PVC request is ≤ 10Gi.
 - [ ] **23-AC-18** SBOM content: the SPDX SBOM of `agent-runner` lists the main module with version equal to the release commit and every module of `go list -m all` used by `src/cmd/agent-runner` (set comparison in the test).
 
+### GATE-F02 (contributed; licence policy, CD-42)
+
+- [ ] **23-AC-28** `LICENSE` is the verbatim GNU AGPL v3 text (sha256 `0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0`, the gnu.org copy). `security/license-policy.yaml` exists with `projectLicense: AGPL-3.0-or-later` and the §9 lists. `make licenses-check` exits 0 on the F02 tree, and `out/licenses/report.json` has one row per linked third-party module version with its SPDX id and verdict. Fixture module caches make it exit non-zero, naming the module and rule: a `GPL-2.0-only` module (`LICENSE_DENIED`), an `SSPL-1.0` module (`LICENSE_DENIED`), a module with no licence file (`LICENSE_UNKNOWN`), and a module whose exception names a different version (`LICENSE_DENIED`). A dual `MIT OR GPL-2.0-only` module and an excepted module version pass. `make verify` runs `licenses-check`.
+
 ### GATE-H04 (contributed; CD-33)
 
 - [ ] **23-AC-24** After a release tag, `s3://<prefix>-recovery/<cluster>/capsule/LATEST.json` names a capsule whose `capsule.json` verifies with `cosign verify-blob --key security/cosign/<active>.pub --bundle capsule.json.sig` using the key copy from the unlocked recovery bundle; every listed object has Object Lock retention ≥ 35 days; a `DeleteObject` with `capsule-writer` is denied; merging a PR that changes `versions/k3s.lock.yaml` produces a new capsule within 24 h (cron `capsule-refresh`), and plan 44's `rt-bootstrap-capsule` passes.
@@ -458,6 +474,7 @@ Metrics: KSM CronJob series; release summary attestation per image (`https://str
 - Admission-time signature verification in MVP (post-MVP, §14.5).
 - SLSA Build L3 certification; reproducible bit-for-bit images.
 - Multi-arch internal images in MVP.
+- Gating aggregated third-party programs in images on their licences (they are reported in the promotion PR, not gated; §14.11), and legal review of licence texts beyond SPDX classification.
 - Automerge of any dependency update in MVP [SPEC §127].
 - Mirroring all third-party images into the Forgejo registry (ADR-0013: it does not help black start).
 

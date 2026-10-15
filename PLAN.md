@@ -38,9 +38,10 @@ Version-sensitive facts (chart values, API endpoints, CLI flags) are pinned and 
 ### F02 — contract-tooling
 
 - **Depends on:** F01
-- **Owning plans:** `plans/01-repository.md`, `plans/52-ci-strategy.md`
-- **Gate `GATE-F02`:** 7 acceptance criteria
+- **Owning plans:** `plans/01-repository.md`, `plans/23-supply-chain.md`, `plans/52-ci-strategy.md`
+- **Gate `GATE-F02`:** 8 acceptance criteria
   - `plans/01-repository.md`: 01-AC-20, 01-AC-21, 01-AC-22, 01-AC-23, 01-AC-24
+  - `plans/23-supply-chain.md`: 23-AC-28
   - `plans/52-ci-strategy.md`: 52-AC-9, 52-AC-10
 
 ### F03 — toolbox-image

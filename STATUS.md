@@ -12,14 +12,14 @@
 | Master plan (architecture, decisions, inventories, DAG, sequence, MVP boundary) | 1 | `plans/00-master-plan.md` |
 | Subsystem plans (each with all 25 SPEC §121 sections) | 55 | `plans/01-*.md` … `plans/55-*.md` |
 | Machine-readable DAG (42 nodes, acyclic) | 1 | `plans/dag.yaml` |
-| Implementation sequence (generated from the DAG and the gate sections; 1,178 gate acceptance criteria) | 1 | `PLAN.md` |
+| Implementation sequence (generated from the DAG and the gate sections; 1,179 gate acceptance criteria) | 1 | `PLAN.md` |
 | Executable Stage-0 validator (checks C01–C15) and its CI workflow (ADR-0021, CD-27) | 1 + 1 | `tools/stage0/validate.py`, `.github/workflows/stage0-validate.yaml` |
-| Compatibility baseline: exact third-party versions the plans are reasoned against (ADR-0022, CD-29) | 60 components | `plans/compatibility-baseline.yaml` |
+| Compatibility baseline: exact third-party versions the plans are reasoned against (ADR-0022, CD-29) | 61 components | `plans/compatibility-baseline.yaml` |
 | Contracts (JSON Schema 2020-12, OpenAPI 3.1, data files) | 52 files (48 schemas validated) | `contracts/` |
 | Operator procedures | 62 | `procedures/` |
 | ADRs (22 global + subsystem ADRs) | 79 | `adr/` |
 | SPEC issues register (59 entries, none blocking) | 1 | `plans/spec-issues.md` |
-| Consolidation decisions (CD-01..CD-41) | 1 | `plans/reviews/consolidation-decisions.md` |
+| Consolidation decisions (CD-01..CD-42) | 1 | `plans/reviews/consolidation-decisions.md` |
 | Independent fresh-context reviews (SPEC §132 items 43–47), plus closure verification | 10 + 3 | `plans/reviews/review-*.md`, `plans/reviews/closure-*.md` |
 | External adversarial reviews of PR #138 (two passes) and their disposition | 1 | `plans/reviews/external-review-pr138.md` |
 | Blind reviews (no access to earlier review conclusions; CD-34) | 5 | `plans/reviews/blind-*.md` |
@@ -31,7 +31,7 @@
    - C04 state machine: 24 states and 94 transitions; every state is reachable and every non-terminal state can terminate in both modes.
    - C05 plan sections: all 25 template sections in each of the 55 plans.
    - C06 DAG and gates: 42 nodes, acyclic, and every node and every plan listed under it has a `GATE-<node>` section.
-   - C07 AC ids: 1,178 gate acceptance criteria.
+   - C07 AC ids: 1,179 gate acceptance criteria.
    - C08 references: no dangling procedure, contract or plan references.
    - C09 alerts: every alert name used resolves in the 277-alert catalogue.
    - C10 secrets: every secret-class token resolves in the 69-class register.
@@ -69,6 +69,7 @@
    - CD-24: the OVH default stays VPS-2.
    - CD-25: SPEC v1.2 disk sizing, 100 GiB minimum and 200 GiB preferred.
    - CD-26: a Bitnami template-only library subchart vendored in an upstream chart is allowed.
+9. **Operator decision** (2026-10-15), CD-42: the project is licensed AGPL-3.0-or-later (`LICENSE`). Linked Go dependencies must have AGPL-compatible licences, checked by the tier-V target `make licenses-check` (plan 23 §14.11, gate 23-AC-28 at F02).
 
 ## SPEC §125 Stage-0 Definition of Done
 
@@ -114,7 +115,7 @@
 | 38 | Destructive operations are defined | ✅ | plan 49; `safe-destruction.md` |
 | 39 | All major failure modes have procedures | ✅ | all 39 SPEC §113 procedures plus 24 discovered ones (master plan §12) |
 | 40 | Dependency DAG exists | ✅ | `plans/dag.yaml` (acyclic, 42 nodes); master plan §13; `make dag-check` (plan 01) |
-| 41 | Every DAG node has acceptance criteria | ✅ | `PLAN.md`: every node has GATE ACs; 1,178 total; enforced by validator C06/C07 |
+| 41 | Every DAG node has acceptance criteria | ✅ | `PLAN.md`: every node has GATE ACs; 1,179 total; enforced by validator C06/C07 |
 | 42 | Deterministic CI strategy exists | ✅ | plan 52; ADR-0018 (amended), ADR-0303; `lab-seed` lane (CD-36); Stage-0 validator in CI (ADR-0021) |
 | 43 | MVP/post-MVP boundary is explicit | ✅ | master plan §15 |
 | 44 | No unresolved issue blocks implementation | ✅ | No open question is marked blocking (validator C13). Versions are frozen in the compatibility baseline (CD-29); remaining version-sensitive facts are `(verify)` items with re-verification ACs inside the owning gates; the OVH ordering spike (plan 04) gates P02 only for `PROVIDER=ovh`, with the `existing` fallback. |

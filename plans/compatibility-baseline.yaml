@@ -852,6 +852,18 @@ spec:
         - 2026-07-28 is stateless (no initialize); older clients (Hermes) negotiate down with initialize (26-AC-30)
       notes: Latest revision as of 2026-10-14. The accepted range is plan 26's; a new revision is a plan amendment.
 
+    - name: google/licensecheck (Go licence classifier)
+      baselineVersion: v0.3.1
+      line: 0.3.x
+      evidence:
+        status: verified
+        source: https://proxy.golang.org/github.com/google/licensecheck/@latest
+        checked: "2026-10-15"
+      planRefs: [plans/23-supply-chain.md]
+      versionSensitiveAssumptions:
+        - classifies licence texts to SPDX ids with a match-coverage percentage (licensecheck.Scan)
+      notes: Released 2020-09-03 and still the latest tag; it is the classifier pkg.go.dev uses. CD-42.
+
     - name: MCP Go SDK
       baselineVersion: v1.8.0
       line: 1.8.x

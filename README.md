@@ -88,7 +88,7 @@ $EDITOR bootstrap.env
 ./bootstrap --profile self-hosting-minimum
 ```
 
-Bootstrap is idempotent and resumable. It runs preflight, plan, provision, configure, seed, forge-init, flux-bootstrap, verify and finally **control transfer**. After control transfer the repository lives in Forgejo, Flux reconciles from it, and GitHub becomes its continuously updated mirror. The same CLI covers the rest of the lifecycle:
+The full walkthrough is [`procedures/fresh-install.md`](procedures/fresh-install.md). Bootstrap is idempotent and resumable. It runs preflight, plan, provision, configure, seed, forge-init, flux-bootstrap, verify and finally **control transfer**. After control transfer the repository lives in Forgejo, Flux reconciles from it, and GitHub becomes its continuously updated mirror. The same CLI covers the rest of the lifecycle:
 
 ```text
 ./bootstrap plan | status | verify
@@ -162,8 +162,8 @@ The minimum that must exist to get there:
 - 52 machine-readable contracts (JSON Schema and OpenAPI);
 - 62 operator procedures;
 - a register of 59 spec issues, none of them blocking;
-- a compatibility baseline pinning 60 third-party components;
-- an acyclic **42-node dependency DAG** with **1,178 acceptance criteria** written in advance.
+- a compatibility baseline pinning 61 third-party components;
+- an acyclic **42-node dependency DAG** with **1,179 acceptance criteria** written in advance.
 
 An executable validator (`tools/stage0/validate.py`, run in CI) checks the definition for internal consistency. [`STATUS.md`](STATUS.md) has the details.
 

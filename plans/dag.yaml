@@ -10,7 +10,7 @@ metadata:
 nodes:
   # ---------------- PHASE 1 ----------------
   - {id: F01, phase: 1, name: repo-skeleton, plans: ["01", "52"], deps: []}
-  - {id: F02, phase: 1, name: contract-tooling, plans: ["01", "52"], deps: [F01]}
+  - {id: F02, phase: 1, name: contract-tooling, plans: ["01", "52", "23"], deps: [F01]}
   - {id: F03, phase: 1, name: toolbox-image, plans: ["02"], deps: [F01]}
   - {id: F04, phase: 1, name: policy-lib, plans: ["22", "26"], deps: [F02]}
   - {id: F05, phase: 1, name: state-machine-lib, plans: ["21", "29"], deps: [F02]}

@@ -74,6 +74,7 @@ strange-company/
 ├── PLAN.md                      ordered implementation tasks (master plan §1)
 ├── STATUS.md                    Stage/implementation status
 ├── README.md                    human entry point: what this is, where to start, link to procedures/fresh-install.md
+├── LICENSE                      GNU AGPL v3 text; the project is AGPL-3.0-or-later (CD-42) (protected)
 ├── AGENTS.md                    worker instructions (advisory; §7.3) (protected)
 ├── bootstrap                    POSIX sh wrapper, mode 100755 (ADR-0002, plan 02) (protected)
 ├── bootstrap.env.example        every bootstrap.env key, generated from plan 50 §9.2 table (protected)
@@ -121,6 +122,7 @@ strange-company/
 │   ├── offcluster/<cluster>/    SOPS files encrypted ONLY to the recovery recipient (plan 35; §6.5)
 │   ├── strange-company/         repository-level SOPS registers changed only by PR, e.g. `runner-admin-credentials.sops.yaml` (hash entries of per-operator Runner admin credentials, CD-30; plans 26, 35, 50)
 │   └── ci/<cluster>/            CI-side SOPS secrets for trusted build pipelines (`ci-secrets apply`, `supply-chain init`; plans 17, 20, 23, 35)
+├── security/                    supply-chain trust and policy files: cosign/ keys, attestations/, release-pushers.yaml, vuln-waivers.yaml, upstream-signatures.yaml, license-policy.yaml (plan 23 §9) (protected)
 ├── evidence/                    small, non-secret, committed evidence records that policy requires in Git (e.g. provider-smoke, plan 53). Never logs.
 ├── tools/
 │   └── stage0/                  Stage-0 validator `validate.py`, `PLAN.md` generator `genplan.py`, pinned `requirements.txt` (ADR-0021; Python by exception to ADR-0002; ships in no image) (protected)
@@ -301,6 +303,7 @@ Execution model (§8.1): every target runs inside the pinned `ci` image (plan 02
 | `locks-check` | V | §6.3 checks 1–5 | 01 |
 | `locks-verify-online` | E (nightly) | every pinned digest/checksum resolves and matches upstream | 01 |
 | `secrets-scan` | V | gitleaks-equivalent scan with the pinned ruleset over the full tree; every `*.sops.yaml` has a `sops:` stanza with the expected recipients per path (§6.5) | 01/35 |
+| `licenses-check` | V | every third-party Go module linked into a `src/cmd/*` binary has a licence allowed by `security/license-policy.yaml` (plan 23 §14.11, CD-42); writes `out/licenses/report.json` | 23 |
 | `secrets-lint` | V | `contracts/secret-classes.yaml` invariants (plan 35) | 35 |
 | `contracts` | V | F02 (§8.3): meta-schema validation, examples pass, `x-invalid-examples` fail, `x-defs-examples`, `$id` naming, OpenAPI 3.1 validation | 01 |
 | `test` | V | `go test ./...` with `-race` on amd64; variables `GO_TEST_PKGS` (default `./...`), `GO_TEST_RUN`, `JUNIT=out/test/junit.xml` (always written). This is the command `.strange-company/validation.yaml` names for RED/GREEN (plan 22) | 01 |
