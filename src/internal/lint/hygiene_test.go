@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
 )
 
 // 01-AC-1: plan 01 section 6.1 allows mode 100755 only for bootstrap, toolbox/bin/* and
