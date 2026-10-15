@@ -29,7 +29,6 @@ jobs:
     timeout-minutes: 5
     outputs:
       toolbox: ${{ steps.select.outputs.toolbox }}
-      unchanged: ${{ steps.marker.outputs.cache-hit == 'true' }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -37,11 +36,12 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      # A hit means this commit already passed a scheduled run (`skipped: unchanged`).
+      # A hit means this commit already passed a scheduled run (`skipped: unchanged`). Restore-only: this job
+      # never saves the marker.
       - name: Look up the scheduled-run marker
         id: marker
         if: github.event_name == 'schedule'
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .cache/e2e-scheduled
           key: e2e-scheduled-ok-${{ github.sha }}
