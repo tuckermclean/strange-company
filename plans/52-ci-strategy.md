@@ -232,6 +232,7 @@ The check **re-executes** RED instead of looking up a recorded CI run on the tes
 - `permissions: {contents: read}`. No secrets referenced (`lint` fails on `secrets.` in workflows other than `GITHUB_TOKEN`). The single exception is `publish.yaml` (§4 item 1): `permissions: {contents: read, id-token: write, packages: write}`, upstream repository only, keyless signing, no stored signing key. `concurrency: {group: <workflow>-<ref>, cancel-in-progress: true}` for PRs only.
 - Checkout uses `fetch-depth: 0`.
 - `.cache/` is cached by `actions/cache` (pinned SHA), keyed by `src/go.sum`, `versions/platform.lock.yaml` and `infra/tofu/**/.terraform.lock.hcl`.
+- The `ci` image is built on the runner by the Makefile re-exec (`./bootstrap exec --image ci`, Docker) and cached separately as `.cache/ci-image/<inputs-id>.tar`, keyed by the toolbox inputs id (plan 02 §14.2 step 5, §14.9). The job loads it before `make` and saves it after a build. Until P11 publishes images, CI never pulls a `ci` image (CD-45).
 - **`mode` job:** it outputs `primary=forgejo` when the commit contains any `gitops/clusters/<c>/config/forge-init.yaml` with `<c>` not matching `ci-*`, otherwise `primary=github`.
   - `verify` and `tdd-discipline` run only when `primary == github`. After control transfer they no longer spend minutes on mirror pushes (ADR-0018: advisory).
   - `e2e.yaml` runs in both modes.
