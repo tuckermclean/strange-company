@@ -20,7 +20,7 @@ Specialised procedures (this file links to them):
 | `SC-AGE-CLUSTER`, `SC-AGE-RECOVERY` | `rotate-age-key.md` |
 | `SC-OBJECT-STORAGE` (all instances) | `rotate-storage-credentials.md` |
 | `SC-BREAK-GLASS-*`, `SC-GRAFANA-ADMIN` | `rotate-break-glass.md` |
-| `SC-FORGEJO-ADMIN`, `SC-FORGEJO-APP-SECRETS`, `SC-FORGEJO-SSH-HOST-KEY`, `SC-FORGEJO-BOT-TOKENS`, `SC-FLUX-DEPLOY-KEY`, `SC-GITHUB-MIRROR`, `SC-GITHUB-PROBE`, `SC-GITHUB-MIRROR-READ`, `SC-RENOVATE`, `SC-WOODPECKER-OAUTH` | `rotate-forge-credentials.md` (plan 16/17) |
+| `SC-FORGEJO-ADMIN`, `SC-FORGEJO-APP-SECRETS`, `SC-FORGEJO-SSH-HOST-KEY`, `SC-FORGEJO-BOT-TOKENS`, `SC-FLUX-DEPLOY-KEY`, `SC-GITHUB-MIRROR`, `SC-GITHUB-PROBE`, `SC-GITHUB-MIRROR-READ`, `SC-GITHUB-PROJECT-MIRROR`, `SC-GITHUB-IMPORT`, `SC-RENOVATE`, `SC-WOODPECKER-OAUTH` | `rotate-forge-credentials.md` (plan 16/17) |
 | `SC-MODEL-API-KEYS`, `SC-GATEWAY-TOKEN` | `rotate-model-credentials.md` (plan 53) |
 | `SC-RELEASE-SIGNING` | `signing-key-rotation.md` |
 

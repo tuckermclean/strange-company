@@ -45,6 +45,7 @@ Derived requirements:
 - **16-R-4** Every forge object that policy depends on (orgs, teams, bot membership, branch protection, webhooks, push mirror, org labels) is declared in `forge/forge.yaml` and applied idempotently by `sc-bootstrap forge apply`. Manual drift is detected (`SCForgeConfigDrift`, `SCForgeBranchProtectionDrift`).
 - **16-R-5** Forgejo Actions is disabled (`[actions] ENABLED=false`). Woodpecker is the CI [SPEC §36].
 - **16-R-6** The SSH listener is cluster-internal by default (ADR-0010). It is reachable from `flux-system`, `agent-jobs`, `strange-company` (Runner), `woodpecker`, `ci-jobs` and `forgejo` (backup CronJobs), and from nowhere else.
+- **16-R-7** (CD-43) Existing GitHub project repositories are migrated into org `projects` and Forgejo becomes their primary. `forge.yaml` may declare a one-time `import` block per `projects/*` repository (§14.5); `forge apply` runs it only if the repository does not exist, with an operator-supplied read-only GitHub token (`SC-GITHUB-IMPORT`) that is never persisted. An optional `pushMirrors` entry (plan 17 §14.8) keeps a GitHub copy. Tasks stay single-repository (SPEC §128).
 
 ## 3. Inputs
 
@@ -252,6 +253,20 @@ spec:
 
 Staging of required status contexts: the list above is the target state. The `forge.yaml` committed at P05 lists only `ci/woodpecker/pr/ci` for `main` (its producer is live at P12, when `forge finalize` applies `steady`); the C09 PR of plan 55 adds `strange-company/tdd-provenance`, `strange-company/review` and `strange-company/release-provenance` (SEC-11), after which no PR merges into `main` without them.
 
+**Project repositories (CD-43).** A `projects/<name>` element has the same `branchProtection` shape as `strange-company/strange-company` `main` (human-only whitelists are schema constants; required contexts per plan 52 §8.2, staged like `main`), and may add `import` and `pushMirrors` (the schema ties `projects/*` to `SC-GITHUB-PROJECT-MIRROR` and rejects `import` elsewhere):
+
+```yaml
+- name: projects/acme-tool
+  defaultBranch: main
+  private: true
+  import:                              # one-time; skipped when the repository exists (§14.5)
+    source: https://github.com/<owner>/acme-tool
+    items: {git: true, issues: true, pullRequests: true, labels: true, milestones: true, releases: true, wiki: false, lfs: false}
+    credential: {class: SC-GITHUB-IMPORT, source: operator-invocation}   # token passed on the command line or stdin, never stored
+  pushMirrors:                         # optional; plan 17 §14.8
+    - {name: github, remoteAddress: "https://github.com/<owner>/acme-tool.git", branchFilter: "main,release/*", interval: 10m0s, syncOnCommit: true, useSSH: false, credential: {class: SC-GITHUB-PROJECT-MIRROR, source: operator}}
+```
+
 `active: false` until C03: plan 26 flips it to `true` by PR, and `forge apply` applies it. Port 8083 and path `/v1/hooks/forgejo` follow CD-03 and plan 26.
 
 ## 8. Internal interfaces
@@ -416,6 +431,8 @@ The chart converts unknown item keys to kebab-case `forgejo admin auth add-oauth
 | `SC-PG-APP` (`forgejo-pg-app`) | master §9 (owner plan 12) | plan 50 pre-seed (32 random bytes) | Forgejo, CNPG `bootstrap.*.secret` | SOPS `gitops/clusters/<c>/secrets/forgejo/forgejo-pg-app.sops.yaml` (12-R-5: identical across `initdb` and `recovery`) | plan 12 | from Git |
 | `SC-OIDC-CLIENTS` (forgejo client) | master §9 | plan 50 pre-seed generation | Authentik blueprint + Forgejo | SOPS | plan 15 | Git |
 | `SC-GITHUB-MIRROR` | master §9 | operator (plan 17) | Forgejo push mirror (DB, encrypted with `SECRET_KEY`) | bundle + Forgejo DB | plan 17 | plan 17 |
+| `SC-GITHUB-IMPORT` (**new**, CD-43) | registered (owner 16) | operator, per import (read-only GitHub token) | `sc-bootstrap forge apply` (Forgejo migrate API request only) | process memory only; never Git, SOPS, Kubernetes Secret, Forgejo configuration or the bundle | per use; operator revokes it in GitHub afterwards (`rotate-forge-credentials.md` §G.8) | not recoverable by design; issue a new token |
+| `SC-GITHUB-PROJECT-MIRROR` (owner plan 17) | registered | operator, when a project declares a push mirror | Forgejo push mirrors of `projects/*` (DB, encrypted with `SECRET_KEY`) | operator offline copy; not in the bundle | ≤ 180 days (`rotate-forge-credentials.md` §G.8) | operator re-issues |
 
 Bot accounts have random passwords that forge-init sets and discards (§14.2 S09). They are not stored anywhere. Bots authenticate only with tokens.
 
@@ -510,6 +527,19 @@ forge-init holds **no** state between runs except Git (SOPS outputs), local stag
 
 Routine forge configuration changes: PR to `forge/forge.yaml` → merge → operator runs `./bootstrap exec -- sc-bootstrap forge apply` (prints a diff, then applies). Automating `forge apply` as an in-cluster reconciler is post-MVP (§24). The probe detects drift continuously.
 
+### 14.5 Importing an existing GitHub repository (CD-43)
+
+`procedures/onboard-project-repository.md` drives this. For each `projects/*` element with `import`:
+1. `forge apply` checks `GET /repos/projects/<name>`. **Exists:** skip the migration and verify (default-branch head SHA and ref counts against the GitHub source via the `SC-GITHUB-IMPORT` token if one is supplied; otherwise only report `import: skipped-exists`). **Absent:** continue.
+2. Pre-checks: org `projects` exists; the source URL host is `github.com`; the token is supplied (`--github-import-token-file <path>` or stdin; refused if absent; never read from the environment of the cluster, never logged).
+3. `POST /api/v1/repos/migrate` with `service: github`, `clone_addr`, `auth_token`, `repo_owner: projects`, `repo_name`, `private: true`, `mirror: false`, and the booleans of `items` (`issues`, `pull_requests`, `labels`, `milestones`, `releases`, `wiki`, `lfs`). (verify, Forgejo v15 migrate API: field names, GitHub item support, handling of PR head refs, comment authors mapped to placeholder users instead of Forgejo accounts, rate-limit and partial-failure behaviour, and that the token is not stored on the repository; 16-AC-42 records the results.) Egress is already allowed by FJ-2 (443).
+4. Wait for the migration task to finish (poll the repository `empty`/`migrating` state, timeout 30 min, configurable). On failure, delete the half-created repository (only if `forge apply` created it in this run) and exit non-zero; the next run starts clean.
+5. Create the repository settings, branch protection, deploy keys and push mirror from `forge.yaml` exactly as for any repository. Branch protection is applied **after** the import so the migration's pushes are not blocked.
+
+`forge apply --rotate-mirror <repo>` deletes and re-creates that repository's push mirror with the credential supplied at invocation (token rotation for plan 17 §14.8).
+
+The import never creates a pull mirror and never keeps the GitHub token. Re-running with the same file performs zero mutations (§17). `.github/workflows/**` stays in the imported history and is inert: Forgejo Actions is disabled (16-R-5).
+
 ## 15. Failure modes
 
 | # | Failure | Detection | Effect | Automated response | Procedure |
@@ -548,6 +578,7 @@ Routine forge configuration changes: PR to `forge/forge.yaml` → merge → oper
 - `git push` is fast-forward only. A diverged remote fails closed.
 - The chart's admin and OAuth init steps are idempotent by design (`initialOnlyNoReset` creates `sc-admin` once; `update-oauth`).
 - `forge apply` computes a diff and applies only the delta. `--dry-run` prints it.
+- Import (§14.5) is create-only: an existing repository is never re-imported or overwritten, and a second `forge apply` with the same `import` block performs zero mutations. A failed import removes only the repository that this run created.
 
 ## 18. Bootstrap behavior
 
@@ -615,6 +646,7 @@ GitHub holds `main`, `release/*` and tags (plan 17). Hourly bundles hold all ref
 - **Contract:** `forge/forge.yaml` validates against the proposed schema (F02). The forge-init journal record validates.
 - **Offline render (F11):** `helm template` of the Forgejo HelmRelease values produces no `bitnami` image and no deployable Bitnami chart object (vendored `type: library` subcharts allowed, CD-26), no `busybox:latest`, `strategy: Recreate`, `replicas: 1`, rootless image by digest, and `valuesFrom` with `optional: true`.
 - **Integration (k3d, CI-runnable without paid APIs; plan 52 target `make e2e-forgejo`):** CNPG + a single-node Longhorn substitute (`local-path` in k3d, with Longhorn-specific checks deferred to the live P04 gate) + SeaweedFS `s3-emulator` as S3 (CD-12, ADR-0205) + Forgejo chart. Runs forge-init twice and asserts idempotency. Verifies OIDC source registration against a mock OIDC provider (dex in test only). Verifies push-mirror creation against a local Git HTTP server standing in for GitHub (verifies `branch_filter`). Verifies branch protection rejects deploy-key pushes to `main`.
+- **Import (CD-43):** the planner unit tests include `import` on an absent repository (one migrate call, then protection), an existing repository (zero calls), a failed migration (cleanup, non-zero exit) and a missing token (refused before any call). The end-to-end import from a local fixture Git source runs in plan 22's C10 criteria (22-AC-29); no GitHub access in CI.
 - **Live gates:** §23 on the real node.
 - **Restore tests:** plan 44 runs a monthly scratch restore (`dr-tests`) of `forgejo-pg` + bundle and records `restore-test-result`.
 
@@ -676,6 +708,10 @@ GitHub holds `main`, `release/*` and tags (plan 17). Hourly bundles hold all ref
 
 **SPEC §124 example Forgejo gate mapping:** HTTP healthy → 16-AC-1; Authentik login works → 16-AC-26; break-glass access works → 16-AC-27, 16-AC-19; DB uses CNPG → 16-AC-2; Git data uses intended storage → 16-AC-3 (+ 16-AC-4 objects); repository creation works → 16-AC-10; push works → 16-AC-11; clone works → 16-AC-12; mirror receives commit → 17-AC-1..3; backup works → 16-AC-28; restore works → 16-AC-29; metrics visible → 16-AC-22 (+ plan 38 at P09); required alerts exist → 16-AC-30.
 
+### GATE-S01 (first project repository; plan 22 owns the node's final criterion)
+
+- **16-AC-42** Real import (CD-43): `./bootstrap exec -- sc-bootstrap forge apply` with the operator's `SC-GITHUB-IMPORT` token creates `projects/<repo>` from the operator's GitHub repository with the declared `items`. The default-branch head SHA equals `git ls-remote https://github.com/<owner>/<repo>.git HEAD`, the branch and tag counts equal GitHub's, and for each enabled item the Forgejo issue/PR/label/milestone/release counts equal GitHub's (documented deviations such as placeholder authors recorded in the evidence). A second `forge apply` reports `import: skipped-exists` and zero mutations. `git grep -c` for the token value in Forgejo, the cluster (`kubectl get secrets -A`) and the journal finds nothing. The Forgejo v15 migrate-API (verify) facts of §14.5 step 3 are written to the node evidence.
+
 ## 24. Explicit non-goals
 
 - Multi-replica Forgejo or a Redis/valkey-backed queue (SPEC §127 spirit; single replica is sufficient).
@@ -685,6 +721,7 @@ GitHub holds `main`, `release/*` and tags (plan 17). Hourly bundles hold all ref
 - An in-cluster continuous reconciler for `forge.yaml` (post-MVP; MVP uses `forge apply` + drift alert).
 - Forgejo federation, package proxying, pull mirrors of arbitrary upstreams (except plan 17's optional upstream sync).
 - Automatic merge (ADR-0019).
+- Continuous sync from GitHub into Forgejo (the import is one-time and is not a pull mirror, CD-43), cross-repository tasks (SPEC §128), automatic translation of imported GitHub users to Forgejo accounts, and migrating GitHub Actions secrets, Projects boards or Discussions.
 
 ## 25. Open questions
 
@@ -701,3 +738,4 @@ GitHub holds `main`, `release/*` and tags (plan 17). Hourly bundles hold all ref
 | Q-16-09 | Emergency merges: plan 55's `emergency-merge.md` uses stage `bootstrap` with `sc-breakglass` whitelisted (fast-forward push of a reviewed commit); this plan also defines a PR-based `recovery` stage. | no | Plan 55's procedure is authoritative; `recovery` stays as the alternative for "Runner statuses only" outages. Both are audited by the plan 55 merge auditor. | 55 / 16 |
 | Q-16-10 | **Decided by CD-40 (accepted exception).** CD-38 says bots hold write at most, but Forgejo v15 requires repository admin to create and delete deploy keys (verify), and per-execution deploy keys (ADR-0007) are load-bearing. | no (decision recorded for lead review; affects only C03) | Adopted: the single admin bot `sc-keys` (team `sc-deploy-keys`), token only in a separate key-broker container of the Runner pod that exposes nothing but create/delete deploy key (plan 26); compensating controls: merge/approval whitelists still require a protection edit first, a protection edit fires `SCForgeBranchProtectionDrift` (critical) and the Runner merge auditor (plan 55) flags any merge without an `sc-mergers` approval. Alternatives for the lead/operator: accept the exception (record in SI-59/CD-38 amendment), or carry a Forgejo change that lets a non-admin role manage deploy keys. The contract allows exactly this one admin team (`sc-deploy-keys` with member `sc-keys`). | lead / 26 / 34 |
 | Q-16-11 | `.gitmodules` and `.gitattributes` must be protected paths for agent tasks so that a worker cannot introduce submodules or LFS filters that the CI clone would process (blind SEC-B4). | no | Plan 22 owns the protected-path list and adds both; plan 20 disables submodule recursion and LFS in the clone step. Forgejo-side nothing changes (`[lfs]` on the `strange-company` repository is unused, plan 17 17-R-5). | 22 / 20 |
+| Q-16-12 | Forgejo v15 migrate API behaviour for GitHub sources (item support, PR refs, author mapping, partial-failure state, token retention, `[migrations] ALLOWED_DOMAINS`/`BLOCKED_DOMAINS` defaults) is unverified. | no | (verify) in 16-AC-42 on the first real import; unit tests use a recorded fake. If PR import is unusable, import with `pullRequests: false` and keep the GitHub PRs readable on the archived or mirrored GitHub repository. | 16 |

@@ -260,7 +260,7 @@ Verification-first tasks use the judge-first states `JUDGE_AUTHORING`, `JUDGE_VA
 
 ## 9. Secret classes (summary; authoritative: plan 35 + `contracts/secret-classes.yaml`)
 
-The authoritative register is `contracts/secret-classes.yaml` (67 classes, validated against `contracts/secret-classes.schema.yaml`), described in plan 35. For each class it defines creator, consumers, storage, rotation, recovery and compromise response (SPEC §99). No plan may use a secret class that is not registered; the `secrets-lint` check in plan 52 enforces this. The table below is generated from the register.
+The authoritative register is `contracts/secret-classes.yaml` (71 classes, validated against `contracts/secret-classes.schema.yaml`), described in plan 35. For each class it defines creator, consumers, storage, rotation, recovery and compromise response (SPEC §99). No plan may use a secret class that is not registered; the `secrets-lint` check in plan 52 enforces this. The table below is generated from the register.
 
 | Class | Title | Owner plan | In recovery bundle |
 |---|---|---|---|
@@ -291,9 +291,11 @@ The authoritative register is `contracts/secret-classes.yaml` (67 classes, valid
 | `SC-FORGEJO-SSH-HOST-KEY` | Forgejo SSH host key | 16 | no |
 | `SC-GATEWAY-TOKEN` | Model Gateway caller token | 53 | no |
 | `SC-GHCR-PUSH` | GHCR toolbox publication token | 23 | no |
+| `SC-GITHUB-IMPORT` | GitHub read credential for one-time repository import | 16 | no |
 | `SC-GITHUB-MIRROR` | GitHub mirror push credential | 17 | yes |
 | `SC-GITHUB-MIRROR-READ` | GitHub mirror read credential for restore tests | 17 | no |
 | `SC-GITHUB-PROBE` | GitHub mirror freshness probe token | 17 | no |
+| `SC-GITHUB-PROJECT-MIRROR` | GitHub push credential for project repository mirrors | 17 | no |
 | `SC-GRAFANA-ADMIN` | Grafana local admin and secret key | 39 | no |
 | `SC-HERMES-API` | Hermes gateway API key | 24 | no |
 | `SC-INFRA-PROVIDER` | Infrastructure provider API credentials | 04 | yes |
@@ -465,6 +467,7 @@ Every SPEC §113 procedure exists. Procedures discovered during Stage 0 have bee
 | `monitoring-failure.md` | 38 |
 | `notification-failure.md` | 42 |
 | `object-storage-outage.md` | 14 |
+| `onboard-project-repository.md` | 16 |
 | `pricing-update.md` | 32 |
 | `provider-outage.md` | 03 |
 | `quarantine-worker.md` | 26 |
@@ -548,6 +551,9 @@ PHASE 4 — Threshold
   R01  real-harness                                 ← C10
   R02  self-hosting-threshold                       ← R01, C11, P12
 
+PHASE 5 — Other repositories (CD-43)
+  S01  first-project-repository                     ← R02
+
 PHASE 6 — Small-HA
   H01  nodes-2-3-etcd-quorum                        ← P12, R02
   H02  cnpg-3-longhorn-2                            ← H01, C08
@@ -561,6 +567,7 @@ Changes from the SPEC §123 approximation, all recorded in ADRs and consolidatio
 - Admission and network policy (F12) are validated offline before any cluster exists.
 - P11 (the installation's supply chain) runs **after** control transfer (CD-19), but still gates C01.
 - Small-HA (H01–H04) follows the Self-Hosting Threshold (R02).
+- S01 (first migrated project repository, CD-43) is a Phase 5 node after R02; it does not widen the Self-Hosting Threshold and is outside the MVP node list of §15.
 - The review round (GC-01) moved acceptance criteria to the gate where their prerequisites exist, or added the edge.
 
 ## 14. Implementation sequence
@@ -571,7 +578,7 @@ Changes from the SPEC §123 approximation, all recorded in ADRs and consolidatio
 2. **Phase 2:** P01 → P12 against one real node (OVH VPS-2-class or `existing`). P12 is the **Bootstrap Definition of Done** (SPEC §130).
 3. **Phase 3:** C01 → C11. C10 is the **orchestration definition of done**: every fake scenario passes on the live cluster.
 4. **Phase 4:** R01 → R02, the **Self-Hosting Threshold** (SPEC §117–118).
-5. **Phase 5:** Strange Company works on itself, and new work enters through Hermes.
+5. **Phase 5:** Strange Company works on itself, and new work enters through Hermes. **S01** migrates the operator's first real GitHub repository into org `projects` (CD-43; `procedures/onboard-project-repository.md`) and lands one genuine test-first task in it.
 6. **Phase 6:** H01 → H04, which reaches **small-HA**.
 
 ---
@@ -579,6 +586,8 @@ Changes from the SPEC §123 approximation, all recorded in ADRs and consolidatio
 ## 15. MVP / post-MVP boundary
 
 **MVP** = DAG nodes F01–F13, P01–P12, C01–C11, R01–R02 (SPEC §126). That includes: one-node bootstrap; k3s; CNPG; Longhorn; Authentik; Forgejo; GitHub mirror; Woodpecker; Flux; Prometheus; Grafana; OTel Collector; Hermes; Runner start/status/logs/result/cancel (+ `agent_list`); repository context; acceptance criteria; enforced test-first; handoffs; state machine; bounded retries; model/harness abstraction; Model Gateway ledger; budgets and emergency stop; fake workers; one real harness; agent branch push; automatic PR creation; trusted CI; seed→Forgejo→Flux control transfer; self-hosted RED→GREEN→REVIEW acceptance.
+
+**Phase 5, after the MVP (CD-43):** S01 (migrate the first operator project repository from GitHub into org `projects`, optional push mirror, one genuine test-first task). The import, project mirror and onboarding procedure are specified in plans 16, 17, 22 and 44, but only S01 gates them; C10 tests them against fixture repositories. Tasks stay single-repository.
 
 **Explicitly post-MVP** (SPEC §127–128, plus Stage-0 deferrals): H01–H04 (small-HA, Loki, Tempo); autonomous merge; admission-time image signature verification (signing and promotion-time verification are MVP, plan 23); second and third real harnesses; task DAG scheduling and cross-repo orchestration; preview environments; autoscaled or local workers; worker-to-worker chat; multi-cluster; a Strange Company–specific web UI (Hermes dashboard, Forgejo and Grafana are the MVP human surfaces); off-cluster GitHub Actions mirror-freshness watchdog beyond the MVP dead-man's switch (plan 42 decides).
 

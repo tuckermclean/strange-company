@@ -51,7 +51,7 @@ Derived requirements:
 | degraded Longhorn | `SCLonghornVolumeDegraded`, `SCLonghornVolumeFaulted`, `SCLonghornVolumeNearlyFull` |
 | Forgejo failure | `SCForgejoDown`, `SCForgejoSSHDown`, `SCForgejoPodStuckPending(Critical)`, `SCForgejoSSHHostKeyMismatch`, `SCForgeBotTokenInvalid`, `SCForgejoObjectStorageErrors` |
 | Authentik failure | `SCAuthentikDown`, `SCAuthentikWorkerDown`, `SCOIDCLoginBroken`, `SCAuthentikTasksFailing`, `SCAuthentikBlueprintFailed` |
-| GitHub mirror failure | `SCGitHubMirrorFailing`, `SCGitHubMirrorStale`, `SCGitHubMirrorRPOBreach`, `SCGitHubMirrorDiverged`, `SCGitHubMirrorNotConfigured`, `SCGitHubMirrorSignalMissing` |
+| GitHub mirror failure | `SCProjectMirrorFailing` (project mirrors, CD-43), `SCGitHubMirrorFailing`, `SCGitHubMirrorStale`, `SCGitHubMirrorRPOBreach`, `SCGitHubMirrorDiverged`, `SCGitHubMirrorNotConfigured`, `SCGitHubMirrorSignalMissing` |
 | Flux failure | `SCFluxReconciliationFailing`, `SCFluxSourceFailing`, `SCFluxSourceNotReady`, `SCFluxControllerDown`, `SCFluxReconcileStalled`, `SCFluxSuspendedTooLong` |
 | Woodpecker failure | `SCWoodpeckerDown`, `SCWoodpeckerNoAgents`, `SCWoodpeckerBacklog` |
 | Agent Runner failure | `SCRunnerDown`, `SCRunnerNotReady`, `SCAgentRunnerReconcileStalled`, `SCRunnerDatabaseDown`, `SCRunnerPolicyInvalid`, `SCRunnerOutboxStalled`, `SCExecutionStuck` |
@@ -639,6 +639,7 @@ All deterministic; no paid model calls [SPEC §104].
 | `SCGrafanaLocalLogin` | security | critical / page | security-audit | rule / 0s | `sum(increase(grafana_api_login_post_total{job="grafana"}[5m])) > 0` | P09 | both | 39 | `break-glass-access.md` |
 | `SCK3sBreakGlassAuditSeen` (aka `SCClusterBreakGlassUsed`) | security | critical / page | security-audit | rule / 0s | `sum(increase(sc_k3s_audit_breakglass_requests_total[10m])) > 0` | P09 | both | 07 | `break-glass-access.md` |
 | `SCGitHubMirrorFailing` | mirror | warning / notify | failed-mirror | rule / 15m | `sc_github_mirror_last_attempt_success{repository="strange-company"} == 0 and on() sc_github_mirror_expected == 1` | P09 | both | 17 | `github-mirror-failure.md` |
+| `SCProjectMirrorFailing` | mirror | warning / notify | none | rule / 1h | `sc_github_mirror_last_attempt_success{repository=~"projects/.+"} == 0` | P09 | both | 17 | `github-mirror-failure.md` |
 | `SCGitHubMirrorRPOBreach` | black-start-threat | critical / page | black-start-threat | rule / 5m | `sc_github_mirror_lag_seconds{repository="strange-company"} > 3600` | P09 | both | 17 | `github-mirror-failure.md` |
 | `SCGitHubMirrorSignalMissing` | mirror | warning / notify | failed-mirror | rule / 30m | `absent(sc_github_mirror_last_attempt_success{repository="strange-company"}) or sc_github_api_up == 0` | P09 | both | 17 | `github-mirror-failure.md` |
 | `SCGitHubMirrorStale` (aka `GitHubMirrorStale`) | mirror | warning / notify | failed-mirror | rule / 5m | `sc_github_mirror_lag_seconds{repository="strange-company"} > 900` | P09 | both | 17 | `github-mirror-failure.md` |

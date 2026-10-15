@@ -28,3 +28,7 @@ SPEC §31–§32 require `strange-company` to mirror continuously from Forgejo t
 
 ## Verification
 GATE-P06 (plan 17): 17-AC-1 (mirror configuration), 17-AC-2/3 (commits and tags propagate), 17-AC-4 (no agent ref leaks), 17-AC-7/8 (GitHub settings and history protection enforced), 17-AC-9/10 (token scope, workflows permission). GATE-P09: 17-AC-13..15 (metrics and alerts).
+
+## Amendments (CD-43, 2026-10-15)
+- Optional push mirrors of `projects/*` repositories to their former GitHub repositories (plan 17 §14.8) use the same native Forgejo push mirror, ref filter rules and read-only GitHub settings, but a **separate** fine-grained PAT class `SC-GITHUB-PROJECT-MIRROR` limited to the mirrored GitHub repositories. This keeps the blast radius of a project-mirror token away from the `strange-company` recovery seed (17-R-8); `SC-GITHUB-MIRROR` remains scoped to the one mirror repository (17-R-6).
+- Project mirrors are a convenience copy. Repository bundles (plan 44 BK-09) are their recovery path, so their health is judged by Forgejo's own status only and alerts at warning severity (`SCProjectMirrorFailing`). The PAT-over-App-token reasoning above applies unchanged.

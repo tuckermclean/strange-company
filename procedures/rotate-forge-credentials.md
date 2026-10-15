@@ -14,7 +14,7 @@
 | §D | `SC-WOODPECKER-OAUTH` | Woodpecker server | Woodpecker logins and token refresh, ≤ 10 min |
 | §E | `SC-FORGEJO-SSH-HOST-KEY` | every SSH client: Flux, Runner, workers, Woodpecker, CI, backup jobs | none if phases are followed; workers paused during phase 2 |
 | §F | `SC-BREAK-GLASS-FORGEJO` (`sc-breakglass`) | humans (emergency) | none |
-| §G | `SC-GITHUB-MIRROR`, `SC-GITHUB-PROBE`, `SC-GITHUB-MIRROR-READ` | Forgejo push mirror, `platform-probes`, release gate, RT-6 restore test | mirror gap < 1 min |
+| §G | `SC-GITHUB-MIRROR`, `SC-GITHUB-PROBE`, `SC-GITHUB-MIRROR-READ`, `SC-GITHUB-PROJECT-MIRROR`, `SC-GITHUB-IMPORT` | Forgejo push mirror, `platform-probes`, release gate, RT-6 restore test | mirror gap < 1 min |
 | §H | `SC-FORGEJO-APP-SECRETS` (`INTERNAL_TOKEN`, `JWT_SECRET`, `LFS_JWT_SECRET`; **not** `SECRET_KEY`) | Forgejo | restart; sessions/JWTs invalidated |
 
 Worker deploy keys (`SC-WORKER-DEPLOY-KEY`) are ephemeral and never rotated by hand; orphans are handled by `agent-runner-failure.md` (plan 26).
@@ -100,6 +100,7 @@ Clients that pin the host key: Flux (`flux-system/flux-system` key `known_hosts`
 - **G.5** `./bootstrap rotate refresh-bundle` (bundle holds `SC-GITHUB-MIRROR`).
 - **G.6** Revoke the old PATs in GitHub. Then `./bootstrap exec -- sc-bootstrap mirror sync` succeeds, and after ≤ 10 min `sc_github_mirror_last_attempt_success` = 1, `sc_github_api_up` = 1, `SCGitHubMirrorTokenExpiring` resolved.
 - **G.7** `SC-GITHUB-MIRROR-READ` (RT-6 restore test): create the new read-only PAT (Contents R, Metadata R), `./bootstrap exec -- sc-bootstrap secrets rotate SC-GITHUB-MIRROR-READ --write-sops` (rewrites `secrets/dr-tests/github-mirror-read.sops.yaml`), PR, merge, then run RT-6 on demand (`./bootstrap exec -- kubectl -n dr-tests create job --from=cronjob/restore-test-github-black-start rt6-rotate-<ts>`) and revoke the old PAT after it passes.
+- **G.8** `SC-GITHUB-PROJECT-MIRROR` (CD-43): create the new fine-grained PAT (selected mirrored repositories only; Contents R/W, Metadata R; expiry ≤ 180 days), then for each `projects/*` repository with a `pushMirrors` entry run `./bootstrap exec -- sc-bootstrap forge apply --rotate-mirror projects/<repo>` (the token is passed at invocation, never written to Git), confirm `sc_github_mirror_last_attempt_success{repository="projects/<repo>"}` = 1, then revoke the old PAT. It is not in the recovery bundle. `SC-GITHUB-IMPORT` is per-use: revoke it in GitHub after the import; nothing to rotate.
 - On compromise: revoke first (G.6 before G.3), accept the mirror gap, then G.1–G.5; afterwards run `github-mirror-failure.md` §C checks (compare refs) to confirm nothing was pushed with the leaked token.
 
 ### §H Forgejo `INTERNAL_TOKEN`, `JWT_SECRET`, `LFS_JWT_SECRET`

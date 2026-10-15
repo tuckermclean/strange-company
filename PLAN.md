@@ -377,9 +377,9 @@ Version-sensitive facts (chart values, API endpoints, CLI flags) are pinned and 
 
 - **Depends on:** C02, C03, C04, C05, C06, C07, C08, C09
 - **Owning plans:** `plans/21-tdd-workflow.md`, `plans/22-verification-policy.md`, `plans/30-handoffs.md`, `plans/31-model-routing.md`, `plans/33-budget-enforcement.md`, `plans/37-admission-policy.md`, `plans/46-self-hosting-threshold.md`, `plans/48-upgrade.md`, `plans/55-forge-workflow.md`
-- **Gate `GATE-C10`:** 44 acceptance criteria
+- **Gate `GATE-C10`:** 47 acceptance criteria
   - `plans/21-tdd-workflow.md`: 21-AC-4, 21-AC-10, 21-AC-11, 21-AC-12, 21-AC-13, 21-AC-14
-  - `plans/22-verification-policy.md`: 22-AC-20, 22-AC-21
+  - `plans/22-verification-policy.md`: 22-AC-20, 22-AC-21, 22-AC-34, 22-AC-35, 22-AC-36
   - `plans/30-handoffs.md`: 30-AC-5
   - `plans/31-model-routing.md`: 31-AC-4, 31-AC-5, 31-AC-6, 31-AC-7, 31-AC-8, 31-AC-11, 31-AC-14
   - `plans/33-budget-enforcement.md`: 33-AC-5, 33-AC-7, 33-AC-8, 33-AC-9, 33-AC-11, 33-AC-16, 33-AC-26, 33-AC-27, 33-AC-31
@@ -423,6 +423,19 @@ Version-sensitive facts (chart values, API endpoints, CLI flags) are pinned and 
   - `plans/45-recovery.md`: 45-AC-21, 45-AC-22, 45-AC-23
   - `plans/46-self-hosting-threshold.md`: 24-AC-13, 46-AC-10, 46-AC-11, 46-AC-12, 46-AC-13, 46-AC-14, 46-AC-15, 46-AC-16, 46-AC-17, 46-AC-18, 46-AC-19
   - `plans/51-capacity-and-scheduling.md`: 51-AC-16
+
+
+## Phase 5 — Strange Company works on other repositories (CD-43; after the threshold, does not widen it)
+
+### S01 — first-project-repository
+
+- **Depends on:** R02
+- **Owning plans:** `plans/16-forgejo.md`, `plans/17-github-mirror.md`, `plans/22-verification-policy.md`, `plans/44-backup.md`
+- **Gate `GATE-S01`:** 4 acceptance criteria
+  - `plans/16-forgejo.md`: 16-AC-42
+  - `plans/17-github-mirror.md`: 17-AC-18
+  - `plans/22-verification-policy.md`: 22-AC-37
+  - `plans/44-backup.md`: 44-AC-29
 
 
 ## Phase 6 — Small-HA (sequenced after the threshold; hard dependency only on P12)

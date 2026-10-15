@@ -147,6 +147,8 @@ The minimum that must exist to get there:
 - **one real coding harness** (Claude Code)
 - agent branch push, automatic PR creation and human merge in Forgejo
 
+**Your other repositories** are not folded into this one. They migrate from GitHub into the Forgejo org `projects`, optionally mirrored back to GitHub, and each carries its own `.strange-company/` context, test command and policy. Templates exist for Python, Rust and TypeScript/JavaScript ([`procedures/onboard-project-repository.md`](procedures/onboard-project-repository.md)). Tasks are single-repository in the MVP.
+
 **Deliberately not required** before the threshold: high availability, Loki and Tempo, autonomous merging, more than one real harness, live worker chat, persistent agent personalities, a worker message bus, task DAG scheduling, multi-cluster, local model hosting, preview environments, or a custom web UI. The MVP human surfaces are the Hermes dashboard, Forgejo and Grafana.
 
 ---
@@ -160,10 +162,10 @@ The minimum that must exist to get there:
 - 55 subsystem plans;
 - 79 ADRs;
 - 52 machine-readable contracts (JSON Schema and OpenAPI);
-- 62 operator procedures;
+- 63 operator procedures;
 - a register of 59 spec issues, none of them blocking;
 - a compatibility baseline pinning 61 third-party components;
-- an acyclic **42-node dependency DAG** with **1,179 acceptance criteria** written in advance.
+- an acyclic **43-node dependency DAG** with **1,186 acceptance criteria** written in advance.
 
 An executable validator (`tools/stage0/validate.py`, run in CI) checks the definition for internal consistency. [`STATUS.md`](STATUS.md) has the details.
 
@@ -184,12 +186,21 @@ A node starts only when all its dependencies have passed their gates. Until Wood
 | **2. Platform on one node** | P01–P12 | Object storage and remote OpenTofu state; provisioning; k3s and node security; the seed; Forgejo; control transfer and the GitHub mirror; Authentik and break-glass; Woodpecker; observability and notifications; backups and restore tests; the supply chain; end-to-end bootstrap verification. | **Bootstrap Definition of Done** (P12) |
 | **3. Control plane** | C01–C11 | Runner core; the Kubernetes, Forgejo and Woodpecker adapters with RED/GREEN evidence; the Model Gateway, ledger and pricing; budgets and the emergency stop; the context compiler; the MCP surface and Hermes; merge-policy enforcement; every TDD flow end to end with fake workers; Strange Company dashboards and alerts. | **Orchestration DoD** (C10) |
 | **4. Real harness** | R01–R02 | The Claude Code harness, then the first genuine self-hosted RED → GREEN → REVIEW task. | **Self-Hosting Threshold** (R02) |
-| **5. Self-development** | — | From here on, Strange Company builds itself using its own workflow. | |
+| **5. Self-development and projects** | S01 | From here on, Strange Company builds itself using its own workflow. S01 migrates the first real project repository from GitHub into Forgejo `projects/` (optionally mirrored back) and completes a genuine test-first task in it. | First project repository (S01) |
 | **6. Small-HA** | H01–H04 | Nodes 2 and 3 with an etcd quorum; CNPG 1 → 3 and Longhorn 1 → 2; Loki and Tempo; HA hardening and recovery drills. Ideally built *by* Strange Company. | **Small-HA** (H04) |
 
 Critical path: F01 → F02 → F08 → P01 → P02 → P03 → P04 → P05 → P06 → P08 → P09 → P10 → P12 → P11 → C01 → (C03, C07) → C02 → C04 → C09 → C10 → R01 → R02.
 
 **Next step: node F01** (repository skeleton and CI; plans 01 and 52).
+
+### Building it with its own process, from hour zero
+
+Strange Company's own machinery doesn't exist yet, so Phase 1 emulates it with Claude Code scaffolding in `.claude/`:
+
+- **`/sc-node <id>`** is a skill that plays the orchestrator. It writes a compact brief from the node's gate criteria. It then dispatches a fresh **tester**, which produces a RED commit of tests only, plus declared stubs. It checks that RED failed for the right reason, then dispatches a fresh **implementer** to reach GREEN and a fresh **reviewer** to judge the evidence. Finally it records the gate evidence in `STATUS.md`.
+- **Role guard hooks** stop the tester from writing implementation and the implementer from editing tests after RED. They stop every role from editing the specification and plans or from rewriting history.
+
+This scaffolding is advisory. What actually enforces the process is interim CI (`tdd-discipline`, plan 52 §8.3), human review and the human merge. Once the Self-Hosting Threshold is reached, the platform's own workers take over.
 
 ### After the MVP
 

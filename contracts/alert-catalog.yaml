@@ -2808,6 +2808,23 @@ spec:
       signalOwnerPlan: "17"
       runbook: procedures/github-mirror-failure.md
       specRefs: ["§32", "§96", "§97"]
+    - alertname: SCProjectMirrorFailing
+      summary: The Forgejo to GitHub push mirror of a projects/* repository has been failing for an hour. The mirror is a convenience copy, not the recovery path.
+      category: mirror
+      severity: warning
+      notifyClass: notify
+      alwaysNotify: none
+      blackStartThreat: false
+      source:
+        kind: prometheus-rule
+        expr: 'sc_github_mirror_last_attempt_success{repository=~"projects/.+"} == 0'
+        for: 1h
+      profiles: [self-hosting-minimum, small-ha]
+      gate: P09
+      ownerPlan: "42"
+      signalOwnerPlan: "17"
+      runbook: procedures/github-mirror-failure.md
+      specRefs: ["§32"]
     - alertname: SCGitHubMirrorRPOBreach
       summary: GitHub has been missing Forgejo main commits for more than 1 hour, which breaches the strange-company Git RPO.
       category: black-start-threat
