@@ -1,6 +1,7 @@
 package gateway_test
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -44,5 +45,41 @@ func TestForbidPaidOffAllowsRealHosts(t *testing.T) {
 	t.Setenv("SC_FORBID_PAID", "0")
 	if err := gateway.ValidateUpstream("https://api.openai.com/v1"); err != nil {
 		t.Errorf("SC_FORBID_PAID=0: real host refused: %v", err)
+	}
+}
+
+// 52-AC-8 (CD-53): with SC_FORBID_PAID=1 only fake upstreams are accepted: loopback, localhost, and the
+// reserved .invalid and .test names. Everything else is refused, including malformed values.
+func TestForbidPaidAllowlistOnly_CD53(t *testing.T) {
+	t.Setenv("SC_FORBID_PAID", "1")
+	for _, u := range []string{
+		"https://eu.api.anthropic.com", "https://api.mistral.ai", "https://203.0.113.5", "http://[2001:db8::1]",
+		"api.anthropic.com", "api.anthropic.com:443", "ftp://localhost", "", "https://x@api.anthropic.com",
+	} {
+		if err := gateway.ValidateUpstream(u); err == nil {
+			t.Errorf("SC_FORBID_PAID=1: upstream %q was accepted", u)
+		}
+	}
+	for _, u := range []string{
+		"http://127.0.0.1:8080", "http://[::1]", "http://localhost", "https://fake.invalid/v1", "https://provider.test",
+	} {
+		if err := gateway.ValidateUpstream(u); err != nil {
+			t.Errorf("SC_FORBID_PAID=1: fake upstream %q refused: %v", u, err)
+		}
+	}
+}
+
+// 52-AC-8: with SC_FORBID_PAID unset or 0 real hosts stay accepted.
+func TestForbidPaidUnsetAllowsRealHosts_CD53(t *testing.T) {
+	for _, v := range []string{"0", "unset"} {
+		t.Setenv("SC_FORBID_PAID", "0")
+		if v == "unset" {
+			os.Unsetenv("SC_FORBID_PAID")
+		}
+		for _, u := range []string{"https://api.anthropic.com", "https://api.mistral.ai", "https://eu.api.anthropic.com"} {
+			if err := gateway.ValidateUpstream(u); err != nil {
+				t.Errorf("SC_FORBID_PAID=%s: %q refused: %v", v, u, err)
+			}
+		}
 	}
 }

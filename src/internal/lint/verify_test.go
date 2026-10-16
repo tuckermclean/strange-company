@@ -3,7 +3,6 @@ package lint_test
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -25,21 +24,14 @@ import (
 //   - 01-AC-3: "a host with Docker (and, separately, rootless Podman) but no Go, OpenTofu or kubectl";
 //   - 01-AC-4: GitHub Actions summary.json parity.
 //
-// `make verify` runs `make test`, which runs these tests. The long tests set SC_NESTED_VERIFY=1 for the
-// make they start and skip themselves when it is set, so there is no recursion.
+// The nested `make verify` evidence (two offline, no-paid runs) is test/e2e/verify/run, not a Go test: a
+// verify started from inside `make test` would run every RED test again.
 
 // verifyTargetOrder is the tier-V order of plan 01 section 7.1 (catalogue row order; `gitops-cache` is
 // the first step), restricted to the targets that exist at F01.
 var verifyTargetOrder = []string{
 	"gitops-cache", "fmt-check", "lint", "layout-check", "locks-check", "secrets-scan", "contracts",
 	"test", "build", "toolbox-check", "dag-check", "quarantine-check",
-}
-
-func skipIfNested(t *testing.T) {
-	t.Helper()
-	if os.Getenv("SC_NESTED_VERIFY") == "1" {
-		t.Skip("nested run started by a long verify test")
-	}
 }
 
 // makeEnv is the in-container environment of plan 52 section 9.2 plus extras.
@@ -113,14 +105,94 @@ func workCopy(t *testing.T) string {
 	return dst
 }
 
+// linkCache makes .cache a real directory in the clone and symlinks only its children (go/, golangci-lint/,
+// ...) from the real tree, so no implementation-side knob is needed for a symlinked .cache.
 func linkCache(t *testing.T, root, dst string) {
 	t.Helper()
 	cache := filepath.Join(root, ".cache")
 	if _, err := os.Stat(filepath.Join(cache, "go", "mod")); err != nil {
 		t.Fatalf("warm module cache %s/go/mod missing (run `go mod download` first, 01-AC-6): %v", cache, err)
 	}
-	if err := os.Symlink(cache, filepath.Join(dst, ".cache")); err != nil {
+	ents, err := os.ReadDir(cache)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dst, ".cache"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range ents {
+		link := filepath.Join(dst, ".cache", e.Name())
+		if _, err := os.Lstat(link); err == nil {
+			continue
+		}
+		if err := os.Symlink(filepath.Join(cache, e.Name()), link); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// 01-AC-6 / plan 01 section 7.1 `test` row: the interface is GO_TEST_PKGS, GO_TEST_RUN and JUNIT, nothing
+// else. No -skip flag, no GO_TEST_SKIP variable, no `/.cache` line besides `/.cache/` in .gitignore (6.6).
+func TestTestTarget_NoSelectionKnob_01AC6(t *testing.T) {
+	root := repoRoot(t)
+	out, err := runCmd(t, root, 2*time.Minute, makeEnv(), "make", "-n", "test")
+	if err != nil {
+		t.Fatalf("make -n test: %v\n%s", err, out)
+	}
+	if strings.Contains(out, "-skip") {
+		t.Errorf("`make -n test` passes a -skip flag:\n%s", out)
+	}
+	mk := readFile(t, root, "mk/test.mk")
+	for _, bad := range []string{"-skip", "GO_TEST_SKIP", "SC_NESTED_VERIFY"} {
+		if strings.Contains(mk, bad) {
+			t.Errorf("mk/test.mk mentions %q (not in the plan 01 section 7.1 interface)", bad)
+		}
+	}
+	for _, l := range strings.Split(readFile(t, root, ".gitignore"), "\n") {
+		if strings.TrimSpace(l) == "/.cache" {
+			t.Errorf(".gitignore has a bare /.cache line; plan 01 section 6.6 lists only /.cache/")
+		}
+	}
+}
+
+// 01-AC-6: tests that shell out to make must not be satisfied by cached go test results.
+func TestTestTarget_NoTestCache_01AC6(t *testing.T) {
+	root := repoRoot(t)
+	out, err := runCmd(t, root, 2*time.Minute, makeEnv(), "make", "-n", "test")
+	if err != nil {
+		t.Fatalf("make -n test: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "-count=1") {
+		t.Errorf("`make -n test` does not pass -count=1 to go test:\n%s", out)
+	}
+}
+
+// 52-AC-8 (plan 52 section 9.2): the ci image environment defaults.
+func TestContainerfile_CIEnvDefaults_52AC8(t *testing.T) {
+	root := repoRoot(t)
+	var env []string
+	for _, l := range strings.Split(strings.ReplaceAll(readFile(t, root, "toolbox/Containerfile"), "\\\n", " "), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(l), "ENV ") {
+			env = append(env, l)
+		}
+	}
+	all := strings.Join(env, " ")
+	for _, want := range []string{"SC_IN_CONTAINER=1", "TZ=UTC", "LC_ALL=C.UTF-8", "SC_FORBID_PAID=1", "SC_TEST_SEED=20261013", "GOFLAGS=-mod=readonly"} {
+		if !regexp.MustCompile(`(^|\s)` + regexp.QuoteMeta(want) + `(\s|$)`).MatchString(all) {
+			t.Errorf("toolbox/Containerfile ENV lacks %s:\n%s", want, all)
+		}
+	}
+}
+
+// 01-AC-9: the version comes from `git describe --abbrev=12` so shallow and full clones agree.
+func TestBuild_DescribeAbbrev_01AC9(t *testing.T) {
+	root := repoRoot(t)
+	out, err := runCmd(t, root, 2*time.Minute, makeEnv(), "make", "-n", "build")
+	if err != nil {
+		t.Fatalf("make -n build: %v\n%s", err, out)
+	}
+	if !strings.Contains(readFile(t, root, "mk/build.mk"), "git describe") || !strings.Contains(readFile(t, root, "mk/build.mk"), "--abbrev=12") {
+		t.Errorf("mk/build.mk: version must use `git describe ... --abbrev=12`")
 	}
 }
 
@@ -182,14 +254,13 @@ func TestBuild_RecipeFlags_01AC9(t *testing.T) {
 
 // 01-AC-9: make build twice in clean clones of the same commit gives identical sha256 of out/bin/linux_amd64/*.
 func TestBuild_Reproducible_01AC9(t *testing.T) {
-	skipIfNested(t)
 	base := workCopy(t)
 	sums := make([]map[string]string, 2)
 	for i := range sums {
 		clone := filepath.Join(t.TempDir(), fmt.Sprintf("clone%d", i))
 		git(t, base, "clone", "-q", "--no-hardlinks", base, clone)
 		linkCache(t, repoRoot(t), clone)
-		if out, err := runCmd(t, clone, 8*time.Minute, makeEnv("SC_NESTED_VERIFY=1"), "make", "build"); err != nil {
+		if out, err := runCmd(t, clone, 8*time.Minute, makeEnv(), "make", "build"); err != nil {
 			t.Fatalf("clone %d: make build: %v\n%s", i, err, out)
 		}
 		dir := filepath.Join(clone, "out", "bin", "linux_"+runtime.GOARCH)
@@ -211,122 +282,6 @@ func TestBuild_Reproducible_01AC9(t *testing.T) {
 	}
 	if _, ok := sums[0]["sc-lint"]; !ok {
 		t.Errorf("out/bin/linux_%s lacks sc-lint: %v", runtime.GOARCH, sums[0])
-	}
-}
-
-type summaryRow struct{ target, result string }
-
-// summaryRows walks summary.json for objects that carry a "result" and a "target" (or "name") string.
-func summaryRows(v any, rows *[]summaryRow) {
-	switch x := v.(type) {
-	case map[string]any:
-		res, _ := x["result"].(string)
-		name, _ := x["target"].(string)
-		if name == "" {
-			name, _ = x["name"].(string)
-		}
-		if res != "" && name != "" {
-			*rows = append(*rows, summaryRow{name, res})
-		}
-		for _, c := range x {
-			summaryRows(c, rows)
-		}
-	case []any:
-		for _, c := range x {
-			summaryRows(c, rows)
-		}
-	}
-}
-
-// stripKeys is the Go form of jq 'del(..|.duration_ms?, .started_at?)'.
-func stripKeys(v any) any {
-	switch x := v.(type) {
-	case map[string]any:
-		delete(x, "duration_ms")
-		delete(x, "started_at")
-		for k, c := range x {
-			x[k] = stripKeys(c)
-		}
-	case []any:
-		for i, c := range x {
-			x[i] = stripKeys(c)
-		}
-	}
-	return v
-}
-
-func hasKey(v any, key string) bool {
-	switch x := v.(type) {
-	case map[string]any:
-		if _, ok := x[key]; ok {
-			return true
-		}
-		for _, c := range x {
-			if hasKey(c, key) {
-				return true
-			}
-		}
-	case []any:
-		for _, c := range x {
-			if hasKey(c, key) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// 01-AC-3 (in-harness part), 01-AC-6, 52-AC-5, 52-AC-8: two consecutive `make verify` runs on a clean
-// checkout, offline (this process has no network), with SC_FORBID_PAID=1, exit 0, write
-// out/verify/summary.json that lists every tier-V target in order with result pass, and are identical
-// after deleting duration_ms and started_at.
-func TestVerify_OfflineRepeatableNoPaid_01AC3_01AC6_52AC5_52AC8(t *testing.T) {
-	skipIfNested(t)
-	dir := workCopy(t)
-	var docs [2]any
-	var raw [2][]byte
-	for i := range docs {
-		out, err := runCmd(t, dir, 20*time.Minute, makeEnv("SC_NESTED_VERIFY=1", "SC_FORBID_PAID=1", "GOFLAGS=-mod=readonly"), "make", "verify")
-		if err != nil {
-			t.Fatalf("run %d: make verify: %v\n%s", i, err, tail(out, 60))
-		}
-		b, err := os.ReadFile(filepath.Join(dir, "out", "verify", "summary.json"))
-		if err != nil {
-			t.Fatalf("run %d: %v", i, err)
-		}
-		raw[i] = b
-		if err := json.Unmarshal(b, &docs[i]); err != nil {
-			t.Fatalf("run %d: summary.json is not JSON: %v\n%s", i, err, b)
-		}
-		var rows []summaryRow
-		summaryRows(docs[i], &rows)
-		var names []string
-		for _, r := range rows {
-			names = append(names, r.target)
-			if r.result != "pass" {
-				t.Errorf("run %d: target %s has result %q, want pass", i, r.target, r.result)
-			}
-		}
-		// every tier-V target of F01 is listed, in the verify order (other rows may sit between).
-		pos := 0
-		for _, n := range names {
-			if pos < len(verifyTargetOrder) && n == verifyTargetOrder[pos] {
-				pos++
-			}
-		}
-		if pos != len(verifyTargetOrder) {
-			t.Errorf("run %d: summary.json rows %v do not contain %v in order", i, names, verifyTargetOrder)
-		}
-		for _, k := range []string{"duration_ms", "started_at"} {
-			if !hasKey(docs[i], k) {
-				t.Errorf("run %d: summary.json has no %q field", i, k)
-			}
-		}
-	}
-	a, _ := json.Marshal(stripKeys(docs[0]))
-	b, _ := json.Marshal(stripKeys(docs[1]))
-	if !bytes.Equal(a, b) {
-		t.Errorf("52-AC-5: summary.json differs between runs after deleting duration_ms/started_at:\n%s\n%s", raw[0], raw[1])
 	}
 }
 
@@ -453,10 +408,97 @@ func TestNetcheck_RealTreePasses_52AC6(t *testing.T) {
 
 // 52-AC-6: `make lint` passes on the tree (fixtures under testdata are not linted).
 func TestLint_RealTreePasses_52AC6(t *testing.T) {
-	skipIfNested(t)
 	root := repoRoot(t)
-	out, err := runCmd(t, root, 10*time.Minute, makeEnv("SC_NESTED_VERIFY=1"), "make", "lint")
+	out, err := runCmd(t, root, 10*time.Minute, makeEnv(), "make", "lint")
 	if err != nil {
 		t.Fatalf("make lint on the tree: %v\n%s", err, tail(out, 60))
+	}
+}
+
+// 52-AC-6 (D7/D8 scoping): D8 (time) applies in internal/testutil, D7 (global rand) applies in cmd main
+// packages and internal/clock; time in main/clock and rand in testutil stay unflagged.
+func TestGolangciLint_ForbidigoScoping_52AC6(t *testing.T) {
+	root := repoRoot(t)
+	if _, err := exec.LookPath("golangci-lint"); err != nil {
+		t.Fatalf("golangci-lint is not in the ci image: %v", err)
+	}
+	cfg := readFile(t, root, "src/.golangci.yaml")
+	mod := t.TempDir()
+	write(t, mod, "go.mod", "module fixture\n\ngo 1.27\n")
+	write(t, mod, ".golangci.yaml", cfg)
+	write(t, mod, "internal/testutil/clock.go", "package testutil\n\nimport \"time\"\n\n// Stamp reads the wall clock.\nfunc Stamp() time.Time { return time.Now() }\n")
+	write(t, mod, "cmd/x/main.go", "package main\n\nimport (\n\t\"math/rand\"\n\t\"time\"\n)\n\nfunc main() { _ = rand.Intn(3); _ = time.Now() }\n")
+	write(t, mod, "internal/clock/clock.go", "package clock\n\nimport (\n\t\"math/rand\"\n\t\"time\"\n)\n\n// Now is the real clock.\nfunc Now() time.Time { _ = rand.Intn(3); return time.Now() }\n")
+	write(t, mod, "internal/testutil/rand.go", "package testutil\n\nimport \"math/rand\"\n\n// Pick uses the global source.\nfunc Pick() int { return rand.Intn(3) }\n")
+	env := append(makeEnv(), "GOFLAGS=-mod=mod", "GOTOOLCHAIN=local", "GOCACHE="+t.TempDir(), "GOMODCACHE="+t.TempDir())
+	out, _ := runCmd(t, mod, 5*time.Minute, env, "golangci-lint", "run", "--config", ".golangci.yaml", "./...")
+	flagged := func(file, msg string) bool {
+		for _, l := range strings.Split(out, "\n") {
+			if strings.Contains(l, file) && strings.Contains(l, "forbidigo") && strings.Contains(l, msg) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, c := range []struct {
+		file, msg string
+		want      bool
+	}{
+		{"internal/testutil/clock.go", "time.Now", true},
+		{"cmd/x/main.go", "rand.Intn", true},
+		{"internal/clock/clock.go", "rand.Intn", true},
+		{"cmd/x/main.go", "time.Now", false},
+		{"internal/clock/clock.go", "time.Now", false},
+		{"internal/testutil/rand.go", "rand.Intn", false},
+	} {
+		if got := flagged(c.file, c.msg); got != c.want {
+			t.Errorf("forbidigo flag for %s %s = %v, want %v\n%s", c.file, c.msg, got, c.want, out)
+		}
+	}
+}
+
+// 52-AC-6 (D5): an aliased net/http import is still http.DefaultClient; a ":port" dial is loopback.
+func TestNetcheck_AliasAndBarePort_52AC6(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "src/internal/x/alias_test.go", "package x\n\nimport (\n\th \"net/http\"\n\t\"testing\"\n)\n\nfunc TestAlias(t *testing.T) { _, _ = h.DefaultClient.Get(\"http://127.0.0.1:1\") }\n")
+	var out, errb bytes.Buffer
+	if code := lint.Main([]string{"netcheck", "--root", dir}, &out, &errb); code != 1 || !strings.Contains(out.String(), "alias_test.go") {
+		t.Errorf("netcheck on an aliased net/http import: exit %d (want 1, naming alias_test.go)\n%s%s", code, out.String(), errb.String())
+	}
+	ok := t.TempDir()
+	write(t, ok, "src/internal/x/port_test.go", "package x\n\nimport (\n\t\"net\"\n\t\"testing\"\n)\n\nfunc TestPort(t *testing.T) { _, _ = net.Dial(\"tcp\", \":8080\") }\n")
+	out.Reset()
+	errb.Reset()
+	if code := lint.Main([]string{"netcheck", "--root", ok}, &out, &errb); code != 0 {
+		t.Errorf("netcheck on a loopback \":8080\" dial: exit %d (want 0)\n%s%s", code, out.String(), errb.String())
+	}
+}
+
+// 01-AC-3, 01-AC-6, 52-AC-5, 52-AC-8: the offline, no-paid, twice-repeatable `make verify` evidence lives in
+// test/e2e/verify/run (plan 01 section 6.1 allows it to be executable). This guards that it stays there.
+func TestVerifyE2EScript_Present_01AC3_01AC6_52AC5_52AC8(t *testing.T) {
+	root := repoRoot(t)
+	out, err := runCmd(t, root, time.Minute, makeEnv(), "git", "ls-files", "-s", "test/e2e/verify/run")
+	if err != nil || !strings.HasPrefix(out, "100755 ") {
+		t.Fatalf("test/e2e/verify/run must be tracked with mode 100755: %q %v", out, err)
+	}
+	body := readFile(t, root, "test/e2e/verify/run")
+	if !strings.HasPrefix(body, "#!/bin/sh\n") {
+		t.Errorf("test/e2e/verify/run is not POSIX sh")
+	}
+	for _, want := range []string{
+		"./bootstrap exec --image ci -- make gitops-cache",
+		"go mod download",
+		"./bootstrap exec --image ci --network none -- env SC_FORBID_PAID=1 make verify",
+		"out/verify/summary.json", "duration_ms", "started_at", "python3",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("test/e2e/verify/run lacks %q", want)
+		}
+	}
+	for _, target := range verifyTargetOrder {
+		if !strings.Contains(body, target) {
+			t.Errorf("test/e2e/verify/run does not list tier-V target %s", target)
+		}
 	}
 }
