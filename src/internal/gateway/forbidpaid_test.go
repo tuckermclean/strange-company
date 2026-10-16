@@ -83,3 +83,17 @@ func TestForbidPaidUnsetAllowsRealHosts_CD53(t *testing.T) {
 		}
 	}
 }
+
+// 52-AC-8 (CD-53): userinfo does not decide the verdict; the host does. Fake hosts with userinfo are accepted,
+// real hosts with userinfo stay refused.
+func TestForbidPaidUserinfo_CD53(t *testing.T) {
+	t.Setenv("SC_FORBID_PAID", "1")
+	for _, u := range []string{"http://u:p@localhost:8080", "http://user@127.0.0.1"} {
+		if err := gateway.ValidateUpstream(u); err != nil {
+			t.Errorf("SC_FORBID_PAID=1: fake upstream with userinfo %q refused: %v", u, err)
+		}
+	}
+	if err := gateway.ValidateUpstream("https://x@api.anthropic.com"); err == nil {
+		t.Errorf("SC_FORBID_PAID=1: real host with userinfo was accepted")
+	}
+}
