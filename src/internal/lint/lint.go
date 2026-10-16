@@ -56,11 +56,14 @@ func (r Result) failed() bool {
 	return false
 }
 
-// Main implements `sc-lint <layout|dag|locks|secrets|quarantine|netcheck> [--root DIR]`. Exit codes: 0 pass, 1 findings, 2 usage or I/O error.
+// Main implements `sc-lint <layout|dag|locks|secrets|quarantine|netcheck|tdd-discipline> [--root DIR]`. Exit codes: 0 pass, 1 findings, 2 usage or I/O error.
 func Main(args []string, stdout, stderr io.Writer) int {
 	if len(args) < 1 {
-		fmt.Fprintln(stderr, "usage: sc-lint <layout|dag|locks|secrets|quarantine|netcheck> [--root DIR]")
+		fmt.Fprintln(stderr, "usage: sc-lint <layout|dag|locks|secrets|quarantine|netcheck|tdd-discipline> [--root DIR]")
 		return 2
+	}
+	if args[0] == "tdd-discipline" {
+		return tddMain(args[1:], stdout, stderr)
 	}
 	var (
 		check func(string) (Result, error)
