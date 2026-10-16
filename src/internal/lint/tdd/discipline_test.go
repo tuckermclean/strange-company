@@ -522,7 +522,7 @@ func TestDiscipline(t *testing.T) {
 		t.Parallel()
 		s := newScen(t, baseOpts{})
 		s.commit("feat: Abs\n", map[string]string{"src/calc/calc.go": calcAbsFixed})
-		r := s.check(func(o *tdd.Options) { o.Branch = "agent/task-1"; o.Author = "sc-runner" })
+		r := s.check(func(o *tdd.Options) { o.Branch = "agent/task-1"; o.Author = "sc-runner"; o.ProvenanceBound = true }) // CD-58b
 		if r.Result != "not-applicable" || len(r.Failures) != 0 {
 			t.Errorf("want not-applicable, got:\n%s", dump(r))
 		}

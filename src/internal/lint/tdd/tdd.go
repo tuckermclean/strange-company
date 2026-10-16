@@ -41,6 +41,8 @@ type Options struct {
 	Author string
 	Policy *Policy
 	Env    []string
+	// SC-STUB(F01 52-AC-4) ProvenanceBound: the Runner binds agent/* branches to a task (CD-58b).
+	ProvenanceBound bool
 }
 
 // Finding is one failure or warning: a code such as TDD_NO_RED_COMMIT, the commit it concerns (may be
@@ -83,6 +85,10 @@ type Report struct {
 	Red       Red       `json:"red"`
 	// Superseded lists the RED test ids accepted as superseded by a valid TDD-Superseded line (CD-57).
 	Superseded []string `json:"superseded"`
+	// SC-STUB(F01 52-AC-4) PolicySource is "base" or "head" (CD-58a).
+	PolicySource string `json:"policy_source"`
+	// SC-STUB(F01 52-AC-4) CheckerSource is "base" or "head" (CD-58a).
+	CheckerSource string `json:"checker_source"`
 }
 
 // Result values of Report.Result.
