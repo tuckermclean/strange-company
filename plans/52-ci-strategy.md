@@ -245,7 +245,7 @@ T5–T7 then apply unchanged.
 **Red-target fallbacks (CD-56).** `tddDiscipline.redTargetFallbacks` maps a red target to the literal command to run at a commit where the Make target does not exist yet (`toolbox-check: "sh test/e2e/wrapper/run.sh"`, for F01's first RED, made before the `Makefile`). The fallback is used only when `make -n <target>` fails at that commit, and the report records that it was used.
 
 **§8.3a Declared stubs in RED commits (CD-44; same shape as ADR-0352).** A RED test for a symbol that does not exist yet cannot compile, and a build failure is never valid RED (T6). So R may also change Go files under `src/**` outside `testPaths`, but only with **declared stubs**:
-- additions only (no deleted or modified lines), in existing files or in new files that contain only a package clause, imports, stubs and type declarations (CD-50: struct, interface or named types with no methods other than declared stubs, and no `var`, `const` or `init`);
+- additions only (no deleted or modified lines), in existing files or in new files that contain only a package clause, imports, stubs and type declarations. A stub may also be a field added to an existing struct type, when the field is directly preceded by its own `// SC-STUB(…)` marker and nothing else in that declaration changes; its zero value is the stub (CD-59) (CD-50: struct, interface or named types with no methods other than declared stubs, and no `var`, `const` or `init`);
 - each stub directly preceded by `// SC-STUB(<node-or-task-id> <AC-id>…)`;
 - a body of at most 12 lines that returns zero values only (`return "", nil`, `return nil`, `return false`, an empty struct), checked by Go AST.
 
