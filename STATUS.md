@@ -155,7 +155,7 @@ Implementation is a separate task. Start at DAG node **F01** in `PLAN.md`, follo
 
 ### F01 — repo-skeleton
 
-Branch `node/F01-repo-skeleton`, built with `/sc-node F01` (CD-44). Base `main` 0d4e721. Five slices: S1 seed `ci` image and `./bootstrap exec`; S2 layout-check; S3 locks, secrets scan, quarantine and CI workflows; S4 `make verify`, lint and determinism; S5 TDD discipline checker. **Status: in progress (S1–S4 and S6 approved; S5 next).**
+Branch `node/F01-repo-skeleton`, built with `/sc-node F01` (CD-44). Base `main` 0d4e721. Five slices: S1 seed `ci` image and `./bootstrap exec`; S2 layout-check; S3 locks, secrets scan, quarantine and CI workflows; S4 `make verify`, lint and determinism; S5 TDD discipline checker. **Status: all six slices approved; node-level CI evidence pending on the PR.**
 
 #### S1 — seed `ci` image, `./bootstrap exec`, Makefile re-exec
 
@@ -317,3 +317,46 @@ Follow-ups recorded (not blocking):
   - 3f245c9 (CD-55 test correction);
   - bbf7d74 (changes `test/e2e/wrapper/makefile-reexec.sh`, `run.sh` and `test/e2e/verify/run`).
 - 5503d4e's `TDD-Red-Target:` sits in the body; CD-54 covers it.
+
+#### S5 — TDD discipline checker (`make tdd-discipline-check`, `sc-lint tdd-discipline`)
+
+| Round | RED | GREEN | Review |
+|---|---|---|---|
+| 1 | 23dc13b (11 failures); orchestrator ee06039 (the `tdd-discipline` job checks out the PR head and passes base, branch and author) | 9b3cb29, 20e6826. A branch dry run then found superseded RED tests and placeholder digests (CD-57) | operator decisions CD-57 (ffaf284) |
+| 2 | chore af24f57 (`make contracts` validates `policy/ci.yaml`); ef52fff (5 failures) | f1620bd | `request_changes`: B1 skipped tests passed as superseded; B2 non-test files in a RED. Escalated: E1 the PR supplied the policy and the checker, E2 `agent/*` skipped the check |
+| 3 | orchestrator 09804d0 (CD-58); 4cce571 (10 failures) | 4f185f0. The dry run rejected 4cce571's own struct-field stubs → CD-59 (00eb09e), one extra attempt granted | — |
+| extra | f54d076 (2 failures) | a310389 | **`approve`** at a310389 |
+
+Implementer attempts used: 3 of 3, plus 1 granted by the operator (CD-59). Red target: `test GO_TEST_PKGS=./src/internal/lint/...`.
+
+| Criterion / rule | Test(s) | Result at a310389 |
+|---|---|---|
+| 52-AC-4 (17 outcomes) | `TestDiscipline/*` (25 subtests) | pass |
+| T4 line, multiple packages, safe values (CD-54/58) | `TestDiscipline_RedTargetLine`, `TestTrusted_RedTargetInjection_CD58c` | pass (gap FU1) |
+| T5 empty baseline, fallbacks, wrapper adapter (CD-56) | `TestDiscipline_Baseline`, `TestDiscipline_WrapperAdapterAndFallback` | pass |
+| Several REDs per PR, T8, `chore` commits | `TestDiscipline_MultipleRedCommits` | pass |
+| T7 supersession (CD-57) | `TestDiscipline_Superseded*`, `…SkippedNotAbsent_B1` | pass |
+| T3 a RED holds only tests and stubs; stub markers; field stubs (CD-50/59) | `…RedWithOtherFiles_B2`, `…StubMarker*`, `…FieldStubs_*` | pass (gap FU2) |
+| Trusted inputs; `agent/*` (CD-58) | `TestTrusted_*`; hand test against a scratch base that has the checker (`policy_source` and `checker_source` both `base`, cleanup verified) | pass |
+| `policy/ci.yaml` equals the plan block and validates | `TestRealTree_*` | pass |
+| 52-AC-3, checker side | branch dry run before this commit: 22 RED commits, all `build_ok`; `red.failed` holds 375 ids, including S2's layout-check RED 0d80999; the only failures were the two superseded sets, which this commit's `TDD-Superseded:` lines declare | pending the CI run on the PR |
+
+Follow-ups (not blocking; FU1 needs an operator CD):
+- **FU1:** the CD-58 safe set still allows `${`, `|` and parentheses. `GO_TEST_RUN=${shell …}` runs through make, and `GO_TEST_PKGS` is unquoted in `mk/test.mk`. This grants nothing new, since CI already runs PR code, but values should be stricter.
+- **FU2:** an embedded field is accepted as a field stub, although it adds promoted methods. It should be rejected.
+- **FU3:** an added blank import (`import _ "…"`, which runs `init`) is allowed in a RED.
+- **FU4:** `mk/tdd.mk` checks the `$TDD_BASE` tip, but the checker reports from the merge base. The recipe should use `git merge-base`.
+- **FU5:** the base-worktree build path has no end-to-end test; it was verified by hand.
+- **FU6:** `mk/tdd.mk` and `verify.yaml` come from the PR head, so human review of these protected paths is the control. Full enforcement needs a workflow the PR cannot edit (Forgejo lane).
+- **FU7:** the checker's temporary directory is not removed on an error return.
+- **Runtime:** about 17–20 min on this branch, within the 40-minute job timeout.
+
+### F01 — node-level evidence (pending CI on the PR)
+
+| Criterion | Evidence | Status |
+|---|---|---|
+| 01-AC-4 | `verify` job summary.json vs local `out/verify/summary.json` (12 of 12 targets pass locally) | pending first Actions run |
+| 01-AC-13 / 52-AC-3 | `tdd-discipline` job `report.json`: `red.failed` non-empty, `red.build_ok: true`, S2 layout-check RED 0d80999 included | pending first Actions run |
+| 02-AC-14..16 on Docker rootful | `e2e` → `toolbox` job | pending first Actions run |
+| 52-AC-5 / 01-AC-6 / 52-AC-8 on Docker | `e2e` → `verify-e2e` job | pending first Actions run |
+| 52-AC-2 | operator adds `verify`, `tdd-discipline` and `e2e-gate` (source: GitHub Actions) to the `main-gates` ruleset after merge (plan 52 §8.2a) | operator action |
