@@ -71,6 +71,9 @@ func (c *checker) stubViolations(sha string, f change) []string {
 				continue
 			}
 			if n < end-start+1 {
+				if fieldStubsOnly(fset, d, added) {
+					continue
+				}
 				bad = append(bad, fmt.Sprintf("%s:%d: the commit changes an existing declaration", f.path, start))
 				continue
 			}
@@ -78,6 +81,55 @@ func (c *checker) stubViolations(sha string, f change) []string {
 		bad = append(bad, declViolations(fset, f.path, d)...)
 	}
 	return bad
+}
+
+// fieldStubsOnly reports whether every added line of the modified declaration d belongs to a field added to a
+// struct type, each field directly preceded by its own SC-STUB marker (CD-59). Deleted and modified lines are
+// already rejected by addedLines, so the remaining lines of d are unchanged. Interfaces are not allowed.
+func fieldStubsOnly(fset *token.FileSet, d ast.Decl, added map[int]bool) bool {
+	gd, ok := d.(*ast.GenDecl)
+	if !ok || gd.Tok != token.TYPE || len(gd.Specs) != 1 {
+		return false
+	}
+	ts, ok := gd.Specs[0].(*ast.TypeSpec)
+	if !ok {
+		return false
+	}
+	st, ok := ts.Type.(*ast.StructType)
+	if !ok || st.Fields == nil {
+		return false
+	}
+	start := fset.Position(d.Pos()).Line
+	if gd.Doc != nil {
+		start = fset.Position(gd.Doc.Pos()).Line
+	}
+	end := fset.Position(d.End()).Line
+	covered := map[int]bool{}
+	for _, fld := range st.Fields.List {
+		first := fset.Position(fld.Pos()).Line
+		if fld.Doc != nil {
+			first = fset.Position(fld.Doc.Pos()).Line
+		}
+		last := fset.Position(fld.End()).Line
+		if !added[first] {
+			continue // an existing field
+		}
+		if fld.Doc == nil || len(fld.Doc.List) == 0 || !stubMarkerRe.MatchString(fld.Doc.List[len(fld.Doc.List)-1].Text) {
+			return false
+		}
+		for l := first; l <= last; l++ {
+			if !added[l] {
+				return false
+			}
+			covered[l] = true
+		}
+	}
+	for l := start; l <= end; l++ {
+		if added[l] && !covered[l] {
+			return false
+		}
+	}
+	return true
 }
 
 func declDoc(d ast.Decl) *ast.CommentGroup {
