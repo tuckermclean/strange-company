@@ -29,6 +29,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       toolbox: ${{ steps.select.outputs.toolbox }}
+      verify-e2e: ${{ steps.select.outputs.verify_e2e }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -56,17 +57,25 @@ jobs:
           UNCHANGED: ${{ steps.marker.outputs.cache-hit }}
         run: |
           toolbox=true
+          verify_e2e=true
           if [ "$EVENT" = pull_request ]; then
             changed=$(git diff --name-only "$BASE_SHA" HEAD)
             toolbox=false
+            verify_e2e=false
             if grep -q -e '^toolbox/' -e '^bootstrap$' -e '^test/e2e/wrapper/' <<<"$changed"; then
               toolbox=true
             fi
+            if grep -q -e '^Makefile$' -e '^mk/' -e '^src/' -e '^toolbox/' -e '^bootstrap$' -e '^policy/' \
+              -e '^test/e2e/verify/' <<<"$changed"; then
+              verify_e2e=true
+            fi
           elif [ "$EVENT" = schedule ] && [ "$UNCHANGED" = true ]; then
             toolbox=false
+            verify_e2e=false
             echo "skipped: unchanged" >> "$GITHUB_STEP_SUMMARY"
           fi
           echo "toolbox=$toolbox" >> "$GITHUB_OUTPUT"
+          echo "verify_e2e=$verify_e2e" >> "$GITHUB_OUTPUT"
 
   toolbox:
     needs: changes
@@ -92,8 +101,36 @@ jobs:
       - name: Containerfile pin checks
         run: sh test/e2e/wrapper/check-pins.sh
 
+  # 52-AC-5, 01-AC-6, 52-AC-8: two offline `make verify` runs with SC_FORBID_PAID=1, identical summaries.
+  verify-e2e:
+    needs: changes
+    if: needs.changes.outputs.verify-e2e == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 60
+    env:
+      SC_CONTAINER_ENGINE: docker
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Offline, repeatable, no-paid make verify
+        run: sh test/e2e/verify/run
+
+      - name: Upload the two verify summaries
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: verify-e2e
+          path: out/verify-e2e/
+          if-no-files-found: ignore
+
   e2e-gate:
-    needs: [changes, toolbox]
+    needs: [changes, toolbox, verify-e2e]
     if: always()
     runs-on: ubuntu-24.04
     permissions:
@@ -104,13 +141,16 @@ jobs:
         env:
           CHANGES: ${{ needs.changes.result }}
           TOOLBOX: ${{ needs.toolbox.result }}
+          VERIFY_E2E: ${{ needs.verify-e2e.result }}
         run: |
-          echo "changes=$CHANGES toolbox=$TOOLBOX"
+          echo "changes=$CHANGES toolbox=$TOOLBOX verify-e2e=$VERIFY_E2E"
           [ "$CHANGES" = success ] || exit 1
-          case $TOOLBOX in
-            success | skipped) ;;
-            *) exit 1 ;;
-          esac
+          for r in "$TOOLBOX" "$VERIFY_E2E"; do
+            case $r in
+              success | skipped) ;;
+              *) exit 1 ;;
+            esac
+          done
 
       - name: Write the scheduled-run marker
         if: github.event_name == 'schedule'
