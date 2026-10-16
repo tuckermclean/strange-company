@@ -137,9 +137,12 @@ jobs:
       contents: read
     timeout-minutes: 40
     steps:
+      # Check out the PR head itself: the default pull_request ref is a synthetic merge commit, which T3
+      # would report as TDD_MERGE_COMMIT (plan 52 section 8.3).
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -177,4 +180,18 @@ jobs:
         run: docker load -i ".cache/ci-image/$INPUTS_ID.tar"
 
       - name: make tdd-discipline-check
-        run: make tdd-discipline-check
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_REF: ${{ github.head_ref }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          git fetch --no-tags origin "+refs/heads/$BASE_REF:refs/remotes/origin/$BASE_REF"
+          make tdd-discipline-check "TDD_BASE=origin/$BASE_REF" "TDD_BRANCH=$HEAD_REF" "TDD_AUTHOR=$PR_AUTHOR"
+
+      - name: Upload the tdd-discipline report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tdd-discipline
+          path: out/tdd-discipline/
+          if-no-files-found: ignore
