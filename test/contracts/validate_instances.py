@@ -14,7 +14,7 @@ from referencing import Registry, Resource
 from referencing.jsonschema import DRAFT202012
 
 API_VERSION = "strange.company/v1alpha1"
-GLOBS = [".strange-company/*.yaml"]
+GLOBS = [".strange-company/*.yaml", "policy/ci.yaml"]
 
 
 def kind_const(schema):
