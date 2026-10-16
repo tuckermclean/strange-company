@@ -155,7 +155,7 @@ Implementation is a separate task. Start at DAG node **F01** in `PLAN.md`, follo
 
 ### F01 — repo-skeleton
 
-Branch `node/F01-repo-skeleton`, built with `/sc-node F01` (CD-44). Base `main` 0d4e721. Five slices: S1 seed `ci` image and `./bootstrap exec`; S2 layout-check; S3 locks, secrets scan, quarantine and CI workflows; S4 `make verify`, lint and determinism; S5 TDD discipline checker. **Status: all six slices approved; node-level CI evidence pending on the PR.**
+Branch `node/F01-repo-skeleton`, built with `/sc-node F01` (CD-44). Base `main` 0d4e721. Five slices: S1 seed `ci` image and `./bootstrap exec`; S2 layout-check; S3 locks, secrets scan, quarantine and CI workflows; S4 `make verify`, lint and determinism; S5 TDD discipline checker. **Status: all seven slices approved (S7 fixed Docker CI); node-level evidence from PR #144.**
 
 #### S1 — seed `ci` image, `./bootstrap exec`, Makefile re-exec
 
@@ -351,12 +351,25 @@ Follow-ups (not blocking; FU1 needs an operator CD):
 - **FU7:** the checker's temporary directory is not removed on an error return.
 - **Runtime:** about 17–20 min on this branch, within the 40-minute job timeout.
 
-### F01 — node-level evidence (pending CI on the PR)
+#### S7 — Docker CI fixes
+
+The first Actions run of PR #144 (54f43f3) failed every container job on Docker rootful: `/tmp` was mounted `--tmpfs /tmp:rw,nosuid,nodev,size=1g`, and Docker's tmpfs default is `noexec`, so neither Go binaries nor the wrapper's stub engines could run there. Rootless Podman allows exec, so every local run had passed. `check-pins.sh`'s "got exit 0" was a hard-coded failure message, printed because its precondition failed for the same reason.
+
+| Commit | Role |
+|---|---|
+| 200dcc3 | RED (`toolbox-check`): the `/tmp` tmpfs must have `exec,nosuid,nodev,size=1g` and not `noexec` in all four engine modes (4 failures); `real-engine.sh` adds a /tmp-exec check and a `go run` check |
+| 64e104a | GREEN: `--tmpfs /tmp:rw,exec,nosuid,nodev,size=1g` |
+| 4e21991 | chore: the real-engine /tmp-exec check compares stdout only (rootless Podman prints warnings on stderr) |
+
+Review: **`approve`** at 4e21991 (attempt 1 of 3). Security: no regression under plan 02 §13, since `nosuid` and `nodev` stay and the repository mount is already rw and exec. Follow-ups: name `exec,nosuid,nodev,size=1g` in plan 02 §14.3's mount table; give `check-pins.sh` a real failure message.
+
+### F01 — node-level evidence
 
 | Criterion | Evidence | Status |
 |---|---|---|
-| 01-AC-4 | `verify` job summary.json vs local `out/verify/summary.json` (12 of 12 targets pass locally) | pending first Actions run |
-| 01-AC-13 / 52-AC-3 | `tdd-discipline` job `report.json`: `red.failed` non-empty, `red.build_ok: true`, S2 layout-check RED 0d80999 included | pending first Actions run |
-| 02-AC-14..16 on Docker rootful | `e2e` → `toolbox` job | pending first Actions run |
-| 52-AC-5 / 01-AC-6 / 52-AC-8 on Docker | `e2e` → `verify-e2e` job | pending first Actions run |
+| 01-AC-4 | Actions run [38978817161](https://github.com/tuckermclean/strange-company/actions/runs/38978817161) `verify` job (Docker rootful) on 4e21991: `summary.json` lists 12 of 12 targets `pass`; local host `make verify` on 4e21991 (rootless Podman) gives the identical target set and results | **pass** |
+| 02-AC-14..16 on Docker rootful | run [38978817153](https://github.com/tuckermclean/strange-company/actions/runs/38978817153) `toolbox` job: `real-engine.sh` and `check-pins.sh` with `SC_CONTAINER_ENGINE=docker` | **pass** |
+| 52-AC-5, 01-AC-6, 52-AC-8 on Docker | run 38978817153 `verify-e2e` job: two `--network none`, `SC_FORBID_PAID=1` runs of `make verify`, both 12 of 12 pass; summaries identical after removing timing fields | **pass** |
+| 01-AC-3 (Docker host without Go) | the `verify` job above (the runner's Go is never used: everything runs in the ci image) | **pass** |
+| 01-AC-13 / 52-AC-3 | the `tdd-discipline` job on this commit (the PR head): `report.json` with `red.failed` non-empty and `red.build_ok: true`, S2 layout-check RED 0d80999 included. On 4e21991 it failed only on the two superseded sets, which this commit declares | see the PR's run on this head |
 | 52-AC-2 | operator adds `verify`, `tdd-discipline` and `e2e-gate` (source: GitHub Actions) to the `main-gates` ruleset after merge (plan 52 §8.2a) | operator action |
