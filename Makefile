@@ -13,9 +13,11 @@ GOALS := $(if $(MAKECMDGOALS),$(MAKECMDGOALS),$(.DEFAULT_GOAL))
 # Command-line overrides travel as one single-quoted argv element each, with the user's literal value
 # (MAKEOVERRIDES holds `$` doubled and splits on spaces, so it is not used).
 sq = '$(subst ','\'',$(1))'
-OVERRIDE_ARGS := $(foreach v,$(filter-out SC_IN_CONTAINER,$(.VARIABLES)),$(if $(filter command line,$(origin $(v))),$(call sq,$(v)=$(value $(v)))))
+# The names are stripped; the values and the recipe line are not, so whitespace inside a value survives.
+OVERRIDE_NAMES := $(strip $(foreach v,$(filter-out SC_IN_CONTAINER,$(.VARIABLES)),$(if $(filter command line,$(origin $(v))),$(v))))
+OVERRIDE_ARGS := $(foreach v,$(OVERRIDE_NAMES),$(call sq,$(v)=$(value $(v))))
 $(firstword $(GOALS)):
-	@$(strip ./bootstrap exec --image ci -- make $(GOALS) $(OVERRIDE_ARGS))
+	@./bootstrap exec --image ci -- make $(GOALS)$(if $(OVERRIDE_NAMES), $(OVERRIDE_ARGS))
 $(wordlist 2,$(words $(GOALS)),$(GOALS)):
 	@:
 else

@@ -40,7 +40,8 @@ var secretPatterns = []struct {
 }
 
 // secretsAllowlistRel is the closed allowlist of `make secrets-scan` (plan 35 section 14.8.1, plan 01
-// section 9). The file is a protected path; it is not scanned itself.
+// section 9). The file is a protected path and is scanned like any other; only its entries' own values are
+// exempt there.
 const secretsAllowlistRel = "test/fixtures/secrets-scan/allowlist.yaml"
 
 // secretAllowlist holds the exact files `make secrets-scan` whitelists (plan 01 section 6.5).
@@ -78,6 +79,15 @@ func loadAllowlist(root string) (*allowlist, error) {
 // allows reports whether an entry exempts the value matched by the rule in the path, and marks it used.
 func (a *allowlist) allows(rel, rule, value string) bool {
 	ok := false
+	if rel == secretsAllowlistRel {
+		// In the allowlist file itself only an entry's exact value is exempt; no entry is marked used.
+		for _, e := range a.entries {
+			if e != nil && e.Rule == rule && e.Value == value {
+				return true
+			}
+		}
+		return false
+	}
 	for _, e := range a.entries {
 		if e != nil && e.Path == rel && e.Rule == rule && e.Value == value {
 			e.used = true
@@ -107,7 +117,7 @@ func SecretsScan(root string) (Result, error) {
 		if (strings.HasSuffix(rel, ".sops.yaml") || strings.HasSuffix(rel, ".sops.yml")) && path.Base(rel) != ".sops.yaml" {
 			sopsFiles = append(sopsFiles, rel)
 		}
-		if secretAllowlist[rel] || rel == secretsAllowlistRel {
+		if secretAllowlist[rel] {
 			continue
 		}
 		b, err := os.ReadFile(filepath.Join(root, rel))
@@ -118,7 +128,7 @@ func SecretsScan(root string) (Result, error) {
 	}
 	for _, e := range allow.entries {
 		if e != nil && !e.used {
-			r.add(ruleSecretPattern, secretsAllowlistRel, "stale allowlist entry: %s %s matches nothing in %s", e.Rule, e.Path, e.Path)
+			r.add(ruleSecretPattern, secretsAllowlistRel, "stale allowlist entry: %s matches nothing in %s", e.Rule, e.Path)
 		}
 	}
 	for _, rel := range sopsFiles {
@@ -139,7 +149,7 @@ var pemHeaderRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9-]*:\s.*$`)
 
 // placeholder reports whether a match is a vendor documentation value: it ends in EXAMPLE (the AWS
 // documentation access key id) or EXAMPLEKEY (the AWS documentation secret access key). Every other
-// documentation-looking value is an entry of the closed allowlist.
+// documentation-looking value (and every non-AWS pattern) is an entry of the closed allowlist.
 func placeholder(m string) bool {
 	return strings.HasSuffix(m, "EXAMPLE") || strings.HasSuffix(m, "EXAMPLEKEY")
 }
@@ -153,7 +163,7 @@ func pemBodyFollows(lines []string, n int) bool {
 		i++
 		headers++
 	}
-	if headers > 0 && i < len(lines) && strings.TrimSpace(lines[i]) == "" {
+	if i < len(lines) && strings.TrimSpace(lines[i]) == "" {
 		i++
 	}
 	return i < len(lines) && pemBodyRe.MatchString(lines[i])
@@ -170,7 +180,7 @@ func scanSecrets(rel string, b []byte, allow *allowlist, r *Result) {
 					if !pemOneLineRe.MatchString(line) && !pemBodyFollows(lines, n) {
 						break
 					}
-				} else if placeholder(m) {
+				} else if strings.HasPrefix(p.name, "aws-") && placeholder(m) {
 					continue
 				}
 				if allow.allows(rel, p.name, m) {
