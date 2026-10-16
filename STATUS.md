@@ -149,7 +149,7 @@ Implementation is a separate task. Start at DAG node **F01** in `PLAN.md`, follo
 
 ### F01 — repo-skeleton
 
-Branch `node/F01-repo-skeleton`, built with `/sc-node F01` (CD-44). Base `main` 0d4e721. Five slices: S1 seed `ci` image and `./bootstrap exec`; S2 layout-check; S3 locks, secrets scan, quarantine and CI workflows; S4 `make verify`, lint and determinism; S5 TDD discipline checker. **Status: in progress (S1, S2, S3 approved).**
+Branch `node/F01-repo-skeleton`, built with `/sc-node F01` (CD-44). Base `main` 0d4e721. Five slices: S1 seed `ci` image and `./bootstrap exec`; S2 layout-check; S3 locks, secrets scan, quarantine and CI workflows; S4 `make verify`, lint and determinism; S5 TDD discipline checker. **Status: in progress (S1–S4 approved).**
 
 #### S1 — seed `ci` image, `./bootstrap exec`, Makefile re-exec
 
@@ -249,3 +249,34 @@ Deviations and open items:
   - lock and quarantine schema validation runs through the Stage-0 venv;
   - cross-file lock rules have nothing to compare until `versions/` lock files exist.
 - **Process:** the S3 implementer wrote `.github/**` through the shell, although the guard bars role agents from that path; the guard's edit check does not cover shell writes. The operator approved committing the files after the orchestrator read them. The guard fix is pending an operator decision.
+
+#### S4 — `make verify`, lint and determinism, build, no-paid
+
+| Round | RED | GREEN | Review |
+|---|---|---|---|
+| 1 | cbe7816 (11 failures); 6b96b5c `style`: gofmt of an S2 RED file | d916776 | `request_changes`: `GO_TEST_SKIP` knob, Go test cache, ci env defaults, gateway too narrow, D7/D8 scoping, host re-exec quoting |
+| 2 | ee0bce2 (wrapper, 6 failures); 9c8d6b1 (Go, 7 failures, all new). The nested-verify Go test moved to `test/e2e/verify/run` (operator-approved; it failed at every RED). A first attempt, 644848c, was discarded unpushed | orchestrator 998ee2c (`verify-e2e` job); 1d0134a | `request_changes`: verify e2e failed on a clean checkout (container Go caches outside `.cache`); `verify.yaml` not offline; filter breadth; `SC_IN_CONTAINER` forwarding; userinfo |
+| 3 | 339dde4 (gateway, 1 failure); b9e1846 (wrapper, 5 failures) | orchestrator 851d60b (offline verify job, wider filters); 4b6de68 | **`approve`** at 4b6de68 |
+
+Red targets: `test GO_TEST_PKGS=./src/internal/lint/... ./src/internal/gateway/...` and `toolbox-check`. Implementer attempts used: 3 of 3. Operator decision: CD-53. CI: not run yet (no PR).
+
+| Criterion | Test(s) | Result at 4b6de68 |
+|---|---|---|
+| 01-AC-3 | `test/e2e/verify/run`; `TestFmtCheck_FailsOnDiff`; host `make verify` (rootless Podman, no Go/tofu/kubectl): 12 of 12 targets pass | pass on Podman; Docker run via the `verify` and `verify-e2e` jobs (pending) |
+| 01-AC-5 (order) | `TestVerify_DryRunSequenceOrder_01AC5`; `test/e2e/wrapper/makefile-reexec.sh` (19 checks) | pass |
+| 01-AC-6 | `test/e2e/verify/run` in a fresh clone with no `.cache` (warm-up, then two `--network none` runs pass); `cache-env.sh`; `TestGitopsCache_OfflineNoop`; `TestTestTarget_{NoSelectionKnob,NoTestCache}` | pass |
+| 01-AC-9 | `TestBuild_{Reproducible,RecipeFlags,DescribeAbbrev}`; two fresh clones produce an identical `sc-lint` sha256 | pass |
+| 52-AC-5 | `test/e2e/verify/run` (c): summaries identical after deleting `duration_ms` and `started_at` | pass |
+| 52-AC-6 | `TestGolangciLint_{ForbidigoFixtures,ForbidigoScoping}`, `TestNetcheck_*`, `TestLint_*` | pass |
+| 52-AC-8 | `forbidpaid_test.go` (6 tests, CD-53 allowlist), `TestContainerfile_CIEnvDefaults`, `verify/run` with `SC_FORBID_PAID=1` | pass |
+
+Deviations and open items (follow-up slice S6, before S5):
+- **Data loss:** `test/e2e/verify/run` runs `rm -rf .cache/go out` in the checkout it starts in. Run in the main checkout, it deleted `out/`, including the orchestrator brief, which was regenerated. It must run in a temporary clone.
+- **Override whitespace:** the `$(strip …)` around the re-exec line collapses whitespace inside quoted override values, a regression from 1d0134a.
+- **CI path:** `verify.yaml` runs `./bootstrap exec … -- make verify` directly, not host `make verify`. The two are equivalent under 01-AC-5, and host `make verify` was run on Podman.
+- **Implementation choices:**
+  - tier-V order follows plan 01 §7.1 catalogue order, with `gitops-cache` first;
+  - `summary.json` has the shape `{"targets":[{target,result,started_at,duration_ms}]}`;
+  - the gateway function is `gateway.ValidateUpstream`;
+  - `GOFLAGS=-mod=readonly` in the image replaces `-buildvcs=false`, which `make build` passes explicitly;
+  - the Go cache defaults are set in `sc-entrypoint`, and a caller's own values win.
