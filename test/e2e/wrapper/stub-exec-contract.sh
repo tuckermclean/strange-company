@@ -63,6 +63,29 @@ L=$(run_line)
 expect_match "02-AC-16 podman-rootful: --user uid:gid" "--user[ =]$uid:$gid( |\$)" "$L"
 expect_nomatch "02-AC-16 podman-rootful: no --userns keep-id" "--userns" "$L"
 
+# /tmp tmpfs must be executable: Docker mounts tmpfs noexec unless "exec" is given, and the toolbox runs
+# go-build outputs and scratch scripts from /tmp (plan 02 14.3 mount table, 14.5 run flags). Every engine mode.
+tmp_opts() { # run-line -> comma list of the /tmp tmpfs options, one per line
+	printf '%s\n' "$1" | tr ' ' '\n' | awk '
+		prev == "--tmpfs" && $0 ~ /^\/tmp(:|$)/ { sub(/^\/tmp:?/, ""); print; exit }
+		$0 ~ /^--tmpfs=\/tmp(:|$)/ { sub(/^--tmpfs=\/tmp:?/, ""); print; exit }
+		{ prev = $0 }' | tr ',' '\n'
+}
+for mode in "docker rootful|docker|0|" "docker rootless|docker|1|" "podman rootless|podman|1|" "podman rootful|podman|0|"; do
+	label=${mode%%|*}
+	rest=${mode#*|}
+	eng=${rest%%|*}
+	rest=${rest#*|}
+	rl=${rest%%|*}
+	reset_log
+	STUB_ROOTLESS=$rl ENGINE=$eng wrap "$fx" exec --image ci -- true
+	opts=$(tmp_opts "$(run_line)")
+	for o in exec nosuid nodev size=1g; do
+		if printf '%s\n' "$opts" | grep -Fxq -- "$o"; then ok "02-AC-16 $label: /tmp tmpfs option $o"; else bad "02-AC-16 $label: /tmp tmpfs option $o" "options: $(printf '%s' "$opts" | tr '\n' ',')"; fi
+	done
+	expect_nomatch "02-AC-16 $label: /tmp tmpfs is not noexec" "^noexec\$" "${opts:-none}"
+done
+
 # TTY allocation: -t only when stdin and stdout are both TTYs (plan 02 7.1), via script(1).
 if command -v script >/dev/null 2>&1 && script -qec true /dev/null >/dev/null 2>&1 </dev/null; then
 	reset_log

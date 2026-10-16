@@ -66,6 +66,15 @@ RC=0
 $B exec --image ci --network none -- curl -sS -m 5 https://proxy.golang.org >/dev/null 2>&1 || RC=$?
 [ "$RC" -ne 0 ] && [ "$RC" -ne 127 ] && [ "$RC" -ne 2 ] && [ "$RC" -ne 3 ] && ok "02-AC-16 --network none: curl fails (exit $RC)" || bad "02-AC-16 --network none: curl fails with a curl error" "exit $RC"
 
+# /tmp must allow exec (Docker tmpfs defaults to noexec; plan 02 14.3): scripts and go-build outputs run from /tmp.
+RC=0
+OUT=$($B exec --image ci -- sh -c 'printf "#!/bin/sh\necho ran\n" > /tmp/x && chmod +x /tmp/x && /tmp/x' 2>&1) || RC=$?
+expect_eq "02-AC-16 an executable script in /tmp runs (prints ran)" ran "$OUT"
+RC=0
+$B exec --image ci -- sh -c 'cd src && go run ./cmd/sc-lint version' >"$TMP/golint.out" 2>&1 || RC=$?
+expect_eq "02-AC-16 go run ./cmd/sc-lint version exits 0 (go-build output executes from /tmp)" 0 "$RC"
+tail -n 5 "$TMP/golint.out" | sed 's/^/       /' | { [ "$RC" -eq 0 ] || cat; }
+
 # --- 01-AC-6 / 52-AC-5 go caches default to the repo-local .cache in every ci container (plan 01 8.1)
 RC=0
 OUT=$($B exec --image ci -- go env GOMODCACHE GOCACHE 2>/dev/null) || RC=$?
