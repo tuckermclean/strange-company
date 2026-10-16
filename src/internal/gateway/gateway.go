@@ -22,7 +22,7 @@ func ValidateUpstream(rawURL string) error {
 	}
 	scheme := strings.ToLower(u.Scheme)
 	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
-	if (scheme != "http" && scheme != "https") || host == "" || u.User != nil || !fakeHost(host) {
+	if (scheme != "http" && scheme != "https") || host == "" || !fakeHost(host) {
 		return fmt.Errorf("gateway: upstream %q refused: SC_FORBID_PAID=1 accepts only http(s) loopback, localhost, *.invalid and *.test hosts (host %q)", rawURL, host)
 	}
 	return nil

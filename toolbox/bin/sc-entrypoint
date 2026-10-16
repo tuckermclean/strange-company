@@ -15,5 +15,9 @@ if [ -n "${SC_REPO_ROOT:-}" ] && [ -d /run/sc ]; then
 	GIT_CONFIG_KEY_0=safe.directory
 	GIT_CONFIG_VALUE_0=$SC_REPO_ROOT
 	export LD_PRELOAD NSS_WRAPPER_PASSWD NSS_WRAPPER_GROUP HOME GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
+	# Go caches default to the repo-local .cache (plan 01 section 8.1); a caller's value wins.
+	GOMODCACHE=${GOMODCACHE:-$SC_REPO_ROOT/.cache/go/mod}
+	GOCACHE=${GOCACHE:-$SC_REPO_ROOT/.cache/go/build}
+	export GOMODCACHE GOCACHE
 fi
 exec "$@"
