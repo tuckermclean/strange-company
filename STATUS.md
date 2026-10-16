@@ -19,7 +19,7 @@
 | Operator procedures | 63 | `procedures/` |
 | ADRs (22 global + subsystem ADRs) | 79 | `adr/` |
 | SPEC issues register (59 entries, none blocking) | 1 | `plans/spec-issues.md` |
-| Consolidation decisions (CD-01..CD-52) | 1 | `plans/reviews/consolidation-decisions.md` |
+| Consolidation decisions (CD-01..CD-53) | 1 | `plans/reviews/consolidation-decisions.md` |
 | Independent fresh-context reviews (SPEC §132 items 43–47), plus closure verification | 10 + 3 | `plans/reviews/review-*.md`, `plans/reviews/closure-*.md` |
 | External adversarial reviews of PR #138 (two passes) and their disposition | 1 | `plans/reviews/external-review-pr138.md` |
 | Blind reviews (no access to earlier review conclusions; CD-34) | 5 | `plans/reviews/blind-*.md` |
@@ -81,6 +81,7 @@
    - CD-50: RED stub files may also hold type declarations (plan 52 §8.3a); `make test` was added before the F01 S2 RED so that RED re-runs by its declared target (found in the F01 slice S2 review).
    - CD-51: `go.yaml.in/yaml/v3` is the Go YAML library and the module's first third-party dependency (found in F01 slice S3).
    - CD-52: the scheduled e2e skip uses a cache marker instead of `gh run list` (only `contents: read`); every workflow job declares its own permissions; the `toolbox` e2e filter also covers `bootstrap` and `test/e2e/wrapper/**` (found in the F01 slice S3 review).
+   - CD-53: with `SC_FORBID_PAID=1` the Gateway accepts only fake upstream hosts (loopback, `localhost`, `*.invalid`, `*.test`) and fails closed on everything else (found in the F01 slice S4 review).
 
 ## SPEC §125 Stage-0 Definition of Done
 
