@@ -31,7 +31,8 @@ type ExemptionClass struct {
 
 // Options select what Check judges. Root is a git work tree. Base is the target ref (for example
 // origin/main); B is the merge base of Base and Head. Head defaults to HEAD. Branch is the PR source
-// branch, Author the PR author login. A nil Policy is read from Root/policy/ci.yaml (spec.tddDiscipline).
+// branch, Author the PR author login. A nil Policy is read from policy/ci.yaml
+// (spec.tddDiscipline) of the merge base, and from Root only when the merge base has none (CD-58a).
 // Env entries (KEY=VALUE) are added to the environment of every red-target run.
 type Options struct {
 	Root   string
@@ -41,7 +42,7 @@ type Options struct {
 	Author string
 	Policy *Policy
 	Env    []string
-	// SC-STUB(F01 52-AC-4) ProvenanceBound: the Runner binds agent/* branches to a task (CD-58b).
+	// ProvenanceBound says the Runner binds agent/* branches to a task (CD-58b); only then are they excluded.
 	ProvenanceBound bool
 }
 
@@ -85,9 +86,9 @@ type Report struct {
 	Red       Red       `json:"red"`
 	// Superseded lists the RED test ids accepted as superseded by a valid TDD-Superseded line (CD-57).
 	Superseded []string `json:"superseded"`
-	// SC-STUB(F01 52-AC-4) PolicySource is "base" or "head" (CD-58a).
+	// PolicySource is "base" or "head": where policy/ci.yaml was read from (CD-58a); empty for an injected Policy.
 	PolicySource string `json:"policy_source"`
-	// SC-STUB(F01 52-AC-4) CheckerSource is "base" or "head" (CD-58a).
+	// CheckerSource is "base" when the merge base already has the tdd-discipline subcommand, else "head" (CD-58a).
 	CheckerSource string `json:"checker_source"`
 }
 
@@ -194,25 +195,13 @@ func Check(opts Options) (Report, error) {
 	if opts.Base == "" {
 		return Report{}, errors.New("tdd: no base ref")
 	}
-	var pol Policy
-	if opts.Policy != nil {
-		pol = *opts.Policy
-	} else if pol, err = LoadPolicy(filepath.Join(root, "policy", "ci.yaml")); err != nil {
-		return Report{}, err
-	}
-	c := &checker{opts: opts, root: root, pol: pol, baselines: map[string]runResult{}}
+	c := &checker{opts: opts, root: root, baselines: map[string]runResult{}}
 	c.rep = &Report{
 		Branch:     opts.Branch,
 		Superseded: []string{},
 		Failures:   []Finding{},
 		Warnings:   []Finding{},
 		Red:        Red{Commits: []RedRun{}, Failed: []string{}, BuildOK: true},
-	}
-	if c.behav, err = compileGlobs(pol.BehaviorPaths, false); err != nil {
-		return Report{}, err
-	}
-	if c.tests, err = compileGlobs(pol.TestPaths, false); err != nil {
-		return Report{}, err
 	}
 	head := opts.Head
 	if head == "" {
@@ -229,6 +218,35 @@ func Check(opts Options) (Report, error) {
 		return Report{}, err
 	}
 	c.baseSHA = strings.TrimSpace(c.baseSHA)
+
+	// CD-58a: the policy and the checker come from the merge base; the head only when B lacks them.
+	if opts.Policy != nil {
+		c.pol = *opts.Policy
+	} else if c.exists(c.baseSHA, "policy/ci.yaml") {
+		b, err := c.show(c.baseSHA, "policy/ci.yaml")
+		if err != nil {
+			return Report{}, err
+		}
+		if c.pol, err = ParsePolicy("policy/ci.yaml@"+short(c.baseSHA), b); err != nil {
+			return Report{}, err
+		}
+		c.rep.PolicySource = "base"
+	} else {
+		if c.pol, err = LoadPolicy(filepath.Join(root, "policy", "ci.yaml")); err != nil {
+			return Report{}, err
+		}
+		c.rep.PolicySource = "head"
+	}
+	c.rep.CheckerSource = "head"
+	if out, err := c.git("grep", "-l", "tdd-discipline", c.baseSHA, "--", "src/cmd/sc-lint/"); err == nil && strings.TrimSpace(out) != "" {
+		c.rep.CheckerSource = "base"
+	}
+	if c.behav, err = compileGlobs(c.pol.BehaviorPaths, false); err != nil {
+		return Report{}, err
+	}
+	if c.tests, err = compileGlobs(c.pol.TestPaths, false); err != nil {
+		return Report{}, err
+	}
 
 	result, err := c.evaluate()
 	if err != nil {
@@ -319,6 +337,9 @@ func (c *checker) excluded(changedPaths []string) (bool, error) {
 		}
 		if !re.MatchString(branch) {
 			continue
+		}
+		if strings.HasPrefix(pat, "agent/") && !c.opts.ProvenanceBound {
+			continue // CD-58b: without Runner provenance an agent/* name proves nothing
 		}
 		if !strings.HasPrefix(pat, "renovate/") {
 			return true, nil

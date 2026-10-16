@@ -11,7 +11,7 @@ import (
 	"strange.company/sc/internal/lint/tdd"
 )
 
-// tddMain implements `sc-lint tdd-discipline [--root DIR] [--base REF] [--head REF] [--branch NAME] [--author LOGIN]`
+// tddMain implements `sc-lint tdd-discipline [--root DIR] [--base REF] [--head REF] [--branch NAME] [--author LOGIN] [--provenance-bound]`
 // (plan 52 section 8.3). It prints every failure and warning, writes out/tdd-discipline/report.json and exits
 // 0 for pass, not-applicable and exempt, 1 for fail and 2 for a usage or I/O error.
 func tddMain(args []string, stdout, stderr io.Writer) int {
@@ -22,10 +22,11 @@ func tddMain(args []string, stdout, stderr io.Writer) int {
 	head := fs.String("head", "HEAD", "head ref")
 	branch := fs.String("branch", "", "source branch of the PR")
 	author := fs.String("author", "", "login of the PR author")
+	bound := fs.Bool("provenance-bound", false, "the Runner binds agent/* branches to a task (CD-58b)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	rep, err := tdd.Check(tdd.Options{Root: *root, Base: *base, Head: *head, Branch: *branch, Author: *author})
+	rep, err := tdd.Check(tdd.Options{Root: *root, Base: *base, Head: *head, Branch: *branch, Author: *author, ProvenanceBound: *bound})
 	if err != nil {
 		fmt.Fprintf(stderr, "sc-lint tdd-discipline: %v\n", err)
 		return 2

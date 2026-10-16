@@ -23,6 +23,11 @@ func LoadPolicy(path string) (Policy, error) {
 	if err != nil {
 		return Policy{}, err
 	}
+	return ParsePolicy(path, b)
+}
+
+// ParsePolicy reads spec.tddDiscipline from the bytes of a policy/ci.yaml file; path is used in errors.
+func ParsePolicy(path string, b []byte) (Policy, error) {
 	var doc struct {
 		Spec struct {
 			TDD *Policy `yaml:"tddDiscipline"`

@@ -104,7 +104,9 @@ func declViolations(fset *token.FileSet, path string, d ast.Decl) []string {
 		return []string{fmt.Sprintf("%s: a %s declaration is not allowed in a RED commit", where, x.Tok)}
 	case *ast.FuncDecl:
 		var bad []string
-		if x.Doc == nil || len(x.Doc.List) == 0 || !stubMarkerRe.MatchString(x.Doc.List[0].Text) {
+		// The marker is the first or the last line of the comment group directly above the func (8.3a).
+		if x.Doc == nil || len(x.Doc.List) == 0 ||
+			!(stubMarkerRe.MatchString(x.Doc.List[0].Text) || stubMarkerRe.MatchString(x.Doc.List[len(x.Doc.List)-1].Text)) {
 			bad = append(bad, fmt.Sprintf("%s: func %s is not directly preceded by a // SC-STUB(<id> <AC>) marker", where, x.Name.Name))
 		}
 		if x.Body == nil {

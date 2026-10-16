@@ -43,6 +43,9 @@ type runResult struct {
 	output   string
 }
 
+// safeWordRe is the character set of red-target values (plan 52 section 8.3, CD-58c).
+var safeWordRe = regexp.MustCompile(`^[A-Za-z0-9_./:^$|()*+?\[\]{}, -]*$`)
+
 // parseRedTarget implements the T4 line; problem is non-empty when the commit's line is unusable.
 func (c *checker) parseRedTarget(ci commitInfo) (spec runSpec, problem string) {
 	lines := redLineRe.FindAllStringSubmatch(ci.message, -1)
@@ -56,6 +59,15 @@ func (c *checker) parseRedTarget(ci commitInfo) (spec runSpec, problem string) {
 	fields := strings.Fields(lines[0][1])
 	if len(fields) == 0 {
 		return spec, "empty TDD-Red-Target line"
+	}
+	for _, f := range fields { // CD-58c: nothing from a commit message reaches a shell unchecked
+		v := f
+		if m := keyValueRe.FindStringSubmatch(f); m != nil {
+			v = m[2]
+		}
+		if !safeWordRe.MatchString(v) || strings.Contains(v, "$(") {
+			return spec, fmt.Sprintf("word %q has characters outside the safe set", f)
+		}
 	}
 	spec.target = fields[0]
 	known := false
@@ -122,8 +134,12 @@ func (c *checker) parseRedTarget(ci commitInfo) (spec runSpec, problem string) {
 func (c *checker) evaluateRed(ci commitInfo) error {
 	var bad []string
 	for _, f := range ci.files {
-		if matchAny(c.behav, f.path) && !matchAny(c.tests, f.path) {
+		switch {
+		case matchAny(c.tests, f.path):
+		case matchAny(c.behav, f.path):
 			bad = append(bad, c.stubViolations(ci.sha, f)...)
+		default: // T3: a RED commit holds test files and declared stubs only
+			bad = append(bad, fmt.Sprintf("%s: a RED commit may change test files and declared stubs only", f.path))
 		}
 	}
 	for _, b := range bad {
@@ -257,7 +273,8 @@ func (c *checker) checkHead() error {
 			if hr.passed[id] {
 				continue
 			}
-			if c.superseded(lines, used, id, p.commit) {
+			// CD-57: only an id ABSENT from HEAD's results can be superseded; a skipped one stays not green.
+			if !hasCase(hr, id) && c.superseded(lines, used, id, p.commit) {
 				continue
 			}
 			notGreen = append(notGreen, id)
@@ -602,4 +619,14 @@ func adaptOutput(out string) []tcase {
 	}
 	flush(adapterFallback)
 	return cases
+}
+
+// hasCase reports whether the run has a testcase with that id, whatever its status.
+func hasCase(r runResult, id string) bool {
+	for _, tc := range r.cases {
+		if tc.id == id {
+			return true
+		}
+	}
+	return false
 }
