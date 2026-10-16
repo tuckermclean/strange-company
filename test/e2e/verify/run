@@ -3,7 +3,7 @@
 # Run from any checkout on a host with a container engine (CI does this; it is not a Go unit test because
 # a nested `make verify` would run every RED test again). The script never changes the checkout it is started
 # from: it makes a fresh `git clone --no-local` under a mktemp -d directory, overlays the checkout's uncommitted
-# changes (modified and untracked-not-ignored files; deletions too) so the run judges the working tree, runs
+# changes (overlay.sh: staged, unstaged and untracked-not-ignored paths; deletions; symlinks kept) so the run judges the working tree, runs
 # everything there, copies the two summaries back to out/verify-e2e/ of the original checkout and removes the
 # temp directory (chmod -R u+w first: the Go module cache is read-only).
 #   (a) with network: warm the caches (`make gitops-cache`, `go mod download`);
@@ -23,15 +23,10 @@ trap cleanup EXIT
 trap 'exit 2' INT TERM
 root=$work/repo
 git clone -q --no-local "$orig" "$root" || exit 2
-# Overlay uncommitted work: modified and untracked-not-ignored files are copied in, deleted ones removed.
-git -C "$orig" ls-files -m -o --exclude-standard | while IFS= read -r f; do
-	if [ -f "$orig/$f" ]; then
-		mkdir -p "$root/$(dirname "$f")"
-		cp -p "$orig/$f" "$root/$f"
-	else
-		rm -f "$root/$f"
-	fi
-done
+# Overlay uncommitted work (staged, unstaged, untracked; deletions and symlinks kept as they are).
+# shellcheck source=test/e2e/verify/overlay.sh
+. "$orig/test/e2e/verify/overlay.sh"
+sc_overlay "$orig" "$root" || exit 2
 cd "$root" || exit 2
 fail=0
 pass() { printf 'PASS: %s\n' "$1"; }
@@ -132,6 +127,7 @@ fi
 # Evidence goes back to the original checkout; nothing there is deleted.
 mkdir -p "$orig/$snap"
 for i in 1 2; do
+	rm -f "$orig/$snap/summary$i.json" # a stale summary must not survive a failed run
 	[ ! -f "$snap/summary$i.json" ] || cp "$snap/summary$i.json" "$orig/$snap/summary$i.json"
 done
 

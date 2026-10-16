@@ -5,7 +5,7 @@ echo "makefile-reexec (01-AC-5)"
 
 cd "$SC_ROOT" || exit 1
 RC=0
-OUT=$(env -u SC_IN_CONTAINER make -n verify 2>"$TMP/err") || RC=$?
+OUT=$(env -u SC_IN_CONTAINER -u MAKEFLAGS -u MAKEOVERRIDES make -n verify 2>"$TMP/err") || RC=$?
 expect_eq "01-AC-5 make -n verify (SC_IN_CONTAINER unset) exits 0" 0 "$RC"
 n=$(printf '%s\n' "$OUT" | grep -c . || true)
 expect_eq "01-AC-5 prints exactly one command" 1 "$n"
