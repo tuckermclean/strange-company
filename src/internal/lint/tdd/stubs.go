@@ -15,7 +15,7 @@ import (
 const maxStubBodyLines = 12
 
 var (
-	stubMarkerRe = regexp.MustCompile(`^//\s*SC-STUB\(\s*\S[^)]*\)\s*$`)
+	stubMarkerRe = regexp.MustCompile(`^//\s*SC-STUB\(\s*\S[^)]*\)(?:\s.*)?$`)
 	// anyMarkerRe finds a marker comment, wherever it sits in a Go file.
 	anyMarkerRe = regexp.MustCompile(`^//\s*SC-STUB\(`)
 	hunkRe      = regexp.MustCompile(`^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@`)
@@ -104,7 +104,7 @@ func declViolations(fset *token.FileSet, path string, d ast.Decl) []string {
 		return []string{fmt.Sprintf("%s: a %s declaration is not allowed in a RED commit", where, x.Tok)}
 	case *ast.FuncDecl:
 		var bad []string
-		if x.Doc == nil || len(x.Doc.List) == 0 || !stubMarkerRe.MatchString(x.Doc.List[len(x.Doc.List)-1].Text) {
+		if x.Doc == nil || len(x.Doc.List) == 0 || !stubMarkerRe.MatchString(x.Doc.List[0].Text) {
 			bad = append(bad, fmt.Sprintf("%s: func %s is not directly preceded by a // SC-STUB(<id> <AC>) marker", where, x.Name.Name))
 		}
 		if x.Body == nil {

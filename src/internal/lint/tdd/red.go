@@ -226,8 +226,14 @@ func bodyChanged(changed map[string]bool, id string) bool {
 	return false
 }
 
-// checkHead implements T7: at HEAD each queued target exits 0 and passes every test RED failed.
+// checkHead implements T7: at HEAD each queued target exits 0 and passes every test RED failed. A test id
+// that is missing at HEAD is accepted when a valid TDD-Superseded line of the head commit names it (CD-57).
 func (c *checker) checkHead() error {
+	lines, err := c.supersededLines()
+	if err != nil {
+		return err
+	}
+	used := make([]bool, len(lines))
 	results := map[string]runResult{}
 	for _, p := range c.pending {
 		hr, ok := results[p.spec.key()]
@@ -248,15 +254,115 @@ func (c *checker) checkHead() error {
 		}
 		var notGreen []string
 		for _, id := range p.failed {
-			if !hr.passed[id] {
-				notGreen = append(notGreen, id)
+			if hr.passed[id] {
+				continue
 			}
+			if c.superseded(lines, used, id, p.commit) {
+				continue
+			}
+			notGreen = append(notGreen, id)
 		}
 		if len(notGreen) > 0 {
 			c.fail(CodeRedNotGreen, p.commit, "RED commit %s: at HEAD these tests are missing, skipped or not passed: %s", short(p.commit), strings.Join(notGreen, ", "))
 		}
 	}
+	for i, l := range lines {
+		if used[i] {
+			c.rep.Superseded = append(c.rep.Superseded, l.id)
+		} else {
+			c.fail(CodeSupersededInvalid, c.headSHA, "TDD-Superseded %q: %s", l.raw, l.problem())
+		}
+	}
 	return nil
+}
+
+// supLine is one parsed TDD-Superseded line of the head commit.
+type supLine struct {
+	raw    string
+	id     string
+	sha    string // resolved commit, "" if unresolved
+	reason string
+	ok     bool // well-formed
+	short  bool // reason too short
+	idx    int  // index of sha in the PR commits, -1 if not in B..HEAD
+	why    string
+}
+
+func (l supLine) problem() string {
+	switch {
+	case !l.ok:
+		return "must read '<test-id> by <sha>: <reason of at least 20 characters>'"
+	case l.short:
+		return "the reason has fewer than 20 characters"
+	case l.why != "":
+		return l.why
+	}
+	return "no RED test with that id is missing at HEAD, or the commit is not a later RED commit of this PR"
+}
+
+var (
+	supLineRe = regexp.MustCompile(`(?m)^TDD-Superseded:[ \t]*(.*?)[ \t\r]*$`)
+	supBodyRe = regexp.MustCompile(`^(.+) by ([0-9a-f]{7,40}): (.*)$`)
+)
+
+// supersededLines parses the TDD-Superseded lines of the head commit message only.
+func (c *checker) supersededLines() ([]supLine, error) {
+	msg, err := c.git("log", "-1", "--format=%B", c.headSHA)
+	if err != nil {
+		return nil, err
+	}
+	var out []supLine
+	for _, m := range supLineRe.FindAllStringSubmatch(msg, -1) {
+		l := supLine{raw: m[1], idx: -1}
+		b := supBodyRe.FindStringSubmatch(m[1])
+		if b == nil {
+			out = append(out, l)
+			continue
+		}
+		l.ok, l.id, l.reason = true, strings.TrimSpace(b[1]), strings.TrimSpace(b[3])
+		if l.id == "" {
+			l.ok = false
+		}
+		if len([]rune(l.reason)) < minExemptionReason {
+			l.short = true
+		}
+		if full, err := c.revParse(b[2]); err == nil {
+			l.sha = full
+			for i, ci := range c.commits {
+				if ci.sha == full {
+					l.idx = i
+				}
+			}
+		}
+		if l.idx < 0 {
+			l.why = fmt.Sprintf("commit %s is not a commit of this PR", b[2])
+		} else if !c.isRed(c.commits[l.idx]) {
+			l.why = fmt.Sprintf("commit %s is not a RED commit", b[2])
+		}
+		out = append(out, l)
+	}
+	return out, nil
+}
+
+// superseded reports whether a valid line accepts id of RED commit redSHA as superseded, marking it used.
+func (c *checker) superseded(lines []supLine, used []bool, id, redSHA string) bool {
+	from := -1
+	for i, ci := range c.commits {
+		if ci.sha == redSHA {
+			from = i
+		}
+	}
+	for i, l := range lines {
+		if !l.ok || l.short || l.id != id || l.idx < 0 || !c.isRed(c.commits[l.idx]) {
+			continue
+		}
+		if l.idx > from {
+			used[i] = true
+			return true
+		}
+		lines[i].why = fmt.Sprintf("commit %s is not a later RED commit than %s, which introduced the test", short(l.sha), short(redSHA))
+	}
+	return false
 }
 
 // firstIDs lists up to n ids.

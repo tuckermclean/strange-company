@@ -29,7 +29,7 @@ properties:
   spec:
     type: object
     additionalProperties: false
-    required: [managedOwners, protectedBranches, releaseTagPattern, imageRegistries, cloneImage, stepSecurityContext, lanes, repoSettings, verify, retention]
+    required: [managedOwners, protectedBranches, releaseTagPattern, imageRegistries, stepSecurityContext, lanes, repoSettings, verify, retention]
     properties:
       managedOwners:
         type: array
@@ -121,7 +121,6 @@ properties:
       verify:
         type: object
         additionalProperties: false
-        required: [installerImage]
         properties:
           installerImage:
             type: string

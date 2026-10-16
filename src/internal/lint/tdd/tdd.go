@@ -81,6 +81,8 @@ type Report struct {
 	Failures  []Finding `json:"failures"`
 	Warnings  []Finding `json:"warnings"`
 	Red       Red       `json:"red"`
+	// Superseded lists the RED test ids accepted as superseded by a valid TDD-Superseded line (CD-57).
+	Superseded []string `json:"superseded"`
 }
 
 // Result values of Report.Result.
@@ -107,6 +109,7 @@ const (
 	CodeRedTestModified     = "TDD_RED_TEST_MODIFIED"
 	CodeStubInvalid         = "TDD_STUB_INVALID"
 	CodeStubNotReplaced     = "TDD_STUB_NOT_REPLACED"
+	CodeSupersededInvalid   = "TDD_SUPERSEDED_INVALID"
 )
 
 var (
@@ -138,6 +141,7 @@ type checker struct {
 	// baselines caches the baseline result by run key.
 	baselines map[string]runResult
 	pending   []headCheck
+	commits   []commitInfo
 }
 
 // headCheck is a RED commit whose failed tests T7 verifies at HEAD.
@@ -192,10 +196,11 @@ func Check(opts Options) (Report, error) {
 	}
 	c := &checker{opts: opts, root: root, pol: pol, baselines: map[string]runResult{}}
 	c.rep = &Report{
-		Branch:   opts.Branch,
-		Failures: []Finding{},
-		Warnings: []Finding{},
-		Red:      Red{Commits: []RedRun{}, Failed: []string{}, BuildOK: true},
+		Branch:     opts.Branch,
+		Superseded: []string{},
+		Failures:   []Finding{},
+		Warnings:   []Finding{},
+		Red:        Red{Commits: []RedRun{}, Failed: []string{}, BuildOK: true},
 	}
 	if c.behav, err = compileGlobs(pol.BehaviorPaths, false); err != nil {
 		return Report{}, err
@@ -425,6 +430,7 @@ func (c *checker) isRed(ci commitInfo) bool {
 
 // redGreen runs T3 to T8.
 func (c *checker) redGreen(commits []commitInfo, all []change) error {
+	c.commits = commits
 	first := -1
 	for i, ci := range commits {
 		if c.isRed(ci) {

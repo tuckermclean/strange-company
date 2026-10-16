@@ -1,8 +1,7 @@
 # CI policy (plan 20 section 9.2, kind CIPolicy; contract contracts/ci-policy.schema.yaml).
 # spec.tddDiscipline is plan 52 section 8.3 verbatim and is read by `make tdd-discipline-check`.
-# The other spec fields are plan 20 section 9.2. cloneImage and verify.installerImage are digest-pinned by the
-# contract, but no image has been built or pinned yet (versions/platform.lock.yaml, plan 23), so they carry
-# the contract's all-5 and all-6 PLACEHOLDER digests until plan 20 deploys Woodpecker.
+# The other spec fields are plan 20 section 9.2. cloneImage and verify.installerImage are optional in the contract
+# (CD-57) and omitted until the nodes that publish those images pin them.
 apiVersion: strange.company/v1alpha1
 kind: CIPolicy
 metadata: {name: platform}
@@ -12,7 +11,6 @@ spec:
   releaseTagPattern: '^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$'
   releaseBranches: []
   imageRegistries: ["git.${BASE_DOMAIN}/strange-company/", "ghcr.io/<owner>/", "docker.io/woodpeckerci/"]
-  cloneImage: "docker.io/woodpeckerci/plugin-git:2.10.1@sha256:5555555555555555555555555555555555555555555555555555555555555555"
   stepSecurityContext:
     runAsNonRoot: true
     runAsUser: 65532
@@ -38,7 +36,6 @@ spec:
   crons:
     - {repo: strange-company/strange-company, name: nightly, branch: main, schedule: "0 0 2 * * *"}
   verify:
-    installerImage: "git.${BASE_DOMAIN}/strange-company/sc-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
     defaultWorkflow: {stepImageFrom: validation.yaml}
   retention: {logDays: 30}
   offclusterLane: {provider: github-actions, workflow: e2e, maxWaitMinutes: 90}
