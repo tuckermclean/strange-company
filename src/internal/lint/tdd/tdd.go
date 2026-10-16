@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -443,34 +444,61 @@ func (c *checker) redGreen(commits []commitInfo, all []change) error {
 			}
 		}
 	}
-	for i, ci := range commits {
+	for _, ci := range commits {
 		if !c.isRed(ci) {
 			continue
 		}
 		if err := c.evaluateRed(ci); err != nil {
 			return err
 		}
-		c.testModified(commits, i)
 	}
+	c.testModified(commits)
 	if err := c.checkHead(); err != nil {
 		return err
 	}
 	return c.markersAtHead(all)
 }
 
-// testModified implements T8 for RED commit commits[i].
-func (c *checker) testModified(commits []commitInfo, i int) {
-	red := commits[i]
-	for _, f := range red.files {
-		if f.status == 'D' || !matchAny(c.tests, f.path) {
+// testModified implements T8: a test file changed in a RED commit that is modified again by a later commit
+// is a warning, once per (later commit, file), naming every RED commit that changed the file earlier.
+func (c *checker) testModified(commits []commitInfo) {
+	redsOf := map[string][]string{} // later commit + "\x00" + path -> RED commits
+	var order []string
+	for i, red := range commits {
+		if !c.isRed(red) {
 			continue
 		}
-		for _, later := range commits[i+1:] {
-			for _, lf := range later.files {
-				if lf.path == f.path {
-					c.warn(CodeRedTestModified, later.sha, "%s, changed in RED commit %s, is modified again in %s", f.path, short(red.sha), short(later.sha))
+		for _, f := range red.files {
+			if f.status == 'D' || !matchAny(c.tests, f.path) {
+				continue
+			}
+			for _, later := range commits[i+1:] {
+				for _, lf := range later.files {
+					if lf.path != f.path {
+						continue
+					}
+					k := later.sha + "\x00" + f.path
+					if _, seen := redsOf[k]; !seen {
+						order = append(order, k)
+					}
+					redsOf[k] = append(redsOf[k], short(red.sha))
 				}
 			}
 		}
 	}
+	sort.SliceStable(order, func(a, b int) bool { return commitIndex(commits, order[a]) < commitIndex(commits, order[b]) })
+	for _, k := range order {
+		sha, path, _ := strings.Cut(k, "\x00")
+		c.warn(CodeRedTestModified, sha, "%s, changed in RED commit(s) %s, is modified again in %s", path, strings.Join(redsOf[k], " "), short(sha))
+	}
+}
+
+func commitIndex(commits []commitInfo, key string) int {
+	sha, _, _ := strings.Cut(key, "\x00")
+	for i, ci := range commits {
+		if ci.sha == sha {
+			return i
+		}
+	}
+	return len(commits)
 }

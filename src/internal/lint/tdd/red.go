@@ -243,7 +243,7 @@ func (c *checker) checkHead() error {
 			c.fail(CodeRedNotGreen, p.commit, "RED commit %s: the red target %s does not exist at HEAD", short(p.commit), p.spec.target)
 			continue
 		case hr.exit != 0:
-			c.fail(CodeRedNotGreen, p.commit, "RED commit %s: the red target %s exits %d at HEAD: %s", short(p.commit), p.spec.target, hr.exit, tail(hr.output))
+			c.fail(CodeRedNotGreen, p.commit, "RED commit %s: the red target %s exits %d at HEAD; failing: %s; output: %s", short(p.commit), p.spec.target, hr.exit, firstIDs(hr.failed, 8), tail(hr.output))
 			continue
 		}
 		var notGreen []string
@@ -257,6 +257,19 @@ func (c *checker) checkHead() error {
 		}
 	}
 	return nil
+}
+
+// firstIDs lists up to n ids.
+func firstIDs(ids []string, n int) string {
+	if len(ids) == 0 {
+		return "(no failed testcase)"
+	}
+	more := ""
+	if len(ids) > n {
+		more = fmt.Sprintf(" and %d more", len(ids)-n)
+		ids = ids[:n]
+	}
+	return strings.Join(ids, ", ") + more
 }
 
 func tail(s string) string {
@@ -342,7 +355,10 @@ func (c *checker) execute(sha string, spec runSpec, baseline bool) (runResult, e
 		cmd = exec.Command("sh", "-c", fb)
 	} else {
 		junit = filepath.Join(c.tmp, fmt.Sprintf("junit%d.xml", c.nwt))
-		args := []string{spec.target, "JUNIT=" + junit}
+		// JUNIT travels in the environment, not as a command-line override: overrides reach every nested make
+		// through MAKEFLAGS and would change what the tests of a target observe (a ?= assignment honors both).
+		env = append(env, "JUNIT="+junit)
+		args := []string{spec.target}
 		if len(spec.pkgs) > 0 {
 			args = append(args, "GO_TEST_PKGS="+strings.Join(spec.pkgs, " "))
 		}
