@@ -60,7 +60,8 @@ RUN set -eu; \
 
 ENV SC_IN_CONTAINER=1 TZ=UTC LC_ALL=C.UTF-8 \
     PATH=/opt/sc/bin:/go/bin:/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin \
-    GOTOOLCHAIN=local GOFLAGS=-buildvcs=false
+    GOTOOLCHAIN=local GOFLAGS=-mod=readonly \
+    SC_FORBID_PAID=1 SC_TEST_SEED=20261013
 USER 10001:10001
 ENTRYPOINT ["/usr/bin/tini", "--", "/opt/sc/bin/sc-entrypoint"]
 CMD ["bash"]

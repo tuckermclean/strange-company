@@ -10,8 +10,12 @@ ifneq ($(SC_IN_CONTAINER),1)
 # `make`, not $(MAKE), so `make -n` prints it instead of recursing.
 GOALS := $(if $(MAKECMDGOALS),$(MAKECMDGOALS),$(.DEFAULT_GOAL))
 .PHONY: $(GOALS)
+# Command-line overrides travel as one single-quoted argv element each, with the user's literal value
+# (MAKEOVERRIDES holds `$` doubled and splits on spaces, so it is not used).
+sq = '$(subst ','\'',$(1))'
+OVERRIDE_ARGS := $(foreach v,$(.VARIABLES),$(if $(filter command line,$(origin $(v))),$(call sq,$(v)=$(value $(v)))))
 $(firstword $(GOALS)):
-	@./bootstrap exec --image ci -- make $(GOALS) $(MAKEOVERRIDES)
+	@./bootstrap exec --image ci -- make $(GOALS) $(OVERRIDE_ARGS)
 $(wordlist 2,$(words $(GOALS)),$(GOALS)):
 	@:
 else

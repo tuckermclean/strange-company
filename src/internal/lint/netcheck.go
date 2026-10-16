@@ -61,10 +61,23 @@ func netcheckFile(res *Result, path, rel string) error {
 	if err != nil {
 		return nil // unparsable files are the compiler's business
 	}
+	// Local names of the net/http import (aliases included); a dot or blank import has none.
+	httpNames := map[string]bool{}
+	for _, imp := range f.Imports {
+		p, err := strconv.Unquote(imp.Path.Value)
+		if err != nil || p != "net/http" {
+			continue
+		}
+		name := "http"
+		if imp.Name != nil {
+			name = imp.Name.Name
+		}
+		httpNames[name] = true
+	}
 	ast.Inspect(f, func(n ast.Node) bool {
 		switch x := n.(type) {
 		case *ast.SelectorExpr:
-			if id, ok := x.X.(*ast.Ident); ok && id.Name == "http" && httpDefaultUsers[x.Sel.Name] {
+			if id, ok := x.X.(*ast.Ident); ok && httpNames[id.Name] && httpDefaultUsers[x.Sel.Name] {
 				res.add(ruleNetcheck, rel, "line %d: http.%s uses http.DefaultClient; use an in-process httptest server and its Client", fset.Position(x.Pos()).Line, x.Sel.Name)
 			}
 		case *ast.CallExpr:
@@ -99,6 +112,9 @@ func loopbackAddr(addr string) bool {
 		host = h
 	}
 	host = strings.Trim(host, "[]")
+	if host == "" { // ":port" listens or dials on the local host
+		return true
+	}
 	if strings.EqualFold(host, "localhost") {
 		return true
 	}

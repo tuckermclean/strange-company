@@ -3,7 +3,7 @@
 .PHONY: build
 
 GOARCH_BUILD := $(shell go env GOARCH)
-BUILD_VERSION := $(shell git describe --tags --always 2>/dev/null || echo unknown)
+BUILD_VERSION := $(shell git describe --tags --always --abbrev=12 2>/dev/null || echo unknown)
 BUILD_COMMIT := $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
 VERSION_PKG := strange.company/sc/internal/version
 

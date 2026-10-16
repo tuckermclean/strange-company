@@ -17,11 +17,15 @@ linters:
   exclusions:
     generated: lax
     rules:
+      # cmd/ and internal/clock are exempt from D8 only; internal/testutil is exempt from D7 only.
       - linters: [forbidigo]
         path: '^internal/clock/'
-      - linters: [forbidigo]
-        path: '^internal/testutil/'
+        text: '^use of `time\.[^`]*` forbidden'
       - linters: [forbidigo]
         path: '^cmd/'
+        text: '^use of `time\.[^`]*` forbidden'
+      - linters: [forbidigo]
+        path: '^internal/testutil/'
+        text: '^use of `[^`]*rand[^`]*` forbidden'
 run:
   tests: true

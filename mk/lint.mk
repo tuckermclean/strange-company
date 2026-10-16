@@ -6,7 +6,7 @@ SH_FILES := bootstrap toolbox/bin/sc-entrypoint
 
 # fmt-check fails on any gofmt or shfmt diff and names the files.
 fmt-check:
-	@bad=$$(find src -name '*.go' -not -path '*/testdata/*' -print0 | xargs -0 gofmt -l); \
+	@bad=$$(find src -name '*.go' -not -path '*/testdata/*' -print0 | xargs -r0 gofmt -l); \
 	if [ -n "$$bad" ]; then echo "fmt-check: gofmt differences in:" >&2; echo "$$bad" >&2; exit 1; fi
 	@shfmt -d $(SH_FILES)
 
