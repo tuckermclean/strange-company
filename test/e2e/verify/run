@@ -66,6 +66,12 @@ sys.exit(rc)
 '
 pycheck() { ./bootstrap exec --image ci --network none -- python3 -I -c "$PY" "$@"; }
 
+# (0) clean-checkout property (01-AC-6, 52-AC-5): no cache or output survives from earlier runs, so steps (a)-(b)
+# prove that warming happens through ./bootstrap exec containers and persists in the checkout's .cache.
+[ ! -d .cache/go ] || chmod -R u+w .cache/go
+rm -rf .cache/go out
+mkdir -p "$snap"
+
 # (a) warm with network
 if ./bootstrap exec --image ci -- make gitops-cache && ./bootstrap exec --image ci -- sh -c 'cd src && go mod download'; then
 	pass "(a) caches warmed with network"

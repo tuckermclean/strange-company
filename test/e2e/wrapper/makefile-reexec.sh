@@ -11,6 +11,17 @@ n=$(printf '%s\n' "$OUT" | grep -c . || true)
 expect_eq "01-AC-5 prints exactly one command" 1 "$n"
 expect_match "01-AC-5 the command starts with ./bootstrap exec --image ci -- make verify" '^\./bootstrap exec --image ci -- make verify' "$OUT"
 
+# 01-AC-5 (review): the re-exec line is exactly the command, with no trailing whitespace, and a command-line
+# SC_IN_CONTAINER is not forwarded to the container.
+RC=0
+OUT=$(env -u SC_IN_CONTAINER make -n verify 2>"$TMP/err") || RC=$?
+expect_eq "01-AC-5 re-exec line is exactly ./bootstrap exec --image ci -- make verify" "./bootstrap exec --image ci -- make verify" "$OUT"
+RC=0
+OUT=$(env -u SC_IN_CONTAINER -u MAKEFLAGS -u MAKELEVEL -u MAKEOVERRIDES make -n verify SC_IN_CONTAINER=0 2>"$TMP/err") || RC=$?
+expect_eq "01-AC-5 make -n verify SC_IN_CONTAINER=0 exits 0" 0 "$RC"
+expect_nomatch "01-AC-5 SC_IN_CONTAINER=0 on the command line is not forwarded" 'SC_IN_CONTAINER=' "$OUT"
+expect_eq "01-AC-5 re-exec line with SC_IN_CONTAINER=0 is exactly the plain command" "./bootstrap exec --image ci -- make verify" "$OUT"
+
 RC=0
 OUT=$(SC_IN_CONTAINER=1 make -n verify 2>"$TMP/err") || RC=$?
 expect_eq "01-AC-5 make -n verify (SC_IN_CONTAINER=1) exits 0" 0 "$RC"

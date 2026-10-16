@@ -66,6 +66,15 @@ RC=0
 $B exec --image ci --network none -- curl -sS -m 5 https://proxy.golang.org >/dev/null 2>&1 || RC=$?
 [ "$RC" -ne 0 ] && [ "$RC" -ne 127 ] && [ "$RC" -ne 2 ] && [ "$RC" -ne 3 ] && ok "02-AC-16 --network none: curl fails (exit $RC)" || bad "02-AC-16 --network none: curl fails with a curl error" "exit $RC"
 
+# --- 01-AC-6 / 52-AC-5 go caches default to the repo-local .cache in every ci container (plan 01 8.1)
+RC=0
+OUT=$($B exec --image ci -- go env GOMODCACHE GOCACHE 2>/dev/null) || RC=$?
+expect_eq "01-AC-6 go env GOMODCACHE GOCACHE print the repo-local .cache paths" "$SC_ROOT/.cache/go/mod
+$SC_ROOT/.cache/go/build" "$OUT"
+OUT=$($B exec --image ci -- env GOMODCACHE=/tmp/m GOCACHE=/tmp/b go env GOMODCACHE GOCACHE 2>/dev/null) || true
+expect_eq "01-AC-6 a caller override of the go caches wins" "/tmp/m
+/tmp/b" "$OUT"
+
 # --- 02-AC-15 checksum enforcement (build side)
 fx=$TMP/bad-lock
 mkdir -p "$fx"
