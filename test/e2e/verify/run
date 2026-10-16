@@ -1,14 +1,37 @@
 #!/bin/sh
 # F01 end-to-end evidence for 01-AC-3, 01-AC-6, 52-AC-5, 52-AC-8 (plan 01 section 7.1, plan 52 section 9.4).
-# Run from a clean checkout on a host with a container engine (CI does this; it is not a Go unit test because
-# a nested `make verify` would run every RED test again).
+# Run from any checkout on a host with a container engine (CI does this; it is not a Go unit test because
+# a nested `make verify` would run every RED test again). The script never changes the checkout it is started
+# from: it makes a fresh `git clone --no-local` under a mktemp -d directory, overlays the checkout's uncommitted
+# changes (modified and untracked-not-ignored files; deletions too) so the run judges the working tree, runs
+# everything there, copies the two summaries back to out/verify-e2e/ of the original checkout and removes the
+# temp directory (chmod -R u+w first: the Go module cache is read-only).
 #   (a) with network: warm the caches (`make gitops-cache`, `go mod download`);
 #   (b) with --network none and SC_FORBID_PAID=1: `make verify` twice on the same checkout;
 #   (c) both exit 0, both summaries list every tier-V target with result pass, and the two summaries are
 #       identical once duration_ms and started_at are deleted at every depth.
 set -u
 
-root=$(cd "$(dirname "$0")/../../.." && pwd -P)
+orig=$(cd "$(dirname "$0")/../../.." && pwd -P)
+work=$(mktemp -d) || exit 2
+# shellcheck disable=SC2317 # run by the EXIT trap
+cleanup() {
+	chmod -R u+w "$work" 2>/dev/null || true
+	rm -rf "$work"
+}
+trap cleanup EXIT
+trap 'exit 2' INT TERM
+root=$work/repo
+git clone -q --no-local "$orig" "$root" || exit 2
+# Overlay uncommitted work: modified and untracked-not-ignored files are copied in, deleted ones removed.
+git -C "$orig" ls-files -m -o --exclude-standard | while IFS= read -r f; do
+	if [ -f "$orig/$f" ]; then
+		mkdir -p "$root/$(dirname "$f")"
+		cp -p "$orig/$f" "$root/$f"
+	else
+		rm -f "$root/$f"
+	fi
+done
 cd "$root" || exit 2
 fail=0
 pass() { printf 'PASS: %s\n' "$1"; }
@@ -66,10 +89,8 @@ sys.exit(rc)
 '
 pycheck() { ./bootstrap exec --image ci --network none -- python3 -I -c "$PY" "$@"; }
 
-# (0) clean-checkout property (01-AC-6, 52-AC-5): no cache or output survives from earlier runs, so steps (a)-(b)
+# (0) clean-checkout property (01-AC-6, 52-AC-5): the clone has no cache or output, so steps (a)-(b)
 # prove that warming happens through ./bootstrap exec containers and persists in the checkout's .cache.
-[ ! -d .cache/go ] || chmod -R u+w .cache/go
-rm -rf .cache/go out
 mkdir -p "$snap"
 
 # (a) warm with network
@@ -107,6 +128,12 @@ if [ -f "$snap/summary1.json" ] && [ -f "$snap/summary2.json" ] && pycheck same 
 else
 	bad "(c) summaries differ or are missing"
 fi
+
+# Evidence goes back to the original checkout; nothing there is deleted.
+mkdir -p "$orig/$snap"
+for i in 1 2; do
+	[ ! -f "$snap/summary$i.json" ] || cp "$snap/summary$i.json" "$orig/$snap/summary$i.json"
+done
 
 if [ "$fail" -eq 0 ]; then
 	echo "verify e2e: PASS"

@@ -61,8 +61,20 @@ check_override() { # name value
 		expect_eq "01-AC-5 $_mode: $1 reaches ./bootstrap as one argv element" "$_want" "$_got"
 	done
 }
+check_override "whitespace run and tab" 'a  b	c'
 check_override "alternation" 'TestA|TestB'
 check_override "trailing dollar" 'TestA$'
 check_override "anchored group" '^(A|B)$'
+
+# 01-AC-5 (S4 review): the printed re-exec line keeps whitespace inside a quoted override value exactly
+# (a double space and a tab), and without overrides the line has no trailing whitespace.
+WS=$(printf 'a  b\tc')
+RC=0
+OUT=$(env -u SC_IN_CONTAINER -u MAKEFLAGS -u MAKELEVEL -u MAKEOVERRIDES make -n verify "GO_TEST_RUN=$WS" 2>"$TMP/err") || RC=$?
+expect_eq "01-AC-5 make -n verify with a whitespace override exits 0" 0 "$RC"
+expect_eq "01-AC-5 re-exec line keeps the override's double space and tab inside its quotes" \
+	"./bootstrap exec --image ci -- make verify 'GO_TEST_RUN=$WS'" "$OUT"
+OUT=$(env -u SC_IN_CONTAINER -u MAKEFLAGS -u MAKELEVEL -u MAKEOVERRIDES make -n verify 2>"$TMP/err") || RC=$?
+expect_eq "01-AC-5 no-override line is exactly the command, no trailing whitespace" "./bootstrap exec --image ci -- make verify" "$OUT"
 
 finish

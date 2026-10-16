@@ -85,4 +85,40 @@ reset_log
 wrap "$TMP/ud" exec --image ci -- true
 expect_match "plan 02 s21 build message is 'bootstrap: toolbox: building ...'" "^bootstrap: toolbox: building " "$ERR"
 
+# 02-R-1 / plan 02 section 21 (S1 review L1): a missing or unreadable toolbox/Containerfile, with a build needed,
+# is WRAPPER_TOOLBOX_BUILD_FAILED (exit 3) naming the file, never a silent exit 2.
+fixture um "FROM scratch AS ci"
+rm -f "$TMP/um/toolbox/Containerfile"
+: >"$STUB_STATE"
+reset_log
+wrap "$TMP/um" exec --image ci -- true
+expect_eq "02-R-1 missing Containerfile exits 3" 3 "$RC"
+expect_match "02-R-1 missing Containerfile reports 'bootstrap: WRAPPER_TOOLBOX_BUILD_FAILED:'" "^bootstrap: WRAPPER_TOOLBOX_BUILD_FAILED: " "$ERR"
+expect_match "02-R-1 missing Containerfile message names toolbox/Containerfile" "toolbox/Containerfile" "$ERR"
+expect_eq "02-R-1 missing Containerfile records no build call" 0 "$(build_calls)"
+
+if [ "$(id -u)" -ne 0 ]; then
+	fixture uu "FROM scratch AS ci"
+	chmod 000 "$TMP/uu/toolbox/Containerfile"
+	: >"$STUB_STATE"
+	reset_log
+	wrap "$TMP/uu" exec --image ci -- true
+	chmod 644 "$TMP/uu/toolbox/Containerfile"
+	expect_eq "02-R-1 unreadable Containerfile exits 3" 3 "$RC"
+	expect_match "02-R-1 unreadable Containerfile reports 'bootstrap: WRAPPER_TOOLBOX_BUILD_FAILED:'" "^bootstrap: WRAPPER_TOOLBOX_BUILD_FAILED: " "$ERR"
+	expect_match "02-R-1 unreadable Containerfile message names toolbox/Containerfile" "toolbox/Containerfile" "$ERR"
+	expect_eq "02-R-1 unreadable Containerfile records no build call" 0 "$(build_calls)"
+fi
+
+# 02-R-1 (S1 review L2): stage names are case-insensitive (Dockerfile stage names are lowercased), so
+# FROM base after AS Base is a stage reference, not an unpinned image.
+fixture uc "FROM docker.io/library/golang@sha256:$DIG AS Base
+FROM base AS ci"
+: >"$STUB_STATE"
+reset_log
+wrap "$TMP/uc" exec --image ci -- true
+expect_eq "02-R-1 'AS Base' then 'FROM base' exits 0" 0 "$RC"
+expect_nomatch "02-R-1 case-insensitive stage name: no refusal" "WRAPPER_TOOLBOX_(BUILD_FAILED|UNPINNED)" "$ERR$OUT x"
+expect_eq "02-R-1 case-insensitive stage name builds exactly once" 1 "$(build_calls)"
+
 finish
