@@ -1,0 +1,166 @@
+# Tier-E jobs (plan 52 section 8.4). On pull requests a path filter selects the jobs whose inputs changed;
+# `e2e-gate` always runs and succeeds iff every selected job succeeded (no required check stuck in "expected").
+# At F01 the only tier-E job is `toolbox`: the real-engine checks of the seed ci image on Docker rootful.
+# Scheduled runs skip a commit that already passed a scheduled run, using a cache marker keyed by the
+# commit SHA rather than a query of earlier runs, so no permission beyond `contents: read` is needed (CD-52).
+name: e2e
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ['v*']
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    outputs:
+      toolbox: ${{ steps.select.outputs.toolbox }}
+      verify-e2e: ${{ steps.select.outputs.verify_e2e }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # A hit means this commit already passed a scheduled run (`skipped: unchanged`). Restore-only: this job
+      # never saves the marker.
+      - name: Look up the scheduled-run marker
+        id: marker
+        if: github.event_name == 'schedule'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cache/e2e-scheduled
+          key: e2e-scheduled-ok-${{ github.sha }}
+          lookup-only: true
+
+      # Fails closed: if `git diff` fails, the step (and so e2e-gate) fails instead of selecting nothing.
+      - name: Select the tier-E jobs
+        id: select
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          UNCHANGED: ${{ steps.marker.outputs.cache-hit }}
+        run: |
+          toolbox=true
+          verify_e2e=true
+          if [ "$EVENT" = pull_request ]; then
+            changed=$(git diff --name-only "$BASE_SHA" HEAD)
+            toolbox=false
+            verify_e2e=false
+            if grep -q -e '^toolbox/' -e '^bootstrap$' -e '^test/e2e/wrapper/' -e '^\.github/workflows/e2e\.yaml$' \
+              <<<"$changed"; then
+              toolbox=true
+            fi
+            if grep -q -e '^Makefile$' -e '^mk/' -e '^src/' -e '^toolbox/' -e '^bootstrap$' -e '^policy/' \
+              -e '^test/e2e/verify/' -e '^versions/' -e '^gitops/' -e '^\.github/workflows/e2e\.yaml$' <<<"$changed"; then
+              verify_e2e=true
+            fi
+          elif [ "$EVENT" = schedule ] && [ "$UNCHANGED" = true ]; then
+            toolbox=false
+            verify_e2e=false
+            echo "skipped: unchanged" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "toolbox=$toolbox" >> "$GITHUB_OUTPUT"
+          echo "verify_e2e=$verify_e2e" >> "$GITHUB_OUTPUT"
+
+  toolbox:
+    needs: changes
+    if: needs.changes.outputs.toolbox == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 60
+    env:
+      SC_CONTAINER_ENGINE: docker
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # 02-AC-14, 02-AC-15 (build side), 02-AC-16 on Docker rootful.
+      - name: Real-engine checks of the ci image and ./bootstrap exec
+        run: sh test/e2e/wrapper/real-engine.sh
+
+      # 02-AC-15 (static side): toolbox-check rejects a FROM without a digest.
+      - name: Containerfile pin checks
+        run: sh test/e2e/wrapper/check-pins.sh
+
+  # 52-AC-5, 01-AC-6, 52-AC-8: two offline `make verify` runs with SC_FORBID_PAID=1, identical summaries.
+  verify-e2e:
+    needs: changes
+    if: needs.changes.outputs.verify-e2e == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 60
+    env:
+      SC_CONTAINER_ENGINE: docker
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Offline, repeatable, no-paid make verify
+        run: sh test/e2e/verify/run
+
+      - name: Upload the two verify summaries
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: verify-e2e
+          path: out/verify-e2e/
+          if-no-files-found: ignore
+
+  e2e-gate:
+    needs: [changes, toolbox, verify-e2e]
+    if: always()
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - name: Every selected job succeeded
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          TOOLBOX: ${{ needs.toolbox.result }}
+          VERIFY_E2E: ${{ needs.verify-e2e.result }}
+        run: |
+          echo "changes=$CHANGES toolbox=$TOOLBOX verify-e2e=$VERIFY_E2E"
+          [ "$CHANGES" = success ] || exit 1
+          for r in "$TOOLBOX" "$VERIFY_E2E"; do
+            case $r in
+              success | skipped) ;;
+              *) exit 1 ;;
+            esac
+          done
+
+      - name: Write the scheduled-run marker
+        if: github.event_name == 'schedule'
+        run: mkdir -p .cache/e2e-scheduled && echo "${GITHUB_SHA}" > .cache/e2e-scheduled/ok
+
+      # Saved by the post step only when this job succeeds, so only a passing scheduled run marks the commit.
+      - name: Record that this commit passed a scheduled run
+        if: github.event_name == 'schedule'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cache/e2e-scheduled
+          key: e2e-scheduled-ok-${{ github.sha }}

@@ -1,0 +1,4 @@
+* text=auto eol=lf
+*.sops.yaml -diff linguist-generated
+gitops/clusters/*/flux-system/gotk-components.yaml linguist-generated -diff
+*.png binary

@@ -1,0 +1,234 @@
+#!/bin/sh
+# Strange Company wrapper, F01 subset (plan 02 sections 7.1, 14.2, 14.9).
+#   ./bootstrap [--engine docker|podman] [--toolbox-build] exec --image ci [--network bridge|host|none] -- <cmd> [args...]
+# Runs <cmd> in the seed `ci` image. No env file, SSH, black-start directory, scopes or `shell` yet (F03).
+set -eu
+
+die() { # code message exit-code
+	printf 'bootstrap: %s: %s\n' "$1" "$2" >&2
+	exit "$3"
+}
+
+usage() {
+	die WRAPPER_USAGE "$1 (usage: ./bootstrap [--engine docker|podman] [--toolbox-build] exec --image ci [--network bridge|host|none] -- <cmd> [args...])" 2
+}
+
+# --- step 1: repository
+self_dir=$(cd "$(dirname "$0")" && pwd -P)
+REPO=$(git -C "$self_dir" rev-parse --show-toplevel 2>/dev/null) || die WRAPPER_NOT_A_REPO "$self_dir is not inside a Git work tree" 2
+REPO=$(cd "$REPO" && pwd -P)
+if [ "$(id -u)" = 0 ] && [ "${SC_ALLOW_ROOT:-}" != 1 ]; then
+	die WRAPPER_RUNNING_AS_ROOT "refusing to run as root (files would become root-owned); set SC_ALLOW_ROOT=1 to override" 2
+fi
+
+# --- step 2: flags
+engine=${SC_CONTAINER_ENGINE:-}
+build=${SC_TOOLBOX_BUILD:-0}
+while [ $# -gt 0 ]; do
+	case $1 in
+	--engine)
+		[ $# -ge 2 ] || usage "--engine needs a value"
+		engine=$2
+		shift 2
+		;;
+	--engine=*)
+		engine=${1#--engine=}
+		shift
+		;;
+	--toolbox-build)
+		build=1
+		shift
+		;;
+	*) break ;;
+	esac
+done
+[ $# -gt 0 ] || usage "missing command"
+command=$1
+shift
+[ "$command" = exec ] || usage "command '$command' is not available until F03 (only 'exec' is implemented)"
+
+image=
+network=${SC_TOOLBOX_NETWORK:-bridge}
+while [ $# -gt 0 ]; do
+	case $1 in
+	--image)
+		[ $# -ge 2 ] || usage "--image needs a value"
+		image=$2
+		shift 2
+		;;
+	--image=*)
+		image=${1#--image=}
+		shift
+		;;
+	--network)
+		[ $# -ge 2 ] || usage "--network needs a value"
+		network=$2
+		shift 2
+		;;
+	--network=*)
+		network=${1#--network=}
+		shift
+		;;
+	--)
+		shift
+		break
+		;;
+	*) usage "unknown exec option '$1'" ;;
+	esac
+done
+[ "$image" = ci ] || usage "exec requires --image ci (the toolbox image arrives with F03)"
+case $network in bridge | host | none) ;; *) usage "--network must be bridge, host or none" ;; esac
+[ $# -gt 0 ] || usage "exec needs a command after --"
+
+# --- step 4: engine and mode
+works() { # engine; true if "<engine> info" succeeds (docker: within 10 s when timeout exists)
+	if [ "$1" = docker ] && command -v timeout >/dev/null 2>&1; then
+		timeout 10 "$1" info >/dev/null 2>&1
+	else
+		"$1" info >/dev/null 2>&1
+	fi
+}
+if [ -z "$engine" ]; then
+	if command -v docker >/dev/null 2>&1 && works docker; then
+		engine=docker
+	elif command -v podman >/dev/null 2>&1 && works podman; then
+		engine=podman
+	else
+		die WRAPPER_ENGINE_MISSING "neither docker nor podman is usable" 3
+	fi
+fi
+case $engine in docker | podman) ;; *) usage "engine must be docker or podman" ;; esac
+if ! { command -v "$engine" >/dev/null 2>&1 && works "$engine"; }; then
+	die WRAPPER_ENGINE_MISSING "$engine is not usable" 3
+fi
+if [ "$engine" = docker ]; then
+	case $(docker info --format '{{.SecurityOptions}}' 2>/dev/null) in
+	*rootless*) mode=docker-rootless ;;
+	*) mode=docker ;;
+	esac
+else
+	if [ "$(podman info --format '{{.Host.Security.Rootless}}' 2>/dev/null)" = true ]; then
+		mode=podman-rootless
+	else
+		mode=podman-rootful
+	fi
+fi
+
+# --- step 5: inputs id
+start_dir=$(pwd -P)
+cd "$REPO"
+listing=$(git ls-files -co --exclude-standard -- toolbox src .dockerignore tools/stage0/requirements.txt |
+	grep -v -e '^toolbox/image\.lock$' -e '/testdata/' -e '_test\.go$' |
+	LC_ALL=C sort |
+	while IFS= read -r f; do
+		[ -f "$f" ] || continue
+		printf '%s %s\n' "$(git hash-object "$f" 2>/dev/null || echo unreadable)" "$f"
+	done)
+inputs_id=$(printf '%s\n' "$listing" | git hash-object --stdin)
+inputs12=$(printf '%s' "$inputs_id" | cut -c1-12)
+tag=localhost/strange-company-ci:in-$inputs12
+label_key=strange.company/toolbox-inputs-id
+
+# --- step 6 (a), (c): resolve the image
+have_image() {
+	[ "$("$engine" image inspect --format "{{index .Config.Labels \"$label_key\"}}" "$tag" 2>/dev/null)" = "$inputs_id" ]
+}
+build_image() {
+	# Every FROM in the Containerfile must be pinned by digest (plan 02 section 14.9); refuse before building from one that is not.
+	if [ ! -f "$REPO/toolbox/Containerfile" ] || [ ! -r "$REPO/toolbox/Containerfile" ]; then
+		die WRAPPER_TOOLBOX_BUILD_FAILED "toolbox/Containerfile is missing or unreadable" 3
+	fi
+	unpinned=$(awk 'function pinned(r, p) {
+		p = index(r, "@sha256:")
+		if (p == 0) return 0
+		r = substr(r, p + 8)
+		return length(r) == 64 && r ~ /^[0-9a-f]+$/
+	}
+	toupper($1) == "FROM" {
+		i = 2
+		while ($i ~ /^--/) i++
+		ref = $i
+		if (!(tolower(ref) in stage) && ref != "scratch" && !pinned(ref)) {
+			print FNR ": FROM " ref " has no valid @sha256 digest (64 hex characters)"
+			exit
+		}
+		if (toupper($(i + 1)) == "AS") stage[tolower($(i + 2))] = 1
+	}' "$REPO/toolbox/Containerfile" 2>/dev/null)
+	[ -z "$unpinned" ] || die WRAPPER_TOOLBOX_BUILD_FAILED "toolbox/Containerfile:$unpinned" 3
+	logdir=$REPO/.bootstrap/toolbox
+	log=$logdir/build-$inputs12.log
+	mkdir -p "$logdir"
+	echo "bootstrap: toolbox: building $tag (log: $log)" >&2
+	# Rootless Podman without a systemd user session cannot reach the session bus from buildah's runtime.
+	cg=
+	if [ "$mode" = podman-rootless ] && [ ! -S "${XDG_RUNTIME_DIR:-/nonexistent}/bus" ]; then cg=--cgroup-manager=cgroupfs; fi
+	# shellcheck disable=SC2086 # cg is empty or one flag
+	if "$engine" build $cg --target ci -f "$REPO/toolbox/Containerfile" -t "$tag" \
+		--label "$label_key=$inputs_id" --build-arg "SC_INPUTS_ID=$inputs_id" "$REPO" >"$log" 2>&1; then
+		return 0
+	fi
+	tail -n 40 "$log" >&2
+	die WRAPPER_TOOLBOX_BUILD_FAILED "image build failed; full log: $log" 3
+}
+if [ "$build" = 1 ] || ! have_image; then
+	build_image
+fi
+image_id=$("$engine" image inspect --format '{{.Id}}' "$tag" 2>/dev/null || true)
+image_ref=$tag${image_id:+@$image_id}
+
+# --- step 8: mounts (14.3), user mapping (14.4), flags (14.5)
+tmpfs_run='/run/sc:rw,nosuid,nodev,size=64m,mode=0700'
+case $mode in
+docker-rootless)
+	user_flags='--user 0:0'
+	tmpfs_run="$tmpfs_run,uid=0,gid=0"
+	;;
+podman-rootless)
+	user_flags="--userns=keep-id --user $(id -u):$(id -g)"
+	tmpfs_run="$tmpfs_run,U"
+	;;
+*)
+	user_flags="--user $(id -u):$(id -g)"
+	tmpfs_run="$tmpfs_run,uid=$(id -u),gid=$(id -g)"
+	;;
+esac
+
+workdir=$start_dir
+case $workdir in
+"$REPO" | "$REPO"/*) ;;
+*) workdir=$REPO ;;
+esac
+common=$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+
+tty=
+if [ -t 0 ] && [ -t 1 ]; then tty=-t; fi
+
+# Build the engine arguments after the command words in "$@", then rotate the command words to the end.
+n=$#
+set -- "$@" run --rm -i
+[ -z "$tty" ] || set -- "$@" "$tty"
+# shellcheck disable=SC2086 # user_flags is a fixed, space-separated flag list
+set -- "$@" $user_flags --cap-drop ALL --security-opt no-new-privileges --security-opt label=disable \
+	--network "$network" --hostname sc-toolbox --name "sc-toolbox-$$" \
+	-v "$REPO:$REPO" -w "$workdir" \
+	--tmpfs "$tmpfs_run" --tmpfs /tmp:rw,exec,nosuid,nodev,size=1g \
+	-e "SC_REPO_ROOT=$REPO" -e SC_TOOLBOX_SOURCE=built -e "SC_TOOLBOX_IMAGE_REF=$image_ref" \
+	-e "SC_ENGINE=$mode" -e "SC_HOST_OS=$(uname -s)" -e "TERM=${TERM:-dumb}" -e LANG=C.UTF-8 -e TZ=UTC \
+	-e "GIT_CONFIG_COUNT=1" -e "GIT_CONFIG_KEY_0=safe.directory" -e "GIT_CONFIG_VALUE_0=$REPO"
+case $common in
+"" | "$REPO" | "$REPO"/*) ;;
+/*) set -- "$@" -v "$common:$common" ;;
+esac
+for v in HTTP_PROXY HTTPS_PROXY NO_PROXY; do
+	eval "val=\${$v:-}"
+	[ -z "$val" ] || set -- "$@" -e "$v=$val"
+done
+set -- "$@" "$tag"
+while [ "$n" -gt 0 ]; do
+	a=$1
+	shift
+	set -- "$@" "$a"
+	n=$((n - 1))
+done
+
+exec "$engine" "$@"

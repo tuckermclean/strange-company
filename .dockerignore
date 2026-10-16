@@ -1,0 +1,6 @@
+*
+!toolbox/**
+!src/**
+!tools/stage0/requirements.txt
+**/testdata
+**/*_test.go

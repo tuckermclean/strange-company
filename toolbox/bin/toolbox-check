@@ -1,0 +1,64 @@
+#!/opt/sc/stage0-venv/bin/python
+"""Static checks of the seed toolbox (plan 02 section 14.9): `make toolbox-check` runs this.
+
+1. toolbox/tools.lock.yaml validates against contracts/version-locks.schema.yaml (ToolboxLock);
+2. every FROM in toolbox/Containerfile is pinned by digest (or names an earlier stage);
+3. the golang FROM digest equals the lock's baseImages.golang digest, and the lock's Go
+   version equals the src/go.mod toolchain directive.
+Exit 0 when all hold; otherwise prints one rule line per violation and exits 1.
+"""
+import json
+import os
+import re
+import sys
+
+import jsonschema
+import yaml
+
+root = os.getcwd()  # make runs recipes at the repository root (a copied tree must check itself)
+errors = []
+
+
+def rd(p):
+    with open(os.path.join(root, p), encoding="utf-8") as f:
+        return f.read()
+
+
+# YAML dates become ISO strings, as in JSON (the schema types verifiedAt as a string).
+lock = json.loads(json.dumps(yaml.safe_load(rd("toolbox/tools.lock.yaml")), default=str))
+schema = yaml.safe_load(rd("contracts/version-locks.schema.yaml"))
+wrapper = {"$schema": schema.get("$schema"), "$defs": schema["$defs"], "$ref": "#/$defs/ToolboxLock"}
+for e in sorted(jsonschema.Draft202012Validator(wrapper).iter_errors(lock), key=lambda e: list(e.path)):
+    errors.append("TOOLBOX_LOCK_INVALID: %s: %s" % ("/".join(str(x) for x in e.path) or "<root>", e.message))
+
+stages = set()
+digests = []
+for n, line in enumerate(rd("toolbox/Containerfile").splitlines(), 1):
+    m = re.match(r"\s*FROM\s+(?:--\S+\s+)*(\S+)(?:\s+AS\s+(\S+))?\s*$", line, re.I)
+    if not m:
+        continue
+    ref, name = m.groups()
+    if ref in stages or ref == "scratch":
+        pass
+    elif re.search(r"@sha256:[0-9a-f]{64}$", ref):
+        digests.append(ref.split("@", 1)[1])
+    else:
+        errors.append("TOOLBOX_FROM_UNPINNED: toolbox/Containerfile:%d: FROM %s has no @sha256 digest" % (n, ref))
+    if name:
+        stages.add(name)
+
+try:
+    gl = lock["spec"]["baseImages"]["golang"]
+    if gl["digest"] not in digests:
+        errors.append("TOOLBOX_GOLANG_DIGEST: lock golang digest %s is not a FROM in toolbox/Containerfile" % gl["digest"])
+    m = re.search(r"toolchain\s+go(\S+)", rd("src/go.mod"))
+    ref = re.search(r":(\d+\.\d+\.\d+)", gl["ref"])
+    if not m or not ref or m.group(1) != ref.group(1):
+        errors.append("TOOLBOX_GO_VERSION: src/go.mod toolchain %s != lock golang ref %s" % (m and m.group(1), gl["ref"]))
+except (KeyError, TypeError):
+    pass  # already reported as TOOLBOX_LOCK_INVALID
+
+for e in errors:
+    print(e, file=sys.stderr)
+print("toolbox-check: %s" % ("FAIL" if errors else "ok"))
+sys.exit(1 if errors else 0)

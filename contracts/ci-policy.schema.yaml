@@ -29,7 +29,7 @@ properties:
   spec:
     type: object
     additionalProperties: false
-    required: [managedOwners, protectedBranches, releaseTagPattern, imageRegistries, cloneImage, stepSecurityContext, lanes, repoSettings, verify, retention]
+    required: [managedOwners, protectedBranches, releaseTagPattern, imageRegistries, stepSecurityContext, lanes, repoSettings, verify, retention]
     properties:
       managedOwners:
         type: array
@@ -121,7 +121,6 @@ properties:
       verify:
         type: object
         additionalProperties: false
-        required: [installerImage]
         properties:
           installerImage:
             type: string
@@ -211,6 +210,11 @@ $defs:
         minItems: 1
         uniqueItems: true
         items: {type: string, pattern: "^[a-z][a-z0-9-]{0,40}$"}
+      redTargetFallbacks:
+        description: Plan 52 §8.3 (CD-56). Maps a red target to the literal command to run at a commit where the Make target does not exist yet (for example before the `Makefile`). It is used only when `make -n <target>` fails there, and the report records its use.
+        type: object
+        propertyNames: {pattern: "^[a-z][a-z0-9-]{0,40}$"}
+        additionalProperties: {type: string, minLength: 1, maxLength: 300}
       exemptionClasses:
         type: object
         minProperties: 1
@@ -270,7 +274,9 @@ examples:
         excludedBranches: ["agent/*", "renovate/*"]
         behaviorPaths: ["src/**", "charts/**", "gitops/platform/**", "policy/**", "contracts/**", "Makefile", "mk/**"]
         testPaths: ["**/*_test.go", "**/testdata/**", "test/**"]
-        redTargets: [test, contracts, policy-check, gitops-validate, chart-test]
+        redTargets: [test, contracts, policy-check, gitops-validate, chart-test, toolbox-check]
+        redTargetFallbacks:
+          toolbox-check: "sh test/e2e/wrapper/run.sh"
         exemptionClasses:
           docs-only: {paths: ["**/*.md", "adr/**", "plans/**", "procedures/**"]}
           revert: {subjectRegex: '^Revert "'}
@@ -355,3 +361,28 @@ x-invalid-examples:
         repoSettings: {timeoutMinutes: 45, maxTimeoutMinutes: 90, requireApproval: forks}
         verify: {installerImage: "git.example.org/strange-company/sc-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"}
         retention: {logDays: 30}
+  - reason: A red-target fallback that is not a command string (C01, CD-56).
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: CIPolicy
+      metadata: {name: platform}
+      spec:
+        managedOwners: [strange-company]
+        protectedBranches: [main]
+        releaseTagPattern: '^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$'
+        imageRegistries: ["ghcr.io/example/"]
+        cloneImage: "docker.io/woodpeckerci/plugin-git:2.6.0@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+        stepSecurityContext: {runAsNonRoot: true, runAsUser: 65532, allowPrivilegeEscalation: false, privileged: false, seccompProfile: {type: RuntimeDefault}, capabilities: {drop: [ALL]}}
+        lanes: {ci: {heavySlotUnits: 1, workspacePvcMax: 8Gi}, build: {heavySlotUnits: 8, workspacePvcMax: 10Gi}}
+        repoSettings: {timeoutMinutes: 45, maxTimeoutMinutes: 90, requireApproval: forks}
+        verify: {installerImage: "git.example.org/strange-company/sc-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"}
+        retention: {logDays: 30}
+        tddDiscipline:
+          excludedBranches: ["agent/*"]
+          behaviorPaths: ["src/**"]
+          testPaths: ["**/*_test.go"]
+          redTargets: [test, toolbox-check]
+          redTargetFallbacks:
+            toolbox-check: [sh, test/e2e/wrapper/run.sh]
+          exemptionClasses:
+            revert: {subjectRegex: '^Revert "'}

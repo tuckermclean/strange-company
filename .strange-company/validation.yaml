@@ -1,0 +1,30 @@
+# Validation commands of this repository (plan 01 section 7.3; plan 22).
+# The image is the seed ci toolchain base; F03 and P08 replace it with the published ci image digest.
+apiVersion: strange.company/v1alpha1
+kind: RepositoryValidation
+metadata:
+  name: strange-company
+spec:
+  verification:
+    image: "docker.io/library/golang@sha256:2d658507a011f1eadc0114d7a421b312b2e77d9042a24036a26e267cc9231677"
+    suites:
+      - name: unit
+        adapter: junit-xml
+        language: go
+        argv: [make, test, "JUNIT={report}"]
+        report: {path: out/sc-verify/unit.xml}
+        timeoutSeconds: 1500
+        phases: [red, green]
+        redScope: ["GO_TEST_PKGS={protected_test_packages}"]
+        selectArgv: ["GO_TEST_RUN={test_ids}"]
+    checks:
+      - {name: lint, argv: [make, lint], timeoutSeconds: 900, toolingFrom: base}
+      - {name: contracts, argv: [make, contracts], timeoutSeconds: 600, toolingFrom: base}
+      - {name: policy-check, argv: [make, policy-check], timeoutSeconds: 600, toolingFrom: base}
+      - {name: gitops-validate, argv: [make, gitops-validate], timeoutSeconds: 900, toolingFrom: base}
+      - {name: secrets-lint, argv: [make, secrets-lint], timeoutSeconds: 600, toolingFrom: base}
+      - {name: secrets-scan, argv: [make, secrets-scan], timeoutSeconds: 900, toolingFrom: base}
+      - {name: stage0-validate, argv: [make, stage0-validate], timeoutSeconds: 600, toolingFrom: base}
+  local:
+    - {name: verify, argv: [make, verify], timeoutSeconds: 1800}
+    - {name: unit, argv: [make, test], timeoutSeconds: 900}

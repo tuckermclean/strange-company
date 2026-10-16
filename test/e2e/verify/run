@@ -1,0 +1,139 @@
+#!/bin/sh
+# F01 end-to-end evidence for 01-AC-3, 01-AC-6, 52-AC-5, 52-AC-8 (plan 01 section 7.1, plan 52 section 9.4).
+# Run from any checkout on a host with a container engine (CI does this; it is not a Go unit test because
+# a nested `make verify` would run every RED test again). The script never changes the checkout it is started
+# from: it makes a fresh `git clone --no-local` under a mktemp -d directory, overlays the checkout's uncommitted
+# changes (overlay.sh: staged, unstaged and untracked-not-ignored paths; deletions; symlinks kept) so the run judges the working tree, runs
+# everything there, copies the two summaries back to out/verify-e2e/ of the original checkout and removes the
+# temp directory (chmod -R u+w first: the Go module cache is read-only).
+#   (a) with network: warm the caches (`make gitops-cache`, `go mod download`);
+#   (b) with --network none and SC_FORBID_PAID=1: `make verify` twice on the same checkout;
+#   (c) both exit 0, both summaries list every tier-V target with result pass, and the two summaries are
+#       identical once duration_ms and started_at are deleted at every depth.
+set -u
+
+orig=$(cd "$(dirname "$0")/../../.." && pwd -P)
+work=$(mktemp -d) || exit 2
+# shellcheck disable=SC2317 # run by the EXIT trap
+cleanup() {
+	chmod -R u+w "$work" 2>/dev/null || true
+	rm -rf "$work"
+}
+trap cleanup EXIT
+trap 'exit 2' INT TERM
+root=$work/repo
+git clone -q --no-local "$orig" "$root" || exit 2
+# Overlay uncommitted work (staged, unstaged, untracked; deletions and symlinks kept as they are).
+# shellcheck source=test/e2e/verify/overlay.sh
+. "$orig/test/e2e/verify/overlay.sh"
+sc_overlay "$orig" "$root" || exit 2
+cd "$root" || exit 2
+fail=0
+pass() { printf 'PASS: %s\n' "$1"; }
+bad() {
+	printf 'FAIL: %s\n' "$1"
+	fail=1
+}
+
+TARGETS="gitops-cache fmt-check lint layout-check locks-check secrets-scan contracts test build toolbox-check dag-check quarantine-check"
+snap=out/verify-e2e
+mkdir -p "$snap"
+
+# Reads summary files given as arguments; prints problems; exit 1 when any.
+# mode "check": every tier-V target present once, in order, with result pass.
+# mode "same":  two files equal after deleting duration_ms and started_at recursively.
+PY='
+import json, sys
+mode, files = sys.argv[1], sys.argv[2:]
+targets = "'"$TARGETS"'".split()
+def strip(v):
+    if isinstance(v, dict):
+        return {k: strip(c) for k, c in v.items() if k not in ("duration_ms", "started_at")}
+    if isinstance(v, list):
+        return [strip(c) for c in v]
+    return v
+def rows(v, out):
+    if isinstance(v, dict):
+        name = v.get("target") or v.get("name")
+        if isinstance(name, str) and isinstance(v.get("result"), str):
+            out.append((name, v["result"]))
+        for c in v.values():
+            rows(c, out)
+    elif isinstance(v, list):
+        for c in v:
+            rows(c, out)
+docs = [json.load(open(f)) for f in files]
+rc = 0
+if mode == "check":
+    r = []
+    rows(docs[0], r)
+    names = [n for n, _ in r]
+    for n, res in r:
+        if res != "pass":
+            print("target %s result %s" % (n, res)); rc = 1
+    pos = 0
+    for n in names:
+        if pos < len(targets) and n == targets[pos]:
+            pos += 1
+    if pos != len(targets):
+        print("targets %s do not contain %s in order" % (names, targets)); rc = 1
+else:
+    if strip(docs[0]) != strip(docs[1]):
+        print("summaries differ after deleting duration_ms and started_at"); rc = 1
+sys.exit(rc)
+'
+pycheck() { ./bootstrap exec --image ci --network none -- python3 -I -c "$PY" "$@"; }
+
+# (0) clean-checkout property (01-AC-6, 52-AC-5): the clone has no cache or output, so steps (a)-(b)
+# prove that warming happens through ./bootstrap exec containers and persists in the checkout's .cache.
+mkdir -p "$snap"
+
+# (a) warm with network
+if ./bootstrap exec --image ci -- make gitops-cache && ./bootstrap exec --image ci -- sh -c 'cd src && go mod download'; then
+	pass "(a) caches warmed with network"
+else
+	bad "(a) cache warm-up failed"
+fi
+
+# (b) two offline, no-paid runs
+for i in 1 2; do
+	if ./bootstrap exec --image ci --network none -- env SC_FORBID_PAID=1 make verify; then
+		pass "(b) run $i: make verify exit 0 (--network none, SC_FORBID_PAID=1)"
+	else
+		bad "(b) run $i: make verify exited non-zero"
+	fi
+	if [ -f out/verify/summary.json ]; then
+		cp out/verify/summary.json "$snap/summary$i.json"
+	else
+		bad "(c) run $i: out/verify/summary.json missing"
+		rm -f "$snap/summary$i.json"
+	fi
+done
+
+# (c) summaries
+for i in 1 2; do
+	if [ -f "$snap/summary$i.json" ] && pycheck check "$snap/summary$i.json"; then
+		pass "(c) run $i: summary.json lists every tier-V target with result pass"
+	else
+		bad "(c) run $i: summary.json does not list every tier-V target as pass"
+	fi
+done
+if [ -f "$snap/summary1.json" ] && [ -f "$snap/summary2.json" ] && pycheck same "$snap/summary1.json" "$snap/summary2.json"; then
+	pass "(c) summaries identical after deleting duration_ms and started_at"
+else
+	bad "(c) summaries differ or are missing"
+fi
+
+# Evidence goes back to the original checkout; nothing there is deleted.
+mkdir -p "$orig/$snap"
+for i in 1 2; do
+	rm -f "$orig/$snap/summary$i.json" # a stale summary must not survive a failed run
+	[ ! -f "$snap/summary$i.json" ] || cp "$snap/summary$i.json" "$orig/$snap/summary$i.json"
+done
+
+if [ "$fail" -eq 0 ]; then
+	echo "verify e2e: PASS"
+else
+	echo "verify e2e: FAIL"
+fi
+exit "$fail"

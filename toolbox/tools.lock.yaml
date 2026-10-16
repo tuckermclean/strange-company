@@ -1,0 +1,52 @@
+apiVersion: strange.company/v1alpha1
+kind: ToolboxLock
+metadata:
+  name: seed-ci
+  description: F01 seed lock (plan 02 section 14.9); later nodes add a tool in the PR of the target that first calls it.
+spec:
+  tools:
+    - name: shfmt
+      set: ci
+      version: "3.14.1"                     # baseline: shfmt v3.14.1
+      selectedBy: "baseline:kubeconform"
+      url: https://github.com/mvdan/sh/releases/download/v{version}/shfmt_v{version}_linux_{arch}
+      sha256:
+        amd64: "76e77641faa025814b77f153b29796b8e6fa2fca03e0c76a691608b86c7ea7bf"
+        arm64: "5f2db09dae91fca848f7adbdd014632e921a383863a2ad7e0450ad3aba0c6489"
+      install: {to: /usr/local/bin/shfmt}
+      versionCommand: [shfmt, --version]
+      versionRegex: '^v{version}$'
+      verifiedAt: 2026-10-15
+    - name: actionlint
+      set: ci
+      version: "1.7.12"                     # baseline: actionlint v1.7.12 (kubeconform entry notes)
+      selectedBy: "baseline:kubeconform"
+      url: https://github.com/rhysd/actionlint/releases/download/v{version}/actionlint_{version}_linux_{arch}.tar.gz
+      sha256:
+        amd64: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+        arm64: "325e971b6ba9bfa504672e29be93c24981eeb1c07576d730e9f7c8805afff0c6"
+      install: {extract: actionlint, to: /usr/local/bin/actionlint}
+      versionCommand: [actionlint, -version]
+      versionRegex: '^{version}$'
+      verifiedAt: 2026-10-15
+    - name: golangci-lint
+      set: ci
+      version: "2.14.0"                     # baseline: golangci-lint v2.14.0 (kubeconform entry notes)
+      selectedBy: "baseline:kubeconform"
+      url: https://github.com/golangci/golangci-lint/releases/download/v{version}/golangci-lint-{version}-linux-{arch}.tar.gz
+      sha256:
+        amd64: "ab90aeb7b066f92a33415b638a50fe5344bbb75a0d32ad30cc248d88f81032ab"
+        arm64: "ee7ec5f3453d15ddf106fae5a4d6c71737712348a979d1fe9cd52ec7ea299bae"
+      install: {extract: "golangci-lint-{version}-linux-{arch}/golangci-lint", to: /usr/local/bin/golangci-lint}
+      versionCommand: [golangci-lint, --version]
+      versionRegex: '^golangci-lint has version {version} '
+      verifiedAt: 2026-10-15
+  baseImages:
+    debian: {ref: docker.io/library/debian:trixie-slim, digest: "sha256:918311b7b6c4c6f68b232ba516584925f6c78ad82b6fd534b98979df6438e483"}
+    golang: {ref: docker.io/library/golang:1.27.2-trixie, digest: "sha256:2d658507a011f1eadc0114d7a421b312b2e77d9042a24036a26e267cc9231677"}
+  debianSnapshot: 20261001T000000Z
+  aptPackages:
+    runtime: [ca-certificates, curl, git, python3, python3-venv, tini, libnss-wrapper]
+    ci: [make, shellcheck]
+  pythonRequirements: toolbox/requirements.txt
+  ansibleCollections: []

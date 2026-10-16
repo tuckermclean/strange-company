@@ -1,0 +1,31 @@
+# golangci-lint v2 configuration (plan 01 section 7.1 lint; plan 52 section 9.4 D7/D8).
+# Paths are relative to src/ (this file's directory).
+version: "2"
+linters:
+  default: none
+  enable:
+    - forbidigo
+  settings:
+    forbidigo:
+      analyze-types: true
+      forbid:
+        - pattern: '^time\.(Now|Since|Until|Sleep|After|Tick|NewTimer|NewTicker|AfterFunc)$'
+          msg: "D8: take a clock.Clock (src/internal/clock); tests use clock.Fake"
+        - pattern: '^rand\.(Seed|Int|Intn|Int31|Int31n|Int63|Int63n|Uint32|Uint64|Float32|Float64|Perm|Shuffle|Read|ExpFloat64|NormFloat64|N|IntN|Int32|Int32N|Int64|Int64N|Uint32N|Uint64N|UintN)$'
+          pkg: '^math/rand(/v2)?$'
+          msg: "D7: use testutil.Rand(t), seeded from SC_TEST_SEED and the test name"
+  exclusions:
+    generated: lax
+    rules:
+      # cmd/ and internal/clock are exempt from D8 only; internal/testutil is exempt from D7 only.
+      - linters: [forbidigo]
+        path: '^internal/clock/'
+        text: '^use of `time\.[^`]*` forbidden'
+      - linters: [forbidigo]
+        path: '^cmd/'
+        text: '^use of `time\.[^`]*` forbidden'
+      - linters: [forbidigo]
+        path: '^internal/testutil/'
+        text: '^use of `[^`]*rand[^`]*` forbidden'
+run:
+  tests: true

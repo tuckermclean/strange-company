@@ -194,20 +194,22 @@ A merge commit in `B..HEAD` fails with `TDD_MERGE_COMMIT`. PRs are linear; rebas
 
 | Rule | Check | Failure code |
 |---|---|---|
-| T0 | The source branch matches `tddDiscipline.excludedBranches` → `not-applicable`, under these conditions only: `agent/*` (covered by the Runner's provenance; plan 55 posts `tdd-provenance = failure` for an unbound agent branch); `renovate/*` **only if** the PR author is `sc-renovate` **and** every changed file matches the `dependency-update` class paths (TDD-16). Any other `renovate/*` PR goes through T1–T8 | `TDD_EXCLUSION_INVALID` (a `renovate/*` PR not meeting both conditions is evaluated normally, and the report records the refused exclusion) |
+| T0 | The source branch matches `tddDiscipline.excludedBranches` → `not-applicable`, under these conditions only: `agent/*` (covered by the Runner's provenance; plan 55 posts `tdd-provenance = failure` for an unbound agent branch), and only when the checker runs with `--provenance-bound`, which the Forgejo/Runner lane passes from C09 on. Without it, as in GitHub interim CI, `agent/*` is evaluated normally (CD-58); `renovate/*` **only if** the PR author is `sc-renovate` **and** every changed file matches the `dependency-update` class paths (TDD-16). Any other `renovate/*` PR goes through T1–T8 | `TDD_EXCLUSION_INVALID` (a `renovate/*` PR not meeting both conditions is evaluated normally, and the report records the refused exclusion) |
 | T1 | Classification: if no file changed in `B..HEAD` matches `behaviorPaths`, or every changed behavior-path file also matches `testPaths` → `not-applicable` | — |
 | T2 | Exemption: the PR head commit has trailer `TDD-Exempt: <class>: <reason ≥ 20 chars>` with `<class>` in `exemptionClasses`, and the class's path constraint holds (below) → `exempt` (recorded in the report; the human merger sees it) | `TDD_EXEMPTION_INVALID` |
 | T3 | There is ≥ 1 RED commit R: subject matches `^test(\([^)]+\))?: ` and every changed file matches `testPaths` or carries only **declared stubs** (§8.3a). No commit before the first R changes a behavior-path file outside `testPaths` | `TDD_NO_RED_COMMIT`, `TDD_IMPLEMENTATION_BEFORE_RED` |
-| T4 | Red target: R's trailer `TDD-Red-Target: <target> [GO_TEST_PKGS=… ] [GO_TEST_RUN=…]`, with `<target>` in `redTargets`. Default `test` with `GO_TEST_PKGS` = the packages containing `_test.go` files changed in R | `TDD_RED_TARGET_INVALID` |
-| T5 | Baseline: run the red target at B in a clean `git worktree` and collect the set of JUnit testcase IDs `S_B` (`classname.name`). A package absent at B contributes nothing | `TDD_BASELINE_FAILED` (the target fails at B: the PR is based on a broken `main`) |
+| T4 | Red target: R's `TDD-Red-Target: <target> [GO_TEST_PKGS=… ] [GO_TEST_RUN=…]` line, with `<target>` in `redTargets`. The line is read from anywhere in the commit message, not only from the git trailer block, and must start a line (`^TDD-Red-Target:`). Exactly one such line is allowed; none or two or more give `TDD_RED_TARGET_INVALID`. `GO_TEST_PKGS` may hold several space-separated package patterns, up to the next `KEY=` token (CD-54). Default `test` with `GO_TEST_PKGS` = the packages containing `_test.go` files changed in R | `TDD_RED_TARGET_INVALID` |
+| T5 | Baseline: run the red target at B in a clean `git worktree` and collect the set of JUnit testcase IDs `S_B` (`classname.name`). A package absent at B contributes nothing, and so does a red target that does not exist at B, for example when there is no `Makefile` or no such target (CD-56) | `TDD_BASELINE_FAILED` (the target fails at B: the PR is based on a broken `main`) |
 | T6 | RED run at R (clean worktree):
 - exit code ≠ 0;
 - JUnit present with ≥ 1 testcase;
 - the build succeeded: no `go test -json` event with `Action: "fail"` on a package without a `Test` field caused by `[build failed]` or `[setup failed]`, and no JUnit `<error type="build">`;
 - the failed set `F_R` is non-empty;
 - every `f ∈ F_R` is either ∉ `S_B` (new) or a test whose function body changed in R (Go AST diff; for non-Go targets only "new" counts) | `TDD_RED_PASSED` (exit 0: the behavior already exists; for humans that is the `ALREADY_SATISFIED` analogue), `TDD_RED_BUILD_FAILURE`, `TDD_RED_PREEXISTING_FAILURE` |
-| T7 | HEAD: the same target exits 0, and every `f ∈ F_R` is present in HEAD's JUnit with result `passed` (not skipped) | `TDD_RED_TESTS_NOT_GREEN` (catches deleted or skipped acceptance tests) |
+| T7 | HEAD: the same target exits 0, and every `f ∈ F_R` is present in HEAD's JUnit with result `passed` (not skipped). Exception (CD-57): a RED test that a later R of the same PR legitimately renamed or moved may be absent if the PR head commit carries `TDD-Superseded: <test-id> by <commit>: <reason ≥ 20 chars>`, where `<commit>` is a later R in `B..HEAD`. A malformed or unmatched line fails with `TDD_SUPERSEDED_INVALID`; listed ids appear in the report for the human merger | `TDD_RED_TESTS_NOT_GREEN` (catches deleted or skipped acceptance tests) |
 | T8 | Warning only: a test file changed in R is modified again after R → `TDD_RED_TEST_MODIFIED` in `warnings[]`. The human reviewer must look (SPEC §53 analogue) | — |
+
+**Trusted inputs (CD-58).** The checker reads `policy/ci.yaml` and builds `sc-lint` from the merge base B (a clean worktree of B), not from the PR head, so a PR cannot change the rules or the checker it is judged by. Only when B has no `policy/ci.yaml` or no `sc-lint tdd-discipline` (the F01 bootstrap PR) does it use the PR head's, and `report.json` records `policy_source` and `checker_source` (`base` or `head`). Red-target values from commit messages (`<target>`, `GO_TEST_PKGS`, `GO_TEST_RUN`) must match `^[A-Za-z0-9_./:^$|()*+?\[\]{}, -]*$` and contain no `$(`, backquote, quote or semicolon; anything else is `TDD_RED_TARGET_INVALID`.
 
 Configuration (`policy/ci.yaml`):
 
@@ -219,7 +221,10 @@ spec:
                     "toolbox/**", "images/**", "harnesses/**", "policy/**", "contracts/**", "Makefile", "mk/**", "bootstrap"]
     testPaths: ["**/*_test.go", "**/testdata/**", "test/**", "charts/*/tests/**", "src/internal/contracts/testdata/**"]
     redTargets: [test, contracts, policy-check, gitops-validate, chart-test, test-ansible-k3s, tofu-validate,
-                 lint-alerts, lint-metrics, profiles-check, locks-check, secrets-lint, layout-check]
+                 lint-alerts, lint-metrics, profiles-check, locks-check, secrets-lint, layout-check,
+                 toolbox-check]
+    redTargetFallbacks:
+      toolbox-check: "sh test/e2e/wrapper/run.sh"
     exemptionClasses:
       docs-only:                {paths: ["**/*.md", "adr/**", "plans/**", "procedures/**"]}
       ci-config:                {paths: [".github/**", ".woodpecker/**", "policy/ci.yaml"]}
@@ -230,8 +235,17 @@ spec:
       policy-tuning:            {paths: ["policy/**"], requires: "policy-check passes; values only"}
 ```
 
+**Non-Go red targets (CD-54, made precise by CD-56).** A red target that writes no JUnit, such as `toolbox-check` (the POSIX-sh wrapper harness), is turned into testcases by the checker's adapter, which is part of `sc-lint tdd-discipline`:
+- every output line matching `^\s*(ok|FAIL)\s+(.+)$` is one testcase: `ok` passes and `FAIL` fails;
+- `classname` is the wrapper script's basename, taken from the `<script>: N checks, M failed` summary line that closes each block; `name` is the check text with surrounding whitespace trimmed;
+- a repeated `classname.name` within one run gets a ` #2`, ` #3`, … suffix in output order;
+- a run that exits non-zero without printing any `FAIL` line is a harness crash, treated like a build failure (`TDD_RED_BUILD_FAILURE` at R, `TDD_BASELINE_FAILED` at B).
+T5–T7 then apply unchanged.
+
+**Red-target fallbacks (CD-56).** `tddDiscipline.redTargetFallbacks` maps a red target to the literal command to run at a commit where the Make target does not exist yet (`toolbox-check: "sh test/e2e/wrapper/run.sh"`, for F01's first RED, made before the `Makefile`). The fallback is used only when `make -n <target>` fails at that commit, and the report records that it was used.
+
 **§8.3a Declared stubs in RED commits (CD-44; same shape as ADR-0352).** A RED test for a symbol that does not exist yet cannot compile, and a build failure is never valid RED (T6). So R may also change Go files under `src/**` outside `testPaths`, but only with **declared stubs**:
-- additions only (no deleted or modified lines), in existing files or in new files that contain only a package clause, imports and stubs;
+- additions only (no deleted or modified lines), in existing files or in new files that contain only a package clause, imports, stubs and type declarations. A stub may also be a field added to an existing struct type, when the field is directly preceded by its own `// SC-STUB(…)` marker and nothing else in that declaration changes; its zero value is the stub (CD-59) (CD-50: struct, interface or named types with no methods other than declared stubs, and no `var`, `const` or `init`);
 - each stub directly preceded by `// SC-STUB(<node-or-task-id> <AC-id>…)`;
 - a body of at most 12 lines that returns zero values only (`return "", nil`, `return nil`, `return false`, an empty struct), checked by Go AST.
 
@@ -265,12 +279,12 @@ The check **re-executes** RED instead of looking up a recorded CI run on the tes
   | `e2e-woodpecker` | `gitops/platform/woodpecker/**`, `src/cmd/sc-ci-config/**`, `.woodpecker/**`, `policy/ci.yaml` |
   | `e2e-bootstrap-fake` | `src/internal/bootstrap/**`, `infra/**` |
   | `test-integration` | `src/**` |
-  | `toolbox` | `toolbox/**` |
+  | `toolbox` | `toolbox/**`, `bootstrap`, `test/e2e/wrapper/**` (CD-52) |
   | `e2e-c10` | not run on PRs (C10 exists only after Phase 1); on `main` pushes touching `src/**`, `charts/strange-company/**`, `policy/harnesses.yaml`, `images/**`, `harnesses/**`, and on tags |
   | `e2e-lab` | as in §8.1 |
 
   On push, schedule and tags every job runs.
-- **Schedule:** daily `17 3 * * *`. The first step compares `main`'s SHA with the head SHA of the last successful scheduled run (`gh run list --workflow e2e --status success --limit 1`, using the `GITHUB_TOKEN` read scope). If equal, the run exits successfully without running the jobs (`skipped: unchanged`). `e2e-lab` runs only on Sundays and on tags.
+- **Schedule:** daily `17 3 * * *`. The first job looks up a cache marker keyed by `main`'s SHA (`actions/cache`, key `e2e-scheduled-ok-<sha>`), which a scheduled run saves only after `e2e-gate` succeeds. On a hit the run exits successfully without running the jobs (`skipped: unchanged`). This needs no permission beyond `contents: read` (CD-52; `gh run list` would need `actions: read`). `e2e-lab` runs only on Sundays and on tags.
 
 - **Lab runners (plan 05):**
   - `e2e-lab LAB_SUBSTRATE=lab-seed` (plan 05 `lab-seed` substrate) runs the plan 19 seed with real Longhorn, CNPG and Forgejo: the positive A-series (19-AC-19, required for P04) and the fault cases `LAB_SCENARIO=handoff-faults` N4-lab, N5-lab and N6-lab (19-AC-21, required for P06; CD-31). **Runner (CD-36, SEEDFLUX-B7):** only a runner that meets plan 05's `lab-seed` host requirement (≥ 8 vCPU, ≥ 16 GiB, KVM, ≥ 60 GiB free disk), stated once in plan 05. Either (a) a **GitHub larger Linux runner** (8-core class, label from repository variable `SC_LAB_SEED_RUNNER`; paid per minute, roughly US$ 0.03/min, so ≈ US$ 2–3 per lab-seed run of 60–90 min and ≈ US$ 20–40/month at weekly runs plus tags and seed-path changes, recorded in the cost table of §12), or (b) an **off-cluster self-hosted runner on operator hardware** registered for this lane only (ADR-0303 item 5). Only the CI run result of this lane counts as evidence; operator-committed evidence is **not** accepted for `lab-seed`. If neither runner exists, GATE-P04 (19-AC-19) and GATE-P06 (19-AC-21) cannot pass; the requirement is explicit rather than weakened. It runs on `main` pushes touching the plan 19 §19 paths, weekly, and on release tags, never on the production node.
@@ -388,7 +402,7 @@ Rules (`make quarantine-check`, tier V):
 | D3 | Registries: only those in `versions/platform.lock.yaml` and `CIPolicy.spec.imageRegistries` | `locks-check`; `sc-ci-config` |
 | D4 | Offline tier V after cache warm-up | GH: `make verify` runs with `--network none` after `gitops-cache` and `go mod download` (01-AC-6). WP: NetworkPolicy denies everything but registries and Forgejo (plan 20 §13.3) |
 | D5 | No real external services in L1–L3: the fake Forgejo, Woodpecker, S3, provider upstream and harnesses are in-process | `lint` forbids `http.DefaultClient` and non-loopback dial addresses in `_test.go` outside `test/e2e/**` (custom analyzer `sc-lint netcheck`) |
-| D6 | No paid model calls: no provider keys exist in any CI lane; `SC_FORBID_PAID=1` makes the Gateway and harness adapters refuse non-fake upstream hosts | `secrets-lint` (no `SC-MODEL-API-KEYS` reference in CI files); unit test asserting refusal; GH `--network none`; WP egress cannot reach the Gateway (plan 20) |
+| D6 | No paid model calls: no provider keys exist in any CI lane; `SC_FORBID_PAID=1` makes the Gateway and harness adapters refuse non-fake upstream hosts (CD-53: fake hosts are http(s) URLs whose host is loopback (`127.0.0.0/8`, `::1`), `localhost`, `*.invalid` or `*.test`; anything else, including a URL with no scheme or no host, is refused) | `secrets-lint` (no `SC-MODEL-API-KEYS` reference in CI files); unit test asserting refusal; GH `--network none`; WP egress cannot reach the Gateway (plan 20) |
 | D7 | Fixed seeds: randomness through `testutil.Rand(t)` seeded from `SC_TEST_SEED` and the test name. `-shuffle` only in `test-flaky-scan`, which prints the seed | `lint` (`forbidigo`: `math/rand` global functions and `rand.Seed` outside `testutil`) |
 | D8 | Time faking: all service code takes a `clock.Clock` | `lint` (`forbidigo`: `time.Now`, `time.Since`, `time.Sleep`, `time.After` outside `src/internal/clock` and `main` packages; tests use `clock.Fake`) |
 | D9 | The only wall-clock input to a tier-V result is HEAD's committer date (quarantine expiry) | `quarantine-check` implementation; review |

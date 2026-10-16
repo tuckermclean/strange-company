@@ -40,6 +40,16 @@ GH_FORBIDDEN = re.compile(r"\bgh\s+(pr\s+(merge|review)|repo\s+(edit|delete|rena
                           r"mergePullRequest|addPullRequestReview|enablePullRequestAutoMerge)")
 # CD-47: the only commit status a session may post is `sc-review` (plan 52 §8.2a).
 STATUS_POST = re.compile(r"/statuses/")
+# Shell writes into ROLE_FORBIDDEN paths (operator decision after the F01 S3 review: an implementer wrote
+# .github/** through the shell). Heuristic: redirect targets and the operands of file-writing commands.
+REDIRECT = re.compile(r"(?<![<>&\d])\d*>>?\|?\s*([^\s;&|<>()]+)")
+WRITE_CMDS = re.compile(r"^(?:sudo\s+)?(?:env\s+(?:\S+=\S*\s+)*)?(cp|mv|tee|rm|rmdir|touch|mkdir|ln|install|"
+                        r"truncate|chmod|chown|dd|rsync|unzip|tar|patch)\b")
+SED_INPLACE = re.compile(r"^(?:sudo\s+)?sed\b.*\s-[a-zA-Z]*i")
+GIT_WRITES = re.compile(r"^git\s+(?:-C\s+\S+\s+)?(checkout|restore|apply|am|cherry-pick|revert|mv|rm|"
+                        r"update-index|stash)\b")
+PY_WRITE = re.compile(r"""open\(\s*['"]([^'"]+)['"]\s*,\s*['"][wax]|Path\(\s*['"]([^'"]+)['"]\s*\)\s*\."""
+                      r"""(write_text|write_bytes|unlink|rename|replace|touch|mkdir)""")
 
 
 def match(path: str, patterns: list[str]) -> bool:
@@ -80,6 +90,34 @@ def staged(root: str) -> list[tuple[int, int, str]]:
         a, d, p = line.split("\t", 2)
         rows.append((int(a) if a != "-" else 0, int(d) if d != "-" else 0, p))
     return rows
+
+
+def forbidden_shell_write(cmd: str, root: str) -> str | None:
+    """Return a ROLE_FORBIDDEN path the command appears to write, or None."""
+    def bad(token: str) -> bool:
+        token = token.strip("'\"")
+        if not token or token.startswith("-") or token.startswith("/dev/"):
+            return False
+        path = rel(root, token)
+        if path.startswith("../"):
+            return False
+        # A whole directory (`rm -rf plans`, `cp -t .claude/ x`) counts as writing below it.
+        return match(path, ROLE_FORBIDDEN) or match(path.rstrip("/") + "/x", ROLE_FORBIDDEN)
+
+    for target in REDIRECT.findall(cmd):
+        if bad(target):
+            return target
+    for m in PY_WRITE.finditer(cmd):
+        target = m.group(1) or m.group(2)
+        if bad(target):
+            return target
+    for simple in re.split(r"&&|\|\||[;|\n]", cmd):
+        simple = simple.strip().lstrip("(").strip()
+        if WRITE_CMDS.match(simple) or SED_INPLACE.match(simple) or GIT_WRITES.match(simple):
+            for token in simple.split()[1:]:
+                if bad(token):
+                    return token
+    return None
 
 
 def check_commit(role: str, root: str) -> None:
@@ -147,6 +185,10 @@ def main() -> None:
             deny("role agents do not push or rewrite history; the orchestrator pushes (RED evidence must stay addressable)")
         if role == "reviewer" and re.search(r"\bgit\s+(commit|add|checkout\s+-b|switch\s+-c|stash)\b", cmd):
             deny("the reviewer does not change the repository")
+        if role in ("tester", "implementer"):
+            hit = forbidden_shell_write(cmd, root)
+            if hit:
+                deny(f"{role} may not write {hit} through the shell (orchestrator/human-owned path)")
         if re.search(r"\bgit\s+commit\b", cmd):
             # The guard inspects the index before the command runs, so staging must already be done.
             if re.search(r"\bgit\s+commit\b[^|;&]*(\s-[a-zA-Z]*a[a-zA-Z]*\b|--all\b)", cmd) or re.search(r"\bgit\s+(add|rm|mv)\b", cmd):

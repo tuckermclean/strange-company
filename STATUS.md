@@ -19,7 +19,7 @@
 | Operator procedures | 63 | `procedures/` |
 | ADRs (22 global + subsystem ADRs) | 79 | `adr/` |
 | SPEC issues register (59 entries, none blocking) | 1 | `plans/spec-issues.md` |
-| Consolidation decisions (CD-01..CD-47) | 1 | `plans/reviews/consolidation-decisions.md` |
+| Consolidation decisions (CD-01..CD-59) | 1 | `plans/reviews/consolidation-decisions.md` |
 | Independent fresh-context reviews (SPEC §132 items 43–47), plus closure verification | 10 + 3 | `plans/reviews/review-*.md`, `plans/reviews/closure-*.md` |
 | External adversarial reviews of PR #138 (two passes) and their disposition | 1 | `plans/reviews/external-review-pr138.md` |
 | Blind reviews (no access to earlier review conclusions; CD-34) | 5 | `plans/reviews/blind-*.md` |
@@ -76,6 +76,18 @@
    - CD-45: F01 builds the seed `ci` image and the `./bootstrap exec` subset (plan 02 §14.9, 02-AC-14..17), so every Make target runs in one pinned container from the first commit. This fixes an ordering defect: GATE-F01 needed the image that F03 owned.
    - CD-46: agent PRs are opened by the machine account `sc-agent-bot`; `main` requires 1 approval, so only the operator can approve and merge; a session-wide guard hook blocks merge, approve and settings changes through `gh`.
    - CD-47: an automated review check replaces the manual approval: after the reviewer agent approves, `sc-agent-bot` posts the commit status `sc-review` on the PR head. `main` needs 0 approvals, and a "Restrict updates" ruleset lets only the operator merge (plan 52 §8.2a).
+   - CD-48: `toolbox-check` is a plan 52 red target, so RED commits for `./bootstrap` and `toolbox/**` can name the wrapper tests (found during F01 slice S1).
+   - CD-49: rootless Podman runs with `--userns=keep-id --user $(id -u):$(id -g)`, because the image `USER` overrides keep-id (plan 02 §14.4; found in the F01 slice S1 review).
+   - CD-50: RED stub files may also hold type declarations (plan 52 §8.3a); `make test` was added before the F01 S2 RED so that RED re-runs by its declared target (found in the F01 slice S2 review).
+   - CD-51: `go.yaml.in/yaml/v3` is the Go YAML library and the module's first third-party dependency (found in F01 slice S3).
+   - CD-52: the scheduled e2e skip uses a cache marker instead of `gh run list` (only `contents: read`); every workflow job declares its own permissions; the `toolbox` e2e filter also covers `bootstrap` and `test/e2e/wrapper/**` (found in the F01 slice S3 review).
+   - CD-53: with `SC_FORBID_PAID=1` the Gateway accepts only fake upstream hosts (loopback, `localhost`, `*.invalid`, `*.test`) and fails closed on everything else (found in the F01 slice S4 review).
+   - CD-54: the TDD checker reads `TDD-Red-Target:` from anywhere in the message and adapts wrapper-harness output into testcases; the guard hook also blocks role-agent shell writes into owned paths (found in the F01 slice S6 review).
+   - CD-55: `reservedBranchPrefixes` is added to the repo-policy schema, as plan 01 describes.
+   - CD-56: a red target missing at the base contributes an empty baseline; `redTargetFallbacks` covers commits made before the Make target existed; the wrapper-output adapter and the T4 line rules are specified precisely (decided before F01 slice S5).
+   - CD-57: legitimately superseded RED tests are declared with a `TDD-Superseded:` line on the PR head commit; `cloneImage` and `verify.installerImage` are optional in the ci-policy schema until their images exist (found in the F01 slice S5 dry run).
+   - CD-58: the TDD checker trusts the base revision's policy and checker (head only for the F01 bootstrap); `agent/*` is excluded only when provenance is bound; red-target values are validated (found in the F01 slice S5 review).
+   - CD-59: a declared stub may be a marked field added to an existing struct; the operator granted F01 slice S5 one extra implementer attempt, beyond SPEC §74's 3, for this rule only.
 
 ## SPEC §125 Stage-0 Definition of Done
 
@@ -138,3 +150,226 @@ See plan 34's residual-risk register. Highlights:
 
 ## Next step
 Implementation is a separate task. Start at DAG node **F01** in `PLAN.md`, following its "How to execute a node" rules: verification first, RED before GREEN, gate evidence recorded here.
+
+## Implementation progress
+
+### F01 — repo-skeleton
+
+Branch `node/F01-repo-skeleton`, built with `/sc-node F01` (CD-44). Base `main` 0d4e721. Five slices: S1 seed `ci` image and `./bootstrap exec`; S2 layout-check; S3 locks, secrets scan, quarantine and CI workflows; S4 `make verify`, lint and determinism; S5 TDD discipline checker. **Status: all seven slices approved (S7 fixed Docker CI); node-level evidence from PR #144.**
+
+#### S1 — seed `ci` image, `./bootstrap exec`, Makefile re-exec
+
+| Round | RED | GREEN | Review |
+|---|---|---|---|
+| 1 | 76836b4 (55 checks failing, assertion-class) | 3b3169c, a3b7c27, cd3e356, f6bce80 | `test_spec_conflict`: plan 02 §14.4 podman-rootless row (resolved by CD-49, af2a52c); also CD-48 (dbe178d), `toolbox-check` as a red target |
+| 2 | 9a10846 (2 SIGTERM checks failing) | aefc4c0 | `request_changes`: 02-AC-14 literal command untested; unpinned-FROM guard used an unplanned code |
+| 3 | 45b2fea (25 checks failing) | 15ab3b3 | **`approve`** at 15ab3b3 |
+
+Red target: `sh test/e2e/wrapper/run.sh` (`TDD-Red-Target: toolbox-check`). Implementer attempts used: 3 of 3. CI: none for S1. No workflow ran on branch pushes before `verify.yaml` (S3).
+
+| Criterion | Test(s) | Result at 15ab3b3 |
+|---|---|---|
+| 02-AC-14 | `test/e2e/wrapper/real-engine.sh` (engine `build --no-cache`, then literal `--toolbox-build … fetch-pinned --check`, GOVERSION, `SC_IN_CONTAINER`); `stub-unpinned-from.sh` | pass, rootless Podman 5.4.2; Docker rootful open (S3 CI) |
+| 02-AC-15 | `real-engine.sh` (`TOOLBOX_CHECKSUM_MISMATCH:shfmt`, no tag left); `check-pins.sh` (`FROM golang:1.27`); `stub-exec-contract.sh` | pass on host and in `ci` image; Docker open (S3 CI) |
+| 02-AC-16 | `real-engine.sh`; `stub-exec-contract.sh` (per-mode flags, TTY, `--network none`, SIGTERM) | pass, rootless Podman; Docker rootful open (S3 CI) |
+| 02-AC-17 | `stub-image-reuse.sh` (17 checks) | pass |
+| 01-AC-5 | `makefile-reexec.sh` (9 checks) | pass; full tier-V order asserted in S4 |
+
+Deviations and open items:
+- Docker-rootful runs of `real-engine.sh` and `check-pins.sh` must run in S3's `verify.yaml`. 02-AC-14..16 stay open until they pass.
+- The wrapper passes `build --cgroup-manager=cgroupfs` when `$XDG_RUNTIME_DIR/bus` is absent (hosts without a user session bus). This is not in plan 02.
+- Reviewer low findings, not fixed in S1 (retry budget spent; carry into a later slice that touches `bootstrap`): L1, a missing or unreadable `toolbox/Containerfile` makes the build path exit 2 with no message; L2, stage names are compared case-sensitively, and BuildKit is case-insensitive.
+- Accepted residual risk: an image built from an unpinned Containerfile by older wrapper code can still be reused, because the 02-R-1 guard runs only before a build.
+
+#### S2 — layout-check and repository hygiene
+
+The branch was rewritten after S1 with operator approval (CD-50). Round 1 (RED dc09d49 + 9ceb865, GREEN 80e12fa) got `request_changes`: the RED's declared target `make test` did not exist at the RED commit. The new history puts a `make test` commit before the RED.
+
+| Commit | Role |
+|---|---|
+| 08548d0 | `make test` with `go test -json` and the JUnit converter (`src/internal/testreport`, `sc-lint junit`). Bootstrapping exception, no RED; converter tests are S4 work |
+| 0d80999 | RED: `src/internal/lint` tests, fixtures, declared stubs and types (CD-50). At R, `make test GO_TEST_PKGS=./src/internal/lint/...` exits 2 with 21 top-level failures and 0 build errors |
+| 361fbd3 | RED: 01-AC-11 instance validation (operator: the Stage-0 venv `jsonschema` at F01; F02 replaces it with `sc-contracts`) |
+| f324222 | docs CD-50 |
+| df735bf | RED: executable-files exactly per plan 01 §6.1, lettered AC ids, `make` mentions inside backtick spans; clears the x-bit on `test/e2e/wrapper/*.sh`. 28 top-level failures |
+| 9745770 | GREEN (attempt 2 of 3): **`approve`** at 9745770 |
+
+Red target: `test GO_TEST_PKGS=./src/internal/lint/...`. CI: none yet (S3).
+
+| Criterion | Test(s) | Result at 9745770 |
+|---|---|---|
+| 01-AC-1 | `TestLayoutCheck_{ValidFixturePasses,RealTreePasses,Negatives,SizeBoundary,EachGitignoreEntryRequired,ExecutableFilesFollowPlan}`, `TestRealTree_{GitignoreHasAllEntries,NoStrayExecutables}`, `TestMakeWiring` | pass; `make layout-check` 0 |
+| 01-AC-2 | `TestRealTree_CheckIgnore_01AC2` | pass; already satisfied by S1's `.gitignore` |
+| 01-AC-10 | `TestLayoutCheck_AgentsMd{Size,PolicyMarkers,MarkerKeyFromVerificationPolicy}`, `TestRealTree_AgentsMd` | pass |
+| 01-AC-11 | `TestRealTree_{PolicyProtectedPathsEqualPlan,StrangeCompanyFilesKinds,ContractsTarget,MakeContractsValidatesInstances}`, `TestMakeContracts_{RejectsSchemaViolation,RejectsWrongType,UnknownKindFails}` | pass; `make contracts` 0 |
+| 01-AC-12 | `TestLayoutCheck_{MakeTargetsKnown,MakeTargetInsideSpan}`, `TestRealTree_PlannedPathsFileExists` | pass |
+| 01-AC-14 | `TestDagCheck_{ValidFixturePasses,RealTreePasses,Negatives,UsesNonUpstreamIsWarning,WritesReport,LetteredACIds}` | pass; `make dag-check` 0 |
+
+Deviations and open items:
+- **Before F01 completes (assigned to S4):** the host re-exec passes `$(MAKEOVERRIDES)` unquoted (`Makefile:14`). So `make test GO_TEST_RUN='TestA$'` from the host selects zero tests and exits 0, and `'^(A|B)$'` is a shell syntax error. In-container runs are correct. Also, `src/internal/lint/hygiene_test.go` fails `gofmt -l`; it needs a whitespace-only `test(F01):` commit, which raises a T8 warning.
+- **Deferred, no GATE-F01 criterion:**
+  - the plan 01 §7.1 / 01-R-1 rule that every backticked plan path exists or is listed in `planned-paths.txt`; `planned-paths.txt` holds only `make` targets;
+  - `SC_TARGET_TREE` support (plan 01 §7.3), which nothing consumes before plan 22.
+- **Plan/contract conflict:** plan 01 §6.4 and §7.3 put `reservedBranchPrefixes` in `policy.yaml`, but `contracts/repo-policy.schema.yaml` has no such field and sets `additionalProperties: false`. This needs an operator decision.
+- **Implementation choices the plan leaves open:**
+  - most layout rule IDs;
+  - `planned-paths.txt` format: one entry per line, `make <target>` for targets;
+  - `DAG_USES_UPSTREAM` warning ID;
+  - a duplicate node id reports under `DAG_UNKNOWN_NODE`;
+  - the `make` mention scan skips the `<make target>` placeholder.
+- **Low reviewer findings:**
+  - a `###` subheading ends the "Enforced rules" marker scan;
+  - the marker key lookup is textual;
+  - `make -n verify`-style mentions are not checked.
+
+#### S3 — locks, secrets scan, quarantine, interim CI workflows
+
+| Round | RED | GREEN | Review |
+|---|---|---|---|
+| 1 | 9937c8c (23 top-level failures) | 2eecac8; workflows 483d87a (implementer-written, orchestrator-committed with operator approval) | `request_changes`: one-line PEM, fail-open e2e filter, schedule vs permissions, placeholder leniency, `maxEntries: 0`, map-order output, Q2 packages, job-level permissions |
+| 2 | a331135 (9 failures) | orchestrator workflows 0fd1752 (CD-52); 8ee2196 | `request_changes`: first match per line only; repeated-character allowance vs plan 35's closed allowlist; legacy encrypted PEM; cache post step |
+| 3 | f108607 (3 failures; adds `test/fixtures/secrets-scan/allowlist.yaml`) | orchestrator e81af85; 3715111 | **`approve`** at 3715111 |
+
+Red target: `test GO_TEST_PKGS=./src/internal/lint/...`. Implementer attempts used: 3 of 3. Operator decisions: CD-51 (`go.yaml.in/yaml/v3`), CD-52 (e2e schedule with a cache marker, job-level permissions, `toolbox` filter), and a closed two-entry secrets allowlist. CI: not run yet (no PR).
+
+| Criterion | Test(s) | Result at 3715111 |
+|---|---|---|
+| 01-AC-7 | `TestLocksCheck_{ValidFixturePasses,Mutations,SchemaViolation,Deterministic}`, `TestRealTree_{MakeLocksCheck,LocksCheckPasses}` | pass; `make locks-check` 0 |
+| 01-AC-8 | `TestSecretsScan_{ValidFixturePasses,Negatives,PEMOneLine,Placeholders,Deterministic,MultipleMatchesPerLine,AllowlistSemantics,LegacyEncryptedPEM}`, `TestRealTree_{MakeSecretsScan,SecretsScanPasses,SecretsAllowlistExact}`, `TestVerifyRunsSecretsScanAndQuarantine` | pass; `make secrets-scan` 0 |
+| 52-AC-1 | `TestWorkflow_{VerifyJobs,ModeGating,VerifyShape,Permissions,NoSecretsAndPinnedUses,E2EGate,E2ESchedule,E2EPathFilter}`, `TestLint_RunsActionlint` | pass; `make lint` 0; first Actions run pending |
+| 52-AC-7 | `TestQuarantineCheck_{ValidPasses,Negatives,UsesHeadCommitterDate,MaxEntriesZero,ProtectedPackages}`, `TestRealTree_{MakeQuarantineCheck,QuarantineListIsEmpty}` | pass; `make quarantine-check` 0 |
+| S1 obligation (02-AC-14..16 on Docker) | `TestWorkflow_RunsRealEngineChecksOnDocker` (e2e.yaml `toolbox` job) | wired; needs an Actions run |
+
+Deviations and open items:
+- **Secrets-scan follow-ups (to be scheduled before F01 completes):**
+  - F1: the scan skips the whole allowlist file, so a real key placed in it goes unreported;
+  - F2: BEGIN, a blank line, then a base64 body is not flagged;
+  - F3: the trailing-`EXAMPLE` exemption applies to every pattern, not only AWS;
+  - F4: the stale-entry message repeats the path.
+- **Deferred:**
+  - the full gitleaks `rules.toml` (plan 01 §9); the scanner's patterns are hard-coded in Go;
+  - Q2 bullets beyond the name pattern and the three protected packages (test manifests, DAG-gate e2e tests, contract examples), tracked against F04–F06 and plan 22;
+  - `TestWorkflow_E2EPathFilter` would still pass if `|| true` were added to the diff step.
+- **Implementation choices the plan leaves open:**
+  - rule IDs for locks and secrets;
+  - lock and quarantine schema validation runs through the Stage-0 venv;
+  - cross-file lock rules have nothing to compare until `versions/` lock files exist.
+- **Process:** the S3 implementer wrote `.github/**` through the shell, although the guard bars role agents from that path; the guard's edit check does not cover shell writes. The operator approved committing the files after the orchestrator read them. The guard fix is pending an operator decision.
+
+#### S4 — `make verify`, lint and determinism, build, no-paid
+
+| Round | RED | GREEN | Review |
+|---|---|---|---|
+| 1 | cbe7816 (11 failures); 6b96b5c `style`: gofmt of an S2 RED file | d916776 | `request_changes`: `GO_TEST_SKIP` knob, Go test cache, ci env defaults, gateway too narrow, D7/D8 scoping, host re-exec quoting |
+| 2 | ee0bce2 (wrapper, 6 failures); 9c8d6b1 (Go, 7 failures, all new). The nested-verify Go test moved to `test/e2e/verify/run` (operator-approved; it failed at every RED). A first attempt, 644848c, was discarded unpushed | orchestrator 998ee2c (`verify-e2e` job); 1d0134a | `request_changes`: verify e2e failed on a clean checkout (container Go caches outside `.cache`); `verify.yaml` not offline; filter breadth; `SC_IN_CONTAINER` forwarding; userinfo |
+| 3 | 339dde4 (gateway, 1 failure); b9e1846 (wrapper, 5 failures) | orchestrator 851d60b (offline verify job, wider filters); 4b6de68 | **`approve`** at 4b6de68 |
+
+Red targets: `test GO_TEST_PKGS=./src/internal/lint/... ./src/internal/gateway/...` and `toolbox-check`. Implementer attempts used: 3 of 3. Operator decision: CD-53. CI: not run yet (no PR).
+
+| Criterion | Test(s) | Result at 4b6de68 |
+|---|---|---|
+| 01-AC-3 | `test/e2e/verify/run`; `TestFmtCheck_FailsOnDiff`; host `make verify` (rootless Podman, no Go/tofu/kubectl): 12 of 12 targets pass | pass on Podman; Docker run via the `verify` and `verify-e2e` jobs (pending) |
+| 01-AC-5 (order) | `TestVerify_DryRunSequenceOrder_01AC5`; `test/e2e/wrapper/makefile-reexec.sh` (19 checks) | pass |
+| 01-AC-6 | `test/e2e/verify/run` in a fresh clone with no `.cache` (warm-up, then two `--network none` runs pass); `cache-env.sh`; `TestGitopsCache_OfflineNoop`; `TestTestTarget_{NoSelectionKnob,NoTestCache}` | pass |
+| 01-AC-9 | `TestBuild_{Reproducible,RecipeFlags,DescribeAbbrev}`; two fresh clones produce an identical `sc-lint` sha256 | pass |
+| 52-AC-5 | `test/e2e/verify/run` (c): summaries identical after deleting `duration_ms` and `started_at` | pass |
+| 52-AC-6 | `TestGolangciLint_{ForbidigoFixtures,ForbidigoScoping}`, `TestNetcheck_*`, `TestLint_*` | pass |
+| 52-AC-8 | `forbidpaid_test.go` (6 tests, CD-53 allowlist), `TestContainerfile_CIEnvDefaults`, `verify/run` with `SC_FORBID_PAID=1` | pass |
+
+Deviations and open items (follow-up slice S6, before S5):
+- **Data loss:** `test/e2e/verify/run` runs `rm -rf .cache/go out` in the checkout it starts in. Run in the main checkout, it deleted `out/`, including the orchestrator brief, which was regenerated. It must run in a temporary clone.
+- **Override whitespace:** the `$(strip …)` around the re-exec line collapses whitespace inside quoted override values, a regression from 1d0134a.
+- **CI path:** `verify.yaml` runs `./bootstrap exec … -- make verify` directly, not host `make verify`. The two are equivalent under 01-AC-5, and host `make verify` was run on Podman.
+- **Implementation choices:**
+  - tier-V order follows plan 01 §7.1 catalogue order, with `gitops-cache` first;
+  - `summary.json` has the shape `{"targets":[{target,result,started_at,duration_ms}]}`;
+  - the gateway function is `gateway.ValidateUpstream`;
+  - `GOFLAGS=-mod=readonly` in the image replaces `-buildvcs=false`, which `make build` passes explicitly;
+  - the Go cache defaults are set in `sc-entrypoint`, and a caller's own values win.
+
+#### S6 — carried follow-ups (run before S5)
+
+| Round | RED / tests | GREEN | Review |
+|---|---|---|---|
+| 1 | 5503d4e (toolbox-check, 11 failures; also moves `test/e2e/verify/run` into a temporary clone); afad724 (lint, 4 failures); chore 18dc460 (JUnit converter tests, passing) | 2865990 | `request_changes`: the clone overlay was not faithful; RED target lines were not git trailers; wrapper REDs had no JUnit |
+| 2 | orchestrator 943b918 (CD-54, CD-55, guard shell-write blocking, sc-tester trailer rule); chore bbf7d74 (faithful overlay plus a scratch-repo test); 4da04cb (CD-55, 7 failures); 3f245c9 (operator-approved correction of a self-contradicting CD-55 test, after the implementer's TEST_SPEC_CONFLICT) | 60f069e | **`approve`** at 60f069e |
+
+Implementer attempts used: 3 of 3 (attempt 2 stopped with TEST_SPEC_CONFLICT). Red targets: `toolbox-check` and `test GO_TEST_PKGS=./src/internal/lint/...`.
+
+| Follow-up | Test(s) | Result at 60f069e |
+|---|---|---|
+| `test/e2e/verify/run` never touches the checkout (it runs in a `git clone --no-local` under a temp dir) | `test/e2e/wrapper/verify-script.sh`, `test/e2e/wrapper/overlay.sh` (10 checks: staged rename, symlinks, non-ASCII name, deletions, failed copy) | pass; `sh test/e2e/verify/run` → 0, and `out/` and the brief stay untouched |
+| Re-exec keeps override whitespace (01-AC-5) | `makefile-reexec.sh` | pass |
+| Missing or unreadable Containerfile → exit 3; stage names case-insensitive (02-R-1, plan 02 §21) | `stub-unpinned-from.sh` | pass |
+| Secrets scan: allowlist file scanned, `EXAMPLE` only for AWS, BEGIN + blank + body flagged, stale path named once (01-AC-8) | `secrets_followups_test.go` | pass |
+| JUnit converter (CD-50) | `convert_cases_test.go` | pass |
+| `reservedBranchPrefixes` (CD-55) | `reserved_prefixes_test.go` | pass; the field is optional in the schema, and this repository's exact list is enforced by test |
+
+Follow-ups recorded (not blocking):
+- `makefile-reexec.sh:17` still inherits `MAKEFLAGS`/`MAKEOVERRIDES` when run from a make given command-line variables. A one-line `chore` fix is pending.
+- `test/e2e/verify/run` removes stale summaries only at the end, so an early exit leaves an older summary in place, and the comment at :126 is out of date.
+- `bootstrap:125` hashes an unreadable input as the literal `unreadable` (implementation choice, not in plan 02 §14.2 step 5).
+- `verify-script.sh` passed at its own RED (5503d4e): it is a static guard, evidence only.
+- Plan 22 §9.4 needs merge semantics for `reservedBranchPrefixes` (union, like `protectedBranches`).
+- **The guard hook is a heuristic.** Whole-directory operands are now caught (fixed by the orchestrator after the review). It still misses `&>`, `cd dir && …`, writes through a variable, `perl -pi` and writes inside `./bootstrap exec`. It also has false positives for copying from a plan file and for paths inside a `git commit -m` message.
+- **T8 warnings S5 must report:**
+  - 6b96b5c (S2 RED file, gofmt only);
+  - 3f245c9 (CD-55 test correction);
+  - bbf7d74 (changes `test/e2e/wrapper/makefile-reexec.sh`, `run.sh` and `test/e2e/verify/run`).
+- 5503d4e's `TDD-Red-Target:` sits in the body; CD-54 covers it.
+
+#### S5 — TDD discipline checker (`make tdd-discipline-check`, `sc-lint tdd-discipline`)
+
+| Round | RED | GREEN | Review |
+|---|---|---|---|
+| 1 | 23dc13b (11 failures); orchestrator ee06039 (the `tdd-discipline` job checks out the PR head and passes base, branch and author) | 9b3cb29, 20e6826. A branch dry run then found superseded RED tests and placeholder digests (CD-57) | operator decisions CD-57 (ffaf284) |
+| 2 | chore af24f57 (`make contracts` validates `policy/ci.yaml`); ef52fff (5 failures) | f1620bd | `request_changes`: B1 skipped tests passed as superseded; B2 non-test files in a RED. Escalated: E1 the PR supplied the policy and the checker, E2 `agent/*` skipped the check |
+| 3 | orchestrator 09804d0 (CD-58); 4cce571 (10 failures) | 4f185f0. The dry run rejected 4cce571's own struct-field stubs → CD-59 (00eb09e), one extra attempt granted | — |
+| extra | f54d076 (2 failures) | a310389 | **`approve`** at a310389 |
+
+Implementer attempts used: 3 of 3, plus 1 granted by the operator (CD-59). Red target: `test GO_TEST_PKGS=./src/internal/lint/...`.
+
+| Criterion / rule | Test(s) | Result at a310389 |
+|---|---|---|
+| 52-AC-4 (17 outcomes) | `TestDiscipline/*` (25 subtests) | pass |
+| T4 line, multiple packages, safe values (CD-54/58) | `TestDiscipline_RedTargetLine`, `TestTrusted_RedTargetInjection_CD58c` | pass (gap FU1) |
+| T5 empty baseline, fallbacks, wrapper adapter (CD-56) | `TestDiscipline_Baseline`, `TestDiscipline_WrapperAdapterAndFallback` | pass |
+| Several REDs per PR, T8, `chore` commits | `TestDiscipline_MultipleRedCommits` | pass |
+| T7 supersession (CD-57) | `TestDiscipline_Superseded*`, `…SkippedNotAbsent_B1` | pass |
+| T3 a RED holds only tests and stubs; stub markers; field stubs (CD-50/59) | `…RedWithOtherFiles_B2`, `…StubMarker*`, `…FieldStubs_*` | pass (gap FU2) |
+| Trusted inputs; `agent/*` (CD-58) | `TestTrusted_*`; hand test against a scratch base that has the checker (`policy_source` and `checker_source` both `base`, cleanup verified) | pass |
+| `policy/ci.yaml` equals the plan block and validates | `TestRealTree_*` | pass |
+| 52-AC-3, checker side | branch dry run before this commit: 22 RED commits, all `build_ok`; `red.failed` holds 375 ids, including S2's layout-check RED 0d80999; the only failures were the two superseded sets, which this commit's `TDD-Superseded:` lines declare | pending the CI run on the PR |
+
+Follow-ups (not blocking; FU1 needs an operator CD):
+- **FU1:** the CD-58 safe set still allows `${`, `|` and parentheses. `GO_TEST_RUN=${shell …}` runs through make, and `GO_TEST_PKGS` is unquoted in `mk/test.mk`. This grants nothing new, since CI already runs PR code, but values should be stricter.
+- **FU2:** an embedded field is accepted as a field stub, although it adds promoted methods. It should be rejected.
+- **FU3:** an added blank import (`import _ "…"`, which runs `init`) is allowed in a RED.
+- **FU4:** `mk/tdd.mk` checks the `$TDD_BASE` tip, but the checker reports from the merge base. The recipe should use `git merge-base`.
+- **FU5:** the base-worktree build path has no end-to-end test; it was verified by hand.
+- **FU6:** `mk/tdd.mk` and `verify.yaml` come from the PR head, so human review of these protected paths is the control. Full enforcement needs a workflow the PR cannot edit (Forgejo lane).
+- **FU7:** the checker's temporary directory is not removed on an error return.
+- **Runtime:** about 17–20 min on this branch, within the 40-minute job timeout.
+
+#### S7 — Docker CI fixes
+
+The first Actions run of PR #144 (54f43f3) failed every container job on Docker rootful: `/tmp` was mounted `--tmpfs /tmp:rw,nosuid,nodev,size=1g`, and Docker's tmpfs default is `noexec`, so neither Go binaries nor the wrapper's stub engines could run there. Rootless Podman allows exec, so every local run had passed. `check-pins.sh`'s "got exit 0" was a hard-coded failure message, printed because its precondition failed for the same reason.
+
+| Commit | Role |
+|---|---|
+| 200dcc3 | RED (`toolbox-check`): the `/tmp` tmpfs must have `exec,nosuid,nodev,size=1g` and not `noexec` in all four engine modes (4 failures); `real-engine.sh` adds a /tmp-exec check and a `go run` check |
+| 64e104a | GREEN: `--tmpfs /tmp:rw,exec,nosuid,nodev,size=1g` |
+| 4e21991 | chore: the real-engine /tmp-exec check compares stdout only (rootless Podman prints warnings on stderr) |
+
+Review: **`approve`** at 4e21991 (attempt 1 of 3). Security: no regression under plan 02 §13, since `nosuid` and `nodev` stay and the repository mount is already rw and exec. Follow-ups: name `exec,nosuid,nodev,size=1g` in plan 02 §14.3's mount table; give `check-pins.sh` a real failure message.
+
+### F01 — node-level evidence
+
+| Criterion | Evidence | Status |
+|---|---|---|
+| 01-AC-4 | Actions run [38978817161](https://github.com/tuckermclean/strange-company/actions/runs/38978817161) `verify` job (Docker rootful) on 4e21991: `summary.json` lists 12 of 12 targets `pass`; local host `make verify` on 4e21991 (rootless Podman) gives the identical target set and results | **pass** |
+| 02-AC-14..16 on Docker rootful | run [38978817153](https://github.com/tuckermclean/strange-company/actions/runs/38978817153) `toolbox` job: `real-engine.sh` and `check-pins.sh` with `SC_CONTAINER_ENGINE=docker` | **pass** |
+| 52-AC-5, 01-AC-6, 52-AC-8 on Docker | run 38978817153 `verify-e2e` job: two `--network none`, `SC_FORBID_PAID=1` runs of `make verify`, both 12 of 12 pass; summaries identical after removing timing fields | **pass** |
+| 01-AC-3 (Docker host without Go) | the `verify` job above (the runner's Go is never used: everything runs in the ci image) | **pass** |
+| 01-AC-13 / 52-AC-3 | the `tdd-discipline` job on this commit (the PR head): `report.json` with `red.failed` non-empty and `red.build_ok: true`, S2 layout-check RED 0d80999 included. On 4e21991 it failed only on the two superseded sets, which this commit declares | see the PR's run on this head |
+| 52-AC-2 | operator adds `verify`, `tdd-discipline` and `e2e-gate` (source: GitHub Actions) to the `main-gates` ruleset after merge (plan 52 §8.2a) | operator action |
