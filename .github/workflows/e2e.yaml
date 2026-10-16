@@ -62,11 +62,12 @@ jobs:
             changed=$(git diff --name-only "$BASE_SHA" HEAD)
             toolbox=false
             verify_e2e=false
-            if grep -q -e '^toolbox/' -e '^bootstrap$' -e '^test/e2e/wrapper/' <<<"$changed"; then
+            if grep -q -e '^toolbox/' -e '^bootstrap$' -e '^test/e2e/wrapper/' -e '^\.github/workflows/e2e\.yaml$' \
+              <<<"$changed"; then
               toolbox=true
             fi
             if grep -q -e '^Makefile$' -e '^mk/' -e '^src/' -e '^toolbox/' -e '^bootstrap$' -e '^policy/' \
-              -e '^test/e2e/verify/' <<<"$changed"; then
+              -e '^test/e2e/verify/' -e '^versions/' -e '^gitops/' -e '^\.github/workflows/e2e\.yaml$' <<<"$changed"; then
               verify_e2e=true
             fi
           elif [ "$EVENT" = schedule ] && [ "$UNCHANGED" = true ]; then

@@ -101,8 +101,14 @@ jobs:
           INPUTS_ID: ${{ steps.toolbox.outputs.id }}
         run: docker load -i ".cache/ci-image/$INPUTS_ID.tar"
 
-      - name: make verify
-        run: make verify
+      # Plan 52 D4 / 01-AC-6: warm the caches with network, then run make verify offline.
+      - name: Warm the chart and Go module caches
+        run: |
+          ./bootstrap exec --image ci -- make gitops-cache
+          ./bootstrap exec --image ci -- sh -c 'cd src && go mod download'
+
+      - name: make verify (offline)
+        run: ./bootstrap exec --image ci --network none -- make verify
 
       - name: Save the ci image for the cache
         if: always() && steps.ci-image.outputs.cache-hit != 'true'
