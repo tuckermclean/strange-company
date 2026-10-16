@@ -39,6 +39,8 @@ def arch():
 def install(tool, data_path, url):
     dest = tool["install"]["to"]
     member = tool["install"].get("extract")
+    if member:
+        member = member.replace("{version}", tool["version"]).replace("{arch}", arch())
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     if member:
         with tempfile.TemporaryDirectory() as tmp:

@@ -3,6 +3,7 @@
 !/bootstrap.env.example
 /.bootstrap/
 /.cache/
+/.cache
 /out/
 *.tfstate
 *.tfstate.*

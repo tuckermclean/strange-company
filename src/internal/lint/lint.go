@@ -56,10 +56,10 @@ func (r Result) failed() bool {
 	return false
 }
 
-// Main implements `sc-lint <layout|dag|locks|secrets|quarantine> [--root DIR]`. Exit codes: 0 pass, 1 findings, 2 usage or I/O error.
+// Main implements `sc-lint <layout|dag|locks|secrets|quarantine|netcheck> [--root DIR]`. Exit codes: 0 pass, 1 findings, 2 usage or I/O error.
 func Main(args []string, stdout, stderr io.Writer) int {
 	if len(args) < 1 {
-		fmt.Fprintln(stderr, "usage: sc-lint <layout|dag|locks|secrets|quarantine> [--root DIR]")
+		fmt.Fprintln(stderr, "usage: sc-lint <layout|dag|locks|secrets|quarantine|netcheck> [--root DIR]")
 		return 2
 	}
 	var (
@@ -77,6 +77,8 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		check, name = SecretsScan, "secrets-scan"
 	case "quarantine":
 		check, name = QuarantineCheck, "quarantine-check"
+	case "netcheck":
+		check, name = NetCheck, "netcheck"
 	default:
 		fmt.Fprintf(stderr, "sc-lint: unknown command %q\n", args[0])
 		return 2

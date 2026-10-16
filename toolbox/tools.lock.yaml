@@ -29,6 +29,18 @@ spec:
       versionCommand: [actionlint, -version]
       versionRegex: '^{version}$'
       verifiedAt: 2026-10-15
+    - name: golangci-lint
+      set: ci
+      version: "2.14.0"                     # baseline: golangci-lint v2.14.0 (kubeconform entry notes)
+      selectedBy: "baseline:kubeconform"
+      url: https://github.com/golangci/golangci-lint/releases/download/v{version}/golangci-lint-{version}-linux-{arch}.tar.gz
+      sha256:
+        amd64: "ab90aeb7b066f92a33415b638a50fe5344bbb75a0d32ad30cc248d88f81032ab"
+        arm64: "ee7ec5f3453d15ddf106fae5a4d6c71737712348a979d1fe9cd52ec7ea299bae"
+      install: {extract: "golangci-lint-{version}-linux-{arch}/golangci-lint", to: /usr/local/bin/golangci-lint}
+      versionCommand: [golangci-lint, --version]
+      versionRegex: '^golangci-lint has version {version} '
+      verifiedAt: 2026-10-15
   baseImages:
     debian: {ref: docker.io/library/debian:trixie-slim, digest: "sha256:918311b7b6c4c6f68b232ba516584925f6c78ad82b6fd534b98979df6438e483"}
     golang: {ref: docker.io/library/golang:1.27.2-trixie, digest: "sha256:2d658507a011f1eadc0114d7a421b312b2e77d9042a24036a26e267cc9231677"}
