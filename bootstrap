@@ -211,7 +211,7 @@ set -- "$@" run --rm -i
 set -- "$@" $user_flags --cap-drop ALL --security-opt no-new-privileges --security-opt label=disable \
 	--network "$network" --hostname sc-toolbox --name "sc-toolbox-$$" \
 	-v "$REPO:$REPO" -w "$workdir" \
-	--tmpfs "$tmpfs_run" --tmpfs /tmp:rw,nosuid,nodev,size=1g \
+	--tmpfs "$tmpfs_run" --tmpfs /tmp:rw,exec,nosuid,nodev,size=1g \
 	-e "SC_REPO_ROOT=$REPO" -e SC_TOOLBOX_SOURCE=built -e "SC_TOOLBOX_IMAGE_REF=$image_ref" \
 	-e "SC_ENGINE=$mode" -e "SC_HOST_OS=$(uname -s)" -e "TERM=${TERM:-dumb}" -e LANG=C.UTF-8 -e TZ=UTC \
 	-e "GIT_CONFIG_COUNT=1" -e "GIT_CONFIG_KEY_0=safe.directory" -e "GIT_CONFIG_VALUE_0=$REPO"
