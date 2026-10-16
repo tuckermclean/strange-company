@@ -101,9 +101,9 @@ func TestMakeContracts_RejectsBadReservedBranchPrefixes_CD55(t *testing.T) {
 				t.Fatal(err)
 			}
 			s := string(b)
-			if strings.Contains(s, "reservedBranchPrefixes") {
-				t.Fatal("policy.yaml already holds reservedBranchPrefixes; the mutation below would double it")
-			}
+			// The real policy.yaml may or may not hold the field: drop any existing block so the
+			// insertions below never double the key.
+			s = stripReservedBranchPrefixes(s)
 			// Insert the block as the first key of spec so it is valid YAML whatever follows.
 			ins := strings.Replace(s, "spec:\n", "spec:\n"+good, 1)
 			if err := os.WriteFile(p, []byte(ins), 0o644); err != nil {
@@ -126,4 +126,31 @@ func TestMakeContracts_RejectsBadReservedBranchPrefixes_CD55(t *testing.T) {
 			}
 		})
 	}
+}
+
+// stripReservedBranchPrefixes removes a reservedBranchPrefixes key from spec: the key line plus, for the
+// block form, the following list items / continuation lines (indented deeper than the key, or "- " items at
+// the key's own indent). The flow form is a single line and is removed with the key line.
+func stripReservedBranchPrefixes(s string) string {
+	lines := strings.SplitAfter(s, "\n")
+	out := make([]string, 0, len(lines))
+	for i := 0; i < len(lines); i++ {
+		l := lines[i]
+		if !strings.HasPrefix(strings.TrimSpace(l), "reservedBranchPrefixes:") {
+			out = append(out, l)
+			continue
+		}
+		indent := len(l) - len(strings.TrimLeft(l, " "))
+		for i+1 < len(lines) {
+			n := lines[i+1]
+			t := strings.TrimSpace(n)
+			ni := len(n) - len(strings.TrimLeft(n, " "))
+			if t == "" || ni > indent || (ni == indent && strings.HasPrefix(t, "- ")) {
+				i++
+				continue
+			}
+			break
+		}
+	}
+	return strings.Join(out, "")
 }
