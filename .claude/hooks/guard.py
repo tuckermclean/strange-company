@@ -99,7 +99,10 @@ def forbidden_shell_write(cmd: str, root: str) -> str | None:
         if not token or token.startswith("-") or token.startswith("/dev/"):
             return False
         path = rel(root, token)
-        return not path.startswith("../") and match(path, ROLE_FORBIDDEN)
+        if path.startswith("../"):
+            return False
+        # A whole directory (`rm -rf plans`, `cp -t .claude/ x`) counts as writing below it.
+        return match(path, ROLE_FORBIDDEN) or match(path.rstrip("/") + "/x", ROLE_FORBIDDEN)
 
     for target in REDIRECT.findall(cmd):
         if bad(target):

@@ -198,8 +198,8 @@ A merge commit in `B..HEAD` fails with `TDD_MERGE_COMMIT`. PRs are linear; rebas
 | T1 | Classification: if no file changed in `B..HEAD` matches `behaviorPaths`, or every changed behavior-path file also matches `testPaths` → `not-applicable` | — |
 | T2 | Exemption: the PR head commit has trailer `TDD-Exempt: <class>: <reason ≥ 20 chars>` with `<class>` in `exemptionClasses`, and the class's path constraint holds (below) → `exempt` (recorded in the report; the human merger sees it) | `TDD_EXEMPTION_INVALID` |
 | T3 | There is ≥ 1 RED commit R: subject matches `^test(\([^)]+\))?: ` and every changed file matches `testPaths` or carries only **declared stubs** (§8.3a). No commit before the first R changes a behavior-path file outside `testPaths` | `TDD_NO_RED_COMMIT`, `TDD_IMPLEMENTATION_BEFORE_RED` |
-| T4 | Red target: R's `TDD-Red-Target: <target> [GO_TEST_PKGS=… ] [GO_TEST_RUN=…]` line, with `<target>` in `redTargets`. The line is read from anywhere in the commit message, not only from the git trailer block; exactly one such line is allowed. `GO_TEST_PKGS` may hold several space-separated package patterns, up to the next `KEY=` token (CD-54). Default `test` with `GO_TEST_PKGS` = the packages containing `_test.go` files changed in R | `TDD_RED_TARGET_INVALID` |
-| T5 | Baseline: run the red target at B in a clean `git worktree` and collect the set of JUnit testcase IDs `S_B` (`classname.name`). A package absent at B contributes nothing | `TDD_BASELINE_FAILED` (the target fails at B: the PR is based on a broken `main`) |
+| T4 | Red target: R's `TDD-Red-Target: <target> [GO_TEST_PKGS=… ] [GO_TEST_RUN=…]` line, with `<target>` in `redTargets`. The line is read from anywhere in the commit message, not only from the git trailer block, and must start a line (`^TDD-Red-Target:`). Exactly one such line is allowed; none or two or more give `TDD_RED_TARGET_INVALID`. `GO_TEST_PKGS` may hold several space-separated package patterns, up to the next `KEY=` token (CD-54). Default `test` with `GO_TEST_PKGS` = the packages containing `_test.go` files changed in R | `TDD_RED_TARGET_INVALID` |
+| T5 | Baseline: run the red target at B in a clean `git worktree` and collect the set of JUnit testcase IDs `S_B` (`classname.name`). A package absent at B contributes nothing, and so does a red target that does not exist at B, for example when there is no `Makefile` or no such target (CD-56) | `TDD_BASELINE_FAILED` (the target fails at B: the PR is based on a broken `main`) |
 | T6 | RED run at R (clean worktree):
 - exit code ≠ 0;
 - JUnit present with ≥ 1 testcase;
@@ -221,6 +221,8 @@ spec:
     redTargets: [test, contracts, policy-check, gitops-validate, chart-test, test-ansible-k3s, tofu-validate,
                  lint-alerts, lint-metrics, profiles-check, locks-check, secrets-lint, layout-check,
                  toolbox-check]
+    redTargetFallbacks:
+      toolbox-check: "sh test/e2e/wrapper/run.sh"
     exemptionClasses:
       docs-only:                {paths: ["**/*.md", "adr/**", "plans/**", "procedures/**"]}
       ci-config:                {paths: [".github/**", ".woodpecker/**", "policy/ci.yaml"]}
@@ -231,7 +233,14 @@ spec:
       policy-tuning:            {paths: ["policy/**"], requires: "policy-check passes; values only"}
 ```
 
-**Non-Go red targets (CD-54).** A red target that writes no JUnit, such as `toolbox-check` (the POSIX-sh wrapper harness, whose stable output is one `ok <id>` or `FAIL <id>` line per check), is turned into testcases by the checker's adapter. Each check line becomes a testcase named by its check id, so T5–T7 apply unchanged. The adapter is part of `sc-lint tdd-discipline`.
+**Non-Go red targets (CD-54, made precise by CD-56).** A red target that writes no JUnit, such as `toolbox-check` (the POSIX-sh wrapper harness), is turned into testcases by the checker's adapter, which is part of `sc-lint tdd-discipline`:
+- every output line matching `^\s*(ok|FAIL)\s+(.+)$` is one testcase: `ok` passes and `FAIL` fails;
+- `classname` is the wrapper script's basename, taken from the `<script>: N checks, M failed` summary line that closes each block; `name` is the check text with surrounding whitespace trimmed;
+- a repeated `classname.name` within one run gets a ` #2`, ` #3`, … suffix in output order;
+- a run that exits non-zero without printing any `FAIL` line is a harness crash, treated like a build failure (`TDD_RED_BUILD_FAILURE` at R, `TDD_BASELINE_FAILED` at B).
+T5–T7 then apply unchanged.
+
+**Red-target fallbacks (CD-56).** `tddDiscipline.redTargetFallbacks` maps a red target to the literal command to run at a commit where the Make target does not exist yet (`toolbox-check: "sh test/e2e/wrapper/run.sh"`, for F01's first RED, made before the `Makefile`). The fallback is used only when `make -n <target>` fails at that commit, and the report records that it was used.
 
 **§8.3a Declared stubs in RED commits (CD-44; same shape as ADR-0352).** A RED test for a symbol that does not exist yet cannot compile, and a build failure is never valid RED (T6). So R may also change Go files under `src/**` outside `testPaths`, but only with **declared stubs**:
 - additions only (no deleted or modified lines), in existing files or in new files that contain only a package clause, imports, stubs and type declarations (CD-50: struct, interface or named types with no methods other than declared stubs, and no `var`, `const` or `init`);

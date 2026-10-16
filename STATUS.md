@@ -19,7 +19,7 @@
 | Operator procedures | 63 | `procedures/` |
 | ADRs (22 global + subsystem ADRs) | 79 | `adr/` |
 | SPEC issues register (59 entries, none blocking) | 1 | `plans/spec-issues.md` |
-| Consolidation decisions (CD-01..CD-55) | 1 | `plans/reviews/consolidation-decisions.md` |
+| Consolidation decisions (CD-01..CD-56) | 1 | `plans/reviews/consolidation-decisions.md` |
 | Independent fresh-context reviews (SPEC §132 items 43–47), plus closure verification | 10 + 3 | `plans/reviews/review-*.md`, `plans/reviews/closure-*.md` |
 | External adversarial reviews of PR #138 (two passes) and their disposition | 1 | `plans/reviews/external-review-pr138.md` |
 | Blind reviews (no access to earlier review conclusions; CD-34) | 5 | `plans/reviews/blind-*.md` |
@@ -84,6 +84,7 @@
    - CD-53: with `SC_FORBID_PAID=1` the Gateway accepts only fake upstream hosts (loopback, `localhost`, `*.invalid`, `*.test`) and fails closed on everything else (found in the F01 slice S4 review).
    - CD-54: the TDD checker reads `TDD-Red-Target:` from anywhere in the message and adapts wrapper-harness output into testcases; the guard hook also blocks role-agent shell writes into owned paths (found in the F01 slice S6 review).
    - CD-55: `reservedBranchPrefixes` is added to the repo-policy schema, as plan 01 describes.
+   - CD-56: a red target missing at the base contributes an empty baseline; `redTargetFallbacks` covers commits made before the Make target existed; the wrapper-output adapter and the T4 line rules are specified precisely (decided before F01 slice S5).
 
 ## SPEC §125 Stage-0 Definition of Done
 
@@ -151,7 +152,7 @@ Implementation is a separate task. Start at DAG node **F01** in `PLAN.md`, follo
 
 ### F01 — repo-skeleton
 
-Branch `node/F01-repo-skeleton`, built with `/sc-node F01` (CD-44). Base `main` 0d4e721. Five slices: S1 seed `ci` image and `./bootstrap exec`; S2 layout-check; S3 locks, secrets scan, quarantine and CI workflows; S4 `make verify`, lint and determinism; S5 TDD discipline checker. **Status: in progress (S1–S4 approved).**
+Branch `node/F01-repo-skeleton`, built with `/sc-node F01` (CD-44). Base `main` 0d4e721. Five slices: S1 seed `ci` image and `./bootstrap exec`; S2 layout-check; S3 locks, secrets scan, quarantine and CI workflows; S4 `make verify`, lint and determinism; S5 TDD discipline checker. **Status: in progress (S1–S4 and S6 approved; S5 next).**
 
 #### S1 — seed `ci` image, `./bootstrap exec`, Makefile re-exec
 
@@ -282,3 +283,34 @@ Deviations and open items (follow-up slice S6, before S5):
   - the gateway function is `gateway.ValidateUpstream`;
   - `GOFLAGS=-mod=readonly` in the image replaces `-buildvcs=false`, which `make build` passes explicitly;
   - the Go cache defaults are set in `sc-entrypoint`, and a caller's own values win.
+
+#### S6 — carried follow-ups (run before S5)
+
+| Round | RED / tests | GREEN | Review |
+|---|---|---|---|
+| 1 | 5503d4e (toolbox-check, 11 failures; also moves `test/e2e/verify/run` into a temporary clone); afad724 (lint, 4 failures); chore 18dc460 (JUnit converter tests, passing) | 2865990 | `request_changes`: the clone overlay was not faithful; RED target lines were not git trailers; wrapper REDs had no JUnit |
+| 2 | orchestrator 943b918 (CD-54, CD-55, guard shell-write blocking, sc-tester trailer rule); chore bbf7d74 (faithful overlay plus a scratch-repo test); 4da04cb (CD-55, 7 failures); 3f245c9 (operator-approved correction of a self-contradicting CD-55 test, after the implementer's TEST_SPEC_CONFLICT) | 60f069e | **`approve`** at 60f069e |
+
+Implementer attempts used: 3 of 3 (attempt 2 stopped with TEST_SPEC_CONFLICT). Red targets: `toolbox-check` and `test GO_TEST_PKGS=./src/internal/lint/...`.
+
+| Follow-up | Test(s) | Result at 60f069e |
+|---|---|---|
+| `test/e2e/verify/run` never touches the checkout (it runs in a `git clone --no-local` under a temp dir) | `test/e2e/wrapper/verify-script.sh`, `test/e2e/wrapper/overlay.sh` (10 checks: staged rename, symlinks, non-ASCII name, deletions, failed copy) | pass; `sh test/e2e/verify/run` → 0, and `out/` and the brief stay untouched |
+| Re-exec keeps override whitespace (01-AC-5) | `makefile-reexec.sh` | pass |
+| Missing or unreadable Containerfile → exit 3; stage names case-insensitive (02-R-1, plan 02 §21) | `stub-unpinned-from.sh` | pass |
+| Secrets scan: allowlist file scanned, `EXAMPLE` only for AWS, BEGIN + blank + body flagged, stale path named once (01-AC-8) | `secrets_followups_test.go` | pass |
+| JUnit converter (CD-50) | `convert_cases_test.go` | pass |
+| `reservedBranchPrefixes` (CD-55) | `reserved_prefixes_test.go` | pass; the field is optional in the schema, and this repository's exact list is enforced by test |
+
+Follow-ups recorded (not blocking):
+- `makefile-reexec.sh:17` still inherits `MAKEFLAGS`/`MAKEOVERRIDES` when run from a make given command-line variables. A one-line `chore` fix is pending.
+- `test/e2e/verify/run` removes stale summaries only at the end, so an early exit leaves an older summary in place, and the comment at :126 is out of date.
+- `bootstrap:125` hashes an unreadable input as the literal `unreadable` (implementation choice, not in plan 02 §14.2 step 5).
+- `verify-script.sh` passed at its own RED (5503d4e): it is a static guard, evidence only.
+- Plan 22 §9.4 needs merge semantics for `reservedBranchPrefixes` (union, like `protectedBranches`).
+- **The guard hook is a heuristic.** Whole-directory operands are now caught (fixed by the orchestrator after the review). It still misses `&>`, `cd dir && …`, writes through a variable, `perl -pi` and writes inside `./bootstrap exec`. It also has false positives for copying from a plan file and for paths inside a `git commit -m` message.
+- **T8 warnings S5 must report:**
+  - 6b96b5c (S2 RED file, gofmt only);
+  - 3f245c9 (CD-55 test correction);
+  - bbf7d74 (changes `test/e2e/wrapper/makefile-reexec.sh`, `run.sh` and `test/e2e/verify/run`).
+- 5503d4e's `TDD-Red-Target:` sits in the body; CD-54 covers it.
