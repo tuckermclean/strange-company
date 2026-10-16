@@ -56,6 +56,11 @@ properties:
         $ref: "#/$defs/GlobList"
       protectedBranches:
         $ref: "#/$defs/GlobList"
+      reservedBranchPrefixes:
+        description: Branch-name prefixes reserved for platform use; each ends in `/` (plan 01 section 6.4, section 7.3; CD-55).
+        type: array
+        uniqueItems: true
+        items: {type: string, pattern: "^[a-z][a-z0-9-]*/$"}
       discoveryConfig:
         description: Additions to platform discovery protection (union).
         type: object
@@ -217,6 +222,7 @@ examples:
       fixturePaths: ["**/testdata/**"]
       testInfraPaths: ["src/internal/testutil/**"]
       stubPaths: ["src/**/*.go"]
+      reservedBranchPrefixes: ["agent/", "bootstrap/", "renovate/", "sc-verify/", "release/"]
       protectedPaths: ["Makefile", "mk/**", "toolbox/**", "gitops/clusters/*/flux-system/**", "test/e2e/**"]
       discoveryConfig:
         wholeFiles: ["Makefile", "mk/**"]
@@ -254,3 +260,9 @@ x-invalid-examples:
       kind: RepositoryPolicy
       metadata: {name: x}
       spec: {protectedPaths: ["docs/**"]}
+  - reason: A reserved branch prefix must end in a slash.
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: RepositoryPolicy
+      metadata: {name: x}
+      spec: {testPaths: ["tests/**"], reservedBranchPrefixes: ["agent"]}

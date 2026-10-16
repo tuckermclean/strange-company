@@ -79,6 +79,12 @@ spec:
   protectedBranches:
     - "main"
     - "release/*"
+  reservedBranchPrefixes:
+    - "agent/"
+    - "bootstrap/"
+    - "renovate/"
+    - "sc-verify/"
+    - "release/"
   testProtection:
     existingTestModification: deny
   merge:
