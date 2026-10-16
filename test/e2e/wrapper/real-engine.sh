@@ -68,7 +68,7 @@ $B exec --image ci --network none -- curl -sS -m 5 https://proxy.golang.org >/de
 
 # /tmp must allow exec (Docker tmpfs defaults to noexec; plan 02 14.3): scripts and go-build outputs run from /tmp.
 RC=0
-OUT=$($B exec --image ci -- sh -c 'printf "#!/bin/sh\necho ran\n" > /tmp/x && chmod +x /tmp/x && /tmp/x' 2>&1) || RC=$?
+OUT=$($B exec --image ci -- sh -c 'printf "#!/bin/sh\necho ran\n" > /tmp/x && chmod +x /tmp/x && /tmp/x' 2>/dev/null) || RC=$?
 expect_eq "02-AC-16 an executable script in /tmp runs (prints ran)" ran "$OUT"
 RC=0
 $B exec --image ci -- sh -c 'cd src && go run ./cmd/sc-lint version' >"$TMP/golint.out" 2>&1 || RC=$?
