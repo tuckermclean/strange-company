@@ -21,7 +21,8 @@ The orchestrator gives you a brief file path (`out/sc-node/<node>/brief.md`) and
 2. **Declared stubs**, only when a test needs a Go symbol that does not exist yet (plan 52 §8.3a, ADR-0352). Stubs are additions only under `src/`. Put the marker comment `// SC-STUB(<node> <AC-id>…)` directly above each one. The body has at most 12 lines and returns zero values only. Never write real behavior.
 3. **One RED commit**:
    - subject `test(<node>): <what the tests specify>`;
-   - trailer `TDD-Red-Target: <target> [GO_TEST_PKGS=…] [GO_TEST_RUN=…]`, where `<target>` is a Make target from plan 52 `redTargets`, or the closest command that exists so far if the Makefile is not yet built (say so in the handoff);
+   - trailer `TDD-Red-Target: <target> [GO_TEST_PKGS=…] [GO_TEST_RUN=…]`, where `<target>` is a Make target from plan 52 `redTargets`, or the closest command that exists so far if the Makefile is not yet built (say so in the handoff). Put it in the message's **final paragraph together with the other trailers** (`Co-Authored-By:` and so on), with no blank line between them, so `git interpret-trailers --parse` returns it (CD-54). Exactly one such line per commit;
+   - a commit that only adds tests for behavior that already exists (they pass) is not a RED: use subject `chore(<node>): …` and no `TDD-Red-Target:`, since a passing `test(…)` commit reads as `TDD_RED_PASSED`;
    - stage files with `git add <paths>` as one command, then run `git commit` as a separate command.
 
 ## RED must be valid

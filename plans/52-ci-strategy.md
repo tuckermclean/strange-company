@@ -198,7 +198,7 @@ A merge commit in `B..HEAD` fails with `TDD_MERGE_COMMIT`. PRs are linear; rebas
 | T1 | Classification: if no file changed in `B..HEAD` matches `behaviorPaths`, or every changed behavior-path file also matches `testPaths` → `not-applicable` | — |
 | T2 | Exemption: the PR head commit has trailer `TDD-Exempt: <class>: <reason ≥ 20 chars>` with `<class>` in `exemptionClasses`, and the class's path constraint holds (below) → `exempt` (recorded in the report; the human merger sees it) | `TDD_EXEMPTION_INVALID` |
 | T3 | There is ≥ 1 RED commit R: subject matches `^test(\([^)]+\))?: ` and every changed file matches `testPaths` or carries only **declared stubs** (§8.3a). No commit before the first R changes a behavior-path file outside `testPaths` | `TDD_NO_RED_COMMIT`, `TDD_IMPLEMENTATION_BEFORE_RED` |
-| T4 | Red target: R's trailer `TDD-Red-Target: <target> [GO_TEST_PKGS=… ] [GO_TEST_RUN=…]`, with `<target>` in `redTargets`. Default `test` with `GO_TEST_PKGS` = the packages containing `_test.go` files changed in R | `TDD_RED_TARGET_INVALID` |
+| T4 | Red target: R's `TDD-Red-Target: <target> [GO_TEST_PKGS=… ] [GO_TEST_RUN=…]` line, with `<target>` in `redTargets`. The line is read from anywhere in the commit message, not only from the git trailer block; exactly one such line is allowed. `GO_TEST_PKGS` may hold several space-separated package patterns, up to the next `KEY=` token (CD-54). Default `test` with `GO_TEST_PKGS` = the packages containing `_test.go` files changed in R | `TDD_RED_TARGET_INVALID` |
 | T5 | Baseline: run the red target at B in a clean `git worktree` and collect the set of JUnit testcase IDs `S_B` (`classname.name`). A package absent at B contributes nothing | `TDD_BASELINE_FAILED` (the target fails at B: the PR is based on a broken `main`) |
 | T6 | RED run at R (clean worktree):
 - exit code ≠ 0;
@@ -230,6 +230,8 @@ spec:
       contract-definition:      {paths: ["contracts/**"], requires: "x-invalid-examples added or changed"}
       policy-tuning:            {paths: ["policy/**"], requires: "policy-check passes; values only"}
 ```
+
+**Non-Go red targets (CD-54).** A red target that writes no JUnit, such as `toolbox-check` (the POSIX-sh wrapper harness, whose stable output is one `ok <id>` or `FAIL <id>` line per check), is turned into testcases by the checker's adapter. Each check line becomes a testcase named by its check id, so T5–T7 apply unchanged. The adapter is part of `sc-lint tdd-discipline`.
 
 **§8.3a Declared stubs in RED commits (CD-44; same shape as ADR-0352).** A RED test for a symbol that does not exist yet cannot compile, and a build failure is never valid RED (T6). So R may also change Go files under `src/**` outside `testPaths`, but only with **declared stubs**:
 - additions only (no deleted or modified lines), in existing files or in new files that contain only a package clause, imports, stubs and type declarations (CD-50: struct, interface or named types with no methods other than declared stubs, and no `var`, `const` or `init`);
