@@ -206,7 +206,7 @@ A merge commit in `B..HEAD` fails with `TDD_MERGE_COMMIT`. PRs are linear; rebas
 - the build succeeded: no `go test -json` event with `Action: "fail"` on a package without a `Test` field caused by `[build failed]` or `[setup failed]`, and no JUnit `<error type="build">`;
 - the failed set `F_R` is non-empty;
 - every `f ∈ F_R` is either ∉ `S_B` (new) or a test whose function body changed in R (Go AST diff; for non-Go targets only "new" counts) | `TDD_RED_PASSED` (exit 0: the behavior already exists; for humans that is the `ALREADY_SATISFIED` analogue), `TDD_RED_BUILD_FAILURE`, `TDD_RED_PREEXISTING_FAILURE` |
-| T7 | HEAD: the same target exits 0, and every `f ∈ F_R` is present in HEAD's JUnit with result `passed` (not skipped) | `TDD_RED_TESTS_NOT_GREEN` (catches deleted or skipped acceptance tests) |
+| T7 | HEAD: the same target exits 0, and every `f ∈ F_R` is present in HEAD's JUnit with result `passed` (not skipped). Exception (CD-57): a RED test that a later R of the same PR legitimately renamed or moved may be absent if the PR head commit carries `TDD-Superseded: <test-id> by <commit>: <reason ≥ 20 chars>`, where `<commit>` is a later R in `B..HEAD`. A malformed or unmatched line fails with `TDD_SUPERSEDED_INVALID`; listed ids appear in the report for the human merger | `TDD_RED_TESTS_NOT_GREEN` (catches deleted or skipped acceptance tests) |
 | T8 | Warning only: a test file changed in R is modified again after R → `TDD_RED_TEST_MODIFIED` in `warnings[]`. The human reviewer must look (SPEC §53 analogue) | — |
 
 Configuration (`policy/ci.yaml`):

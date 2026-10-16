@@ -19,7 +19,7 @@
 | Operator procedures | 63 | `procedures/` |
 | ADRs (22 global + subsystem ADRs) | 79 | `adr/` |
 | SPEC issues register (59 entries, none blocking) | 1 | `plans/spec-issues.md` |
-| Consolidation decisions (CD-01..CD-56) | 1 | `plans/reviews/consolidation-decisions.md` |
+| Consolidation decisions (CD-01..CD-57) | 1 | `plans/reviews/consolidation-decisions.md` |
 | Independent fresh-context reviews (SPEC §132 items 43–47), plus closure verification | 10 + 3 | `plans/reviews/review-*.md`, `plans/reviews/closure-*.md` |
 | External adversarial reviews of PR #138 (two passes) and their disposition | 1 | `plans/reviews/external-review-pr138.md` |
 | Blind reviews (no access to earlier review conclusions; CD-34) | 5 | `plans/reviews/blind-*.md` |
@@ -85,6 +85,7 @@
    - CD-54: the TDD checker reads `TDD-Red-Target:` from anywhere in the message and adapts wrapper-harness output into testcases; the guard hook also blocks role-agent shell writes into owned paths (found in the F01 slice S6 review).
    - CD-55: `reservedBranchPrefixes` is added to the repo-policy schema, as plan 01 describes.
    - CD-56: a red target missing at the base contributes an empty baseline; `redTargetFallbacks` covers commits made before the Make target existed; the wrapper-output adapter and the T4 line rules are specified precisely (decided before F01 slice S5).
+   - CD-57: legitimately superseded RED tests are declared with a `TDD-Superseded:` line on the PR head commit; `cloneImage` and `verify.installerImage` are optional in the ci-policy schema until their images exist (found in the F01 slice S5 dry run).
 
 ## SPEC §125 Stage-0 Definition of Done
 
