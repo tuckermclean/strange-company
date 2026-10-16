@@ -19,4 +19,39 @@ for t in toolbox-check layout-check locks-check lint; do
 	expect_match "01-AC-5 tier-V sequence includes $t" "(^|[^A-Za-z0-9_-])$t([^A-Za-z0-9_-]|\$)" "$OUT"
 done
 
+# 01-AC-5 (S2 follow-up): make variable overrides reach ./bootstrap as one argv element with the exact value,
+# whatever shell metacharacters they hold. A stub ./bootstrap records its argv, one element per line.
+FX=$TMP/reexec
+mkdir -p "$FX"
+cp "$SC_ROOT/Makefile" "$FX/Makefile"
+cat >"$FX/bootstrap" <<'STUB'
+#!/bin/sh
+: >"$REEXEC_REC"
+for a in "$@"; do printf '%s\n' "$a" >>"$REEXEC_REC"; done
+STUB
+chmod +x "$FX/bootstrap"
+REEXEC_REC=$TMP/reexec.argv
+export REEXEC_REC
+check_override() { # name value
+	_val=$2
+	for _mode in dry real; do
+		rm -f "$REEXEC_REC"
+		_rc=0
+		if [ "$_mode" = dry ]; then
+			_line=$(cd "$FX" && env -u SC_IN_CONTAINER -u MAKEFLAGS -u MAKELEVEL -u MAKEOVERRIDES make -n test "GO_TEST_RUN=$_val" 2>"$TMP/err") || _rc=$?
+			# the printed command is what a shell would run: execute it against the stub
+			[ "$_rc" -ne 0 ] || (cd "$FX" && sh -c "$_line") >/dev/null 2>&1 || true
+		else
+			(cd "$FX" && env -u SC_IN_CONTAINER -u MAKEFLAGS -u MAKELEVEL -u MAKEOVERRIDES make test "GO_TEST_RUN=$_val") >/dev/null 2>"$TMP/err" || _rc=$?
+		fi
+		_want=$(printf 'exec\n--image\nci\n--\nmake\ntest\nGO_TEST_RUN=%s' "$_val")
+		_got=
+		[ ! -f "$REEXEC_REC" ] || _got=$(cat "$REEXEC_REC")
+		expect_eq "01-AC-5 $_mode: $1 reaches ./bootstrap as one argv element" "$_want" "$_got"
+	done
+}
+check_override "alternation" 'TestA|TestB'
+check_override "trailing dollar" 'TestA$'
+check_override "anchored group" '^(A|B)$'
+
 finish
