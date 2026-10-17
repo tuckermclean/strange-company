@@ -357,7 +357,7 @@ func (r *runner) checkOpenAPI(rel string, schemas []*schemaFile, oas *jsonschema
 // its own member keys are names and not keywords.
 func nameMapKey(ptr, k string) bool {
 	switch k {
-	case "properties", "patternProperties", "$defs", "dependentSchemas":
+	case "properties", "patternProperties", "$defs", "dependentSchemas", "responses":
 		return true
 	case "schemas":
 		return ptr == "/components"
