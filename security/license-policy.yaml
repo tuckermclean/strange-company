@@ -31,4 +31,13 @@ spec:
     - Commons-Clause
     - CC-BY-NC-4.0
     - CC-BY-NC-SA-4.0
-  exceptions: []
+  exceptions:
+    # licensecheck v0.3.1 matches both licences of this module's single LICENSE file (MIT, then the
+    # Apache-2.0 notice) but at 85 % total coverage, below the 90 % threshold of plan 23 section 14.11,
+    # so it would be NOASSERTION. Both licences are allowed above. Found by F02 slice S4.
+    - module: go.yaml.in/yaml/v3
+      version: v3.0.5
+      license: MIT AND Apache-2.0
+      reason: licensecheck v0.3.1 matches MIT and Apache-2.0 at 85 % coverage because of the surrounding notice prose; both licences are allowed
+      approvedBy: tuckermclean
+      created: "2026-10-17"
