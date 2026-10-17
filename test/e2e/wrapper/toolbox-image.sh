@@ -119,9 +119,11 @@ if [ "$RC" -eq 0 ]; then
 	"$eng" rm -f "$cname" >/dev/null 2>&1 || true
 fi
 [ -d "$dir/opt/sc" ] && ok "02-AC-9 the toolbox filesystem was exported" || bad "02-AC-9 the toolbox filesystem was exported" "no $dir/opt/sc"
+# S2 review N1: the scan config is passed explicitly; the image must not carry its own /.gitleaks.toml.
+[ ! -e "$dir/.gitleaks.toml" ] && ok "02-AC-9 the exported toolbox filesystem has no /.gitleaks.toml" || bad "02-AC-9 the exported toolbox filesystem has no /.gitleaks.toml" "found $dir/.gitleaks.toml"
 RC=0
 # shellcheck disable=SC2086
-OUT=$($B exec $IMG -- gitleaks dir --no-banner --redact --exit-code 1 "$dir" 2>&1) || RC=$?
+OUT=$($B exec $IMG -- gitleaks dir --no-banner --redact --exit-code 1 --config "$SC_ROOT/toolbox/gitleaks-image.toml" "$dir" 2>&1) || RC=$?
 expect_eq "02-AC-9 gitleaks dir over the exported toolbox filesystem finds nothing" 0 "$RC"
 [ "$RC" -eq 0 ] || printf '%s\n' "$OUT" | tail -n 15 | sed 's/^/       /'
 rm -rf "$dir"
