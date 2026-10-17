@@ -1,20 +1,28 @@
-# Seed `ci` image (plan 02 section 14.9, CD-45). One stage; F03 rebases it onto the toolbox stages.
-# Build context is the repository root, restricted by .dockerignore. Every FROM is pinned by digest.
-FROM docker.io/library/golang@sha256:2d658507a011f1eadc0114d7a421b312b2e77d9042a24036a26e267cc9231677 AS ci
+# Toolbox and ci images (plan 02 section 14.1). Targets: toolbox (final operator image) and ci (FROM toolbox).
+# Build context is the repository root, restricted by .dockerignore. Every external FROM is pinned by digest.
+# Tool downloads are verified by `sc-bootstrap toolbox fetch` against toolbox/tools.lock.yaml; a mismatch fails the
+# build with TOOLBOX_CHECKSUM_MISMATCH:<tool>. Debian packages come from the lock's snapshot date.
 
+# ---- gobuild: sc-bootstrap and the other src/cmd binaries (plan 01 section 6.2 flags; byte-identical for one inputs id)
+FROM docker.io/library/golang@sha256:2d658507a011f1eadc0114d7a421b312b2e77d9042a24036a26e267cc9231677 AS gobuild
 ARG SC_INPUTS_ID=unknown
-LABEL strange.company/toolbox-inputs-id=$SC_INPUTS_ID
+ENV GOTOOLCHAIN=local GOFLAGS=-mod=readonly CGO_ENABLED=0
+WORKDIR /src
+COPY src/ /src/
+RUN set -eu; \
+    id12=$(printf '%s' "$SC_INPUTS_ID" | cut -c1-12); \
+    mkdir -p /out; \
+    go build -trimpath -buildvcs=false \
+      -ldflags "-s -w -X strange.company/sc/internal/version.Version=in-$id12 -X strange.company/sc/internal/version.Commit=$SC_INPUTS_ID" \
+      -o /out/ ./cmd/...
 
+# ---- base: Debian trixie on the lock's snapshot, runtime packages, user sc (10001)
+FROM docker.io/library/debian@sha256:918311b7b6c4c6f68b232ba516584925f6c78ad82b6fd534b98979df6438e483 AS base
 COPY toolbox/tools.lock.yaml /usr/share/strange-company/tools.lock.yaml
-COPY toolbox/bin/ /opt/sc/bin/
-COPY tools/stage0/requirements.txt /tmp/stage0-requirements.txt
-COPY src/go.mod /tmp/go.mod
-
-# Debian snapshot (lock debianSnapshot) and the apt package sets (lock aptPackages) are read from the lock.
 RUN set -eu; \
     lock=/usr/share/strange-company/tools.lock.yaml; \
     snap=$(sed -n 's/^  debianSnapshot: *\([0-9TZ]*\).*/\1/p' "$lock"); \
-    pkgs=$(sed -n 's/^    \(runtime\|ci\): *\[\(.*\)\].*/\2/p' "$lock" | tr -d ','); \
+    pkgs=$(sed -n 's/^    runtime: *\[\(.*\)\].*/\1/p' "$lock" | tr -d ','); \
     test -n "$snap" && test -n "$pkgs"; \
     printf '%s\n' \
       'Types: deb' \
@@ -33,35 +41,109 @@ RUN set -eu; \
       >/etc/apt/sources.list.d/debian.sources; \
     apt-get -o Acquire::Retries=5 update; \
     DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --no-install-recommends $pkgs; \
-    rm -rf /var/lib/apt/lists/*
-
-# Stage-0 validator venv (hash-checked); also runs fetch-pinned and toolbox-check.
-RUN set -eu; \
-    python3 -m venv /opt/sc/stage0-venv; \
-    /opt/sc/stage0-venv/bin/pip install --no-cache-dir --require-hashes -r /tmp/stage0-requirements.txt; \
-    rm /tmp/stage0-requirements.txt
-
-# set: ci tools, checksum-verified; a mismatch fails the build with TOOLBOX_CHECKSUM_MISMATCH:<tool>.
-RUN /opt/sc/bin/fetch-pinned --set ci
-
-# The Go toolchain must equal the src/go.mod toolchain directive.
-RUN set -eu; \
-    want=$(sed -n 's/^toolchain[[:space:]]*\(go[0-9][0-9.]*\).*/\1/p' /tmp/go.mod | head -n 1); \
-    have=$(go env GOVERSION); \
-    test -n "$want" && test "$want" = "$have" || { echo "TOOLBOX_VERSION_MISMATCH:go ($want != $have)" >&2; exit 1; }; \
-    rm /tmp/go.mod
-
-RUN set -eu; \
+    rm -rf /var/lib/apt/lists/*; \
     groupadd --gid 10001 sc; \
-    useradd --uid 10001 --gid 10001 --home-dir /run/sc/home --no-create-home --shell /bin/bash sc; \
-    chmod 0755 /opt/sc/bin/*; \
-    mkdir -p /go/pkg && chmod -R a+rwX /go; \
-    /opt/sc/bin/fetch-pinned --check
+    useradd --uid 10001 --gid 10001 --home-dir /run/sc/home --no-create-home --shell /bin/bash sc
 
+# ---- fetch: runtime tools (checksum-verified), the Ansible venv and the collections
+FROM base AS fetch
+COPY --from=gobuild /out/ /opt/sc/bin/
+COPY toolbox/requirements.txt /tmp/requirements.txt
+RUN set -eu; \
+    /opt/sc/bin/sc-bootstrap toolbox fetch --set runtime \
+      --lock /usr/share/strange-company/tools.lock.yaml --arch "$(dpkg --print-architecture)" --dest /
+# The AWS CLI zip is a directory tree: fetch verified the archive, aws/install lays it out.
+RUN set -eu; \
+    mkdir /tmp/aws; \
+    unzip -q /opt/sc/dl/awscliv2.zip -d /tmp/aws; \
+    /tmp/aws/aws/install --install-dir /opt/sc/aws-cli --bin-dir /opt/sc/bin; \
+    rm -rf /tmp/aws /opt/sc/dl
+RUN set -eu; \
+    python3 -m venv /opt/sc/ansible-venv; \
+    /opt/sc/ansible-venv/bin/pip install --no-cache-dir --require-hashes --no-deps --only-binary=:all: -r /tmp/requirements.txt
+# Collections: tarball url and sha256 from the lock (one flow-mapping line per collection).
+RUN set -eu; \
+    lock=/usr/share/strange-company/tools.lock.yaml; \
+    mkdir -p /opt/sc/ansible-collections /tmp/coll; \
+    sed -n 's/^    - {name: \([a-z0-9_.]*\), version: "[^"]*", url: "\([^"]*\)", sha256: "\([0-9a-f]*\)"}.*/\1 \2 \3/p' "$lock" >/tmp/coll/list; \
+    test -s /tmp/coll/list; \
+    while read -r name url sum; do \
+      curl -fsSL --retry 3 --retry-delay 5 -o "/tmp/coll/$name.tar.gz" "$url"; \
+      echo "$sum  /tmp/coll/$name.tar.gz" | sha256sum -c --status || { echo "TOOLBOX_CHECKSUM_MISMATCH:$name" >&2; exit 1; }; \
+      /opt/sc/ansible-venv/bin/ansible-galaxy collection install "/tmp/coll/$name.tar.gz" -p /opt/sc/ansible-collections --no-deps; \
+    done </tmp/coll/list; \
+    rm -rf /tmp/coll /root/.ansible
+
+# ---- toolbox (final operator image)
+FROM base AS toolbox
+ARG SC_INPUTS_ID=unknown
+LABEL strange.company/toolbox-inputs-id=$SC_INPUTS_ID
+COPY --from=fetch /opt/sc/ /opt/sc/
+COPY --chmod=0755 toolbox/bin/sc-entrypoint /opt/sc/bin/sc-entrypoint
+ARG SC_SOURCE_COMMIT=unknown
+ARG SC_BUILT_AT=unknown
+RUN set -eu; \
+    printf '{"inputs_id": "%s", "built_at": "%s", "source_commit": "%s", "target": "toolbox", "arch": "%s"}\n' \
+      "$SC_INPUTS_ID" "$SC_BUILT_AT" "$SC_SOURCE_COMMIT" "$(dpkg --print-architecture)" \
+      >/usr/share/strange-company/image-info.json
+# ANSIBLE_CONFIG, TF_PLUGIN_CACHE_DIR and HELM_CACHE_HOME depend on $SC_REPO_ROOT and are set by sc-entrypoint.
 ENV SC_IN_CONTAINER=1 TZ=UTC LC_ALL=C.UTF-8 \
-    PATH=/opt/sc/bin:/go/bin:/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin \
-    GOTOOLCHAIN=local GOFLAGS=-mod=readonly \
-    SC_FORBID_PAID=1 SC_TEST_SEED=20261013
+    PATH=/opt/sc/bin:/opt/sc/ansible-venv/bin:/usr/local/bin:/usr/bin:/bin \
+    ANSIBLE_COLLECTIONS_PATH=/opt/sc/ansible-collections \
+    AWS_REQUEST_CHECKSUM_CALCULATION=when_required AWS_RESPONSE_CHECKSUM_VALIDATION=when_required
 USER 10001:10001
 ENTRYPOINT ["/usr/bin/tini", "--", "/opt/sc/bin/sc-entrypoint"]
 CMD ["bash"]
+RUN sc-bootstrap toolbox selfcheck --embedded-only
+
+# ---- ci (FROM toolbox): the Go toolchain, apt ci packages, set: ci tools, stage-0 and ci venvs, envtest assets
+FROM toolbox AS ci
+ARG SC_INPUTS_ID=unknown
+ARG SC_SOURCE_COMMIT=unknown
+ARG SC_BUILT_AT=unknown
+USER 0
+COPY --from=gobuild /usr/local/go /usr/local/go
+COPY --chmod=0755 toolbox/bin/ /opt/sc/bin/
+COPY toolbox/requirements-ci.txt /tmp/ci-requirements.txt
+COPY tools/stage0/requirements.txt /tmp/stage0-requirements.txt
+COPY src/go.mod /tmp/go.mod
+RUN set -eu; \
+    pkgs=$(sed -n 's/^    ci: *\[\(.*\)\].*/\1/p' /usr/share/strange-company/tools.lock.yaml | tr -d ','); \
+    test -n "$pkgs"; \
+    apt-get -o Acquire::Retries=5 update; \
+    DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --no-install-recommends $pkgs; \
+    rm -rf /var/lib/apt/lists/*
+# Stage-0 validator venv (hash-checked); it runs fetch-pinned --check and toolbox-check.
+RUN set -eu; \
+    python3 -m venv /opt/sc/stage0-venv; \
+    /opt/sc/stage0-venv/bin/pip install --no-cache-dir --require-hashes -r /tmp/stage0-requirements.txt; \
+    if grep -q '==' /tmp/ci-requirements.txt; then \
+      python3 -m venv /opt/sc/ci-venv; \
+      /opt/sc/ci-venv/bin/pip install --no-cache-dir --require-hashes -r /tmp/ci-requirements.txt; \
+    fi; \
+    rm /tmp/stage0-requirements.txt /tmp/ci-requirements.txt
+# set: ci tools, checksum-verified; a mismatch fails the build with TOOLBOX_CHECKSUM_MISMATCH:<tool>.
+RUN set -eu; \
+    /opt/sc/bin/sc-bootstrap toolbox fetch --set ci \
+      --lock /usr/share/strange-company/tools.lock.yaml --arch "$(dpkg --print-architecture)" --dest /; \
+    mkdir -p /opt/sc/helm-plugins/helm-unittest; \
+    tar -xzf /opt/sc/dl/helm-unittest.tgz -C /opt/sc/helm-plugins/helm-unittest; \
+    rm -rf /opt/sc/dl
+# The Go toolchain must equal the src/go.mod toolchain directive.
+RUN set -eu; \
+    want=$(sed -n 's/^toolchain[[:space:]]*\(go[0-9][0-9.]*\).*/\1/p' /tmp/go.mod | head -n 1); \
+    have=$(/usr/local/go/bin/go env GOVERSION); \
+    test -n "$want" && test "$want" = "$have" || { echo "TOOLBOX_VERSION_MISMATCH:go ($want != $have)" >&2; exit 1; }; \
+    rm /tmp/go.mod; \
+    mkdir -p /go/pkg; \
+    chmod -R a+rwX /go; \
+    printf '{"inputs_id": "%s", "built_at": "%s", "source_commit": "%s", "target": "ci", "arch": "%s"}\n' \
+      "$SC_INPUTS_ID" "$SC_BUILT_AT" "$SC_SOURCE_COMMIT" "$(dpkg --print-architecture)" \
+      >/usr/share/strange-company/image-info.json
+ENV PATH=/opt/sc/bin:/opt/sc/ansible-venv/bin:/go/bin:/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin \
+    GOPATH=/go GOTOOLCHAIN=local GOFLAGS=-mod=readonly \
+    HELM_PLUGINS=/opt/sc/helm-plugins KUBEBUILDER_ASSETS=/usr/local/kubebuilder/bin \
+    SC_FORBID_PAID=1 SC_TEST_SEED=20261013
+USER 10001:10001
+# Helm 4 plugins need a writable cache; the build user's home does not exist (sc-entrypoint sets HELM_CACHE_HOME at run time).
+RUN HELM_CACHE_HOME=/tmp/helm-cache sc-bootstrap toolbox selfcheck --embedded-only

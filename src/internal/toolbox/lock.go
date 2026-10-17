@@ -3,6 +3,7 @@ package toolbox
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 
 	"go.yaml.in/yaml/v3"
@@ -40,8 +41,21 @@ func readLock(path string) (*toolLock, []byte, error) {
 	return &l, b, nil
 }
 
-// expand substitutes {version} and {arch} (as fetch-pinned did in url and install.extract).
+// archMap matches {arch:amd64=x86_64,arm64=aarch64}: a vendor's own name for each architecture.
+var archMap = regexp.MustCompile(`\{arch:([^{}]*)\}`)
+
+// expand substitutes {version}, {arch} and {arch:amd64=<name>,arm64=<name>} (as fetch-pinned did in url and
+// install.extract). A map token without an entry for arch leaves the token in place, so the URL stays invalid
+// instead of silently naming another platform's artifact.
 func (t lockTool) expand(s, arch string) string {
+	s = archMap.ReplaceAllStringFunc(s, func(tok string) string {
+		for _, kv := range strings.Split(archMap.FindStringSubmatch(tok)[1], ",") {
+			if k, v, ok := strings.Cut(kv, "="); ok && k == arch {
+				return v
+			}
+		}
+		return tok
+	})
 	return strings.NewReplacer("{version}", t.Ver, "{arch}", arch).Replace(s)
 }
 
