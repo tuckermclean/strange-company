@@ -88,3 +88,10 @@ func (c *cmdCtx) getenv(k, def string) string {
 	}
 	return def
 }
+
+// ProductionEnv returns env with the container paths of plan 02 section 7.2 filled in when unset.
+//
+// SC-STUB(F03 review2)
+func ProductionEnv(env map[string]string) map[string]string {
+	return nil
+}
