@@ -1,7 +1,9 @@
 #!/bin/sh
-# Strange Company wrapper, F01 subset (plan 02 sections 7.1, 14.2, 14.9).
-#   ./bootstrap [--engine docker|podman] [--toolbox-build] exec --image ci [--network bridge|host|none] -- <cmd> [args...]
-# Runs <cmd> in the seed `ci` image. No env file, SSH, black-start directory, scopes or `shell` yet (F03).
+# Strange Company wrapper, F01 subset plus the toolbox image build (plan 02 sections 7.1, 14.2, 14.9).
+#   ./bootstrap [--engine docker|podman] [--toolbox-build] exec --image toolbox|ci [--network bridge|host|none] -- <cmd> [args...]
+#   ./bootstrap [--engine docker|podman] build [--no-cache] [--platform P] [-f FILE] --target toolbox|ci
+# `exec` runs <cmd> in the image (--image is required until the toolbox becomes the default). `build` is what `make toolbox` calls.
+# No env file, SSH, black-start directory, scopes or `shell` yet (F03 S3).
 set -eu
 
 die() { # code message exit-code
@@ -10,7 +12,7 @@ die() { # code message exit-code
 }
 
 usage() {
-	die WRAPPER_USAGE "$1 (usage: ./bootstrap [--engine docker|podman] [--toolbox-build] exec --image ci [--network bridge|host|none] -- <cmd> [args...])" 2
+	die WRAPPER_USAGE "$1 (usage: ./bootstrap [--engine docker|podman] [--toolbox-build] exec --image toolbox|ci [--network bridge|host|none] -- <cmd> [args...]; ./bootstrap build [--no-cache] [--platform P] [-f FILE] --target toolbox|ci)" 2
 }
 
 # --- step 1: repository
@@ -45,11 +47,38 @@ done
 [ $# -gt 0 ] || usage "missing command"
 command=$1
 shift
-[ "$command" = exec ] || usage "command '$command' is not available until F03 (only 'exec' is implemented)"
+case $command in exec | build) ;; *) usage "command '$command' is not available until F03 S3 (only 'exec' and 'build' are implemented)" ;; esac
 
 image=
 network=${SC_TOOLBOX_NETWORK:-bridge}
-while [ $# -gt 0 ]; do
+nocache=
+platform=
+cfile=toolbox/Containerfile
+while [ "$command" = build ] && [ $# -gt 0 ]; do
+	case $1 in
+	--no-cache)
+		nocache=--no-cache
+		shift
+		;;
+	--platform)
+		[ $# -ge 2 ] || usage "--platform needs a value"
+		platform=$2
+		shift 2
+		;;
+	-f | --file)
+		[ $# -ge 2 ] || usage "$1 needs a value"
+		cfile=$2
+		shift 2
+		;;
+	--target)
+		[ $# -ge 2 ] || usage "--target needs a value"
+		image=$2
+		shift 2
+		;;
+	*) usage "unknown build option '$1'" ;;
+	esac
+done
+while [ "$command" = exec ] && [ $# -gt 0 ]; do
 	case $1 in
 	--image)
 		[ $# -ge 2 ] || usage "--image needs a value"
@@ -76,9 +105,12 @@ while [ $# -gt 0 ]; do
 	*) usage "unknown exec option '$1'" ;;
 	esac
 done
-[ "$image" = ci ] || usage "exec requires --image ci (the toolbox image arrives with F03)"
+case $image in toolbox | ci) ;; "") usage "$command needs --image toolbox|ci (the default image arrives with F03 S3)" ;; *) usage "the image must be toolbox or ci" ;; esac
 case $network in bridge | host | none) ;; *) usage "--network must be bridge, host or none" ;; esac
-[ $# -gt 0 ] || usage "exec needs a command after --"
+if [ "$command" = exec ]; then
+	[ $# -gt 0 ] || usage "exec needs a command after --"
+fi
+case $cfile in /* | *..*) usage "-f must be a repository-relative path" ;; esac
 
 # --- step 4: engine and mode
 works() { # engine; true if "<engine> info" succeeds (docker: within 10 s when timeout exists)
@@ -126,7 +158,7 @@ listing=$(git ls-files -co --exclude-standard -- toolbox src .dockerignore tools
 	done)
 inputs_id=$(printf '%s\n' "$listing" | git hash-object --stdin)
 inputs12=$(printf '%s' "$inputs_id" | cut -c1-12)
-tag=localhost/strange-company-ci:in-$inputs12
+tag=localhost/strange-company-$image:in-$inputs12
 label_key=strange.company/toolbox-inputs-id
 
 # --- step 6 (a), (c): resolve the image
@@ -135,8 +167,8 @@ have_image() {
 }
 build_image() {
 	# Every FROM in the Containerfile must be pinned by digest (plan 02 section 14.9); refuse before building from one that is not.
-	if [ ! -f "$REPO/toolbox/Containerfile" ] || [ ! -r "$REPO/toolbox/Containerfile" ]; then
-		die WRAPPER_TOOLBOX_BUILD_FAILED "toolbox/Containerfile is missing or unreadable" 3
+	if [ ! -f "$REPO/$cfile" ] || [ ! -r "$REPO/$cfile" ]; then
+		die WRAPPER_TOOLBOX_BUILD_FAILED "$cfile is missing or unreadable" 3
 	fi
 	unpinned=$(awk 'function pinned(r, p) {
 		p = index(r, "@sha256:")
@@ -153,23 +185,32 @@ build_image() {
 			exit
 		}
 		if (toupper($(i + 1)) == "AS") stage[tolower($(i + 2))] = 1
-	}' "$REPO/toolbox/Containerfile" 2>/dev/null)
-	[ -z "$unpinned" ] || die WRAPPER_TOOLBOX_BUILD_FAILED "toolbox/Containerfile:$unpinned" 3
+	}' "$REPO/$cfile" 2>/dev/null)
+	[ -z "$unpinned" ] || die WRAPPER_TOOLBOX_BUILD_FAILED "$cfile:$unpinned" 3
 	logdir=$REPO/.bootstrap/toolbox
-	log=$logdir/build-$inputs12.log
+	log=$logdir/build-$image-$inputs12.log
 	mkdir -p "$logdir"
 	echo "bootstrap: toolbox: building $tag (log: $log)" >&2
 	# Rootless Podman without a systemd user session cannot reach the session bus from buildah's runtime.
 	cg=
 	if [ "$mode" = podman-rootless ] && [ ! -S "${XDG_RUNTIME_DIR:-/nonexistent}/bus" ]; then cg=--cgroup-manager=cgroupfs; fi
-	# shellcheck disable=SC2086 # cg is empty or one flag
-	if "$engine" build $cg --target ci -f "$REPO/toolbox/Containerfile" -t "$tag" \
-		--label "$label_key=$inputs_id" --build-arg "SC_INPUTS_ID=$inputs_id" "$REPO" >"$log" 2>&1; then
+	built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+	commit=$(git -C "$REPO" rev-parse HEAD 2>/dev/null || echo unknown)
+	# shellcheck disable=SC2086 # cg, nocache and platform are empty or one flag (the platform value has no spaces)
+	if "$engine" build $cg $nocache ${platform:+--platform "$platform"} --target "$image" -f "$REPO/$cfile" -t "$tag" \
+		--label "$label_key=$inputs_id" --build-arg "SC_INPUTS_ID=$inputs_id" \
+		--build-arg "SC_SOURCE_COMMIT=$commit" --build-arg "SC_BUILT_AT=$built_at" "$REPO" >"$log" 2>&1; then
 		return 0
 	fi
+	# A checksum, version or download failure names its tool; show those lines first, then the tail of the log.
+	grep -h -m 5 -E 'TOOLBOX_[A-Z_]+:' "$log" >&2 || true
 	tail -n 40 "$log" >&2
 	die WRAPPER_TOOLBOX_BUILD_FAILED "image build failed; full log: $log" 3
 }
+if [ "$command" = build ]; then
+	build_image
+	exit 0
+fi
 if [ "$build" = 1 ] || ! have_image; then
 	build_image
 fi

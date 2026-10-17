@@ -5,7 +5,11 @@ SHELL := /bin/bash
 MAKEFLAGS += --no-builtin-rules --no-print-directory
 .DEFAULT_GOAL := verify
 
-ifneq ($(SC_IN_CONTAINER),1)
+ifeq ($(MAKECMDGOALS),toolbox)
+# `make toolbox` runs on the host (plan 01 section 8.1, CD-64): it drives the container engine and builds the ci
+# image itself, so it is the one target that is not re-executed in the ci image. Run it alone.
+include mk/toolbox.mk
+else ifneq ($(SC_IN_CONTAINER),1)
 # Container re-exec: every target runs as `make <goals>` in the ci image. The recipe uses a literal
 # `make`, not $(MAKE), so `make -n` prints it instead of recursing.
 GOALS := $(if $(MAKECMDGOALS),$(MAKECMDGOALS),$(.DEFAULT_GOAL))
