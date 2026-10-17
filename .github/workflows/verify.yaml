@@ -17,7 +17,10 @@ concurrency:
 
 jobs:
   # primary=forgejo once a non-CI cluster has committed forge-init.yaml: control moved to Forgejo/Woodpecker
-  # and this workflow stops spending minutes (ADR-0018: advisory).
+  # and this workflow stops spending minutes (ADR-0018: advisory). On pull_request the decision is read from
+  # the PR base revision, never from the candidate tree, so a PR cannot switch off the checks that judge it
+  # (issue #149). Push and workflow_dispatch read the revision being run. verify and tdd-discipline also run
+  # when this job fails: a job skipped by its `if:` counts as a passing required check.
   mode:
     runs-on: ubuntu-24.04
     permissions:
@@ -34,23 +37,37 @@ jobs:
 
       - name: Select the primary CI product
         id: mode
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
+          rev=HEAD
+          if [ "$EVENT" = pull_request ]; then
+            if [ -z "$BASE_SHA" ]; then
+              echo "::error::pull_request event without a base SHA; refusing to choose the CI mode"
+              exit 1
+            fi
+            git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null || git fetch --no-tags --depth=1 origin "$BASE_SHA"
+            rev=$BASE_SHA
+          fi
+          # Fails the step (and so the workflow) if the trusted revision cannot be read.
+          paths=$(git ls-tree -r --name-only "$rev" -- gitops/clusters)
           primary=github
-          for f in gitops/clusters/*/config/forge-init.yaml; do
-            [ -e "$f" ] || continue
+          while IFS= read -r f; do
             c=${f#gitops/clusters/}
             c=${c%%/*}
+            [ "$f" = "gitops/clusters/$c/config/forge-init.yaml" ] || continue
             case $c in
               ci-*) ;;
               *) primary=forgejo ;;
             esac
-          done
+          done <<<"$paths"
           echo "primary=$primary" >> "$GITHUB_OUTPUT"
-          echo "primary: $primary (runner image ${ImageOS:-unknown} ${ImageVersion:-unknown})" >> "$GITHUB_STEP_SUMMARY"
+          echo "primary: $primary from $rev (runner image ${ImageOS:-unknown} ${ImageVersion:-unknown})" >> "$GITHUB_STEP_SUMMARY"
 
   verify:
     needs: mode
-    if: needs.mode.outputs.primary == 'github'
+    if: ${{ !cancelled() && (needs.mode.result != 'success' || needs.mode.outputs.primary == 'github') }}
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -139,7 +156,7 @@ jobs:
   # Until it exists, this job fails instead of passing without checking anything.
   tdd-discipline:
     needs: mode
-    if: needs.mode.outputs.primary == 'github' && github.event_name == 'pull_request'
+    if: ${{ !cancelled() && (needs.mode.result != 'success' || needs.mode.outputs.primary == 'github') && github.event_name == 'pull_request' }}
     runs-on: ubuntu-24.04
     permissions:
       contents: read
