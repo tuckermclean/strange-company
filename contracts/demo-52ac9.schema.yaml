@@ -11,5 +11,5 @@ additionalProperties: false
 examples:
   - {name: ok}
 x-invalid-examples:
-  - reason: should fail because name is empty, but it is a valid value
-    value: {name: valid}
+  - reason: name must not be empty (minLength 1)
+    value: {name: ""}
