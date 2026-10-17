@@ -4,6 +4,7 @@ package main
 import (
 	"os"
 	"strings"
+	"time"
 
 	"strange.company/sc/internal/toolbox"
 )
@@ -15,5 +16,5 @@ func main() {
 			env[k] = v
 		}
 	}
-	os.Exit(toolbox.Main(os.Args[1:], env, os.Stdout, os.Stderr))
+	os.Exit(toolbox.Run(os.Args[1:], env, os.Stdout, os.Stderr, time.Sleep))
 }

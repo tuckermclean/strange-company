@@ -20,7 +20,8 @@ func (c *cmdCtx) envCmd(args []string) int {
 	}
 	vars, err := c.loadEnvFile()
 	if err != nil {
-		return c.fail(err)
+		fmt.Fprintln(c.err, "sc-bootstrap env s3:", err)
+		return 2
 	}
 	var missing []string
 	for _, k := range []string{"S3_ENDPOINT", "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY"} {

@@ -40,6 +40,9 @@ func readLock(path string) (*toolLock, []byte, error) {
 	return &l, b, nil
 }
 
-func (t lockTool) expandURL(arch string) string {
-	return strings.NewReplacer("{version}", t.Ver, "{arch}", arch).Replace(t.URL)
+// expand substitutes {version} and {arch} (as fetch-pinned did in url and install.extract).
+func (t lockTool) expand(s, arch string) string {
+	return strings.NewReplacer("{version}", t.Ver, "{arch}", arch).Replace(s)
 }
+
+func (t lockTool) expandURL(arch string) string { return t.expand(t.URL, arch) }

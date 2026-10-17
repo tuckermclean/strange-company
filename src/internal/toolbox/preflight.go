@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -75,42 +76,62 @@ func (c *cmdCtx) expandHome(p string) string {
 
 func (c *cmdCtx) pf06(vars map[string]string) pfRow {
 	fail := func(code, msg string) pfRow { return pfRow{"PF-06", "fail", code, msg} }
-	priv := vars["SSH_PRIVATE_KEY_PATH"]
-	if priv == "" {
+	agent := strings.EqualFold(vars["SSH_USE_AGENT"], "true")
+	if agent {
+		sock := filepath.Join(c.getenv("SC_INPUT_DIR", "/run/sc-input"), "ssh-agent.sock")
+		fi, err := os.Stat(sock)
+		if err != nil || fi.Mode()&os.ModeSocket == 0 {
+			return fail("SSH_AGENT_UNAVAILABLE", fmt.Sprintf("SSH_USE_AGENT=true but %s is not a unix socket", sock))
+		}
+	}
+	shown := vars["SSH_PRIVATE_KEY_PATH"]
+	if shown == "" {
+		if agent {
+			return pfRow{"PF-06", "pass", "", "ssh-agent socket present"}
+		}
 		return fail("SSH_KEY_UNSET", "SSH_PRIVATE_KEY_PATH is not set")
 	}
-	priv = c.expandHome(priv)
+	shown = c.expandHome(shown)
+	// Inside the container the key is the mount $SC_INPUT_DIR/ssh/id_key; the env-file path is a host path.
+	priv, pubPath := shown, vars["SSH_PUBLIC_KEY_PATH"]
+	if in := c.env["SC_INPUT_DIR"]; in != "" {
+		if _, err := os.Stat(filepath.Join(in, "ssh", "id_key")); err == nil {
+			priv = filepath.Join(in, "ssh", "id_key")
+			pubPath = priv + ".pub"
+		}
+	}
+	if pubPath == "" {
+		pubPath = priv + ".pub"
+	}
+	pubPath = c.expandHome(pubPath)
 	fi, err := os.Stat(priv)
 	if err != nil {
-		return fail("SSH_KEY_UNREADABLE", fmt.Sprintf("SSH_PRIVATE_KEY_PATH %s: %v", priv, err))
+		return fail("SSH_KEY_UNREADABLE", fmt.Sprintf("SSH_PRIVATE_KEY_PATH %s: %v", shown, err))
 	}
 	if fi.Mode().Perm()&0o077 != 0 {
-		return fail("SSH_KEY_PERMISSIONS", fmt.Sprintf("%s is accessible by group or others (mode %04o); chmod 600", priv, fi.Mode().Perm()))
+		return fail("SSH_KEY_PERMISSIONS", fmt.Sprintf("%s is accessible by group or others (mode %04o); chmod 600", shown, fi.Mode().Perm()))
 	}
 	data, err := os.ReadFile(priv)
 	if err != nil {
-		return fail("SSH_KEY_UNREADABLE", fmt.Sprintf("SSH_PRIVATE_KEY_PATH %s: %v", priv, err))
+		return fail("SSH_KEY_UNREADABLE", fmt.Sprintf("SSH_PRIVATE_KEY_PATH %s: %v", shown, err))
 	}
-	key, err := parseOpenSSHPrivate(data)
+	key, err := parseOpenSSHPrivate(data, agent)
 	if err != nil {
-		return fail("SSH_KEY_INVALID", fmt.Sprintf("%s: %v", priv, err))
+		return fail("SSH_KEY_INVALID", fmt.Sprintf("%s: %v", shown, err))
 	}
 	if key.Type == "ssh-rsa" && key.Bits < 3072 {
-		return fail("SSH_KEY_WEAK", fmt.Sprintf("%s: RSA key has %d bits, at least 3072 required", priv, key.Bits))
+		return fail("SSH_KEY_WEAK", fmt.Sprintf("%s: RSA key has %d bits, at least 3072 required", shown, key.Bits))
 	}
-	if pubPath := vars["SSH_PUBLIC_KEY_PATH"]; pubPath != "" {
-		pubPath = c.expandHome(pubPath)
-		pb, err := os.ReadFile(pubPath)
-		if err != nil {
-			return fail("SSH_PUBKEY_UNREADABLE", fmt.Sprintf("SSH_PUBLIC_KEY_PATH %s: %v", pubPath, err))
-		}
-		typ, blob, err := parsePublicLine(pb)
-		if err != nil {
-			return fail("SSH_PUBKEY_INVALID", fmt.Sprintf("%s: %v", pubPath, err))
-		}
-		if typ != key.Type || !bytes.Equal(blob, key.Blob) {
-			return fail("SSH_PUBKEY_MISMATCH", fmt.Sprintf("%s does not match the public key derived from %s", pubPath, priv))
-		}
+	pb, err := os.ReadFile(pubPath)
+	if err != nil {
+		return fail("SSH_PUBKEY_UNREADABLE", fmt.Sprintf("SSH_PUBLIC_KEY_PATH %s: %v", pubPath, err))
 	}
-	return pfRow{"PF-06", "pass", "", fmt.Sprintf("%s: %s", priv, key.Type)}
+	typ, blob, err := parsePublicLine(pb)
+	if err != nil {
+		return fail("SSH_PUBKEY_INVALID", fmt.Sprintf("%s: %v", pubPath, err))
+	}
+	if typ != key.Type || !bytes.Equal(blob, key.Blob) {
+		return fail("SSH_PUBKEY_MISMATCH", fmt.Sprintf("%s does not match the public key derived from %s", pubPath, shown))
+	}
+	return pfRow{"PF-06", "pass", "", fmt.Sprintf("%s: %s", shown, key.Type)}
 }
