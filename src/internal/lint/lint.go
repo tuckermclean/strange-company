@@ -62,6 +62,9 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "usage: sc-lint <layout|dag|locks|secrets|quarantine|netcheck|tdd-discipline> [--root DIR]")
 		return 2
 	}
+	if args[0] == "licenses" {
+		return licensesMain(args[1:], stdout, stderr)
+	}
 	if args[0] == "tdd-discipline" {
 		return tddMain(args[1:], stdout, stderr)
 	}
