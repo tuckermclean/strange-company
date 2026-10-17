@@ -2,7 +2,9 @@ package toolbox
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"os"
 	"path/filepath"
@@ -76,6 +78,15 @@ func (c *cmdCtx) expandHome(p string) string {
 	return p
 }
 
+// reason is the error without the file name, which the caller shows as the operator wrote it.
+func reason(err error) error {
+	var pe *fs.PathError
+	if errors.As(err, &pe) {
+		return pe.Err
+	}
+	return err
+}
+
 func (c *cmdCtx) pf06(vars map[string]string) pfRow {
 	fail := func(code, msg string) pfRow { return pfRow{"PF-06", "fail", code, msg} }
 	agent := strings.EqualFold(vars["SSH_USE_AGENT"], "true")
@@ -91,40 +102,58 @@ func (c *cmdCtx) pf06(vars map[string]string) pfRow {
 		}
 		conn.Close()
 	}
-	shown := vars["SSH_PRIVATE_KEY_PATH"]
-	if shown == "" {
-		if agent {
-			return pfRow{"PF-06", "pass", "", "ssh-agent socket present"}
+	written := vars["SSH_PRIVATE_KEY_PATH"]
+	if written == "" && agent {
+		return pfRow{"PF-06", "pass", "", "ssh-agent socket present"}
+	}
+	// Inside the container the key is the mount $SC_INPUT_DIR/ssh/id_key; the env-file path is a host path.
+	// The mount is checked first: a mounted key needs no HOME.
+	var priv, shown string
+	pubPath := vars["SSH_PUBLIC_KEY_PATH"]
+	mounted := ""
+	if in := c.env["SC_INPUT_DIR"]; in != "" {
+		m := filepath.Join(in, "ssh", "id_key")
+		if _, err := os.Stat(m); err == nil {
+			mounted = m
 		}
-		// Plan 50 section 9.2 default.
-		shown = "~/.ssh/id_ed25519"
+	}
+	switch {
+	case mounted != "":
+		priv = mounted
+		pubPath = mounted + ".pub"
+		shown = c.expandHome(written)
+		if written == "" {
+			shown = mounted + " (mounted)"
+		}
+	case written != "":
+		shown = c.expandHome(written)
+		priv = shown
+	default:
+		// Plan 50 section 9.2 default, shown as the operator writes it (never the expanded container home).
 		if c.env["HOME"] == "" {
 			return fail("SSH_KEY_UNSET", "SSH_PRIVATE_KEY_PATH is not set and HOME is unset")
 		}
-	}
-	shown = c.expandHome(shown)
-	// Inside the container the key is the mount $SC_INPUT_DIR/ssh/id_key; the env-file path is a host path.
-	priv, pubPath := shown, vars["SSH_PUBLIC_KEY_PATH"]
-	if in := c.env["SC_INPUT_DIR"]; in != "" {
-		if _, err := os.Stat(filepath.Join(in, "ssh", "id_key")); err == nil {
-			priv = filepath.Join(in, "ssh", "id_key")
-			pubPath = priv + ".pub"
-		}
+		shown = "~/.ssh/id_ed25519"
+		priv = c.expandHome(shown)
 	}
 	if pubPath == "" {
 		pubPath = priv + ".pub"
 	}
+	pubShown := pubPath
+	if written == "" && mounted == "" {
+		pubShown = shown + ".pub"
+	}
 	pubPath = c.expandHome(pubPath)
 	fi, err := os.Stat(priv)
 	if err != nil {
-		return fail("SSH_KEY_UNREADABLE", fmt.Sprintf("SSH_PRIVATE_KEY_PATH %s: %v", shown, err))
+		return fail("SSH_KEY_UNREADABLE", fmt.Sprintf("SSH_PRIVATE_KEY_PATH %s: %v", shown, reason(err)))
 	}
 	if fi.Mode().Perm()&0o077 != 0 {
 		return fail("SSH_KEY_PERMISSIONS", fmt.Sprintf("%s is accessible by group or others (mode %04o); chmod 600", shown, fi.Mode().Perm()))
 	}
 	data, err := os.ReadFile(priv)
 	if err != nil {
-		return fail("SSH_KEY_UNREADABLE", fmt.Sprintf("SSH_PRIVATE_KEY_PATH %s: %v", shown, err))
+		return fail("SSH_KEY_UNREADABLE", fmt.Sprintf("SSH_PRIVATE_KEY_PATH %s: %v", shown, reason(err)))
 	}
 	key, err := parseOpenSSHPrivate(data, agent)
 	if err != nil {
@@ -135,14 +164,14 @@ func (c *cmdCtx) pf06(vars map[string]string) pfRow {
 	}
 	pb, err := os.ReadFile(pubPath)
 	if err != nil {
-		return fail("SSH_PUBKEY_UNREADABLE", fmt.Sprintf("SSH_PUBLIC_KEY_PATH %s: %v", pubPath, err))
+		return fail("SSH_PUBKEY_UNREADABLE", fmt.Sprintf("SSH_PUBLIC_KEY_PATH %s: %v", pubShown, reason(err)))
 	}
 	typ, blob, err := parsePublicLine(pb)
 	if err != nil {
-		return fail("SSH_PUBKEY_INVALID", fmt.Sprintf("%s: %v", pubPath, err))
+		return fail("SSH_PUBKEY_INVALID", fmt.Sprintf("%s: %v", pubShown, err))
 	}
 	if typ != key.Type || !bytes.Equal(blob, key.Blob) {
-		return fail("SSH_PUBKEY_MISMATCH", fmt.Sprintf("%s does not match the public key derived from %s", pubPath, shown))
+		return fail("SSH_PUBKEY_MISMATCH", fmt.Sprintf("%s does not match the public key derived from %s", pubShown, shown))
 	}
 	return pfRow{"PF-06", "pass", "", fmt.Sprintf("%s: %s", shown, key.Type)}
 }
