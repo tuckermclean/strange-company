@@ -27,8 +27,11 @@ func run(args []string) int {
 	}
 	rows := contracts.Run(*root)
 	for _, r := range rows {
-		if r.Result == "fail" {
+		switch {
+		case r.Result == "fail":
 			fmt.Printf("%s: FAIL %s %s\n", r.File, r.Check, r.Detail)
+		case r.Check == contracts.CheckInstanceInvalid:
+			fmt.Printf("%s: ok %s\n", r.File, r.Detail)
 		}
 	}
 	if err := contracts.WriteReports(dir, rows); err != nil {

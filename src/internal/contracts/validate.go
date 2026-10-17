@@ -288,6 +288,10 @@ func (r *runner) checkSchema(sf *schemaFile, compile func(string) (*jsonschema.S
 			r.fail(rel, CheckSchemaInvalid, fmt.Sprintf("x-defs-examples.%s must be a list of examples", name))
 			continue
 		}
+		if len(list) == 0 {
+			r.fail(rel, CheckSchemaInvalid, fmt.Sprintf("x-defs-examples.%s is an empty list; declare at least one example", name))
+			continue
+		}
 		ds, err := compile(sf.id + "#/$defs/" + name)
 		if err != nil {
 			r.fail(rel, CheckDefsExample, fmt.Sprintf("x-defs-examples.%s: %s", name, oneLine(err.Error())))
@@ -387,7 +391,10 @@ func collectExamplesIn(v any, ptr string, names bool, out *[]string) {
 			if !names && isDataOrExtension(k) {
 				continue
 			}
-			collectExamplesIn(t[k], ptr+"/"+strings.ReplaceAll(strings.ReplaceAll(k, "~", "~0"), "/", "~1"), !names && nameMapKey(ptr, k), out)
+			if names && isResponsesMap(ptr) && strings.HasPrefix(k, "x-") {
+				continue // OAS: ^x- extensions are allowed directly under responses
+			}
+			collectExamplesIn(t[k], ptr+"/"+escapeToken(k), !names && nameMapKey(ptr, k), out)
 		}
 	case []any:
 		for i, e := range t {
@@ -395,6 +402,13 @@ func collectExamplesIn(v any, ptr string, names bool, out *[]string) {
 		}
 	}
 }
+
+func escapeToken(k string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(k, "~", "~0"), "/", "~1")
+}
+
+// isResponsesMap reports whether the name map at ptr is an operation's responses object.
+func isResponsesMap(ptr string) bool { return strings.HasSuffix(ptr, "/responses") }
 
 // isDataOrExtension reports keys whose values are instance data or extension objects, not schemas.
 func isDataOrExtension(k string) bool {
@@ -442,6 +456,9 @@ func walkRefsIn(v any, path string, names bool, fn func(path, ref string)) {
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
+			if names && isResponsesMap(path) && strings.HasPrefix(k, "x-") {
+				continue
+			}
 			if !names {
 				if s, ok := t[k].(string); ok && k == "$ref" {
 					fn(path, s)
@@ -452,7 +469,7 @@ func walkRefsIn(v any, path string, names bool, fn func(path, ref string)) {
 					continue
 				}
 			}
-			walkRefsIn(t[k], path+"/"+k, !names && nameMapKey(path, k), fn)
+			walkRefsIn(t[k], path+"/"+escapeToken(k), !names && nameMapKey(path, k), fn)
 		}
 	case []any:
 		for i, e := range t {
@@ -527,102 +544,4 @@ func hasAnchor(v any, name string) bool {
 		}
 	}
 	return false
-}
-
-// instanceGlobs are the governed instance files validated by sc-contracts so far (version locks, plan 01 8.2);
-// the remaining plan 01 section 8.3 globs are still validated by test/contracts/validate_instances.py.
-var instanceGlobs = []string{"versions/*.yaml", "toolbox/tools.lock.yaml", "toolbox/image.lock", "infra/lab/lab.yaml"}
-
-func kindConst(s any) string {
-	m, _ := s.(map[string]any)
-	props, _ := m["properties"].(map[string]any)
-	k, _ := props["kind"].(map[string]any)
-	c, _ := k["const"].(string)
-	return c
-}
-
-func (r *runner) checkInstances(schemas []*schemaFile, compile func(string) (*jsonschema.Schema, error)) {
-	type target struct {
-		file string
-		ref  string
-	}
-	byKind := map[string][]target{}
-	for _, sf := range schemas { // schemas arrive sorted by file
-		if sf.id == "" {
-			continue
-		}
-		consider := func(kind, ref string) {
-			if kind != "" {
-				byKind[kind] = append(byKind[kind], target{sf.rel, ref})
-			}
-		}
-		consider(kindConst(sf.doc), sf.id)
-		defs, _ := sf.doc["$defs"].(map[string]any)
-		names := make([]string, 0, len(defs))
-		for n := range defs {
-			names = append(names, n)
-		}
-		sort.Strings(names)
-		for _, name := range names {
-			consider(kindConst(defs[name]), sf.id+"#/$defs/"+name)
-		}
-	}
-	kinds := make([]string, 0, len(byKind))
-	for k := range byKind {
-		kinds = append(kinds, k)
-	}
-	sort.Strings(kinds)
-	ambiguous := map[string]bool{}
-	for _, kind := range kinds {
-		ts := byKind[kind]
-		if len(ts) < 2 {
-			continue
-		}
-		ambiguous[kind] = true
-		locs := make([]string, len(ts))
-		for i, t := range ts {
-			locs[i] = t.ref
-		}
-		detail := fmt.Sprintf("kind %q is claimed by %d schema locations: %s", kind, len(ts), strings.Join(locs, ", "))
-		last := ""
-		for _, t := range ts {
-			if t.file != last {
-				r.fail(t.file, CheckKindAmbiguous, detail)
-				last = t.file
-			}
-		}
-	}
-	for _, g := range instanceGlobs {
-		for _, rel := range glob(r.root, g) {
-			doc, ok := r.load(rel)
-			if !ok {
-				continue
-			}
-			m, _ := doc.(map[string]any)
-			kind := str(m, "kind")
-			if ambiguous[kind] {
-				continue // CONTRACT_KIND_AMBIGUOUS already failed for this kind
-			}
-			var t target
-			ts := byKind[kind]
-			known := len(ts) == 1
-			if known {
-				t = ts[0]
-			}
-			if m == nil || str(m, "apiVersion") != apiVersion || !known {
-				r.fail(rel, CheckKindUnknown, fmt.Sprintf("apiVersion=%q kind=%q has no schema", str(m, "apiVersion"), kind))
-				continue
-			}
-			sch, err := compile(t.ref)
-			if err != nil {
-				r.fail(rel, CheckInstanceInvalid, oneLine(err.Error()))
-				continue
-			}
-			if err := sch.Validate(m); err != nil {
-				r.fail(rel, CheckInstanceInvalid, fmt.Sprintf("kind %s does not validate against %s: %s", kind, t.file, oneLine(err.Error())))
-			} else {
-				r.pass(rel, CheckInstanceInvalid, fmt.Sprintf("kind %s validated against %s", kind, t.file))
-			}
-		}
-	}
 }
