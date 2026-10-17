@@ -46,7 +46,10 @@ Dispatch a **new** `sc-implementer` with the brief path, the RED SHA, the red ta
 - `git diff <red>..HEAD -- <test paths>` shows no modified or deleted RED tests;
 - `git grep -n 'SC-STUB('` finds nothing in the files the slice touched.
 
-Push, wait for CI, and record the run URL and result. CI failures go back to a new implementer with the log excerpt. Retries are bounded: **at most 3 implementer attempts per slice** (SPEC §74). After that, go to step 7.
+Push, wait for CI, and record the run URL and result. CI failures go back to a new implementer with the log excerpt. Retries are bounded (SPEC §74, CD-63): **at most 4 implementer attempts per slice**.
+- Attempts 1–3 use the agent's default model (`model:` in `.claude/agents/sc-implementer.md`).
+- Attempt 4 is an **escalation**: dispatch the new `sc-implementer` with the Agent tool's `model: "opus"` override. Give it the brief, the latest RED SHA and failing tests, and every review's findings and failed diff SHAs from attempts 1–3, so it does not replay identical work (SPEC §74). Record the escalation in `STATUS.md`.
+- If attempt 4 is rejected or fails, go to step 7.
 
 ## 4. Review
 Dispatch a **new** `sc-reviewer` with the brief path, the base, RED and head SHAs, and the evidence. On `request_changes`, give the findings to a new implementer; the retry budget still applies. On `test_spec_conflict`, go to step 7. Never edit tests to satisfy a reviewer: a wrong test means a new RED commit from a new tester, and the user approves that first.
@@ -76,7 +79,7 @@ Stop for:
 - a false `(verify)` assumption;
 - an ambiguous or contradictory criterion;
 - a `TEST_SPEC_CONFLICT`;
-- an exhausted retry budget;
+- an exhausted retry budget (after the attempt-4 escalation);
 - a needed change to SPEC, a plan, an ADR or the DAG.
 
 Propose the amendment and record a spec issue if it touches SPEC (`plans/spec-issues.md`). Do not continue on a guess.
