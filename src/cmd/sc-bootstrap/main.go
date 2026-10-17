@@ -1,5 +1,19 @@
 // Command sc-bootstrap is the in-toolbox bootstrap tool (plan 02 section 8).
 package main
 
-// SC-STUB(F03 02-AC-12)
-func main() {}
+import (
+	"os"
+	"strings"
+
+	"strange.company/sc/internal/toolbox"
+)
+
+func main() {
+	env := map[string]string{}
+	for _, kv := range os.Environ() {
+		if k, v, ok := strings.Cut(kv, "="); ok {
+			env[k] = v
+		}
+	}
+	os.Exit(toolbox.Main(os.Args[1:], env, os.Stdout, os.Stderr))
+}
