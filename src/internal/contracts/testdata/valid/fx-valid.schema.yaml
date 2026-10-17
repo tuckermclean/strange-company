@@ -1,0 +1,15 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://strange.company/contracts/fx-valid/v1alpha1
+title: Fixture
+description: Negative fixture for sc-contracts (01-AC-21); the only defect is the one named by the directory.
+type: object
+required: [name]
+additionalProperties: false
+properties:
+  name: {type: string, minLength: 1}
+  at: {type: string, format: date-time}
+examples:
+  - {name: a, at: "2026-10-16T10:00:00Z"}
+x-invalid-examples:
+  - reason: name is required.
+    value: {at: "2026-10-16T10:00:00Z"}

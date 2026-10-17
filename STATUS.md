@@ -88,6 +88,8 @@
    - CD-57: legitimately superseded RED tests are declared with a `TDD-Superseded:` line on the PR head commit; `cloneImage` and `verify.installerImage` are optional in the ci-policy schema until their images exist (found in the F01 slice S5 dry run).
    - CD-58: the TDD checker trusts the base revision's policy and checker (head only for the F01 bootstrap); `agent/*` is excluded only when provenance is bound; red-target values are validated (found in the F01 slice S5 review).
    - CD-59: a declared stub may be a marked field added to an existing struct; the operator granted F01 slice S5 one extra implementer attempt, beyond SPEC §74's 3, for this rule only.
+   - CD-60: `sc-contracts` validates with `github.com/santhosh-tekuri/jsonschema/v6`; OpenAPI 3.1 is validated against the embedded official OAS 3.1 schema with the same library, with no OpenAPI dependency (decided before F02); its regex engine is `github.com/dlclark/regexp2`, because the contracts use lookaround (F02 S1).
+   - CD-61: the operator granted F02 slice S1 one extra implementer attempt, beyond SPEC §74's 3, to fix the `responses.default` `$ref` regression only.
 
 ## SPEC §125 Stage-0 Definition of Done
 
@@ -373,3 +375,70 @@ Review: **`approve`** at 4e21991 (attempt 1 of 3). Security: no regression under
 | 01-AC-3 (Docker host without Go) | the `verify` job above (the runner's Go is never used: everything runs in the ci image) | **pass** |
 | 01-AC-13 / 52-AC-3 | the `tdd-discipline` job on this commit (the PR head): `report.json` with `red.failed` non-empty and `red.build_ok: true`, S2 layout-check RED 0d80999 included. On 4e21991 it failed only on the two superseded sets, which this commit declares | see the PR's run on this head |
 | 52-AC-2 | operator adds `verify`, `tdd-discipline` and `e2e-gate` (source: GitHub Actions) to the `main-gates` ruleset after merge (plan 52 §8.2a) | operator action |
+
+### F02 — contract-tooling
+
+Branch `node/F02-contract-tooling`, built with `/sc-node F02`. Base `main` 56c280b (after operator PRs #145, the licence policy, and #146, the `go.yaml.in/yaml/v3` exception). Four slices: S1 `sc-contracts` schema checks, `report.json` and `junit.xml`; S2 instance validation for every plan 01 §8.3 glob; S3 the Python crosscheck; S4 `make licenses-check`. Decisions: CD-60 (validator library, OAS 3.1 approach, regexp2), CD-61 (one extra S1 implementer attempt). **Status: all four slices approved; gate evidence below; PR CI pending.** SHAs are those after the rebase onto 56c280b.
+
+#### S1 — `sc-contracts` schema checks, report, junit (01-AC-20, 01-AC-21, 01-AC-24, 52-AC-10)
+
+| Commit | Role |
+|---|---|
+| d43da0f | docs: CD-60 |
+| 193e1a7 | RED: report/junit, six negative fixtures, version locks (11 tests fail on assertions) |
+| 9154c22 | GREEN attempt 1: `src/cmd/sc-contracts`, `src/internal/contracts`, embedded OAS 3.1 schema, `make contracts` |
+| 98ecdff | docs: CD-60 names regexp2 (the contracts use lookaround) |
+| e0470b4 → bd09452 | review 1 request_changes → RED (7 fail) → fix attempt 2 (example index in details, value-less invalid examples fail, all OpenAPI schema examples, second YAML document rejected, `toolbox/image.lock`) |
+| 46debd1, 5c7d0ee → 64f5c4d | review 2 request_changes → chore (per-check-ID accounting test) → RED (5 fail) → fix attempt 3 (`CONTRACT_KIND_AMBIGUOUS`, wrong-shaped containers fail, keyword-named properties, `x-` extensions skipped) |
+| 6238b92 | ci: `verify.yaml` runs `make contracts` alone after an earlier failure, so `junit.xml` is always uploaded (52-AC-10; operator) |
+| d1e2eb6, 2b0b9cf → b31aec9 | review 3 request_changes (regression: `responses.default` not walked) → CD-61 → RED (2 fail) → fix attempt 4 (one line) |
+| — | review 4 **approve** at b31aec9 |
+
+#### S2 — instance validation (01-AC-23)
+
+| Commit | Role |
+|---|---|
+| 1d70aa3 | chore: three tests already satisfied by S1 (lock-glob violations, `kind: HelmLock` → `CONTRACT_KIND_UNKNOWN`, kind-less `versions/` file) |
+| b114a23 → 9c4689c | RED (11 fail) → GREEN: every §8.3 glob (kind-selected, fixed, registers), `**` walker, pass lines naming file and schema, `make contracts` Go-only; S1 follow-ups (`x-` under operation `responses`, escaped `$ref` pointers, empty `x-defs-examples` list) |
+| 5ee22fa → 9ab3941 | review 1 approve with non-blockers, fixed before S3: RED (4 fail) → fix (kind rows accept only their row's schema files; fixed rows validate the whole document; only operation `responses` skip `x-` keys) |
+| — | review 2 **approve** at 9ab3941 |
+
+#### S3 — Go/Python crosscheck (01-AC-22)
+
+| Commit | Role |
+|---|---|
+| d15a407 → a7934e6 | RED (2 fail; deletes the unused `test/contracts/validate_instances.py`) → GREEN: `test/contracts/crosscheck.py`, `make contracts` runs both with a combined exit status |
+| 3110156 → f5ff16b | review 1 request_changes (OpenAPI examples never paired; silent drops and zero pairs passed; OAS-structure and meta-validation verdicts unpaired) → RED (5 fail) → fix: every verdict row carries a structured `pair`; the crosscheck evaluates exactly those rows, fails on any mismatch, unevaluable pair or zero pairs; its YAML loader follows go.yaml.in/yaml/v3. Written by the implementer, committed by the orchestrator because the role guard blocks implementer edits to `test/contracts/crosscheck.py` (operator) |
+| — | review 2 **approve** at f5ff16b |
+
+#### S4 — licence compliance (23-AC-28)
+
+| Commit | Role |
+|---|---|
+| e720971 | chore: `LICENSE` sha256 and policy-shape tests (already true) |
+| 43149ec | RED: `sc-lint licenses` over fixture module caches, real tree, `make verify` composition (12 fail) |
+| — | the implementer found plan 23 §14.11's `(verify)` false: licensecheck v0.3.1 classifies `go.yaml.in/yaml/v3` v3.0.5 (MIT plus the Apache-2.0 notice) at 85 % coverage → `NOASSERTION`. Per §14.11 the operator added a version-pinned exception (PR #146) |
+| 05264da | GREEN: `sc-lint licenses`, `make licenses-check`, `make verify` runs it between `secrets-scan` and `contracts`; `github.com/google/licensecheck` v0.3.1 (committed by the orchestrator after the rebase) |
+| 0965af9 | chore: three tests that assumed an empty exception list now accept the §14.11 exception (operator); `tdd-discipline` reports `TDD_RED_TEST_MODIFIED` for `licenses_test.go` as a warning |
+| — | review **approve** at 0965af9 |
+
+#### F02 — gate evidence
+
+| Criterion | Test(s) / evidence | Status |
+|---|---|---|
+| 01-AC-20 | `TestMakeContracts_ReportHasRowPerCheck_01AC20`, `_PerCheckAccounting_01AC20`, `TestReview_InvalidExampleWithoutValue_01AC20`; real tree `sc-contracts: 942 checks, 0 failed` | pass |
+| 01-AC-21 | `TestMakeContracts_NegativeFixtures_01AC21` (wrong `$id`, missing examples, passing invalid example, `date-time` violation, duplicate key, unresolved OpenAPI `$ref`), `TestReview*_01AC21`, `TestReview2*_01AC21`, `TestReview3*_01AC21`, `TestInstances*_01AC21` | pass |
+| 01-AC-22 | `TestMakeContracts_Crosscheck*_01AC22`, `TestCrosscheck2_*_01AC22`; real tree `crosscheck: 399 pairs compared, 0 mismatches, 0 unevaluable` | pass |
+| 01-AC-23 | `TestInstances_*_01AC23`, `TestInstances2_*_01AC23` (every §8.3 glob; `memory: 8GB` fails naming `substrate.schema.yaml`; `kind: HelmLock` → `CONTRACT_KIND_UNKNOWN`) | pass |
+| 01-AC-24 | `TestMakeContracts_VersionLocks_01AC24`, `TestReview_*_01AC24`, `TestReview2_KindAmbiguous*_01AC24` | pass |
+| 23-AC-28 | `TestLicenseFile_Sha256_23AC28`, `TestLicensePolicy_Shape_23AC28`, `TestLicenses_*_23AC28`, `TestVerifyRunsLicensesCheck_23AC28`; real tree: 5 modules, 4 classified and allowed, `go.yaml.in/yaml/v3` v3.0.5 by exception | pass |
+| 52-AC-9 | demonstration PR #147 (base = this branch, closed unmerged): run [39056889365](https://github.com/tuckermclean/strange-company/actions/runs/39056889365/job/117466594871) on 1a20e01 failed `verify` at target `contracts`, `report.json` names the demo schema `demo-52ac9` entry `x-invalid-examples[0]` (`CONTRACT_INVALID_EXAMPLE_PASSES`); run [39057039213](https://github.com/tuckermclean/strange-company/actions/runs/39057039213/job/117467036761) on the fix 8f73e65 passed | pass |
+| 52-AC-10 | `TestMakeContracts_JUnitMatchesReport_52AC10`; run 39056889365 artifact `verify-out`: `out/contracts/junit.xml` 952 testcases = 952 `report.json` rows; 6238b92 uploads it even when `verify` fails earlier | pass |
+| TDD discipline | local `make tdd-discipline-check` on 0965af9 (checker and policy from base 56c280b): `pass`, 9 RED commits, 76 RED failures, `build_ok`, 1 warning (`TDD_RED_TEST_MODIFIED`, above) | pass; PR run pending |
+
+Follow-ups (not blocking GATE-F02):
+- Plan 01 §8.3: the `policy/**` row lists plans 22, 25, 26, 28, 31, 32, 33, 52, but `policy/ci.yaml` is plan 20's `CIPolicy`; correct the list before restricting that row's schemas in `sc-contracts`. A `CONTRACT_KIND_UNKNOWN` detail for a kind outside a row's allowed set is misleading.
+- `test/contracts/validate_schema.py` (behind `sc-lint locks` and `quarantine`) still says F02 replaces it with `sc-contracts`; no F02 criterion covers it.
+- Crosscheck: the ci image's Python `jsonschema` asserts no `date-time` or `uri` format (no `rfc3339-validator`, `rfc3987` in `tools/stage0/requirements.txt`), so Go/Python leniency on those formats is invisible; the Python loader differs from go.yaml.in on overflow floats (`1e400`) and `.1_5`; a Go-only metaschema rejection carries no `pair`; an empty `pair` object is skipped.
+- Licences: licensecheck v0.3.1 has no `-or-later` ids, so any GPL/LGPL/AGPL module needs an exception; versions are not case-escaped when locating the module cache (prerelease tags) and `go list` `Replace` is ignored; excepted rows are not marked in `report.json`; separate licence files combine as OR; the missing-module message is misleading; the `sc-lint` usage string omits `licenses`.
+- Role guard: `test/contracts/crosscheck.py` is check logic under a test path, so implementers cannot edit it after it exists; the orchestrator commits such edits.
