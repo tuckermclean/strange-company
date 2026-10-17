@@ -1,0 +1,19 @@
+openapi: 3.1.0
+info:
+  title: Fixture
+  version: v1alpha1
+paths:
+  /v1/things:
+    get:
+      operationId: listThings
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DoesNotExist"
+components:
+  schemas:
+    Thing:
+      type: object
