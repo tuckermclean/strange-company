@@ -279,7 +279,7 @@ The check **re-executes** RED instead of looking up a recorded CI run on the tes
   | `e2e-woodpecker` | `gitops/platform/woodpecker/**`, `src/cmd/sc-ci-config/**`, `.woodpecker/**`, `policy/ci.yaml` |
   | `e2e-bootstrap-fake` | `src/internal/bootstrap/**`, `infra/**` |
   | `test-integration` | `src/**` |
-  | `toolbox` | `toolbox/**`, `bootstrap`, `test/e2e/wrapper/**` (CD-52), `mk/toolbox.mk` (the host-run `make toolbox` recipe, CD-64) |
+  | `toolbox` | `toolbox/**`, `bootstrap`, `test/e2e/wrapper/**` (CD-52), `Makefile`, `mk/toolbox.mk` (the host-run `make toolbox` recipe, CD-64), and the other toolbox inputs (`src/**`, `.dockerignore`, `tools/stage0/requirements.txt`; plan 02 §14.2 step 5), since the images build the Go binaries |
   | `e2e-c10` | not run on PRs (C10 exists only after Phase 1); on `main` pushes touching `src/**`, `charts/strange-company/**`, `policy/harnesses.yaml`, `images/**`, `harnesses/**`, and on tags |
   | `e2e-lab` | as in §8.1 |
 

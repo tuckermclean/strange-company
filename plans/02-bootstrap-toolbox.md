@@ -78,9 +78,11 @@ Derived requirements:
 ./bootstrap [--engine docker|podman] [--toolbox-build] [--env-file PATH] <command> [args...]
 ./bootstrap shell [--image toolbox|ci] [--network bridge|host|none] [--unlock]
 ./bootstrap exec  [--image toolbox|ci] [--network bridge|host|none] [--unlock] [--no-kube] [--kvm] -- <cmd> [args...]
+./bootstrap build [--no-cache] [--platform PLATFORM] [-f CONTAINERFILE] --target toolbox|ci
 ```
 
 - Wrapper flags are consumed by the wrapper; everything else is passed to `sc-bootstrap` unchanged.
+- `build` runs §14.2 (a) for one target with the wrapper's engine selection, tag, inputs-id label and build log (§21). `make toolbox` (host-run, CD-64) calls it for `toolbox` and then `ci` with `--no-cache --platform linux/amd64` (CD-66).
 - `exec` passes stdin through and allocates a TTY only when both stdin and stdout are TTYs, so pipes work: `./bootstrap exec -- kubectl get cm x -o yaml | ./bootstrap exec -- kubectl apply -f -`.
 - `exec` returns the exit code of `<cmd>`. Wrapper-level failures use plan 50's codes: `2` usage / not a repository, `3` engine missing, image pull+build failed, or toolbox stale.
 - `--image ci` selects the ci image (Make targets, lab). `--kvm` (ci image only) adds `--device /dev/kvm` and the device's group (plan 05 lab).
@@ -135,7 +137,7 @@ spec:
   aptPackages:
     runtime: [bash, ca-certificates, curl, git, openssh-client, python3, python3-venv, tini, libnss-wrapper,
               less, vim-tiny, procps, iproute2, dnsutils, netcat-openbsd, openssl, unzip, xz-utils]
-    ci: [make, shellcheck, qemu-system-x86, qemu-system-arm, qemu-utils, cloud-image-utils, genisoimage, docker-cli]
+    ci: [make, shellcheck, gcc, libc6-dev, qemu-system-x86, qemu-system-arm, qemu-utils, cloud-image-utils, genisoimage, docker-cli]
   tools:
     - name: opentofu
       set: runtime
@@ -153,6 +155,8 @@ spec:
     - {name: ansible.posix, version: "x.y.z", url: …, sha256: …}
     - {name: community.general, version: "x.y.z", url: …, sha256: …}
 ```
+
+`url` and `install.extract` substitute `{version}` and `{arch}` (the Go architecture name, `amd64`/`arm64`). Where a vendor names architectures differently, `{arch:amd64=<name>,arm64=<name>}` maps them, for example `{arch:amd64=x86_64,arm64=aarch64}` (AWS CLI, CloudNativePG plugin). `gcc` and `libc6-dev` are in `aptPackages.ci` because `make test` runs the race detector, which needs cgo (CD-66).
 
 ### 9.3 `toolbox/image.lock` (`kind: ToolboxImageLock`)
 
@@ -213,7 +217,7 @@ Image size budgets (uncompressed, amd64): toolbox ≤ 1.6 GiB, ci ≤ 3.5 GiB. 0
 
 ## 10. Secrets
 
-Consumed (never stored by the toolbox itself): `SC-SSH-OPERATOR` (read-only mount, copied into tmpfs), everything in `bootstrap.env` (read-only mount; parsed by sc-bootstrap), `SC-RECOVERY-PASSPHRASE` (TTY prompt, `--unlock` / mutating commands), and bundle-derived material placed in `/run/sc` (plan 50 §10.2, ADR-0101). `SC-LAB-SSH` (plan 05) is mounted the same way as the operator key. No new secret class. The images contain no secret; `make toolbox-check` scans the built image filesystem with `gitleaks` (02-AC-9).
+Consumed (never stored by the toolbox itself): `SC-SSH-OPERATOR` (read-only mount, copied into tmpfs), everything in `bootstrap.env` (read-only mount; parsed by sc-bootstrap), `SC-RECOVERY-PASSPHRASE` (TTY prompt, `--unlock` / mutating commands), and bundle-derived material placed in `/run/sc` (plan 50 §10.2, ADR-0101). `SC-LAB-SSH` (plan 05) is mounted the same way as the operator key. No new secret class. The images contain no secret; the tier-E build test (`test/e2e/wrapper/toolbox-image.sh`, §22) scans the built image filesystem with `gitleaks` (02-AC-9).
 
 ## 11. Storage
 
@@ -238,7 +242,7 @@ Operator host: 2 CPU, 4 GiB RAM free, 5 GiB disk for the toolbox path (plan 50 �
 
 ### 14.1 Image build (`toolbox/Containerfile`, stages)
 
-1. `gobuild` — `FROM golang@<digest>`; `go build` (plan 01 §6.2 flags) of `sc-bootstrap`, `sc-gitops`, `sc-lint`, `sc-contracts` for `$TARGETARCH`.
+1. `gobuild` — `FROM golang@<digest>`; `go build` (plan 01 §6.2 flags) of `sc-bootstrap`, `sc-gitops`, `sc-lint`, `sc-contracts` for `$TARGETARCH`. The version stamps are `Version=in-<inputs12>` and `Commit=<inputs id>` rather than `git describe` and the commit SHA, so the binaries depend only on the inputs id and a pulled and a locally built image of the same inputs carry byte-identical binaries (02-R-2, 02-AC-4; CD-66).
 2. `base` — `FROM debian@<digest>`; apt sources replaced by `deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/<debianSnapshot>/ trixie main` (+ `trixie-security` snapshot); install `aptPackages.runtime`; create user `sc` uid/gid `10001`.
 3. `fetch` — copy `sc-bootstrap` from `gobuild`; `sc-bootstrap toolbox fetch --set runtime` into `/opt/sc/bin`; create the Ansible venv and `pip install --require-hashes --no-deps -r requirements.txt`; install collections from verified tarballs (`ansible-galaxy collection install <tarball> -p /opt/sc/ansible-collections`).
 4. `toolbox` (final) — `FROM base`; copy `/opt/sc` and the Go binaries; copy `tools.lock.yaml` and write `image-info.json`; `ENV SC_IN_CONTAINER=1 …`; `USER 10001:10001`; `ENTRYPOINT ["/usr/bin/tini","--","/opt/sc/bin/sc-entrypoint"]`; label `strange.company/toolbox-inputs-id=<id>` (build-arg).
@@ -399,7 +403,7 @@ Nothing to recover: images are reproducible from Git. A corrupted local image is
 
 ## 21. Observability
 
-- Wrapper messages are prefixed `bootstrap:` on stderr: engine and mode, image source and reference, build progress (the engine's own output is captured to `.bootstrap/toolbox/build-<inputs12>.log`).
+- Wrapper messages are prefixed `bootstrap:` on stderr: engine and mode, image source and reference, build progress (the engine's own output is captured to `.bootstrap/toolbox/build-<target>-<inputs12>.log`).
 - `./bootstrap version` prints sc-bootstrap version, toolbox reference and source, and the selfcheck table (plan 50 §7.1).
 - No metrics or alerts (off-cluster tool).
 
