@@ -17,7 +17,11 @@ concurrency:
 
 jobs:
   # primary=forgejo once a non-CI cluster has committed forge-init.yaml: control moved to Forgejo/Woodpecker
-  # and this workflow stops spending minutes (ADR-0018: advisory).
+  # and this workflow stops spending minutes (ADR-0018: advisory). Only a default-branch revision may select
+  # forgejo: on pull_request the PR base (when the PR targets the default branch), never the candidate tree, so
+  # a PR cannot switch off the checks that judge it (issue #149); on push and workflow_dispatch the revision
+  # being run, when it is the default branch. Every other run verifies. verify and tdd-discipline also run
+  # when this job fails: a job skipped by its `if:` counts as a passing required check.
   mode:
     runs-on: ubuntu-24.04
     permissions:
@@ -34,23 +38,48 @@ jobs:
 
       - name: Select the primary CI product
         id: mode
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
+          # Only a revision of the default branch may select forgejo; anything else verifies here.
+          rev=
+          if [ "$EVENT" = pull_request ]; then
+            if [ -z "$BASE_SHA" ]; then
+              echo "::error::pull_request event without a base SHA; refusing to choose the CI mode"
+              exit 1
+            fi
+            if [ -n "$DEFAULT_BRANCH" ] && [ "$BASE_REF" = "$DEFAULT_BRANCH" ]; then
+              git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null || git fetch --no-tags --depth=1 origin "$BASE_SHA"
+              rev=$BASE_SHA
+            fi
+          elif [ -n "$DEFAULT_BRANCH" ] && [ "$REF" = "refs/heads/$DEFAULT_BRANCH" ]; then
+            rev=HEAD
+          fi
           primary=github
-          for f in gitops/clusters/*/config/forge-init.yaml; do
-            [ -e "$f" ] || continue
-            c=${f#gitops/clusters/}
-            c=${c%%/*}
-            case $c in
-              ci-*) ;;
-              *) primary=forgejo ;;
-            esac
-          done
+          if [ -n "$rev" ]; then
+            # Fails the step if the trusted revision cannot be read; verify and tdd-discipline then still run.
+            paths=$(git -c core.quotePath=false ls-tree -r --name-only "$rev" -- gitops/clusters)
+            while IFS= read -r f; do
+              c=${f#gitops/clusters/}
+              c=${c%%/*}
+              [ "$f" = "gitops/clusters/$c/config/forge-init.yaml" ] || continue
+              case $c in
+                ci-*) ;;
+                *) primary=forgejo ;;
+              esac
+            done <<<"$paths"
+          fi
           echo "primary=$primary" >> "$GITHUB_OUTPUT"
-          echo "primary: $primary (runner image ${ImageOS:-unknown} ${ImageVersion:-unknown})" >> "$GITHUB_STEP_SUMMARY"
+          echo "primary: $primary from ${rev:-no default-branch revision} (runner image ${ImageOS:-unknown} ${ImageVersion:-unknown})" >> "$GITHUB_STEP_SUMMARY"
 
   verify:
     needs: mode
-    if: needs.mode.outputs.primary == 'github'
+    if: ${{ !cancelled() && (needs.mode.result != 'success' || needs.mode.outputs.primary == 'github') }}
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -139,7 +168,7 @@ jobs:
   # Until it exists, this job fails instead of passing without checking anything.
   tdd-discipline:
     needs: mode
-    if: needs.mode.outputs.primary == 'github' && github.event_name == 'pull_request'
+    if: ${{ !cancelled() && (needs.mode.result != 'success' || needs.mode.outputs.primary == 'github') && github.event_name == 'pull_request' }}
     runs-on: ubuntu-24.04
     permissions:
       contents: read
