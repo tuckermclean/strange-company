@@ -19,5 +19,14 @@ if [ -n "${SC_REPO_ROOT:-}" ] && [ -d /run/sc ]; then
 	GOMODCACHE=${GOMODCACHE:-$SC_REPO_ROOT/.cache/go/mod}
 	GOCACHE=${GOCACHE:-$SC_REPO_ROOT/.cache/go/build}
 	export GOMODCACHE GOCACHE
+	# Plan 02 section 9.4 defaults that depend on the repository path; a caller's value wins.
+	if [ -z "${ANSIBLE_CONFIG:-}" ] && [ -f "$SC_REPO_ROOT/infra/ansible/ansible.cfg" ]; then
+		ANSIBLE_CONFIG=$SC_REPO_ROOT/infra/ansible/ansible.cfg
+		export ANSIBLE_CONFIG
+	fi
+	TF_PLUGIN_CACHE_DIR=${TF_PLUGIN_CACHE_DIR:-$SC_REPO_ROOT/.cache/tofu-plugins}
+	HELM_CACHE_HOME=${HELM_CACHE_HOME:-$SC_REPO_ROOT/.cache/helm}
+	mkdir -p "$TF_PLUGIN_CACHE_DIR" "$HELM_CACHE_HOME" 2>/dev/null || true
+	export TF_PLUGIN_CACHE_DIR HELM_CACHE_HOME
 fi
 exec "$@"
