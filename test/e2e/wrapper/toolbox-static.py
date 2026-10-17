@@ -45,7 +45,7 @@ RUNTIME = {
     "aws": (["aws", "awscli", "aws-cli"], "AWS CLI v2"),
     "kubectl-cnpg": (["kubectl-cnpg"], "CloudNativePG operator"),
     "etcdutl": (["etcdutl"], "=3.6.x"),
-    "cmctl": (["cmctl"], "cert-manager"),
+    "cmctl": (["cmctl"], "cmctl"),
     "gitleaks": (["gitleaks"], "gitleaks"),
     "cosign": (["cosign"], "cosign"),
     "syft": (["syft"], "syft"),

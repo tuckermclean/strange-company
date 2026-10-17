@@ -42,7 +42,7 @@ RC=0
 jq -e 'all(.tools[]; .ok) and (.tools | length) > 0' "$TMP/selfcheck-ci.json" >/dev/null 2>&1 || RC=$?
 expect_eq "02-AC-1 all ci tool rows ok" 0 "$RC"
 RC=0
-jq -e '[.tools[].name] | index("actionlint") != null and index("weed") != null' "$TMP/selfcheck-ci.json" >/dev/null 2>&1 || RC=$?
+jq -e '[.tools[].tool] | index("actionlint") != null and index("weed") != null' "$TMP/selfcheck-ci.json" >/dev/null 2>&1 || RC=$?
 expect_eq "02-AC-1 the ci selfcheck covers set: ci tools (image-info target: ci)" 0 "$RC"
 RC=0
 OUT=$($B exec $IMG -- cat /usr/share/strange-company/image-info.json 2>/dev/null) || RC=$?
