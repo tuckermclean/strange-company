@@ -272,3 +272,21 @@ func TestModeStep_PushModes_Issue149(t *testing.T) {
 		})
 	}
 }
+
+// Issue #149: if the mode job fails, verify and tdd-discipline must still run. A job skipped by its `if:` counts as
+// a passing required check, so only a successful mode job that chose forgejo may skip them.
+func TestVerifyJobsRunWhenModeFails_Issue149(t *testing.T) {
+	jobs := jobsOf(mustWorkflow(t, "verify.yaml"))
+	for _, j := range []string{"verify", "tdd-discipline"} {
+		cond := ""
+		for _, l := range jobs[j] {
+			if indentOf(l) == 4 && strings.HasPrefix(strings.TrimSpace(l), "if:") {
+				cond = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(l), "if:"))
+			}
+		}
+		if !strings.Contains(cond, "!cancelled()") || !regexp.MustCompile(`needs\.mode\.result\s*!=\s*'success'`).MatchString(cond) {
+			t.Errorf("job %s: `if: %s` skips the job when the mode job fails; want !cancelled() and "+
+				"needs.mode.result != 'success' as a run condition", j, cond)
+		}
+	}
+}
