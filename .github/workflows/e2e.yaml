@@ -63,7 +63,7 @@ jobs:
             toolbox=false
             verify_e2e=false
             if grep -q -e '^toolbox/' -e '^bootstrap$' -e '^test/e2e/wrapper/' -e '^\.github/workflows/e2e\.yaml$' \
-              <<<"$changed"; then
+              -e '^mk/toolbox\.mk$' <<<"$changed"; then
               toolbox=true
             fi
             if grep -q -e '^Makefile$' -e '^mk/' -e '^src/' -e '^toolbox/' -e '^bootstrap$' -e '^policy/' \
@@ -101,6 +101,17 @@ jobs:
       # 02-AC-15 (static side): toolbox-check rejects a FROM without a digest.
       - name: Containerfile pin checks
         run: sh test/e2e/wrapper/check-pins.sh
+
+      # The toolbox and ci images need about 10 GB with their build cache; the hosted image ships unused SDKs.
+      - name: Free runner disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          docker image prune -af
+          df -h /
+
+      # 02-AC-1, 02-AC-2, 02-AC-3 (build side), 02-AC-8, 02-AC-9: make toolbox (both targets, --no-cache) on Docker.
+      - name: Toolbox and ci images
+        run: sh test/e2e/wrapper/toolbox-image.sh
 
   # 52-AC-5, 01-AC-6, 52-AC-8: two offline `make verify` runs with SC_FORBID_PAID=1, identical summaries.
   verify-e2e:
