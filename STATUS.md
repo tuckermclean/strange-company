@@ -88,7 +88,7 @@
    - CD-57: legitimately superseded RED tests are declared with a `TDD-Superseded:` line on the PR head commit; `cloneImage` and `verify.installerImage` are optional in the ci-policy schema until their images exist (found in the F01 slice S5 dry run).
    - CD-58: the TDD checker trusts the base revision's policy and checker (head only for the F01 bootstrap); `agent/*` is excluded only when provenance is bound; red-target values are validated (found in the F01 slice S5 review).
    - CD-59: a declared stub may be a marked field added to an existing struct; the operator granted F01 slice S5 one extra implementer attempt, beyond SPEC §74's 3, for this rule only.
-   - CD-60: `sc-contracts` validates with `github.com/santhosh-tekuri/jsonschema/v6`; OpenAPI 3.1 is validated against the embedded official OAS 3.1 schema with the same library, with no OpenAPI dependency (decided before F02).
+   - CD-60: `sc-contracts` validates with `github.com/santhosh-tekuri/jsonschema/v6`; OpenAPI 3.1 is validated against the embedded official OAS 3.1 schema with the same library, with no OpenAPI dependency (decided before F02); its regex engine is `github.com/dlclark/regexp2`, because the contracts use lookaround (F02 S1).
 
 ## SPEC §125 Stage-0 Definition of Done
 

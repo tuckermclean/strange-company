@@ -429,7 +429,7 @@ spec:
 
 ### 8.3 Contract tooling (F02)
 
-`sc-contracts` (Go, `src/cmd/sc-contracts`) is the single contract validator. It validates with `github.com/santhosh-tekuri/jsonschema/v6`, and checks OpenAPI 3.1 against the official OAS 3.1 JSON Schema embedded under `src/internal/contracts/` (CD-60):
+`sc-contracts` (Go, `src/cmd/sc-contracts`) is the single contract validator. It validates with `github.com/santhosh-tekuri/jsonschema/v6` (regex engine `github.com/dlclark/regexp2`, because the contracts use lookaround), and checks OpenAPI 3.1 against the official OAS 3.1 JSON Schema embedded under `src/internal/contracts/` (CD-60):
 - For each `contracts/*.schema.yaml`: parse YAML (1.2 core schema; duplicate keys are an error), check `$schema` = 2020-12, `$id` = `https://strange.company/contracts/<file-stem>/v1alpha1`, `title`, `description`, ≥ 1 `examples`; meta-validate; validate each `examples[i]` (must pass), each `x-invalid-examples[i].value` (must fail, and `reason` present), each `x-defs-examples.<Def>[i]` against `#/$defs/<Def>`.
 - For `contracts/*.openapi.yaml`: OpenAPI 3.1 structural validation, every `$ref` resolves, every schema example validates.
 - Register files (`contracts/*.yaml` without `.schema`) validate against their companion schema (`alert-catalog.yaml` → `alert-catalog.schema.yaml`, `secret-classes.yaml` → `secret-classes.schema.yaml`; mapping by `kind` + file stem, declared by the `kind`/file-stem table below).
