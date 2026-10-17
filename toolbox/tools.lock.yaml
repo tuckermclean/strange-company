@@ -372,7 +372,7 @@ spec:
   debianSnapshot: 20261001T000000Z
   aptPackages:
     runtime: [bash, ca-certificates, curl, git, openssh-client, python3, python3-venv, tini, libnss-wrapper, less, vim-tiny, procps, iproute2, dnsutils, netcat-openbsd, openssl, unzip, xz-utils]
-    ci: [make, shellcheck]
+    ci: [make, shellcheck, gcc, libc6-dev]
   pythonRequirements: toolbox/requirements.txt
   ansibleCollections:
     # sha256 source: Galaxy API artifact.sha256 of the published collection; the tarball downloaded from galaxy.ansible.com/download has the same digest.
