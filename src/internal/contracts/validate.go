@@ -408,7 +408,9 @@ func escapeToken(k string) string {
 }
 
 // isResponsesMap reports whether the name map at ptr is an operation's responses object.
-func isResponsesMap(ptr string) bool { return strings.HasSuffix(ptr, "/responses") }
+func isResponsesMap(ptr string) bool {
+	return strings.HasSuffix(ptr, "/responses") && !strings.HasSuffix(ptr, "/components/responses")
+}
 
 // isDataOrExtension reports keys whose values are instance data or extension objects, not schemas.
 func isDataOrExtension(k string) bool {

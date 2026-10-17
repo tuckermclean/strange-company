@@ -16,16 +16,19 @@ import (
 // file's companion schema.
 type globRow struct {
 	pattern string
-	schema  string // fixed rows: schema file name; empty for kind rows
-	def     string // fixed rows: optional $defs entry
+	schema  string   // fixed rows: schema file name; empty for kind rows
+	def     string   // fixed rows: optional $defs entry
+	allowed []string // kind rows: schema files the row may select from; empty means any schema
 }
 
+var versionLockSchemas = []string{"version-locks.schema.yaml"}
+
 var instanceRows = []globRow{
-	{pattern: "infra/profiles/*.yaml"},
-	{pattern: "versions/*.yaml"},
-	{pattern: "toolbox/tools.lock.yaml"},
-	{pattern: "toolbox/image.lock"},
-	{pattern: "infra/lab/lab.yaml"},
+	{pattern: "infra/profiles/*.yaml", allowed: []string{"substrate.schema.yaml", "cluster-profile.schema.yaml"}},
+	{pattern: "versions/*.yaml", allowed: versionLockSchemas},
+	{pattern: "toolbox/tools.lock.yaml", allowed: versionLockSchemas},
+	{pattern: "toolbox/image.lock", allowed: versionLockSchemas},
+	{pattern: "infra/lab/lab.yaml", allowed: versionLockSchemas},
 	{pattern: "policy/**/*.yaml"},
 	{pattern: ".strange-company/*.yaml"},
 	{pattern: "context/**/*.yaml"},
@@ -180,7 +183,12 @@ func (r *runner) checkInstances(schemas []*schemaFile, compile func(string) (*js
 				if ambiguous[kind] {
 					continue // CONTRACT_KIND_AMBIGUOUS already failed for this kind
 				}
-				ts := byKind[kind]
+				var ts []target
+				for _, c := range byKind[kind] {
+					if len(row.allowed) == 0 || contains(row.allowed, filepath.Base(c.file)) {
+						ts = append(ts, c)
+					}
+				}
 				if m == nil || str(m, "apiVersion") != apiVersion || len(ts) != 1 {
 					r.fail(rel, CheckKindUnknown, fmt.Sprintf("apiVersion=%q kind=%q has no schema", str(m, "apiVersion"), kind))
 					continue
@@ -193,11 +201,24 @@ func (r *runner) checkInstances(schemas []*schemaFile, compile func(string) (*js
 				r.fail(rel, CheckInstanceInvalid, oneLine(err.Error()))
 				continue
 			}
-			if err := sch.Validate(m); err != nil {
-				r.fail(rel, CheckInstanceInvalid, fmt.Sprintf("does not validate against %s: %s", t.file, oneLine(err.Error())))
+			if err := sch.Validate(doc); err != nil {
+				why := oneLine(err.Error())
+				if m == nil {
+					why = "type mismatch: " + why
+				}
+				r.fail(rel, CheckInstanceInvalid, fmt.Sprintf("does not validate against %s: %s", t.file, why))
 			} else {
 				r.pass(rel, CheckInstanceInvalid, label+" "+t.file)
 			}
 		}
 	}
+}
+
+func contains(list []string, v string) bool {
+	for _, x := range list {
+		if x == v {
+			return true
+		}
+	}
+	return false
 }
