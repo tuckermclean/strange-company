@@ -195,7 +195,7 @@ Versions are the entries of `plans/compatibility-baseline.yaml` ("baseline: X").
 | `syft`, `trivy` | runtime | GitHub releases + sha256 | baseline: syft v1.54.1, trivy v0.76.0 (trivy DB fetched at run time, not baked in) | 23 (`supply-chain init`) |
 | `gitleaks` | runtime | GitHub release + sha256 | baseline: gitleaks v8.30.1 | 35 (`sc-bootstrap secrets scan`), 01 `secrets-scan` |
 | `etcdutl` | runtime | etcd release tarball + sha256 | the etcd embedded in baseline k3s v1.36.5+k3s1 (etcd v3.6.14; `versions/k3s.lock.yaml` `etcdctl.version`) | 07 (`restore-etcd.md`), 45 |
-| `cmctl` | runtime | GitHub release + sha256 | baseline: cert-manager v1.21.2 (cmctl version matching) | 10 (`certificate-failure.md`) |
+| `cmctl` | runtime | GitHub release (`cert-manager/cmctl`) + sha256 | baseline: cmctl v2.6.1 (2.6.x), the release built against cert-manager v1.21.2 (CD-65; cmctl is versioned separately since cert-manager 1.15) | 10 (`certificate-failure.md`) |
 | `sc-bootstrap`, `sc-gitops`, `sc-lint`, `sc-contracts` | runtime | built from `src/` in the `gobuild` stage | repository HEAD | 50, 18, 01 |
 | `tini`, `libnss-wrapper` | runtime | Debian (snapshot) | Debian 13 packages | §14.5 |
 | Go toolchain | ci | golang base image by digest | baseline: Go 1.27.2 (1.27.x; `src/go.mod` `toolchain` directive) | `make test/build` |
