@@ -1,0 +1,20 @@
+# Installed as /.gitleaks.toml in the toolbox image so that `gitleaks dir` over the exported image filesystem
+# (02-AC-9) reads it as the target-path config. It keeps the default rules and allowlists only vendored
+# third-party documentation and examples that contain published placeholder credentials. Nothing this
+# repository adds is allowlisted: /opt/sc/bin, /usr/share/strange-company and /etc are scanned in full.
+title = "toolbox image filesystem scan"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "AWS CLI v2 bundled service examples and botocore API documentation (AKIAIOSFODNN7EXAMPLE style placeholders)"
+paths = ['''/opt/sc/aws-cli/.+/awscli/(examples|botocore/data)/''']
+
+[[allowlists]]
+description = "community.general plugin and module documentation (api_key: placeholder examples)"
+paths = ['''/opt/sc/ansible-collections/ansible_collections/community/general/(plugins|docs)/''']
+
+[[allowlists]]
+description = "Debian perl-base apidoc comment in CORE/cop.h"
+paths = ['''/usr/lib/[^/]+/perl/[0-9.]+/CORE/cop\.h''']

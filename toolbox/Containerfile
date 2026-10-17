@@ -72,7 +72,7 @@ RUN set -eu; \
       echo "$sum  /tmp/coll/$name.tar.gz" | sha256sum -c --status || { echo "TOOLBOX_CHECKSUM_MISMATCH:$name" >&2; exit 1; }; \
       /opt/sc/ansible-venv/bin/ansible-galaxy collection install "/tmp/coll/$name.tar.gz" -p /opt/sc/ansible-collections --no-deps; \
     done </tmp/coll/list; \
-    rm -rf /tmp/coll /root/.ansible
+    rm -rf /tmp/coll /root/.ansible /opt/sc/ansible-collections/ansible_collections/*/*/tests  # test trees: not needed at run time, full of fixture credentials
 
 # ---- toolbox (final operator image)
 FROM base AS toolbox
@@ -80,6 +80,8 @@ ARG SC_INPUTS_ID=unknown
 LABEL strange.company/toolbox-inputs-id=$SC_INPUTS_ID
 COPY --from=fetch /opt/sc/ /opt/sc/
 COPY --chmod=0755 toolbox/bin/sc-entrypoint /opt/sc/bin/sc-entrypoint
+# Config read by `gitleaks dir` over the exported filesystem (02-AC-9); see the file for what it allowlists.
+COPY toolbox/gitleaks-image.toml /.gitleaks.toml
 ARG SC_SOURCE_COMMIT=unknown
 ARG SC_BUILT_AT=unknown
 RUN set -eu; \
