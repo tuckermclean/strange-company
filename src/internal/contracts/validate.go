@@ -57,7 +57,11 @@ func (r *runner) add(file, check string, err error, detail string) {
 	res := "pass"
 	if err != nil {
 		res = "fail"
-		detail = trim(oneLine(err.Error()))
+		msg := oneLine(err.Error())
+		if detail != "" {
+			msg = detail + ": " + msg
+		}
+		detail = trim(msg)
 	}
 	r.rows = append(r.rows, Row{File: file, Check: check, Result: res, Detail: detail})
 }
@@ -242,16 +246,24 @@ func (r *runner) checkSchema(sf *schemaFile, compile func(string) (*jsonschema.S
 	for i, e := range invalid {
 		item, _ := e.(map[string]any)
 		detail := fmt.Sprintf("x-invalid-examples[%d]", i)
+		if item == nil {
+			r.fail(rel, CheckInvalidPasses, detail+" is not a mapping with reason and value")
+			continue
+		}
+		val, hasValue := item["value"]
+		if !hasValue {
+			r.fail(rel, CheckInvalidPasses, detail+" has no value")
+			if str(item, "reason") == "" {
+				r.fail(rel, CheckInvalidReason, detail+" has no reason")
+			}
+			continue
+		}
 		if str(item, "reason") == "" {
 			r.fail(rel, CheckInvalidReason, detail+" has no reason")
 		} else {
 			r.pass(rel, CheckInvalidReason, detail)
 		}
-		if item == nil {
-			r.fail(rel, CheckInvalidPasses, detail+" is not a mapping with reason and value")
-			continue
-		}
-		if err := sch.Validate(item["value"]); err == nil {
+		if err := sch.Validate(val); err == nil {
 			r.fail(rel, CheckInvalidPasses, detail+" validates but must fail")
 		} else {
 			r.pass(rel, CheckInvalidPasses, detail)
@@ -314,28 +326,70 @@ func (r *runner) checkOpenAPI(rel string, schemas []*schemaFile, oas *jsonschema
 		r.add(rel, CheckOpenAPIInvalid, err, "")
 		return
 	}
-	comps, _ := m["components"].(map[string]any)
-	sm, _ := comps["schemas"].(map[string]any)
-	names := make([]string, 0, len(sm))
-	for n := range sm {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	for _, n := range names {
-		s, _ := sm[n].(map[string]any)
-		ex, _ := s["examples"].([]any)
-		if len(ex) == 0 {
-			continue
-		}
-		sch, err := compile(base + "#/components/schemas/" + n)
+	var ptrs []string
+	collectExamples(m, "", &ptrs)
+	for _, ptr := range ptrs {
+		node := ptrNode(m, ptr)
+		ex, _ := node["examples"].([]any)
+		sch, err := compile(base + "#" + escapeFrag(ptr))
 		if err != nil {
-			r.fail(rel, CheckOpenAPIExample, fmt.Sprintf("components.schemas.%s: %s", n, oneLine(err.Error())))
+			r.fail(rel, CheckOpenAPIExample, fmt.Sprintf("%s: %s", ptr, oneLine(err.Error())))
 			continue
 		}
 		for i, e := range ex {
-			r.add(rel, CheckOpenAPIExample, sch.Validate(e), fmt.Sprintf("components.schemas.%s.examples[%d]", n, i))
+			r.add(rel, CheckOpenAPIExample, sch.Validate(e), fmt.Sprintf("%s/examples[%d]", ptr, i))
 		}
 	}
+}
+
+// collectExamples gathers the JSON pointers of every Schema Object position carrying an examples array.
+func collectExamples(v any, ptr string, out *[]string) {
+	switch t := v.(type) {
+	case map[string]any:
+		if ex, ok := t["examples"].([]any); ok && len(ex) > 0 {
+			*out = append(*out, ptr)
+		}
+		keys := make([]string, 0, len(t))
+		for k := range t {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			switch k {
+			case "example", "examples", "default", "const", "enum", "x-invalid-examples":
+				continue
+			}
+			collectExamples(t[k], ptr+"/"+strings.ReplaceAll(strings.ReplaceAll(k, "~", "~0"), "/", "~1"), out)
+		}
+	case []any:
+		for i, e := range t {
+			collectExamples(e, ptr+"/"+strconv.Itoa(i), out)
+		}
+	}
+}
+
+func ptrNode(doc any, ptr string) map[string]any {
+	cur := doc
+	if ptr != "" {
+		for _, tok := range strings.Split(ptr[1:], "/") {
+			tok = strings.ReplaceAll(strings.ReplaceAll(tok, "~1", "/"), "~0", "~")
+			switch t := cur.(type) {
+			case map[string]any:
+				cur = t[tok]
+			case []any:
+				i, _ := strconv.Atoi(tok)
+				if i >= 0 && i < len(t) {
+					cur = t[i]
+				}
+			}
+		}
+	}
+	m, _ := cur.(map[string]any)
+	return m
+}
+
+func escapeFrag(ptr string) string {
+	return (&url.URL{Path: ptr}).EscapedPath()
 }
 
 func walkRefs(v any, path string, fn func(path, ref string)) {
@@ -430,7 +484,7 @@ func hasAnchor(v any, name string) bool {
 
 // instanceGlobs are the governed instance files validated by sc-contracts so far (version locks, plan 01 8.2);
 // the remaining plan 01 section 8.3 globs are still validated by test/contracts/validate_instances.py.
-var instanceGlobs = []string{"versions/*.yaml", "toolbox/tools.lock.yaml", "infra/lab/lab.yaml"}
+var instanceGlobs = []string{"versions/*.yaml", "toolbox/tools.lock.yaml", "toolbox/image.lock", "infra/lab/lab.yaml"}
 
 func kindConst(s any) string {
 	m, _ := s.(map[string]any)

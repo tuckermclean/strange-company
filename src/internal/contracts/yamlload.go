@@ -3,6 +3,7 @@ package contracts
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"strings"
 
 	"go.yaml.in/yaml/v3"
@@ -22,7 +23,14 @@ func (e *dupKeyError) Error() string {
 // bool, int, float64, nil). Timestamps stay strings (YAML 1.2 core schema); duplicate keys are an error.
 func parseYAML(b []byte) (any, error) {
 	var n yaml.Node
-	if err := yaml.NewDecoder(bytes.NewReader(b)).Decode(&n); err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(b))
+	if err := dec.Decode(&n); err != nil {
+		return nil, err
+	}
+	var extra yaml.Node
+	if err := dec.Decode(&extra); err == nil {
+		return nil, fmt.Errorf("multiple YAML documents; exactly one is allowed")
+	} else if err != io.EOF {
 		return nil, err
 	}
 	return convert(&n)
