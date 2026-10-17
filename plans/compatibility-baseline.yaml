@@ -110,7 +110,23 @@ spec:
         - metric names certmanager_certificate_expiration_timestamp_seconds / ready_status (10-AC-9)
         - webhook serving certificate is self-renewing
         - publisher signature practice (plan 23 upstream-signatures.yaml)
-      notes: cert-manager 1.21 supports Kubernetes 1.33–1.36. cmctl derives from this entry.
+      notes: cert-manager 1.21 supports Kubernetes 1.33–1.36. cmctl is versioned separately (entry `cmctl`, CD-65).
+
+    - name: cmctl
+      baselineVersion: v2.6.1
+      line: 2.6.x
+      evidence:
+        status: verified
+        source: https://github.com/cert-manager/cmctl/releases/tag/v2.6.1
+        checked: "2026-10-17"
+      planRefs: [plans/02-bootstrap-toolbox.md, plans/10-tls-certificates.md]
+      versionSensitiveAssumptions:
+        - cmctl renew [-n NS NAME | --all -A] against cert-manager 1.21 (plan 10, procedures/certificate-failure.md)
+      notes: >-
+        cmctl left the cert-manager repository at cert-manager 1.15 and is released as cmctl v2.x; there is no
+        cmctl 1.21.x (F03 found plan 02's "cmctl version matching" false). v2.6.1's go.mod requires
+        github.com/cert-manager/cert-manager v1.21.2, the cert-manager baseline. Move this entry together with
+        cert-manager.
 
     - name: CloudNativePG operator
       baselineVersion: v1.30.1
