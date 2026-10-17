@@ -110,6 +110,14 @@ jobs:
       - name: make verify (offline)
         run: ./bootstrap exec --image ci --network none -- make verify
 
+      # 52-AC-10: out/contracts/junit.xml is uploaded on every PR run. make verify stops at the first failing
+      # target, so when it failed before reaching `contracts`, run that target alone. The job has already failed;
+      # this step only produces the report.
+      - name: make contracts (report only, after an earlier verify failure)
+        if: failure()
+        run: |
+          [ -f out/contracts/junit.xml ] || ./bootstrap exec --image ci --network none -- make contracts || true
+
       - name: Save the ci image for the cache
         if: always() && steps.ci-image.outputs.cache-hit != 'true'
         env:
