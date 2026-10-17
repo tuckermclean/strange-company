@@ -142,6 +142,11 @@ func (c *cmdCtx) selfcheck(args []string) int {
 			fmt.Fprintf(c.out, "%-4s %s expected=%s actual=%s\n", st, r.Tool, r.Expected, r.Actual)
 		}
 	}
+	for _, r := range rep.Tools {
+		if !r.OK {
+			fmt.Fprintf(c.err, "TOOLBOX_VERSION_MISMATCH:%s\n", r.Tool)
+		}
+	}
 	if rep.Stale {
 		fmt.Fprintln(c.err, "TOOLBOX_STALE: the embedded tools.lock.yaml differs from $SC_REPO_ROOT/toolbox/tools.lock.yaml")
 		return 1

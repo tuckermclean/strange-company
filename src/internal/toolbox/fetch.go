@@ -5,7 +5,6 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -73,7 +72,7 @@ func (c *cmdCtx) fetch(args []string) int {
 				break
 			}
 			fmt.Fprintf(c.err, "toolbox fetch: %s: %v (attempt %d of 3)\n", t.Name, err, attempt+1)
-			pause(delays[attempt])
+			c.sleep(delays[attempt])
 		}
 		if err != nil {
 			fmt.Fprintf(c.err, "TOOLBOX_DOWNLOAD_FAILED:%s: %v\n", t.Name, err)
@@ -86,7 +85,7 @@ func (c *cmdCtx) fetch(args []string) int {
 		}
 		data := body
 		if t.Inst.Extract != "" {
-			if data, err = extractMember(body, t.Inst.Extract); err != nil {
+			if data, err = extractMember(body, t.expand(t.Inst.Extract, *arch)); err != nil {
 				fmt.Fprintf(c.err, "TOOLBOX_EXTRACT_FAILED:%s: %v\n", t.Name, err)
 				return 1
 			}
@@ -171,11 +170,4 @@ func extractMember(b []byte, member string) ([]byte, error) {
 			return io.ReadAll(io.LimitReader(tr, maxDownload))
 		}
 	}
-}
-
-// pause waits d. It uses a context deadline rather than time.Sleep, which the D8 lint rule forbids outside cmd/.
-func pause(d time.Duration) {
-	ctx, cancel := context.WithTimeout(context.Background(), d)
-	defer cancel()
-	<-ctx.Done()
 }

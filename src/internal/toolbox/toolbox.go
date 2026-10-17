@@ -4,6 +4,7 @@ package toolbox
 import (
 	"fmt"
 	"io"
+	"time"
 
 	"strange.company/sc/internal/version"
 )
@@ -12,7 +13,15 @@ const usage = "usage: sc-bootstrap [--env-file <file>] <version|preflight|env s3
 
 // Main runs sc-bootstrap with the given arguments and environment and returns the process exit code
 // (plan 50 section 7.2: 2 usage, 3 preflight failed).
+//
+// Main never waits between download retries; the real binary calls Run with a sleeper.
 func Main(args []string, env map[string]string, stdout, stderr io.Writer) int {
+	return Run(args, env, stdout, stderr, nil)
+}
+
+// Run is Main with an injected sleeper used between download retries (time.Sleep is forbidden outside cmd/).
+// A nil sleep means no waiting. SC_TOOLBOX_RETRY_DELAY overrides the 5s/15s delays handed to the sleeper (tests).
+func Run(args []string, env map[string]string, stdout, stderr io.Writer, sleep func(time.Duration)) int {
 	envFile := ""
 	for len(args) > 0 {
 		if args[0] == "--env-file" {
@@ -33,7 +42,7 @@ func Main(args []string, env map[string]string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, usage)
 		return 2
 	}
-	c := &cmdCtx{env: env, out: stdout, err: stderr, envFile: envFile}
+	c := &cmdCtx{env: env, out: stdout, err: stderr, envFile: envFile, sleeper: sleep}
 	switch args[0] {
 	case "version":
 		fmt.Fprintf(stdout, "sc-bootstrap %s %s\n", version.Version, version.Commit)
@@ -64,6 +73,13 @@ type cmdCtx struct {
 	env      map[string]string
 	out, err io.Writer
 	envFile  string
+	sleeper  func(time.Duration)
+}
+
+func (c *cmdCtx) sleep(d time.Duration) {
+	if c.sleeper != nil {
+		c.sleeper(d)
+	}
 }
 
 func (c *cmdCtx) getenv(k, def string) string {

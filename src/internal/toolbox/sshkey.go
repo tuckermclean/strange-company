@@ -48,7 +48,10 @@ func sshStr(b []byte) []byte {
 }
 
 // parseOpenSSHPrivate parses an unencrypted openssh-key-v1 ed25519 or RSA key (PF-06).
-func parseOpenSSHPrivate(data []byte) (*sshKey, error) {
+//
+// With allowEncrypted (ssh-agent mode) a passphrase-protected key is accepted: type, size and public key are taken
+// from the unencrypted public blob in the header.
+func parseOpenSSHPrivate(data []byte, allowEncrypted bool) (*sshKey, error) {
 	blk, _ := pem.Decode(data)
 	if blk == nil || blk.Type != "OPENSSH PRIVATE KEY" {
 		return nil, errors.New("not an OpenSSH private key (PEM \"OPENSSH PRIVATE KEY\" expected)")
@@ -68,15 +71,20 @@ func parseOpenSSHPrivate(data []byte) (*sshKey, error) {
 	if _, err = r.str(); err != nil { // kdfoptions
 		return nil, err
 	}
-	if string(cipher) != "none" {
-		return nil, errors.New("private key is passphrase-protected (cipher " + string(cipher) + "); an unencrypted key is required")
+	encrypted := string(cipher) != "none"
+	if encrypted && !allowEncrypted {
+		return nil, errors.New("private key is passphrase-protected (cipher " + string(cipher) + "); an unencrypted key is required (or set SSH_USE_AGENT=true)")
 	}
 	n, err := r.u32()
 	if err != nil || n != 1 {
 		return nil, errors.New("expected exactly one key")
 	}
-	if _, err = r.str(); err != nil { // public blob in header
+	hdrBlob, err := r.str() // public blob in header
+	if err != nil {
 		return nil, err
+	}
+	if encrypted {
+		return keyFromBlob(hdrBlob)
 	}
 	privBytes, err := r.str()
 	if err != nil {
@@ -103,7 +111,8 @@ func parseOpenSSHPrivate(data []byte) (*sshKey, error) {
 			return nil, err
 		}
 		if len(pub) != ed25519.PublicKeySize || len(priv) != ed25519.PrivateKeySize ||
-			!bytes.Equal(ed25519.PrivateKey(priv).Public().(ed25519.PublicKey), pub) {
+			!bytes.Equal(ed25519.NewKeyFromSeed(priv[:ed25519.SeedSize]).Public().(ed25519.PublicKey), pub) ||
+			!bytes.Equal(priv[ed25519.SeedSize:], pub) {
 			return nil, errors.New("corrupt ed25519 key")
 		}
 		blob := append(sshStr([]byte("ssh-ed25519")), sshStr(pub)...)
@@ -136,4 +145,31 @@ func parsePublicLine(data []byte) (string, []byte, error) {
 		return "", nil, err
 	}
 	return f[0], b, nil
+}
+
+// keyFromBlob reads type and size from an SSH wire-format public key blob.
+func keyFromBlob(blob []byte) (*sshKey, error) {
+	r := &sshReader{blob}
+	kt, err := r.str()
+	if err != nil {
+		return nil, err
+	}
+	switch string(kt) {
+	case "ssh-ed25519":
+		pub, err := r.str()
+		if err != nil || len(pub) != ed25519.PublicKeySize {
+			return nil, errors.New("corrupt ed25519 public blob")
+		}
+		return &sshKey{Type: "ssh-ed25519", Bits: 256, Blob: blob}, nil
+	case "ssh-rsa":
+		if _, err := r.str(); err != nil {
+			return nil, err
+		}
+		nb, err := r.str()
+		if err != nil {
+			return nil, err
+		}
+		return &sshKey{Type: "ssh-rsa", Bits: new(big.Int).SetBytes(nb).BitLen(), Blob: blob}, nil
+	}
+	return nil, fmt.Errorf("unsupported key type %q (ed25519 or RSA >= 3072 required)", kt)
 }
