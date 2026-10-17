@@ -45,6 +45,7 @@ const (
 	CheckOpenAPIExample  = "CONTRACT_OPENAPI_EXAMPLE_INVALID"
 	CheckKindUnknown     = "CONTRACT_KIND_UNKNOWN"
 	CheckInstanceInvalid = "CONTRACT_INSTANCE_INVALID"
+	CheckKindAmbiguous   = "CONTRACT_KIND_AMBIGUOUS"
 )
 
 type runner struct {
@@ -242,7 +243,10 @@ func (r *runner) checkSchema(sf *schemaFile, compile func(string) (*jsonschema.S
 	for i, ex := range examples {
 		r.add(rel, CheckExampleInvalid, sch.Validate(ex), fmt.Sprintf("examples[%d]", i))
 	}
-	invalid, _ := m["x-invalid-examples"].([]any)
+	invalid, invalidIsList := m["x-invalid-examples"].([]any)
+	if _, present := m["x-invalid-examples"]; present && !invalidIsList {
+		r.fail(rel, CheckSchemaInvalid, "x-invalid-examples must be a list of {reason, value} mappings")
+	}
 	for i, e := range invalid {
 		item, _ := e.(map[string]any)
 		detail := fmt.Sprintf("x-invalid-examples[%d]", i)
@@ -269,14 +273,21 @@ func (r *runner) checkSchema(sf *schemaFile, compile func(string) (*jsonschema.S
 			r.pass(rel, CheckInvalidPasses, detail)
 		}
 	}
-	defs, _ := m["x-defs-examples"].(map[string]any)
+	defs, defsIsMap := m["x-defs-examples"].(map[string]any)
+	if _, present := m["x-defs-examples"]; present && !defsIsMap {
+		r.fail(rel, CheckSchemaInvalid, "x-defs-examples must be a mapping of $defs name to a list of examples")
+	}
 	names := make([]string, 0, len(defs))
 	for n := range defs {
 		names = append(names, n)
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		list, _ := defs[name].([]any)
+		list, listOK := defs[name].([]any)
+		if !listOK {
+			r.fail(rel, CheckSchemaInvalid, fmt.Sprintf("x-defs-examples.%s must be a list of examples", name))
+			continue
+		}
 		ds, err := compile(sf.id + "#/$defs/" + name)
 		if err != nil {
 			r.fail(rel, CheckDefsExample, fmt.Sprintf("x-defs-examples.%s: %s", name, oneLine(err.Error())))
@@ -342,12 +353,30 @@ func (r *runner) checkOpenAPI(rel string, schemas []*schemaFile, oas *jsonschema
 	}
 }
 
+// nameMapKey reports whether the member key of a map at ptr holds a map from names to schemas, so that
+// its own member keys are names and not keywords.
+func nameMapKey(ptr, k string) bool {
+	switch k {
+	case "properties", "patternProperties", "$defs", "dependentSchemas":
+		return true
+	case "schemas":
+		return ptr == "/components"
+	}
+	return false
+}
+
 // collectExamples gathers the JSON pointers of every Schema Object position carrying an examples array.
-func collectExamples(v any, ptr string, out *[]string) {
+// In a name map (names true: property names and the like) every child is visited, and the map itself is
+// not a schema.
+func collectExamples(v any, ptr string, out *[]string) { collectExamplesIn(v, ptr, false, out) }
+
+func collectExamplesIn(v any, ptr string, names bool, out *[]string) {
 	switch t := v.(type) {
 	case map[string]any:
-		if ex, ok := t["examples"].([]any); ok && len(ex) > 0 {
-			*out = append(*out, ptr)
+		if !names {
+			if ex, ok := t["examples"].([]any); ok && len(ex) > 0 {
+				*out = append(*out, ptr)
+			}
 		}
 		keys := make([]string, 0, len(t))
 		for k := range t {
@@ -355,17 +384,25 @@ func collectExamples(v any, ptr string, out *[]string) {
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
-			switch k {
-			case "example", "examples", "default", "const", "enum", "x-invalid-examples":
+			if !names && isDataOrExtension(k) {
 				continue
 			}
-			collectExamples(t[k], ptr+"/"+strings.ReplaceAll(strings.ReplaceAll(k, "~", "~0"), "/", "~1"), out)
+			collectExamplesIn(t[k], ptr+"/"+strings.ReplaceAll(strings.ReplaceAll(k, "~", "~0"), "/", "~1"), !names && nameMapKey(ptr, k), out)
 		}
 	case []any:
 		for i, e := range t {
-			collectExamples(e, ptr+"/"+strconv.Itoa(i), out)
+			collectExamplesIn(e, ptr+"/"+strconv.Itoa(i), false, out)
 		}
 	}
+}
+
+// isDataOrExtension reports keys whose values are instance data or extension objects, not schemas.
+func isDataOrExtension(k string) bool {
+	switch k {
+	case "example", "examples", "default", "const", "enum":
+		return true
+	}
+	return strings.HasPrefix(k, "x-")
 }
 
 func ptrNode(doc any, ptr string) map[string]any {
@@ -392,7 +429,11 @@ func escapeFrag(ptr string) string {
 	return (&url.URL{Path: ptr}).EscapedPath()
 }
 
-func walkRefs(v any, path string, fn func(path, ref string)) {
+// walkRefs calls fn for every $ref string. It does not look inside instance data (example, default, const,
+// enum, a list-valued examples) or x- extensions; the member keys of name maps are always visited.
+func walkRefs(v any, path string, fn func(path, ref string)) { walkRefsIn(v, path, false, fn) }
+
+func walkRefsIn(v any, path string, names bool, fn func(path, ref string)) {
 	switch t := v.(type) {
 	case map[string]any:
 		keys := make([]string, 0, len(t))
@@ -401,15 +442,21 @@ func walkRefs(v any, path string, fn func(path, ref string)) {
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
-			if s, ok := t[k].(string); ok && k == "$ref" {
-				fn(path, s)
-				continue
+			if !names {
+				if s, ok := t[k].(string); ok && k == "$ref" {
+					fn(path, s)
+					continue
+				}
+				_, isList := t[k].([]any)
+				if strings.HasPrefix(k, "x-") || k == "example" || k == "default" || k == "const" || k == "enum" || (k == "examples" && isList) {
+					continue
+				}
 			}
-			walkRefs(t[k], path+"/"+k, fn)
+			walkRefsIn(t[k], path+"/"+k, !names && nameMapKey(path, k), fn)
 		}
 	case []any:
 		for i, e := range t {
-			walkRefs(e, path+"/"+strconv.Itoa(i), fn)
+			walkRefsIn(e, path+"/"+strconv.Itoa(i), false, fn)
 		}
 	}
 }
@@ -496,28 +543,53 @@ func kindConst(s any) string {
 
 func (r *runner) checkInstances(schemas []*schemaFile, compile func(string) (*jsonschema.Schema, error)) {
 	type target struct {
-		prio int
 		file string
 		ref  string
 	}
-	byKind := map[string]target{}
-	for _, sf := range schemas {
+	byKind := map[string][]target{}
+	for _, sf := range schemas { // schemas arrive sorted by file
 		if sf.id == "" {
 			continue
 		}
-		consider := func(prio int, kind, ref string) {
-			if kind == "" {
-				return
-			}
-			t := target{prio, sf.rel, ref}
-			if old, ok := byKind[kind]; !ok || t.prio < old.prio || (t.prio == old.prio && t.file < old.file) {
-				byKind[kind] = t
+		consider := func(kind, ref string) {
+			if kind != "" {
+				byKind[kind] = append(byKind[kind], target{sf.rel, ref})
 			}
 		}
-		consider(0, kindConst(sf.doc), sf.id)
+		consider(kindConst(sf.doc), sf.id)
 		defs, _ := sf.doc["$defs"].(map[string]any)
-		for name, d := range defs {
-			consider(1, kindConst(d), sf.id+"#/$defs/"+name)
+		names := make([]string, 0, len(defs))
+		for n := range defs {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			consider(kindConst(defs[name]), sf.id+"#/$defs/"+name)
+		}
+	}
+	kinds := make([]string, 0, len(byKind))
+	for k := range byKind {
+		kinds = append(kinds, k)
+	}
+	sort.Strings(kinds)
+	ambiguous := map[string]bool{}
+	for _, kind := range kinds {
+		ts := byKind[kind]
+		if len(ts) < 2 {
+			continue
+		}
+		ambiguous[kind] = true
+		locs := make([]string, len(ts))
+		for i, t := range ts {
+			locs[i] = t.ref
+		}
+		detail := fmt.Sprintf("kind %q is claimed by %d schema locations: %s", kind, len(ts), strings.Join(locs, ", "))
+		last := ""
+		for _, t := range ts {
+			if t.file != last {
+				r.fail(t.file, CheckKindAmbiguous, detail)
+				last = t.file
+			}
 		}
 	}
 	for _, g := range instanceGlobs {
@@ -528,7 +600,15 @@ func (r *runner) checkInstances(schemas []*schemaFile, compile func(string) (*js
 			}
 			m, _ := doc.(map[string]any)
 			kind := str(m, "kind")
-			t, known := byKind[kind]
+			if ambiguous[kind] {
+				continue // CONTRACT_KIND_AMBIGUOUS already failed for this kind
+			}
+			var t target
+			ts := byKind[kind]
+			known := len(ts) == 1
+			if known {
+				t = ts[0]
+			}
 			if m == nil || str(m, "apiVersion") != apiVersion || !known {
 				r.fail(rel, CheckKindUnknown, fmt.Sprintf("apiVersion=%q kind=%q has no schema", str(m, "apiVersion"), kind))
 				continue
