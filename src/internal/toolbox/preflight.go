@@ -3,9 +3,11 @@ package toolbox
 import (
 	"bytes"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 type pfRow struct {
@@ -83,13 +85,22 @@ func (c *cmdCtx) pf06(vars map[string]string) pfRow {
 		if err != nil || fi.Mode()&os.ModeSocket == 0 {
 			return fail("SSH_AGENT_UNAVAILABLE", fmt.Sprintf("SSH_USE_AGENT=true but %s is not a unix socket", sock))
 		}
+		conn, err := net.DialTimeout("unix", sock, 2*time.Second)
+		if err != nil {
+			return fail("SSH_AGENT_UNAVAILABLE", fmt.Sprintf("SSH_USE_AGENT=true but %s does not accept connections: %v", sock, err))
+		}
+		conn.Close()
 	}
 	shown := vars["SSH_PRIVATE_KEY_PATH"]
 	if shown == "" {
 		if agent {
 			return pfRow{"PF-06", "pass", "", "ssh-agent socket present"}
 		}
-		return fail("SSH_KEY_UNSET", "SSH_PRIVATE_KEY_PATH is not set")
+		// Plan 50 section 9.2 default.
+		shown = "~/.ssh/id_ed25519"
+		if c.env["HOME"] == "" {
+			return fail("SSH_KEY_UNSET", "SSH_PRIVATE_KEY_PATH is not set and HOME is unset")
+		}
 	}
 	shown = c.expandHome(shown)
 	// Inside the container the key is the mount $SC_INPUT_DIR/ssh/id_key; the env-file path is a host path.
