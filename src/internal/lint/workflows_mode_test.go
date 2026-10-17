@@ -95,6 +95,9 @@ type modeCase struct {
 	base    map[string]string // files of the trusted base commit (path -> content)
 	head    map[string]string // files of the checked-out candidate (path -> content); nil = same as base
 	noBase  bool              // pull_request without a base SHA in the event payload
+	badBase bool              // pull_request whose base SHA names no object in the clone
+	ref     string            // github.ref for push and workflow_dispatch; default refs/heads/main
+	baseRef string            // github.event.pull_request.base.ref; default main
 	wantErr bool
 }
 
@@ -158,15 +161,29 @@ func runMode(t *testing.T, c modeCase) (string, error) {
 		baseSHA = ""
 	}
 	ctx := map[string]string{
-		"github.event_name":                  c.event,
-		"github.sha":                         headSHA,
-		"github.event.pull_request.base.sha": "",
-		"github.event.pull_request.head.sha": "",
-		"github.event.before":                "",
+		"github.event_name":                      c.event,
+		"github.sha":                             headSHA,
+		"github.event.pull_request.base.sha":     "",
+		"github.event.pull_request.head.sha":     "",
+		"github.event.before":                    "",
+		"github.ref":                             "refs/heads/main",
+		"github.event.pull_request.base.ref":     "",
+		"github.event.repository.default_branch": "main",
+	}
+	if c.ref != "" {
+		ctx["github.ref"] = c.ref
 	}
 	if c.event == "pull_request" {
+		if c.badBase {
+			baseSHA = strings.Repeat("ab", 20)
+		}
 		ctx["github.event.pull_request.base.sha"] = baseSHA
 		ctx["github.event.pull_request.head.sha"] = headSHA
+		ctx["github.event.pull_request.base.ref"] = "main"
+		if c.baseRef != "" {
+			ctx["github.event.pull_request.base.ref"] = c.baseRef
+		}
+		ctx["github.ref"] = "refs/pull/1/merge"
 	}
 	tmp := t.TempDir()
 	out := filepath.Join(tmp, "out")
@@ -189,7 +206,7 @@ func runMode(t *testing.T, c modeCase) (string, error) {
 		}
 		env = append(env, k+"="+val)
 	}
-	// GitHub's default `run` shell on Linux runners.
+	// What `shell: bash` runs on Linux runners (TestModeStepDeclaresBash pins the step to it).
 	cmd := exec.Command("bash", "--noprofile", "--norc", "-eo", "pipefail", scriptFile)
 	cmd.Dir = dir
 	cmd.Env = env
@@ -287,6 +304,75 @@ func TestVerifyJobsRunWhenModeFails_Issue149(t *testing.T) {
 		if !strings.Contains(cond, "!cancelled()") || !regexp.MustCompile(`needs\.mode\.result\s*!=\s*'success'`).MatchString(cond) {
 			t.Errorf("job %s: `if: %s` skips the job when the mode job fails; want !cancelled() and "+
 				"needs.mode.result != 'success' as a run condition", j, cond)
+		}
+	}
+}
+
+func TestModeStep_PRToNonDefaultBase_StaysGithub_Issue149(t *testing.T) {
+	got, err := runMode(t, modeCase{event: "pull_request", baseRef: "feature",
+		base: map[string]string{"gitops/clusters/prod/config/forge-init.yaml": forgeInit},
+	})
+	if err != nil || got != "github" {
+		t.Errorf("only a default-branch base may select forgejo; a PR into another branch must run verify: "+
+			"primary=%q err=%v", got, err)
+	}
+}
+
+func TestModeStep_DispatchOnNonDefaultRef_StaysGithub_Issue149(t *testing.T) {
+	for _, ev := range []string{"workflow_dispatch", "push"} {
+		got, err := runMode(t, modeCase{event: ev, ref: "refs/heads/pr-branch",
+			base: map[string]string{"gitops/clusters/prod/config/forge-init.yaml": forgeInit},
+		})
+		if err != nil || got != "github" {
+			t.Errorf("%s on a non-default ref: its tree must not select forgejo: primary=%q err=%v", ev, got, err)
+		}
+	}
+	got, err := runMode(t, modeCase{event: "workflow_dispatch",
+		base: map[string]string{"gitops/clusters/prod/config/forge-init.yaml": forgeInit},
+	})
+	if err != nil || got != "forgejo" {
+		t.Errorf("workflow_dispatch on the default branch reads its tree: primary=%q err=%v, want forgejo", got, err)
+	}
+}
+
+func TestModeStep_PRUnreadableBase_FailsClosed_Issue149(t *testing.T) {
+	got, err := runMode(t, modeCase{event: "pull_request", badBase: true})
+	if err == nil {
+		t.Errorf("a base SHA that cannot be read must fail the mode step, got primary=%q", got)
+	}
+}
+
+func TestModeStep_NonASCIIClusterName_Issue149(t *testing.T) {
+	got, err := runMode(t, modeCase{event: "push",
+		base: map[string]string{"gitops/clusters/pr\u00f8d/config/forge-init.yaml": forgeInit},
+	})
+	if err != nil || got != "forgejo" {
+		t.Errorf("a cluster name with non-ASCII bytes must be read like any other: primary=%q err=%v", got, err)
+	}
+}
+
+func TestModeStepDeclaresBash_Issue149(t *testing.T) {
+	lines := jobsOf(mustWorkflow(t, "verify.yaml"))["mode"]
+	if !containsLine(lines, "shell: bash") {
+		t.Error("the mode step must declare `shell: bash` (bash --noprofile --norc -eo pipefail), which these tests run")
+	}
+}
+
+// The verify/tdd-discipline condition exactly: they skip only when mode succeeded and chose forgejo.
+func TestVerifyJobsIfTruthTable_Issue149(t *testing.T) {
+	want := "!cancelled() && (needs.mode.result != 'success' || needs.mode.outputs.primary == 'github')"
+	jobs := jobsOf(mustWorkflow(t, "verify.yaml"))
+	for _, j := range []string{"verify", "tdd-discipline"} {
+		cond := ""
+		for _, l := range jobs[j] {
+			if indentOf(l) == 4 && strings.HasPrefix(strings.TrimSpace(l), "if:") {
+				cond = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(l), "if:"))
+			}
+		}
+		cond = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(cond, "${{"), "}}"))
+		cond = strings.TrimSuffix(cond, " && github.event_name == 'pull_request'")
+		if cond != want {
+			t.Errorf("job %s: if: %q, want %q (runs unless mode succeeded with forgejo)", j, cond, want)
 		}
 	}
 }
