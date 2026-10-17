@@ -14,6 +14,15 @@ type Row struct {
 	Check  string `json:"check"`
 	Result string `json:"result"`
 	Detail string `json:"detail,omitempty"`
+	// Pair names the (schema, instance) validation behind a verdict row, as "<file or URI>#<JSON pointer>"
+	// locators, so the Python cross-check can recompute the verdict. Rows that are not validations omit it.
+	Pair *Pair `json:"pair,omitempty"`
+}
+
+// Pair is the schema and instance locators of one validation verdict.
+type Pair struct {
+	Schema   string `json:"schema"`
+	Instance string `json:"instance"`
 }
 
 // Failed counts the fail rows.

@@ -55,6 +55,11 @@ type runner struct {
 }
 
 func (r *runner) add(file, check string, err error, detail string) {
+	r.addPair(file, check, err, detail, nil)
+}
+
+// addPair is add for a validation verdict; pair (when non-nil) is recorded on the row.
+func (r *runner) addPair(file, check string, err error, detail string, pair *Pair) {
 	res := "pass"
 	if err != nil {
 		res = "fail"
@@ -64,7 +69,7 @@ func (r *runner) add(file, check string, err error, detail string) {
 		}
 		detail = trim(msg)
 	}
-	r.rows = append(r.rows, Row{File: file, Check: check, Result: res, Detail: detail})
+	r.rows = append(r.rows, Row{File: file, Check: check, Result: res, Detail: detail, Pair: pair})
 }
 
 func (r *runner) fail(file, check, detail string) {
@@ -239,9 +244,11 @@ func (r *runner) checkSchema(sf *schemaFile, compile func(string) (*jsonschema.S
 		r.add(rel, CheckSchemaInvalid, err, "")
 		return
 	}
-	r.pass(rel, CheckSchemaInvalid, "meta-validation")
+	r.rows = append(r.rows, Row{File: rel, Check: CheckSchemaInvalid, Result: "pass", Detail: "meta-validation",
+		Pair: &Pair{Schema: dialect2020, Instance: rel + "#"}})
 	for i, ex := range examples {
-		r.add(rel, CheckExampleInvalid, sch.Validate(ex), fmt.Sprintf("examples[%d]", i))
+		r.addPair(rel, CheckExampleInvalid, sch.Validate(ex), fmt.Sprintf("examples[%d]", i),
+			&Pair{Schema: rel + "#", Instance: fmt.Sprintf("%s#/examples/%d", rel, i)})
 	}
 	invalid, invalidIsList := m["x-invalid-examples"].([]any)
 	if _, present := m["x-invalid-examples"]; present && !invalidIsList {
@@ -267,11 +274,12 @@ func (r *runner) checkSchema(sf *schemaFile, compile func(string) (*jsonschema.S
 		} else {
 			r.pass(rel, CheckInvalidReason, detail)
 		}
+		pair := &Pair{Schema: rel + "#", Instance: fmt.Sprintf("%s#/x-invalid-examples/%d/value", rel, i)}
+		row := Row{File: rel, Check: CheckInvalidPasses, Result: "pass", Detail: detail, Pair: pair}
 		if err := sch.Validate(val); err == nil {
-			r.fail(rel, CheckInvalidPasses, detail+" validates but must fail")
-		} else {
-			r.pass(rel, CheckInvalidPasses, detail)
+			row.Result, row.Detail = "fail", detail+" validates but must fail"
 		}
+		r.rows = append(r.rows, row)
 	}
 	defs, defsIsMap := m["x-defs-examples"].(map[string]any)
 	if _, present := m["x-defs-examples"]; present && !defsIsMap {
@@ -298,7 +306,8 @@ func (r *runner) checkSchema(sf *schemaFile, compile func(string) (*jsonschema.S
 			continue
 		}
 		for i, ex := range list {
-			r.add(rel, CheckDefsExample, ds.Validate(ex), fmt.Sprintf("x-defs-examples.%s[%d]", name, i))
+			r.addPair(rel, CheckDefsExample, ds.Validate(ex), fmt.Sprintf("x-defs-examples.%s[%d]", name, i),
+				&Pair{Schema: rel + "#/$defs/" + escapeToken(name), Instance: fmt.Sprintf("%s#/x-defs-examples/%s/%d", rel, escapeToken(name), i)})
 		}
 	}
 }
@@ -314,7 +323,7 @@ func (r *runner) checkOpenAPI(rel string, schemas []*schemaFile, oas *jsonschema
 		return
 	}
 	if oas != nil {
-		r.add(rel, CheckOpenAPIInvalid, oas.Validate(m), "OpenAPI 3.1 structure")
+		r.addPair(rel, CheckOpenAPIInvalid, oas.Validate(m), "OpenAPI 3.1 structure", &Pair{Schema: oasURL, Instance: rel + "#"})
 	}
 	byID := map[string]any{}
 	for _, sf := range schemas {
@@ -352,7 +361,8 @@ func (r *runner) checkOpenAPI(rel string, schemas []*schemaFile, oas *jsonschema
 			continue
 		}
 		for i, e := range ex {
-			r.add(rel, CheckOpenAPIExample, sch.Validate(e), fmt.Sprintf("%s/examples[%d]", ptr, i))
+			r.addPair(rel, CheckOpenAPIExample, sch.Validate(e), fmt.Sprintf("%s/examples[%d]", ptr, i),
+				&Pair{Schema: rel + "#" + ptr, Instance: fmt.Sprintf("%s#%s/examples/%d", rel, ptr, i)})
 		}
 	}
 }

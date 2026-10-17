@@ -201,17 +201,26 @@ func (r *runner) checkInstances(schemas []*schemaFile, compile func(string) (*js
 				r.fail(rel, CheckInstanceInvalid, oneLine(err.Error()))
 				continue
 			}
+			pair := &Pair{Schema: t.file + "#" + defPointer(t.ref), Instance: rel + "#"}
 			if err := sch.Validate(doc); err != nil {
 				why := oneLine(err.Error())
 				if m == nil {
 					why = "type mismatch: " + why
 				}
-				r.fail(rel, CheckInstanceInvalid, fmt.Sprintf("does not validate against %s: %s", t.file, why))
+				r.rows = append(r.rows, Row{File: rel, Check: CheckInstanceInvalid, Result: "fail", Pair: pair,
+					Detail: trim(fmt.Sprintf("does not validate against %s: %s", t.file, why))})
 			} else {
-				r.pass(rel, CheckInstanceInvalid, label+" "+t.file)
+				r.rows = append(r.rows, Row{File: rel, Check: CheckInstanceInvalid, Result: "pass", Pair: pair,
+					Detail: label + " " + t.file})
 			}
 		}
 	}
+}
+
+// defPointer returns the JSON pointer part of a schema reference ("" for the whole document).
+func defPointer(ref string) string {
+	_, frag, _ := strings.Cut(ref, "#")
+	return frag
 }
 
 func contains(list []string, v string) bool {
