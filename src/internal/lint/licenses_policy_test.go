@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"testing"
+	"time"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -37,7 +39,14 @@ func TestLicensePolicy_Shape_23AC28(t *testing.T) {
 			ProjectLicense string   `yaml:"projectLicense"`
 			Allow          []string `yaml:"allow"`
 			Deny           []string `yaml:"deny"`
-			Exceptions     []any    `yaml:"exceptions"`
+			Exceptions     []struct {
+				Module     string `yaml:"module"`
+				Version    string `yaml:"version"`
+				License    string `yaml:"license"`
+				Reason     string `yaml:"reason"`
+				ApprovedBy string `yaml:"approvedBy"`
+				Created    string `yaml:"created"`
+			} `yaml:"exceptions"`
 		} `yaml:"spec"`
 	}
 	if err := yaml.Unmarshal(b, &doc); err != nil {
@@ -58,7 +67,20 @@ func TestLicensePolicy_Shape_23AC28(t *testing.T) {
 	if !reflect.DeepEqual(doc.Spec.Deny, deny) {
 		t.Errorf("deny = %v, want %v", doc.Spec.Deny, deny)
 	}
-	if len(doc.Spec.Exceptions) != 0 {
-		t.Errorf("exceptions = %v, want none", doc.Spec.Exceptions)
+	// Every exception is well-formed per plan 23 section 9 (exact version, no ranges or wildcards).
+	exactVersion := regexp.MustCompile(`^v\d+\.\d+\.\d+(-[0-9A-Za-z.+-]+)?(\+[0-9A-Za-z.-]+)?$`)
+	date := regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
+	for i, x := range doc.Spec.Exceptions {
+		if x.Module == "" || x.License == "" || x.Reason == "" || x.ApprovedBy == "" {
+			t.Errorf("exceptions[%d] = %+v: module, license, reason and approvedBy must be non-empty", i, x)
+		}
+		if !exactVersion.MatchString(x.Version) {
+			t.Errorf("exceptions[%d].version = %q, want an exact vX.Y.Z version", i, x.Version)
+		}
+		if !date.MatchString(x.Created) {
+			t.Errorf("exceptions[%d].created = %q, want a date YYYY-MM-DD", i, x.Created)
+		} else if _, err := time.Parse("2006-01-02", x.Created); err != nil {
+			t.Errorf("exceptions[%d].created = %q: %v", i, x.Created, err)
+		}
 	}
 }

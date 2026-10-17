@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"go.yaml.in/yaml/v3"
+
 	"strange.company/sc/internal/lint"
 )
 
@@ -60,12 +62,31 @@ func newLicCase(t *testing.T, exceptions string, mods ...string) licCase {
 	t.Helper()
 	c := licCase{root: t.TempDir(), modcache: fixtureModcache(t)}
 	pol := readFile(t, repoRoot(t), "security/license-policy.yaml")
-	if exceptions != "" {
-		if !strings.Contains(pol, "exceptions: []") {
-			t.Fatal("policy has no empty exceptions list to replace")
-		}
-		pol = strings.Replace(pol, "exceptions: []", "exceptions:\n"+exceptions, 1)
+	// The fixture policy keeps the real allow/deny lists but carries only the given exceptions, so these tests do
+	// not depend on the real policy's exception list.
+	var doc map[string]any
+	if err := yaml.Unmarshal([]byte(pol), &doc); err != nil {
+		t.Fatal(err)
 	}
+	spec, ok := doc["spec"].(map[string]any)
+	if !ok {
+		t.Fatal("policy has no spec mapping")
+	}
+	var exc struct {
+		Exceptions []any `yaml:"exceptions"`
+	}
+	if err := yaml.Unmarshal([]byte("exceptions:\n"+exceptions), &exc); err != nil {
+		t.Fatal(err)
+	}
+	if exc.Exceptions == nil {
+		exc.Exceptions = []any{}
+	}
+	spec["exceptions"] = exc.Exceptions
+	pb, err := yaml.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pol = string(pb)
 	write(t, c.root, "policy.yaml", pol)
 	c.policy = filepath.Join(c.root, "policy.yaml")
 	var buf bytes.Buffer
@@ -300,11 +321,28 @@ func TestLicenses_RealTree_23AC28(t *testing.T) {
 		t.Errorf("sc-lint licenses on the real tree: exit %d\n%s%s", code, o.String(), e.String())
 	}
 	rows := readRows(t, root)
+	// NOASSERTION is allowed only for a module@version the real policy names in an exception (plan 23 section 14.11).
+	excepted := map[string]bool{}
+	var pol struct {
+		Spec struct {
+			Exceptions []struct {
+				Module  string `yaml:"module"`
+				Version string `yaml:"version"`
+			} `yaml:"exceptions"`
+		} `yaml:"spec"`
+	}
+	if err := yaml.Unmarshal([]byte(readFile(t, root, "security/license-policy.yaml")), &pol); err != nil {
+		t.Fatal(err)
+	}
+	for _, x := range pol.Spec.Exceptions {
+		excepted[x.Module+"@"+x.Version] = true
+	}
 	var got []string
 	for _, r := range rows {
-		got = append(got, r.Module+"@"+r.Version)
-		if r.Verdict != "pass" || r.SPDX == "" || r.SPDX == "NOASSERTION" {
-			t.Errorf("row %+v: want a classified, passing module", r)
+		key := r.Module + "@" + r.Version
+		got = append(got, key)
+		if r.Verdict != "pass" || r.SPDX == "" || (r.SPDX == "NOASSERTION" && !excepted[key]) {
+			t.Errorf("row %+v: want a classified, passing module (NOASSERTION only for a policy exception)", r)
 		}
 	}
 	sort.Strings(got)
