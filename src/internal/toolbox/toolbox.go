@@ -20,7 +20,7 @@ func Main(args []string, env map[string]string, stdout, stderr io.Writer) int {
 }
 
 // Run is Main with an injected sleeper used between download retries (time.Sleep is forbidden outside cmd/).
-// A nil sleep means no waiting. SC_TOOLBOX_RETRY_DELAY overrides the 5s/15s delays handed to the sleeper (tests).
+// A nil sleep means no waiting. The sleeper always receives 5s then 15s.
 func Run(args []string, env map[string]string, stdout, stderr io.Writer, sleep func(time.Duration)) int {
 	envFile := ""
 	for len(args) > 0 {
@@ -90,8 +90,16 @@ func (c *cmdCtx) getenv(k, def string) string {
 }
 
 // ProductionEnv returns env with the container paths of plan 02 section 7.2 filled in when unset.
-//
-// SC-STUB(F03 review2)
 func ProductionEnv(env map[string]string) map[string]string {
-	return nil
+	out := make(map[string]string, len(env)+2)
+	for k, v := range env {
+		out[k] = v
+	}
+	if out["SC_INPUT_DIR"] == "" {
+		out["SC_INPUT_DIR"] = "/run/sc-input"
+	}
+	if out["SC_RUN_DIR"] == "" {
+		out["SC_RUN_DIR"] = "/run/sc"
+	}
+	return out
 }

@@ -27,13 +27,7 @@ type errChecksum struct{ tool string }
 func (e errChecksum) Error() string { return "TOOLBOX_CHECKSUM_MISMATCH:" + e.tool }
 
 func (c *cmdCtx) retryDelays() [2]time.Duration {
-	d := [2]time.Duration{5 * time.Second, 15 * time.Second}
-	if v := c.env["SC_TOOLBOX_RETRY_DELAY"]; v != "" {
-		if x, err := time.ParseDuration(v); err == nil {
-			d = [2]time.Duration{x, x}
-		}
-	}
-	return d
+	return [2]time.Duration{5 * time.Second, 15 * time.Second}
 }
 
 func (c *cmdCtx) fetch(args []string) int {

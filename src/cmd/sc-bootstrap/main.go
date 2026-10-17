@@ -16,5 +16,5 @@ func main() {
 			env[k] = v
 		}
 	}
-	os.Exit(toolbox.Run(os.Args[1:], env, os.Stdout, os.Stderr, time.Sleep))
+	os.Exit(toolbox.Run(os.Args[1:], toolbox.ProductionEnv(env), os.Stdout, os.Stderr, time.Sleep))
 }
