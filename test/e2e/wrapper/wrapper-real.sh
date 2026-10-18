@@ -118,6 +118,9 @@ expect_eq "02-AC-6 ./bootstrap exec -- sh -c 'env' exits 0" 0 "$RC"
 for c in "$C1" "$C2" "$C3"; do
 	if printf '%s\n' "$OUT" | grep -Fq -- "$c"; then bad "02-AC-6 env inside the container does not contain canary $c"; else ok "02-AC-6 env inside the container does not contain canary $c"; fi
 done
+# S3 review 2 N6: the s3 scope is active in this very run (so the canary check above is not satisfied vacuously).
+expect_match "02-AC-6 AWS_CONFIG_FILE is set in the exec environment (the s3 scope is active)" '^AWS_CONFIG_FILE=/' "$OUT"
+expect_match "02-AC-6 AWS_SHARED_CREDENTIALS_FILE is set in the exec environment" '^AWS_SHARED_CREDENTIALS_FILE=/' "$OUT"
 RC=0
 OUT=$($B --env-file "$TMP/canary.env" exec -- sh -c 'cat /run/sc-input/bootstrap.env' 2>/dev/null) || RC=$?
 expect_match "02-AC-6 the env file itself is available to sc-bootstrap at /run/sc-input/bootstrap.env" "S3_SECRET_ACCESS_KEY=$C1" "$OUT"

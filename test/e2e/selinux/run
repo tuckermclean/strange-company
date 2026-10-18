@@ -1,0 +1,173 @@
+#!/bin/sh
+# Tier-E evidence for 02-AC-5, rootless Podman with SELinux enforcing on Fedora (F03 decision D4, plan 02 section 22):
+# boots a Fedora Cloud VM under QEMU/KVM, copies the working tree of this repository into it, and runs
+# test/e2e/wrapper/ac5-probe.sh there as an unprivileged user with rootless Podman. NOT part of run.sh / the RED checks.
+#
+#   sh test/e2e/selinux/run                      # everything; exit status is the probe's
+#   SC_VM_ONLY=fetch sh test/e2e/selinux/run     # only download and verify the pinned image
+#   SC_VM_ONLY=seed  sh test/e2e/selinux/run     # only build the cloud-init seed (no qemu needed)
+#
+# Needs: qemu-system-x86_64 and qemu-img (apt: qemu-system-x86 qemu-utils), one of cloud-localds (cloud-image-utils),
+# genisoimage, xorriso or mkisofs, curl, ssh, ssh-keygen, git, tar, and read-write access to /dev/kvm. KVM is
+# mandatory (no TCG fallback: the toolbox build is far too slow without it). Resources: 2 vCPU, 3 GiB RAM, a 40 GiB
+# sparse disk (the toolbox image build needs about 10 GiB), the 0.55 GB image download cached in $SC_VM_CACHE.
+# Duration: boot 1 to 3 min, package install 2 to 5 min, toolbox build in the VM 30 to 60 min (cold). To skip the build,
+# set SC_VM_TOOLBOX_ARCHIVE to a `docker save`/`podman save` archive of the toolbox image for this checkout; it is
+# loaded into the VM's Podman first.
+# Other knobs: SC_VM_DIR (work directory, default out/selinux-vm), SC_VM_CACHE (default ~/.cache/strange-company/vm),
+# SC_VM_PORT (host ssh port, default 2222), SC_VM_CPUS=2, SC_VM_MEM=3072 (MiB), SC_VM_DISK=40G, SC_VM_TIMEOUT=7200 (s).
+#
+# Pinned external artifact (provenance): Fedora 44 Cloud Base Generic x86_64 image 1.7, from the Fedora release tree
+# https://dl.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/x86_64/images/ ; the sha256 below is the line for the
+# image in Fedora-Cloud-44-1.7-x86_64-CHECKSUM from the same directory (read 2026-10-17). The script refuses an image
+# whose sha256 differs. The VM installs podman, git and friends with dnf from the Fedora mirrors through QEMU user networking.
+set -eu
+
+SC_ROOT=$(cd "$(dirname "$0")/../../.." && pwd -P)
+IMG_NAME=Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2
+IMG_URL=https://dl.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/x86_64/images/$IMG_NAME
+IMG_SHA256=28680fe5b371a5a82ebf43a31926e086a168e59949d03969c5093e7071f90b7f
+
+cache=${SC_VM_CACHE:-${HOME:-/tmp}/.cache/strange-company/vm}
+work=${SC_VM_DIR:-$SC_ROOT/out/selinux-vm}
+port=${SC_VM_PORT:-2222}
+cpus=${SC_VM_CPUS:-2}
+mem=${SC_VM_MEM:-3072}
+disk=${SC_VM_DISK:-40G}
+timeout_s=${SC_VM_TIMEOUT:-7200}
+only=${SC_VM_ONLY:-all}
+
+die() { echo "selinux-vm: $*" >&2; exit 2; }
+need() { command -v "$1" >/dev/null 2>&1 || die "$1 is required"; }
+log() { echo "selinux-vm: $*" >&2; }
+
+# --- 1. the pinned image
+fetch_image() {
+	mkdir -p "$cache"
+	img=$cache/$IMG_NAME
+	if [ -f "$img" ] && [ "$(sha256sum "$img" | cut -d' ' -f1)" = "$IMG_SHA256" ]; then
+		log "image cached: $img"
+		return 0
+	fi
+	need curl
+	log "downloading $IMG_URL"
+	curl -fL --retry 3 --retry-delay 5 -o "$img.part" "$IMG_URL"
+	got=$(sha256sum "$img.part" | cut -d' ' -f1)
+	if [ "$got" != "$IMG_SHA256" ]; then
+		rm -f "$img.part"
+		die "sha256 of $IMG_NAME is $got, expected $IMG_SHA256"
+	fi
+	mv "$img.part" "$img"
+	log "image verified: $img"
+}
+fetch_image
+[ "$only" != fetch ] || exit 0
+
+mkdir -p "$work"
+rm -f "$work/id" "$work/id.pub" "$work/seed.iso" "$work/vm.qcow2" "$work/qemu.pid"
+
+# --- 2. cloud-init seed (NoCloud): one unprivileged user, key-only login, packages, subuid/subgid, linger
+need ssh-keygen
+ssh-keygen -q -t ed25519 -N "" -C selinux-vm -f "$work/id"
+pub=$(cat "$work/id.pub")
+cat >"$work/user-data" <<EOT
+#cloud-config
+ssh_pwauth: false
+disable_root: true
+users:
+  - name: sc
+    gecos: Strange Company probe user
+    shell: /bin/bash
+    lock_passwd: true
+    ssh_authorized_keys:
+      - $pub
+package_update: false
+packages:
+  - podman
+  - git
+  - make
+  - jq
+  - tar
+  - openssh-clients
+  - shadow-utils
+  - passt
+  - fuse-overlayfs
+  - libselinux-utils
+runcmd:
+  - [ sh, -c, "grep -q '^sc:' /etc/subuid || usermod --add-subuids 100000-165535 --add-subgids 100000-165535 sc" ]
+  - [ loginctl, enable-linger, sc ]
+  - [ sh, -c, "touch /var/lib/sc-vm-ready" ]
+EOT
+printf 'instance-id: sc-selinux-%s\nlocal-hostname: sc-selinux\n' "$$" >"$work/meta-data"
+if command -v cloud-localds >/dev/null 2>&1; then
+	cloud-localds "$work/seed.iso" "$work/user-data" "$work/meta-data"
+else
+	mk=
+	for c in genisoimage mkisofs xorriso; do
+		if command -v "$c" >/dev/null 2>&1; then mk=$c; break; fi
+	done
+	[ -n "$mk" ] || die "one of cloud-localds, genisoimage, mkisofs or xorriso is required"
+	if [ "$mk" = xorriso ]; then
+		xorriso -as mkisofs -output "$work/seed.iso" -volid cidata -joliet -rock "$work/user-data" "$work/meta-data" >/dev/null 2>&1
+	else
+		"$mk" -output "$work/seed.iso" -volid cidata -joliet -rock "$work/user-data" "$work/meta-data" >/dev/null 2>&1
+	fi
+fi
+log "seed built: $work/seed.iso"
+[ "$only" != seed ] || exit 0
+
+# --- 3. boot
+need qemu-system-x86_64
+need qemu-img
+need ssh
+need git
+need tar
+[ -r /dev/kvm ] && [ -w /dev/kvm ] || die "/dev/kvm is not readable and writable by $(id -un); KVM is required"
+qemu-img create -q -f qcow2 -F qcow2 -b "$img" "$work/vm.qcow2" "$disk"
+cleanup() {
+	if [ -f "$work/qemu.pid" ]; then
+		kill "$(cat "$work/qemu.pid")" 2>/dev/null || true
+	fi
+}
+trap cleanup EXIT INT TERM
+log "booting: $cpus vCPU, $mem MiB, ssh on 127.0.0.1:$port"
+qemu-system-x86_64 -machine q35,accel=kvm -cpu host -smp "$cpus" -m "$mem" -display none -no-reboot \
+	-serial "file:$work/console.log" -daemonize -pidfile "$work/qemu.pid" \
+	-drive "file=$work/vm.qcow2,if=virtio,format=qcow2" \
+	-drive "file=$work/seed.iso,if=virtio,format=raw,readonly=on" \
+	-netdev "user,id=n0,hostfwd=tcp:127.0.0.1:$port-:22" -device virtio-net-pci,netdev=n0
+
+SSH_OPTS="-i $work/id -p $port -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o IdentitiesOnly=yes -o ConnectTimeout=10 -o ServerAliveInterval=30"
+# shellcheck disable=SC2086 # SSH_OPTS is a fixed list of words without spaces
+vm() { ssh $SSH_OPTS sc@127.0.0.1 "$@"; }
+
+deadline=$(($(date +%s) + 1800))
+log "waiting for ssh and cloud-init (console: $work/console.log)"
+until vm 'test -f /var/lib/sc-vm-ready' >/dev/null 2>&1; do
+	[ "$(date +%s)" -lt "$deadline" ] || {
+		tail -n 30 "$work/console.log" >&2 || true
+		die "the VM was not ready within 30 minutes"
+	}
+	[ -s "$work/qemu.pid" ] && kill -0 "$(cat "$work/qemu.pid")" 2>/dev/null || die "qemu exited early (see $work/console.log)"
+	sleep 5
+done
+log "VM ready"
+
+# --- 4. the repository copy: tracked and untracked, not ignored files, with a fresh Git history (the inputs id depends
+# only on file contents, so it equals this checkout's)
+cd "$SC_ROOT"
+git ls-files -co --exclude-standard -z | tar --null -T - -czf "$work/repo.tgz"
+vm 'rm -rf ~/sc && mkdir -p ~/sc' </dev/null
+vm 'tar -xzf - -C ~/sc' <"$work/repo.tgz"
+vm 'cd ~/sc && git init -q . && git add -A && git -c user.name=vm -c user.email=vm@example.invalid -c commit.gpgsign=false commit -q -m vm' </dev/null
+if [ -n "${SC_VM_TOOLBOX_ARCHIVE:-}" ]; then
+	log "loading $SC_VM_TOOLBOX_ARCHIVE into the VM's Podman"
+	vm 'podman load -q' <"$SC_VM_TOOLBOX_ARCHIVE"
+fi
+
+# --- 5. the probe, as the unprivileged user; its exit status is ours
+log "running test/e2e/selinux/guest.sh (timeout ${timeout_s}s)"
+rc=0
+vm "cd ~/sc && timeout $timeout_s sh test/e2e/selinux/guest.sh" </dev/null || rc=$?
+log "guest exit status $rc"
+exit "$rc"
