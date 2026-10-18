@@ -85,13 +85,15 @@ rows() { jq -S -c '.tools' "$1"; }
 
 # --- 1. the --toolbox-build image
 RC=0
-(cd "$fx" && ./bootstrap --toolbox-build exec -- sc-bootstrap toolbox selfcheck --json) >"$TMP/built.json" 2>"$TMP/built.err" || RC=$?
+# One --toolbox-build exec collects both the selfcheck rows and the sha256, so a fixture lock naming a published digest
+# can never turn the "built" side into a pull.
+(cd "$fx" && ./bootstrap --toolbox-build exec -- sh -c 'sc-bootstrap toolbox selfcheck --json || exit $?; sha256sum /opt/sc/bin/sc-bootstrap >&2') >"$TMP/built.json" 2>"$TMP/built.err" || RC=$?
 expect_eq "02-AC-4 the --toolbox-build image: selfcheck --json exits 0" 0 "$RC"
 [ "$RC" -eq 0 ] || { sed 's/^/       /' "$TMP/built.err" | tail -n 15; finish; exit 1; }
 RC=0
 jq -e '(.tools | length) > 0 and all(.tools[]; .ok)' "$TMP/built.json" >/dev/null 2>&1 || RC=$?
 expect_eq "02-AC-4 the --toolbox-build image: non-empty tool rows, all ok" 0 "$RC"
-(cd "$fx" && ./bootstrap exec -- sha256sum /opt/sc/bin/sc-bootstrap) >"$TMP/built.sha" 2>/dev/null
+grep -E '^[0-9a-f]{64}  /opt/sc/bin/sc-bootstrap$' "$TMP/built.err" >"$TMP/built.sha" || true
 expect_match "02-AC-4 the --toolbox-build image: sha256sum of sc-bootstrap printed" '^[0-9a-f]{64}  /opt/sc/bin/sc-bootstrap$' "$(cat "$TMP/built.sha")"
 
 # --- 2. an independent --no-cache build, pushed to the registry

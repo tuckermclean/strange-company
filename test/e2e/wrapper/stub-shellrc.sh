@@ -12,8 +12,9 @@ mkdir -p "$IN" "$TMP/run"
 # prompt_for 'CLUSTER_NAME line': runs the interactive shell; sets PROMPT (stderr, where bash prints prompts).
 prompt_for() {
 	printf '%s\n' "$1" >"$IN/bootstrap.env"
-	env -i PATH="$PATH" HOME="$TMP" SC_INPUT_DIR="$IN" SC_RUN_DIR="$TMP/run" TERM=dumb \
-		bash --rcfile "$RC_FILE" -i </dev/null >"$TMP/sh.out" 2>"$TMP/sh.err" || true
+	# cwd-independent: a long cwd in the default prompt makes TERM=dumb readline scroll and hide "[sc ".
+	(cd "$TMP" && env -i PATH="$PATH" HOME="$TMP" SC_INPUT_DIR="$IN" SC_RUN_DIR="$TMP/run" TERM=dumb COLUMNS=1000 \
+		bash --rcfile "$RC_FILE" -i </dev/null >"$TMP/sh.out" 2>"$TMP/sh.err") || true
 	PROMPT=$(cat "$TMP/sh.err")
 }
 

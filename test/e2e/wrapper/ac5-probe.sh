@@ -35,15 +35,16 @@ if [ ! -e "$HOME/.ssh/id_ed25519" ]; then
 	ssh-keygen -q -t ed25519 -N "" -f "$HOME/.ssh/id_ed25519" >/dev/null 2>&1 || bad "02-AC-5 harness: a default key was created"
 fi
 
-# Build or reuse the image first, so the label snapshot below covers only the 02-AC-5 command itself.
+# The label snapshot comes before the first ./bootstrap exec (setup included), so any relabel by it is caught.
+labels() { ls -Zd "$SC_ROOT" "$HOME/.ssh" 2>&1; ls -Z "$SC_ROOT" "$HOME/.ssh" 2>&1; }
+sel_before=
+[ "$selinux" != 1 ] || sel_before=$(labels)
+
+# Build or reuse the image first.
 RC=0
 $B exec -- true >"$TMP/first.out" 2>&1 || RC=$?
 expect_eq "02-AC-5 setup: ./bootstrap exec -- true exits 0" 0 "$RC"
 [ "$RC" -eq 0 ] || { tail -n 20 "$TMP/first.out" | sed 's/^/       /'; finish; exit 1; }
-
-labels() { ls -Zd "$SC_ROOT" "$HOME/.ssh" 2>&1; ls -Z "$SC_ROOT" "$HOME/.ssh" 2>&1; }
-sel_before=
-[ "$selinux" != 1 ] || sel_before=$(labels)
 
 rm -f out/own-probe
 RC=0
