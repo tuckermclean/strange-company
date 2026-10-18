@@ -305,6 +305,11 @@ spec:
     - CLAUDE.md
     - '**/CLAUDE.md'
     - charts/**
+    - gitops/**
+    - deploy/**
+    - ansible/**
+    - tofu/**
+    - '**/migrations/**'
     - '**/skills/**'
     - context/**
     - '**/SOUL.md'

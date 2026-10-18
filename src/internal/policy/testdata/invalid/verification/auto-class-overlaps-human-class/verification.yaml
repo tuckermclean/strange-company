@@ -298,13 +298,16 @@
     "allowedPaths":
     - "docs/**"
     - "**/*.md"
-    - "gitops/docs/**"
     "deniedPaths":
     - "AGENTS.md"
     - "**/AGENTS.md"
     - "CLAUDE.md"
     - "**/CLAUDE.md"
     - "charts/**"
+    - "deploy/**"
+    - "ansible/**"
+    - "tofu/**"
+    - "**/migrations/**"
     - "**/skills/**"
     - "context/**"
     - "**/SOUL.md"
