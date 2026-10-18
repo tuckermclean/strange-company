@@ -9,13 +9,16 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"path"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"unicode/utf8"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
+	"github.com/santhosh-tekuri/jsonschema/v6/kind"
+	"golang.org/x/text/language"
+	"golang.org/x/text/message"
 	"go.yaml.in/yaml/v3"
 
 	"strange.company/sc/internal/contracts"
@@ -94,8 +97,11 @@ type Resource struct {
 
 type file struct {
 	rel  string // relative path as found on disk
-	path string // path with ConfigMap keys mapped to nested paths
+	path string // path used for the digest and in issues
 	data []byte
+	// reserved is set when the name is not allowed: it contains "__" in a git-style tree, or its mapped path
+	// is shared with another file.
+	reserved bool
 }
 
 // readTree reads every regular file under fsys (plan 26 section 9.2 step 1). Names beginning with ".." are
@@ -131,10 +137,38 @@ func readTree(fsys fs.FS) ([]file, error) {
 		if err != nil {
 			return err
 		}
-		files = append(files, file{rel: p, path: mapKey(p), data: b})
+		files = append(files, file{rel: p, path: p, data: b})
 		return nil
 	})
-	sort.Slice(files, func(i, j int) bool { return files[i].path < files[j].path })
+	// A tree with a real subdirectory is a git-style tree; only a flat tree is a ConfigMap mount whose
+	// top-level keys `a__b.yaml` are read as `a/b.yaml`.
+	nested := false
+	for _, f := range files {
+		if strings.Contains(f.rel, "/") {
+			nested = true
+		}
+	}
+	mapped := map[string]int{}
+	for i := range files {
+		m := mapKey(files[i].rel)
+		mapped[m]++
+		if !nested {
+			files[i].path = m
+		} else if strings.Contains(files[i].rel, "__") {
+			files[i].reserved = true
+		}
+	}
+	for i := range files {
+		if mapped[mapKey(files[i].rel)] > 1 {
+			files[i].reserved = true
+		}
+	}
+	sort.Slice(files, func(i, j int) bool {
+		if files[i].path != files[j].path {
+			return files[i].path < files[j].path
+		}
+		return files[i].rel < files[j].rel
+	})
 	return files, err
 }
 
@@ -201,12 +235,8 @@ func check(dir string, opts Options) (string, map[string]Resource, []Issue) {
 	present := map[string]bool{}
 
 	for _, f := range files {
-		if strings.Contains(path.Base(f.rel), "__") && strings.Contains(f.rel, "/") || hasReservedDir(f.rel) {
-			add(CodeReservedFilename, "", f.path, `a policy file name may not contain "__" (reserved for ConfigMap keys)`)
-			continue
-		}
-		ext := strings.ToLower(path.Ext(f.path))
-		if ext != ".yaml" && ext != ".yml" {
+		if f.reserved {
+			add(CodeReservedFilename, "", f.rel, `a policy file name may not contain "__" (reserved for ConfigMap keys) or share a path with another file`)
 			continue
 		}
 		if len(f.data) > MaxFileSize {
@@ -260,15 +290,32 @@ func check(dir string, opts Options) (string, map[string]Resource, []Issue) {
 			}
 		}
 	}
+	sortIssues(issues)
 	return rev, resources, issues
 }
 
-func hasReservedDir(rel string) bool {
-	d := path.Dir(rel)
-	return d != "." && strings.Contains(d, "__")
+// sortIssues orders issues by (file, pointer, code, message) and drops exact duplicates.
+func sortIssues(issues []Issue) []Issue {
+	sort.SliceStable(issues, func(a, b int) bool {
+		x, y := issues[a], issues[b]
+		if x.File != y.File {
+			return x.File < y.File
+		}
+		if x.Pointer != y.Pointer {
+			return x.Pointer < y.Pointer
+		}
+		if x.Code != y.Code {
+			return x.Code < y.Code
+		}
+		return x.Message < y.Message
+	})
+	return issues
 }
 
-// validate returns (pointer, message) for every schema error.
+// validate returns (pointer, message) for every leaf schema error. It walks ValidationError.Causes instead of
+// BasicOutput. The library stores a shared, later-mutated slice as the location of a propertyNames error: its
+// length (the depth) is right but its tokens are not. The location is therefore recovered from the document:
+// the objects at that depth that hold the offending key (the longest common parent when several do).
 func validate(s *jsonschema.Schema, doc any) [][2]string {
 	err := s.Validate(doc)
 	if err == nil {
@@ -280,20 +327,104 @@ func validate(s *jsonschema.Schema, doc any) [][2]string {
 	}
 	var out [][2]string
 	seen := map[string]bool{}
-	for _, u := range ve.BasicOutput().Errors {
-		if u.Error == nil {
-			continue
-		}
-		e := [2]string{u.InstanceLocation, oneLine(u.Error.String())}
+	emit := func(ptr, msg string) {
+		e := [2]string{ptr, oneLine(msg)}
 		if !seen[e[0]+"\x00"+e[1]] {
 			seen[e[0]+"\x00"+e[1]] = true
 			out = append(out, e)
 		}
 	}
+	p := message.NewPrinter(language.English)
+	var walk func(e *jsonschema.ValidationError)
+	walk = func(e *jsonschema.ValidationError) {
+		loc := e.InstanceLocation
+		if k, ok := e.ErrorKind.(*kind.PropertyNames); ok {
+			parentLoc := propertyParent(doc, len(e.InstanceLocation), k.Property)
+			msg := k.LocalizedString(p)
+			for _, d := range validateLeaves(e.Causes, p) {
+				msg += "; " + d[1]
+			}
+			if parentLoc == nil {
+				emit("", msg)
+			} else {
+				emit(pointer(append(parentLoc, k.Property)), msg)
+			}
+			return
+		}
+		if len(e.Causes) == 0 {
+			emit(pointer(loc), e.ErrorKind.LocalizedString(p))
+			return
+		}
+		for _, c := range e.Causes {
+			walk(c)
+		}
+	}
+	walk(ve)
 	if len(out) == 0 {
 		out = append(out, [2]string{"", oneLine(err.Error())})
 	}
 	return out
+}
+
+// validateLeaves returns the leaf messages of errs (used for the detail of a propertyNames error, whose causes
+// are about the property name string itself).
+func validateLeaves(errs []*jsonschema.ValidationError, p *message.Printer) [][2]string {
+	var out [][2]string
+	for _, e := range errs {
+		if len(e.Causes) == 0 {
+			out = append(out, [2]string{"", oneLine(e.ErrorKind.LocalizedString(p))})
+			continue
+		}
+		out = append(out, validateLeaves(e.Causes, p)...)
+	}
+	return out
+}
+
+// propertyParent returns the tokens of the object at depth holding key, or the longest common prefix of the
+// candidates when several do, or nil when none does.
+func propertyParent(doc any, depth int, key string) []string {
+	var cands [][]string
+	var rec func(v any, at []string)
+	rec = func(v any, at []string) {
+		switch t := v.(type) {
+		case map[string]any:
+			if len(at) == depth {
+				if _, ok := t[key]; ok {
+					cands = append(cands, append([]string{}, at...))
+				}
+				return
+			}
+			for k, c := range t {
+				rec(c, append(at[:len(at):len(at)], k))
+			}
+		case []any:
+			for i, c := range t {
+				rec(c, append(at[:len(at):len(at)], strconv.Itoa(i)))
+			}
+		}
+	}
+	rec(doc, nil)
+	if len(cands) == 0 {
+		return nil
+	}
+	pre := cands[0]
+	for _, c := range cands[1:] {
+		n := 0
+		for n < len(pre) && n < len(c) && pre[n] == c[n] {
+			n++
+		}
+		pre = pre[:n]
+	}
+	return append([]string{}, pre...)
+}
+
+func pointer(toks []string) string {
+	var sb strings.Builder
+	for _, t := range toks {
+		sb.WriteByte('/')
+		sb.WriteString(strings.ReplaceAll(strings.ReplaceAll(t, "~", "~0"), "/", "~1"))
+	}
+	return sb.String()
 }
 
 // findAnchor reports a YAML anchor or alias anywhere in the document.
