@@ -120,7 +120,7 @@ Derived requirements:
 |---|---|---|
 | `--engine` / `SC_CONTAINER_ENGINE` | auto: `docker` if `docker info` succeeds within 10 s, else `podman` if `podman info` succeeds, else exit 3 `WRAPPER_ENGINE_MISSING` | explicit value wins |
 | `--toolbox-build` / `SC_TOOLBOX_BUILD=1` | off | force local build |
-| `SC_TOOLBOX_REQUIRE_PULL=1` | off | forbid build fallback (release verification, fresh-VPS E2E) |
+| `SC_TOOLBOX_REQUIRE_PULL=1` | off | forbid build fallback (release verification, fresh-VPS E2E): only a pulled `<image>@<digest>` from `image.lock` is accepted; a reused or new local build in branch (a) or (c) exits 3 `WRAPPER_TOOLBOX_PULL_FAILED` (CD-67) |
 | `SC_BLACKSTART_DIR` | `$HOME/.strange-company` | created with mode 0700 if absent; refused if group/world-writable |
 | `SC_TOOLBOX_NETWORK` | `bridge` | `host` for lab |
 
@@ -278,6 +278,8 @@ The build context is the repository root, restricted by the root `.dockerignore`
 | `SSH_PRIVATE_KEY_PATH`, `SSH_PUBLIC_KEY_PATH` | `/run/sc-input/ssh/id_key`, `/run/sc-input/ssh/id_key.pub` | ro |
 | `$SSH_AUTH_SOCK` (if `SSH_USE_AGENT=true`) | `/run/sc-input/ssh-agent.sock` | rw (socket); macOS Docker Desktop: `/run/host-services/ssh-auth.sock` (verify) |
 | tmpfs | `/run/sc` (`size=64m,mode=0700`, owner = container user; §14.4) and `/tmp` (`size=1g`) | rw |
+
+The env file, SSH, agent-socket and `/blackstart` rows apply to the `toolbox` image only. `--image ci` (every Make target, plan 01 §8.1) gets the repository, worktree and tmpfs rows, as in §14.9: build and test containers never see operator credentials (CD-67).
 
 Mounting the repository at its host path keeps Git worktrees, absolute paths in error messages and host-path references in logs consistent. The black-start directory lives outside the repository so nothing in it can be committed (plan 50 §4).
 
