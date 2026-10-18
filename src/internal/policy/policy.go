@@ -233,8 +233,13 @@ func check(dir string, opts Options) (string, map[string]Resource, []Issue) {
 	resources := map[string]Resource{}
 	seen := map[string]string{} // kind/name -> first file
 	present := map[string]bool{}
+	names := map[string]map[string]bool{} // kind -> names seen, including documents rejected by their schema
+	repoDocs := map[string]map[string]any{}
 
 	for _, f := range files {
+		if _, isRepo := repoSide(f.path); isRepo && !isRepoDocument(f.path) {
+			continue // other files under .strange-company/ belong to other plans (repo.yaml, scripts)
+		}
 		if f.reserved {
 			add(CodeReservedFilename, "", f.rel, `a policy file name may not contain "__" (reserved for ConfigMap keys) or share a path with another file`)
 			continue
@@ -256,6 +261,16 @@ func check(dir string, opts Options) (string, map[string]Resource, []Issue) {
 			add(CodeYAMLInvalid, "", f.path, oneLine(err.Error()))
 			continue
 		}
+		if rstem, isRepo := repoSide(f.path); isRepo {
+			if len(validate(schemas[rstem], doc)) == 0 {
+				repoDocs[f.path], _ = doc.(map[string]any)
+			} else {
+				for _, e := range validate(schemas[rstem], doc) {
+					add(CodeSchemaInvalid, e[0], f.path, e[1])
+				}
+			}
+			continue
+		}
 		m, _ := doc.(map[string]any)
 		kind, _ := m["kind"].(string)
 		stem, known := kindSchemas[kind]
@@ -265,6 +280,12 @@ func check(dir string, opts Options) (string, map[string]Resource, []Issue) {
 		}
 		present[kind] = true
 		bad := false
+		if nm, _ := mapAt(m, "metadata")["name"].(string); nm != "" {
+			if names[kind] == nil {
+				names[kind] = map[string]bool{}
+			}
+			names[kind][nm] = true
+		}
 		if verr := validate(schemas[stem], doc); len(verr) > 0 {
 			bad = true
 			for _, e := range verr {
@@ -290,9 +311,40 @@ func check(dir string, opts Options) (string, map[string]Resource, []Issue) {
 			}
 		}
 	}
+	issues = append(issues, crossFileInvariants(resources, names)...)
+	var protected []string
+	paths := make([]string, 0, len(resources))
+	for p := range resources {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	for _, p := range paths {
+		if r := resources[p]; r.Kind == "VerificationPolicy" {
+			issues = append(issues, verificationInvariants(p, mapAt(r.Doc, "spec"))...)
+			protected = append(protected, strList(r.Doc, "spec", "protectedPaths")...)
+		}
+	}
+	issues = append(issues, repoSideInvariants(protected, repoDocs[repoPolicyFile], repoDocs[repoValidationFile])...)
 	sortIssues(issues)
 	return rev, resources, issues
 }
+
+// repoSide reports whether p is under the repository-side directory and, if it is one of the two documents
+// this package validates, the stem of its schema.
+func repoSide(p string) (string, bool) {
+	if !strings.HasPrefix(p, repoSideDir+"/") {
+		return "", false
+	}
+	switch p {
+	case repoPolicyFile:
+		return repoPolicySchemaStem, true
+	case repoValidationFile:
+		return repoValidationSchemaStem, true
+	}
+	return "", true
+}
+
+func isRepoDocument(p string) bool { s, _ := repoSide(p); return s != "" }
 
 // sortIssues orders issues by (file, pointer, code, message). Exact duplicates are already removed by validate.
 func sortIssues(issues []Issue) []Issue {
@@ -324,8 +376,9 @@ func errMessage(k jsonschema.ErrorKind, p *message.Printer) string {
 	return k.LocalizedString(p)
 }
 
-// propNamesCount counts the propertyNames errors for key at depth that validating doc produces.
-func propNamesCount(s *jsonschema.Schema, doc any, depth int, key string) int {
+// propNamesCount counts the propertyNames errors raised by the schema schemaURL for key at depth that validating
+// doc produces.
+func propNamesCount(s *jsonschema.Schema, doc any, schemaURL string, depth int, key string) int {
 	var ve *jsonschema.ValidationError
 	if err := s.Validate(doc); err == nil || !errors.As(err, &ve) {
 		return 0
@@ -334,7 +387,7 @@ func propNamesCount(s *jsonschema.Schema, doc any, depth int, key string) int {
 	var rec func(e *jsonschema.ValidationError)
 	rec = func(e *jsonschema.ValidationError) {
 		if k, ok := e.ErrorKind.(*kind.PropertyNames); ok {
-			if k.Property == key && len(e.InstanceLocation) == depth {
+			if k.Property == key && len(e.InstanceLocation) == depth && e.SchemaURL == schemaURL {
 				n++
 			}
 			return
@@ -347,30 +400,37 @@ func propNamesCount(s *jsonschema.Schema, doc any, depth int, key string) int {
 	return n
 }
 
+// maxExperimentCandidates bounds the key-removal experiment of propertyIssues.
+const maxExperimentCandidates = 32
+
 // propertyIssues locates the objects whose key violates a propertyNames constraint. The library stores a shared,
 // later-mutated slice as the location of such an error (its length, the depth, is right but its tokens are not),
 // so the offending objects are found by experiment: among the objects at that depth holding the key, those
 // whose removal of the key lowers the number of such errors. When no object can be singled out, the result is
 // the deepest common pointer of the candidates, without the key, and the message names the candidates.
-func propertyIssues(s *jsonschema.Schema, doc any, depth int, key, msg string) [][2]string {
+func propertyIssues(s *jsonschema.Schema, doc any, schemaURL string, depth int, key, msg string) [][2]string {
 	cands := propertyCandidates(doc, depth, key)
 	if len(cands) == 0 {
 		return [][2]string{{"", msg}}
 	}
-	base := propNamesCount(s, doc, depth, key)
-	var out [][2]string
-	for _, c := range cands {
-		obj := lookupTokens(doc, c)
-		v := obj[key]
-		delete(obj, key)
-		after := propNamesCount(s, doc, depth, key)
-		obj[key] = v
-		if after < base {
-			out = append(out, [2]string{pointer(append(append([]string{}, c...), key)), msg})
+	// The experiment costs one validation per candidate; above maxExperimentCandidates the candidates are
+	// reported by their common prefix instead.
+	if len(cands) <= maxExperimentCandidates {
+		base := propNamesCount(s, doc, schemaURL, depth, key)
+		var out [][2]string
+		for _, c := range cands {
+			obj := lookupTokens(doc, c)
+			v := obj[key]
+			delete(obj, key)
+			after := propNamesCount(s, doc, schemaURL, depth, key)
+			obj[key] = v
+			if after < base {
+				out = append(out, [2]string{pointer(append(append([]string{}, c...), key)), msg})
+			}
 		}
-	}
-	if len(out) > 0 {
-		return out
+		if len(out) > 0 {
+			return out
+		}
 	}
 	pre := cands[0]
 	names := make([]string, 0, len(cands))
@@ -413,6 +473,12 @@ func validate(s *jsonschema.Schema, doc any) [][2]string {
 	}
 	var out [][2]string
 	seen := map[string]bool{}
+	type propKey struct {
+		url   string
+		depth int
+		key   string
+	}
+	memo := map[propKey][][2]string{} // one experiment per (schema, depth, key) in this call
 	emit := func(ptr, msg string) {
 		e := [2]string{ptr, oneLine(msg)}
 		if !seen[e[0]+"\x00"+e[1]] {
@@ -428,7 +494,13 @@ func validate(s *jsonschema.Schema, doc any) [][2]string {
 			for _, d := range validateLeaves(e.Causes, p) {
 				msg += "; " + d[1]
 			}
-			for _, r := range propertyIssues(s, doc, len(e.InstanceLocation), k.Property, oneLine(msg)) {
+			pk := propKey{e.SchemaURL, len(e.InstanceLocation), k.Property}
+			res, done := memo[pk]
+			if !done {
+				res = propertyIssues(s, doc, pk.url, pk.depth, pk.key, oneLine(msg))
+				memo[pk] = res
+			}
+			for _, r := range res {
 				emit(r[0], r[1])
 			}
 			return
