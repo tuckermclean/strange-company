@@ -582,7 +582,7 @@ examples:
         - name: documentation-only
           description: Prose documentation changes judged by required facts written before the change.
           allowedPaths: ["docs/**", "**/*.md"]
-          deniedPaths: ["AGENTS.md", "**/AGENTS.md", "CLAUDE.md", "**/CLAUDE.md", "charts/**", "**/skills/**", "context/**", "**/SOUL.md"]
+          deniedPaths: ["AGENTS.md", "**/AGENTS.md", "CLAUDE.md", "**/CLAUDE.md", "charts/**", "gitops/**", "deploy/**", "ansible/**", "tofu/**", "**/migrations/**", "**/skills/**", "context/**", "**/SOUL.md"]
           judge: {kind: required-facts, source: artifact, executor: ci, artifactPaths: ["verification/sc-*/**"]}
           approval: auto
           producesMergeableChange: true
