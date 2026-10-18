@@ -1,32 +1,72 @@
 #!/bin/sh
-# Seed entrypoint (plan 02 section 14.4, 14.9): nss_wrapper files and git safe.directory, then exec.
+# Container entrypoint (plan 02 section 14.5). Without SC_REPO_ROOT (in-cluster, plan 15) it just execs its arguments.
+# With the wrapper: `sc-bootstrap toolbox init` (work dirs, nss_wrapper files, SSH key copy), the agent socket, the
+# environment of plan 02 section 9.4 and 14.4, then the dispatch:
+#   run|plan|preflight|status|verify|expand|destroy|recover|report|rotate|state|unlock|version ... -> sc-bootstrap
+#   shell -> bash with the shell rc file;  exec -- CMD ... or any other command -> CMD
+# SC_RUN_DIR (default /run/sc) and SC_INPUT_DIR (default /run/sc-input) move the two directories (plan 02 section 14.4).
 set -eu
-if [ -n "${SC_REPO_ROOT:-}" ] && [ -d /run/sc ]; then
-	uid=$(id -u)
-	gid=$(id -g)
-	mkdir -p /run/sc/home /run/sc/tmp
-	printf 'sc-operator:x:%s:%s:Strange Company operator:/run/sc/home:/bin/bash\n' "$uid" "$gid" >/run/sc/passwd
-	printf 'sc-operator:x:%s:\n' "$gid" >/run/sc/group
-	LD_PRELOAD=libnss_wrapper.so
-	NSS_WRAPPER_PASSWD=/run/sc/passwd
-	NSS_WRAPPER_GROUP=/run/sc/group
-	HOME=/run/sc/home
-	GIT_CONFIG_COUNT=1
-	GIT_CONFIG_KEY_0=safe.directory
-	GIT_CONFIG_VALUE_0=$SC_REPO_ROOT
-	export LD_PRELOAD NSS_WRAPPER_PASSWD NSS_WRAPPER_GROUP HOME GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
-	# Go caches default to the repo-local .cache (plan 01 section 8.1); a caller's value wins.
-	GOMODCACHE=${GOMODCACHE:-$SC_REPO_ROOT/.cache/go/mod}
-	GOCACHE=${GOCACHE:-$SC_REPO_ROOT/.cache/go/build}
-	export GOMODCACHE GOCACHE
-	# Plan 02 section 9.4 defaults that depend on the repository path; a caller's value wins.
-	if [ -z "${ANSIBLE_CONFIG:-}" ] && [ -f "$SC_REPO_ROOT/infra/ansible/ansible.cfg" ]; then
-		ANSIBLE_CONFIG=$SC_REPO_ROOT/infra/ansible/ansible.cfg
-		export ANSIBLE_CONFIG
-	fi
-	TF_PLUGIN_CACHE_DIR=${TF_PLUGIN_CACHE_DIR:-$SC_REPO_ROOT/.cache/tofu-plugins}
-	HELM_CACHE_HOME=${HELM_CACHE_HOME:-$SC_REPO_ROOT/.cache/helm}
-	mkdir -p "$TF_PLUGIN_CACHE_DIR" "$HELM_CACHE_HOME" 2>/dev/null || true
-	export TF_PLUGIN_CACHE_DIR HELM_CACHE_HOME
+if [ -z "${SC_REPO_ROOT:-}" ]; then
+	exec "$@"
 fi
-exec "$@"
+run=${SC_RUN_DIR:-/run/sc}
+in=${SC_INPUT_DIR:-/run/sc-input}
+SC_RUN_DIR=$run
+SC_INPUT_DIR=$in
+export SC_RUN_DIR SC_INPUT_DIR
+sc-bootstrap toolbox init
+if [ -e "$in/ssh-agent.sock" ]; then
+	SSH_AUTH_SOCK=$in/ssh-agent.sock
+	export SSH_AUTH_SOCK
+fi
+LD_PRELOAD=libnss_wrapper.so
+NSS_WRAPPER_PASSWD=$run/passwd
+NSS_WRAPPER_GROUP=$run/group
+HOME=$run/home
+GIT_CONFIG_COUNT=1
+GIT_CONFIG_KEY_0=safe.directory
+GIT_CONFIG_VALUE_0=$SC_REPO_ROOT
+export LD_PRELOAD NSS_WRAPPER_PASSWD NSS_WRAPPER_GROUP HOME GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
+# Go caches default to the repo-local .cache (plan 01 section 8.1); a caller's value wins.
+GOMODCACHE=${GOMODCACHE:-$SC_REPO_ROOT/.cache/go/mod}
+GOCACHE=${GOCACHE:-$SC_REPO_ROOT/.cache/go/build}
+export GOMODCACHE GOCACHE
+# Plan 02 section 9.4 defaults that depend on the repository path; a caller's value wins.
+if [ -z "${ANSIBLE_CONFIG:-}" ] && [ -f "$SC_REPO_ROOT/infra/ansible/ansible.cfg" ]; then
+	ANSIBLE_CONFIG=$SC_REPO_ROOT/infra/ansible/ansible.cfg
+	export ANSIBLE_CONFIG
+fi
+TF_PLUGIN_CACHE_DIR=${TF_PLUGIN_CACHE_DIR:-$SC_REPO_ROOT/.cache/tofu-plugins}
+HELM_CACHE_HOME=${HELM_CACHE_HOME:-$SC_REPO_ROOT/.cache/helm}
+mkdir -p "$TF_PLUGIN_CACHE_DIR" "$HELM_CACHE_HOME" 2>/dev/null || true
+export TF_PLUGIN_CACHE_DIR HELM_CACHE_HOME
+
+# The s3 scope (plan 02 section 14.6): AWS_CONFIG_FILE and AWS_SHARED_CREDENTIALS_FILE point at profile sc-admin under
+# $run/aws; no default profile and no secret in the environment. Skipped without an env file or without S3 settings.
+s3_scope() {
+	[ -f "$in/bootstrap.env" ] || return 0
+	if s3_exports=$(sc-bootstrap --env-file "$in/bootstrap.env" env s3 2>/dev/null); then
+		eval "$s3_exports"
+	fi
+}
+
+[ $# -gt 0 ] || set -- shell
+case $1 in
+run | plan | preflight | status | verify | expand | destroy | recover | report | rotate | state | unlock | version)
+	exec sc-bootstrap --env-file "$in/bootstrap.env" "$@"
+	;;
+shell)
+	s3_scope
+	exec bash --rcfile /usr/share/strange-company/shellrc -i
+	;;
+exec)
+	shift
+	if [ "${1:-}" = -- ]; then shift; fi
+	s3_scope
+	exec "$@"
+	;;
+*)
+	s3_scope
+	exec "$@"
+	;;
+esac

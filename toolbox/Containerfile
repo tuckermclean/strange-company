@@ -80,8 +80,9 @@ ARG SC_INPUTS_ID=unknown
 LABEL strange.company/toolbox-inputs-id=$SC_INPUTS_ID
 COPY --from=fetch /opt/sc/ /opt/sc/
 COPY --chmod=0755 toolbox/bin/sc-entrypoint /opt/sc/bin/sc-entrypoint
-# Config read by `gitleaks dir` over the exported filesystem (02-AC-9); see the file for what it allowlists.
-COPY toolbox/gitleaks-image.toml /.gitleaks.toml
+# Interactive rc file of `./bootstrap shell` (plan 02 section 14.6). The image scan config toolbox/gitleaks-image.toml
+# stays out of the image; 02-AC-9 passes it to `gitleaks dir --config` explicitly.
+COPY --chmod=0644 toolbox/shellrc /usr/share/strange-company/shellrc
 ARG SC_SOURCE_COMMIT=unknown
 ARG SC_BUILT_AT=unknown
 RUN set -eu; \

@@ -1,0 +1,11 @@
+# Published toolbox and ci images for the toolbox inputs id (plan 02 section 9.3). Flat key: value lines, read by
+# ./bootstrap with sed. Empty digests (before the first release) mean "always build". Excluded from the inputs id.
+apiVersion: strange.company/v1alpha1
+kind: ToolboxImageLock
+inputsId: ""
+toolboxImage: ghcr.io/tuckermclean/strange-company-toolbox
+toolboxDigest: ""
+ciImage: ghcr.io/tuckermclean/strange-company-ci
+ciDigest: ""
+platforms: linux/amd64
+publishedAt:

@@ -5,9 +5,15 @@ SHELL := /bin/bash
 MAKEFLAGS += --no-builtin-rules --no-print-directory
 .DEFAULT_GOAL := verify
 
-ifeq ($(MAKECMDGOALS),toolbox)
+ifneq ($(filter toolbox,$(MAKECMDGOALS)),)
 # `make toolbox` runs on the host (plan 01 section 8.1, CD-64): it drives the container engine and builds the ci
 # image itself, so it is the one target that is not re-executed in the ci image. Run it alone.
+ifneq ($(MAKECMDGOALS),toolbox)
+$(error make toolbox must be run alone: it builds the images on the host, so it cannot share a command line with other goals)
+endif
+ifeq ($(SC_IN_CONTAINER),1)
+$(error make toolbox must be run alone on the host, not inside the container: it drives the container engine, which is never mounted into the images)
+endif
 include mk/toolbox.mk
 else ifneq ($(SC_IN_CONTAINER),1)
 # Container re-exec: every target runs as `make <goals>` in the ci image. The recipe uses a literal
