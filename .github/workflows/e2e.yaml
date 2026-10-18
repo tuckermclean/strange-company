@@ -111,8 +111,15 @@ jobs:
         run: sh test/e2e/wrapper/check-pins.sh
 
       # 02-AC-1, 02-AC-2, 02-AC-3 (build side), 02-AC-8, 02-AC-9: make toolbox (both targets, --no-cache) on Docker.
+      # SC_IMG_FLAG is empty, so the criteria's literal `./bootstrap exec --` commands run on the default toolbox image.
       - name: Toolbox and ci images
+        env:
+          SC_IMG_FLAG: ''
         run: sh test/e2e/wrapper/toolbox-image.sh
+
+      # 02-AC-5 (Docker rootful leg), 02-AC-6, 02-AC-7, 02-AC-10, 02-AC-11, 02-AC-13 with the literal commands.
+      - name: Wrapper contract on the toolbox image
+        run: sh test/e2e/wrapper/wrapper-real.sh
 
   # 52-AC-5, 01-AC-6, 52-AC-8: two offline `make verify` runs with SC_FORBID_PAID=1, identical summaries.
   verify-e2e:
