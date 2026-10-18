@@ -294,7 +294,7 @@ func check(dir string, opts Options) (string, map[string]Resource, []Issue) {
 	return rev, resources, issues
 }
 
-// sortIssues orders issues by (file, pointer, code, message) and drops exact duplicates.
+// sortIssues orders issues by (file, pointer, code, message). Exact duplicates are already removed by validate.
 func sortIssues(issues []Issue) []Issue {
 	sort.SliceStable(issues, func(a, b int) bool {
 		x, y := issues[a], issues[b]
@@ -312,10 +312,96 @@ func sortIssues(issues []Issue) []Issue {
 	return issues
 }
 
+// errMessage renders one leaf error deterministically. The library builds the property list of an
+// additionalProperties error by ranging over a map, so that list is sorted before it is formatted.
+func errMessage(k jsonschema.ErrorKind, p *message.Printer) string {
+	if ap, ok := k.(*kind.AdditionalProperties); ok {
+		c := *ap
+		c.Properties = append([]string(nil), ap.Properties...)
+		sort.Strings(c.Properties)
+		return c.LocalizedString(p)
+	}
+	return k.LocalizedString(p)
+}
+
+// propNamesCount counts the propertyNames errors for key at depth that validating doc produces.
+func propNamesCount(s *jsonschema.Schema, doc any, depth int, key string) int {
+	var ve *jsonschema.ValidationError
+	if err := s.Validate(doc); err == nil || !errors.As(err, &ve) {
+		return 0
+	}
+	n := 0
+	var rec func(e *jsonschema.ValidationError)
+	rec = func(e *jsonschema.ValidationError) {
+		if k, ok := e.ErrorKind.(*kind.PropertyNames); ok {
+			if k.Property == key && len(e.InstanceLocation) == depth {
+				n++
+			}
+			return
+		}
+		for _, c := range e.Causes {
+			rec(c)
+		}
+	}
+	rec(ve)
+	return n
+}
+
+// propertyIssues locates the objects whose key violates a propertyNames constraint. The library stores a shared,
+// later-mutated slice as the location of such an error (its length, the depth, is right but its tokens are not),
+// so the offending objects are found by experiment: among the objects at that depth holding the key, those
+// whose removal of the key lowers the number of such errors. When no object can be singled out, the result is
+// the deepest common pointer of the candidates, without the key, and the message names the candidates.
+func propertyIssues(s *jsonschema.Schema, doc any, depth int, key, msg string) [][2]string {
+	cands := propertyCandidates(doc, depth, key)
+	if len(cands) == 0 {
+		return [][2]string{{"", msg}}
+	}
+	base := propNamesCount(s, doc, depth, key)
+	var out [][2]string
+	for _, c := range cands {
+		obj := lookupTokens(doc, c)
+		v := obj[key]
+		delete(obj, key)
+		after := propNamesCount(s, doc, depth, key)
+		obj[key] = v
+		if after < base {
+			out = append(out, [2]string{pointer(append(append([]string{}, c...), key)), msg})
+		}
+	}
+	if len(out) > 0 {
+		return out
+	}
+	pre := cands[0]
+	names := make([]string, 0, len(cands))
+	for _, c := range cands {
+		n := 0
+		for n < len(pre) && n < len(c) && pre[n] == c[n] {
+			n++
+		}
+		pre = pre[:n]
+		names = append(names, pointer(append(append([]string{}, c...), key)))
+	}
+	return [][2]string{{pointer(pre), msg + " (candidates: " + strings.Join(names, ", ") + ")"}}
+}
+
+func lookupTokens(doc any, toks []string) map[string]any {
+	cur := doc
+	for _, t := range toks {
+		switch x := cur.(type) {
+		case map[string]any:
+			cur = x[t]
+		case []any:
+			i, _ := strconv.Atoi(t)
+			cur = x[i]
+		}
+	}
+	m, _ := cur.(map[string]any)
+	return m
+}
+
 // validate returns (pointer, message) for every leaf schema error. It walks ValidationError.Causes instead of
-// BasicOutput. The library stores a shared, later-mutated slice as the location of a propertyNames error: its
-// length (the depth) is right but its tokens are not. The location is therefore recovered from the document:
-// the objects at that depth that hold the offending key (the longest common parent when several do).
+// BasicOutput (see propertyIssues for the propertyNames locations).
 func validate(s *jsonschema.Schema, doc any) [][2]string {
 	err := s.Validate(doc)
 	if err == nil {
@@ -337,22 +423,18 @@ func validate(s *jsonschema.Schema, doc any) [][2]string {
 	p := message.NewPrinter(language.English)
 	var walk func(e *jsonschema.ValidationError)
 	walk = func(e *jsonschema.ValidationError) {
-		loc := e.InstanceLocation
 		if k, ok := e.ErrorKind.(*kind.PropertyNames); ok {
-			parentLoc := propertyParent(doc, len(e.InstanceLocation), k.Property)
 			msg := k.LocalizedString(p)
 			for _, d := range validateLeaves(e.Causes, p) {
 				msg += "; " + d[1]
 			}
-			if parentLoc == nil {
-				emit("", msg)
-			} else {
-				emit(pointer(append(parentLoc, k.Property)), msg)
+			for _, r := range propertyIssues(s, doc, len(e.InstanceLocation), k.Property, oneLine(msg)) {
+				emit(r[0], r[1])
 			}
 			return
 		}
 		if len(e.Causes) == 0 {
-			emit(pointer(loc), e.ErrorKind.LocalizedString(p))
+			emit(pointer(e.InstanceLocation), errMessage(e.ErrorKind, p))
 			return
 		}
 		for _, c := range e.Causes {
@@ -372,7 +454,7 @@ func validateLeaves(errs []*jsonschema.ValidationError, p *message.Printer) [][2
 	var out [][2]string
 	for _, e := range errs {
 		if len(e.Causes) == 0 {
-			out = append(out, [2]string{"", oneLine(e.ErrorKind.LocalizedString(p))})
+			out = append(out, [2]string{"", oneLine(errMessage(e.ErrorKind, p))})
 			continue
 		}
 		out = append(out, validateLeaves(e.Causes, p)...)
@@ -380,9 +462,8 @@ func validateLeaves(errs []*jsonschema.ValidationError, p *message.Printer) [][2
 	return out
 }
 
-// propertyParent returns the tokens of the object at depth holding key, or the longest common prefix of the
-// candidates when several do, or nil when none does.
-func propertyParent(doc any, depth int, key string) []string {
+// propertyCandidates returns the tokens of every object at depth holding key, in sorted order.
+func propertyCandidates(doc any, depth int, key string) [][]string {
 	var cands [][]string
 	var rec func(v any, at []string)
 	rec = func(v any, at []string) {
@@ -394,8 +475,13 @@ func propertyParent(doc any, depth int, key string) []string {
 				}
 				return
 			}
-			for k, c := range t {
-				rec(c, append(at[:len(at):len(at)], k))
+			ks := make([]string, 0, len(t))
+			for k := range t {
+				ks = append(ks, k)
+			}
+			sort.Strings(ks)
+			for _, k := range ks {
+				rec(t[k], append(at[:len(at):len(at)], k))
 			}
 		case []any:
 			for i, c := range t {
@@ -404,18 +490,7 @@ func propertyParent(doc any, depth int, key string) []string {
 		}
 	}
 	rec(doc, nil)
-	if len(cands) == 0 {
-		return nil
-	}
-	pre := cands[0]
-	for _, c := range cands[1:] {
-		n := 0
-		for n < len(pre) && n < len(c) && pre[n] == c[n] {
-			n++
-		}
-		pre = pre[:n]
-	}
-	return append([]string{}, pre...)
+	return cands
 }
 
 func pointer(toks []string) string {
