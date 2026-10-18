@@ -176,8 +176,9 @@ envval() { # NAME: last assignment in the env file, whitespace and one level of 
 	[ -n "$envfile" ] || return 0
 	# Only the surrounding whitespace (a CRLF line ending's CR included) goes; an embedded CR stays. One quote level only:
 	# the `b` leaves the script after a double-quote strip so a single-quote strip cannot run on the result.
-	sed -n "s/^$1=//p" "$envfile" | tail -n 1 |
-		sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e '/^".*"$/{s/^"\(.*\)"$/\1/;b' -e '}' -e "s/^'\\(.*\\)'\$/\\1/"
+	# LC_ALL=C: bytes, not locale characters (invalid UTF-8 inside quotes survives; Unicode spaces are not trimmed).
+	LC_ALL=C sed -n "s/^$1=//p" "$envfile" | tail -n 1 |
+		LC_ALL=C sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e '/^".*"$/{s/^"\(.*\)"$/\1/;b' -e '}' -e "s/^'\\(.*\\)'\$/\\1/"
 }
 hostpath() { # PATH: a leading ~/ is the host $HOME
 	case $1 in \~/*) printf '%s\n' "${HOME:-}/${1#\~/}" ;; *) printf '%s\n' "$1" ;; esac
@@ -187,6 +188,11 @@ mode_of() { ls -ldL -- "$1" 2>/dev/null | cut -c1-10; }
 group_other_bits() { mode_of "$1" | cut -c5-10; }
 in_mounts=
 bs=
+if [ "$command" != build ] && [ "$image" != toolbox ] && [ "$envfile_explicit" = 1 ]; then
+	# the ci image gets no operator inputs; a missing explicit file is still worth saying
+	case $envfile in /*) ;; *) envfile=$start_dir/$envfile ;; esac
+	[ -f "$envfile" ] || warn "--env-file $envfile does not exist (ignored: the $image image gets no operator inputs)"
+fi
 if [ "$command" != build ] && [ "$image" = toolbox ]; then
 	# CD-67 (a): only the toolbox image gets the operator inputs; the ci image gets none of them and no black-start directory.
 	if [ "$envfile_explicit" = 1 ]; then
@@ -300,8 +306,8 @@ if [ "$command" = build ]; then
 fi
 lockval() { # KEY: value of a flat image.lock line, empty when the file or the key is absent
 	[ -f "$REPO/toolbox/image.lock" ] || return 0
-	sed -n "s/^$1:[[:space:]]*//p" "$REPO/toolbox/image.lock" | tail -n 1 | tr -d '\r' |
-		sed -e 's/[[:space:]]*$//' -e '/^".*"$/{s/^"\(.*\)"$/\1/;b' -e '}' -e "s/^'\\(.*\\)'\$/\\1/"
+	LC_ALL=C sed -n "s/^$1:[[:space:]]*//p" "$REPO/toolbox/image.lock" | tail -n 1 | tr -d '\r' |
+		LC_ALL=C sed -e 's/[[:space:]]*$//' -e '/^".*"$/{s/^"\(.*\)"$/\1/;b' -e '}' -e "s/^'\\(.*\\)'\$/\\1/"
 }
 pull_image() { # REF: 3 attempts, waiting 10 s and 30 s between them (plan 02 section 16); pull output goes to stderr
 	attempt=1
@@ -330,7 +336,7 @@ else
 	if [ -n "$lock_digest" ] && [ "$(lockval inputsId)" = "$inputs_id" ]; then
 		# (b) the published image for exactly these inputs
 		if ! printf '%s\n' "$lock_digest" | grep -Eq '^sha256:[0-9a-f]{64}$' ||
-			! printf '%s\n' "$lock_image" | grep -Eq '^[a-z0-9.-]+(/[a-z0-9._-]+)+$'; then
+			! printf '%s\n' "$lock_image" | grep -Eq '^[a-z0-9.-]+(:[0-9]+)?(/[a-z0-9._-]+)+$'; then
 			die WRAPPER_LOCK_INVALID "toolbox/image.lock: the $image image or digest is malformed" 2
 		fi
 		pullref=$lock_image@$lock_digest

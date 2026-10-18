@@ -25,7 +25,7 @@ func parseEnvFile(path string) (map[string]string, error) {
 			continue // outside ^[A-Z][A-Z0-9_]*= : comments, blanks and malformed lines assign nothing
 		}
 		k, v, _ := strings.Cut(line, "=")
-		v = strings.TrimSpace(v)
+		v = strings.Trim(v, " \t\r\n\v\f")
 		if len(v) >= 2 && (v[0] == '"' || v[0] == '\'') && v[len(v)-1] == v[0] {
 			v = v[1 : len(v)-1]
 		}

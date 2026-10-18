@@ -5,7 +5,9 @@ _sc_in=${SC_INPUT_DIR:-/run/sc-input}
 _sc_run=${SC_RUN_DIR:-/run/sc}
 _sc_cluster=
 if [ -f "$_sc_in/bootstrap.env" ]; then
-	_sc_cluster=$(sed -n 's/^CLUSTER_NAME=//p' "$_sc_in/bootstrap.env" | tail -n 1 | tr -d '\r"'"'")
+	# envval grammar: last assignment, ASCII whitespace trimmed, one level of matching quotes removed.
+	_sc_cluster=$(LC_ALL=C sed -n 's/^CLUSTER_NAME=//p' "$_sc_in/bootstrap.env" | tail -n 1 |
+		LC_ALL=C sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e '/^".*"$/{s/^"\(.*\)"$/\1/;b' -e '}' -e "s/^'\\(.*\\)'\$/\\1/")
 	# The value is untrusted text: keep the leading run of name characters (at most 32), so prompt expansion has
 	# nothing to run or expand ($(...), backticks and backslash escapes end the name).
 	_sc_cluster=$(printf '%s' "$_sc_cluster" | sed -n 's/^\([A-Za-z0-9._-]\{1,32\}\).*/\1/p')
