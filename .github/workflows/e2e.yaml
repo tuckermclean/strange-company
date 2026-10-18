@@ -1,6 +1,7 @@
 # Tier-E jobs (plan 52 section 8.4). On pull requests a path filter selects the jobs whose inputs changed;
 # `e2e-gate` always runs and succeeds iff every selected job succeeded (no required check stuck in "expected").
-# At F01 the only tier-E job is `toolbox`: the real-engine checks of the seed ci image on Docker rootful.
+# F03 jobs: `toolbox` (images and wrapper on Docker rootful), the engine matrix `toolbox-podman` and `toolbox-selinux`,
+# `toolbox-pull-equivalence` (02-AC-4) and `e2e-k3d` (02-AC-12); `verify-e2e` runs make verify offline twice.
 # Scheduled runs skip a commit that already passed a scheduled run, using a cache marker keyed by the
 # commit SHA rather than a query of earlier runs, so no permission beyond `contents: read` is needed (CD-52).
 name: e2e

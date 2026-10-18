@@ -280,7 +280,7 @@ The check **re-executes** RED instead of looking up a recorded CI run on the tes
   | `e2e-bootstrap-fake` | `src/internal/bootstrap/**`, `infra/**` |
   | `test-integration` | `src/**` |
   | `toolbox` | `toolbox/**`, `bootstrap`, `test/e2e/wrapper/**` (CD-52), `Makefile`, `mk/toolbox.mk` (the host-run `make toolbox` recipe, CD-64), and the other toolbox inputs (`src/**`, `.dockerignore`, `tools/stage0/requirements.txt`; plan 02 §14.2 step 5), since the images build the Go binaries |
-  | `toolbox-podman`, `toolbox-selinux`, `toolbox-pull-equivalence` | as `toolbox`, plus `test/e2e/selinux/**` (plan 02 §22 engine matrix and reproducibility test: 02-AC-5, 02-AC-4; F03) |
+  | `toolbox-podman`, `toolbox-selinux`, `toolbox-pull-equivalence` | the `toolbox` paths plus `test/e2e/selinux/**`; one shared selection, so a change under `test/e2e/selinux/**` also selects `toolbox` (plan 02 §22 engine matrix and reproducibility test: 02-AC-5, 02-AC-4; F03) |
   | `e2e-c10` | not run on PRs (C10 exists only after Phase 1); on `main` pushes touching `src/**`, `charts/strange-company/**`, `policy/harnesses.yaml`, `images/**`, `harnesses/**`, and on tags |
   | `e2e-lab` | as in §8.1 |
 
