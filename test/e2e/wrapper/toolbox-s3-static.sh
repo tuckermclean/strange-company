@@ -15,8 +15,8 @@ if [ -f toolbox/image.lock ]; then
 	expect_eq "image.lock is flat: every line is key: value, a comment or blank" "" "$bad_lines"
 	expect_match "image.lock names toolboxImage on ghcr.io" "^toolboxImage: ghcr\.io/" "$L"
 	expect_match "image.lock names ciImage on ghcr.io" "^ciImage: ghcr\.io/" "$L"
-	expect_match "image.lock has an empty toolboxDigest until the first release" "^toolboxDigest:[[:space:]]*\$" "$L"
-	expect_match "image.lock has an empty ciDigest until the first release" "^ciDigest:[[:space:]]*\$" "$L"
+	expect_match "image.lock has an empty toolboxDigest until the first release" "^toolboxDigest:[[:space:]]*(\"\"|'')?[[:space:]]*\$" "$L"
+	expect_match "image.lock has an empty ciDigest until the first release" "^ciDigest:[[:space:]]*(\"\"|'')?[[:space:]]*\$" "$L"
 	expect_match "image.lock has an inputsId key" "^inputsId:" "$L"
 else
 	bad "toolbox/image.lock exists"
