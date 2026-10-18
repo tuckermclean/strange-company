@@ -531,7 +531,7 @@ CI runs on GitHub-hosted ubuntu-24.04 (`e2e.yaml`, `workflow_dispatch` on the br
 | 02-AC-12 | `test/e2e/k3d/run`: k3s v1.36.5+k3s1 by digest, namespace PSA `restricted` enforced (privileged control rejected), Pod `runAsNonRoot`, `readOnlyRootFilesystem`, drop ALL, `RuntimeDefault`, emptyDir `/tmp` and `/run/sc`, `args: [sc-bootstrap, version]` → Succeeded, exit 0 (`e2e-k3d`, 15/0) | pass |
 | 02-AC-13 | `wrapper-real.sh`, `stub-s3-wrapper.sh` | pass |
 | F01 02-AC-14..17 (regression) | `real-engine.sh` 22/0 on Docker; `stub-exec-contract.sh`, `stub-image-reuse.sh`, `stub-unpinned-from.sh` | pass |
-| TDD discipline | local `make tdd-discipline-check` on the final head | see below |
+| TDD discipline | local `make tdd-discipline-check` on b5dcdcb (checker and policy from base 665a3a9): `pass`, 12 RED commits, 342 RED failures, `build_ok`, 14 warnings (`TDD_RED_TEST_MODIFIED`, the post-RED test corrections listed below), 0 superseded | pass; PR run pending |
 
 Deviations and disclosures:
 - 7ffd8e1 removes two base F01 assertions (plan 02 §14.9 limited that behaviour to "until F03"). It needs human sign-off.
