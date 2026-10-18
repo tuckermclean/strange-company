@@ -17,9 +17,9 @@ import (
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 	"github.com/santhosh-tekuri/jsonschema/v6/kind"
+	"go.yaml.in/yaml/v3"
 	"golang.org/x/text/language"
 	"golang.org/x/text/message"
-	"go.yaml.in/yaml/v3"
 
 	"strange.company/sc/internal/contracts"
 )
