@@ -31,6 +31,8 @@ func parseEnvFile(path string) (map[string]string, error) {
 		}
 		if v != "" {
 			out[k] = v
+		} else {
+			delete(out, k) // last assignment wins; an empty value unsets an earlier one
 		}
 	}
 	return out, sc.Err()

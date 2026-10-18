@@ -174,8 +174,10 @@ fi
 # --- steps 2 and 3: env file, SSH key and agent, black-start directory (read without evaluating anything)
 envval() { # NAME: last assignment in the env file, whitespace and one level of matching quotes removed
 	[ -n "$envfile" ] || return 0
-	sed -n "s/^$1=//p" "$envfile" | tail -n 1 | tr -d '\r' |
-		sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/^"\(.*\)"$/\1/' -e "s/^'\\(.*\\)'\$/\\1/"
+	# Only the surrounding whitespace (a CRLF line ending's CR included) goes; an embedded CR stays. One quote level only:
+	# the `b` leaves the script after a double-quote strip so a single-quote strip cannot run on the result.
+	sed -n "s/^$1=//p" "$envfile" | tail -n 1 |
+		sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e '/^".*"$/{s/^"\(.*\)"$/\1/;b' -e '}' -e "s/^'\\(.*\\)'\$/\\1/"
 }
 hostpath() { # PATH: a leading ~/ is the host $HOME
 	case $1 in \~/*) printf '%s\n' "${HOME:-}/${1#\~/}" ;; *) printf '%s\n' "$1" ;; esac
@@ -185,7 +187,8 @@ mode_of() { ls -ldL -- "$1" 2>/dev/null | cut -c1-10; }
 group_other_bits() { mode_of "$1" | cut -c5-10; }
 in_mounts=
 bs=
-if [ "$command" != build ]; then
+if [ "$command" != build ] && [ "$image" = toolbox ]; then
+	# CD-67 (a): only the toolbox image gets the operator inputs; the ci image gets none of them and no black-start directory.
 	if [ "$envfile_explicit" = 1 ]; then
 		case $envfile in /*) ;; *) envfile=$start_dir/$envfile ;; esac
 		[ -f "$envfile" ] || usage "--env-file $envfile does not exist"
@@ -297,7 +300,8 @@ if [ "$command" = build ]; then
 fi
 lockval() { # KEY: value of a flat image.lock line, empty when the file or the key is absent
 	[ -f "$REPO/toolbox/image.lock" ] || return 0
-	sed -n "s/^$1:[[:space:]]*//p" "$REPO/toolbox/image.lock" | tail -n 1 | tr -d '\r' | sed -e 's/[[:space:]]*$//' -e 's/^"\(.*\)"$/\1/'
+	sed -n "s/^$1:[[:space:]]*//p" "$REPO/toolbox/image.lock" | tail -n 1 | tr -d '\r' |
+		sed -e 's/[[:space:]]*$//' -e '/^".*"$/{s/^"\(.*\)"$/\1/;b' -e '}' -e "s/^'\\(.*\\)'\$/\\1/"
 }
 pull_image() { # REF: 3 attempts, waiting 10 s and 30 s between them (plan 02 section 16); pull output goes to stderr
 	attempt=1
@@ -313,6 +317,10 @@ source=built
 runimg=$tag
 image_ref=
 if [ "$build" = 1 ]; then
+	# CD-67 (b): SC_TOOLBOX_REQUIRE_PULL=1 accepts only a pulled image.
+	if [ "${SC_TOOLBOX_REQUIRE_PULL:-}" = 1 ]; then
+		die WRAPPER_TOOLBOX_PULL_FAILED "--toolbox-build builds locally and SC_TOOLBOX_REQUIRE_PULL=1 forbids building" 3
+	fi
 	build_image
 else
 	case $image in
@@ -337,12 +345,12 @@ else
 			build_image
 			source=built-fallback
 		fi
-	elif ! have_image; then
-		# (c) a development checkout: reuse the local tag, else build
+	else
+		# (c) a development checkout: reuse the local tag, else build; neither is a pulled image
 		if [ "${SC_TOOLBOX_REQUIRE_PULL:-}" = 1 ]; then
-			die WRAPPER_TOOLBOX_PULL_FAILED "toolbox/image.lock names no published $image image for inputs id $inputs_id and SC_TOOLBOX_REQUIRE_PULL=1 forbids building" 3
+			die WRAPPER_TOOLBOX_PULL_FAILED "toolbox/image.lock names no published $image image for inputs id $inputs_id and SC_TOOLBOX_REQUIRE_PULL=1 accepts only a pulled image" 3
 		fi
-		build_image
+		have_image || build_image
 	fi
 fi
 if [ -z "$image_ref" ]; then

@@ -121,13 +121,13 @@ func (c *cmdCtx) pf06(vars map[string]string) pfRow {
 	case mounted != "":
 		priv = mounted
 		pubPath = mounted + ".pub"
-		shown = c.expandHome(written)
+		shown = written // as written, never the expanded container home
 		if written == "" {
 			shown = mounted + " (mounted)"
 		}
 	case written != "":
-		shown = c.expandHome(written)
-		priv = shown
+		shown = written
+		priv = c.expandHome(written)
 	default:
 		// Plan 50 section 9.2 default, shown as the operator writes it (never the expanded container home).
 		if c.env["HOME"] == "" {
