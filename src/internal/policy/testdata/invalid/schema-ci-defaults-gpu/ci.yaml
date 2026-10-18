@@ -1,0 +1,114 @@
+apiVersion: strange.company/v1alpha1
+kind: CIPolicy
+metadata:
+  name: platform
+spec:
+  managedOwners:
+  - strange-company
+  - projects
+  - sc-e2e
+  protectedBranches:
+  - main
+  releaseBranches: []
+  releaseTagPattern: ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$
+  imageRegistries:
+  - git.${BASE_DOMAIN}/strange-company/
+  - ghcr.io/example/
+  - docker.io/woodpeckerci/
+  cloneImage: docker.io/woodpeckerci/plugin-git:2.6.0@sha256:5555555555555555555555555555555555555555555555555555555555555555
+  stepSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    fsGroup: 65532
+    allowPrivilegeEscalation: false
+    privileged: false
+    seccompProfile:
+      type: RuntimeDefault
+    capabilities:
+      drop:
+      - ALL
+  lanes:
+    ci:
+      defaults:
+        requests:
+          cpu: 500m
+          memory: 1Gi
+          gpu: '1'
+        limits:
+          memory: 3Gi
+          ephemeral-storage: 4Gi
+          gpu: '1'
+      max:
+        requests:
+          cpu: '2'
+          memory: 3Gi
+        limits:
+          memory: 3Gi
+          ephemeral-storage: 6Gi
+      constrained:
+        limits:
+          memory: 2Gi
+      heavySlotUnits: 1
+      workspacePvcMax: 8Gi
+    build:
+      fromPlan: '23'
+      heavySlotUnits: 8
+      workspacePvcMax: 10Gi
+      sequentialStepsOnly: true
+  repoSettings:
+    timeoutMinutes: 45
+    maxTimeoutMinutes: 90
+    requireApproval: forks
+    allowPullRequests: true
+    cancelPreviousEvents:
+    - pull_request
+  crons:
+  - repo: strange-company/strange-company
+    name: nightly
+    branch: main
+    schedule: 0 0 2 * * *
+  verify:
+    installerImage: git.example.org/strange-company/sc-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666
+    defaultWorkflow:
+      stepImageFrom: validation.yaml
+  retention:
+    logDays: 30
+  offclusterLane:
+    provider: github-actions
+    workflow: e2e
+    maxWaitMinutes: 90
+  tddDiscipline:
+    excludedBranches:
+    - agent/*
+    - renovate/*
+    behaviorPaths:
+    - src/**
+    - charts/**
+    - gitops/platform/**
+    - policy/**
+    - contracts/**
+    - Makefile
+    - mk/**
+    testPaths:
+    - '**/*_test.go'
+    - '**/testdata/**'
+    - test/**
+    redTargets:
+    - test
+    - contracts
+    - policy-check
+    - gitops-validate
+    - chart-test
+    - toolbox-check
+    redTargetFallbacks:
+      toolbox-check: sh test/e2e/wrapper/run.sh
+    exemptionClasses:
+      docs-only:
+        paths:
+        - '**/*.md'
+        - adr/**
+        - plans/**
+        - procedures/**
+      revert:
+        subjectRegex: ^Revert "
