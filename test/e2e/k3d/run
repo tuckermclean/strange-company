@@ -1,0 +1,183 @@
+#!/bin/sh
+# Tier-E evidence for 02-AC-12 (plan 52 e2e-k3d, plan 02 section 14.8): the toolbox image runs in a k3d cluster as a Pod
+# under Pod Security Admission `restricted` (runAsNonRoot, readOnlyRootFilesystem, capabilities.drop [ALL], seccompProfile
+# RuntimeDefault, emptyDir at /tmp and /run/sc) with args ["sc-bootstrap","version"] and completes with exit 0. NOT part
+# of run.sh / the RED checks.
+#   sh test/e2e/k3d/run
+# Needs Docker (k3d supports no other engine; the job runs it on the host with the Docker socket), network, jq,
+# about 12 GiB free disk, 4 to 6 minutes once the images exist (a cold toolbox/ci build adds 15 to 30 minutes).
+# Tools: k3d and kubectl from PATH when present, otherwise copied out of the ci image (/opt/sc/bin/k3d, kubectl) which
+# is built first when missing. The toolbox image is the wrapper's image for this checkout (built when missing).
+# Pinned external artifact: rancher/k3s v1.36.5-k3s1, the k3s of plans/compatibility-baseline.yaml (v1.36.5+k3s1),
+# pinned by the index digest below (Docker Hub registry API, tag v1.36.5-k3s1, 2026-10-17); the script pulls it by
+# digest, tags it, and k3d uses the local tag. The load balancer is disabled (--no-lb). k3d v5 still starts a
+# k3d-tools node for `cluster create`, so K3D_IMAGE_TOOLS pins it by digest: ghcr.io/k3d-io/k3d-tools tag 5.9.0 (the
+# tag k3d v5.9.0 uses, no "v" prefix), index digest read from the GHCR registry API on 2026-10-17
+# (HEAD /v2/k3d-io/k3d-tools/manifests/5.9.0, Docker-Content-Digest). The toolbox image is imported with
+# `k3d image import --mode direct`. After `cluster create` the script asserts no other ghcr.io/k3d-io image exists.
+#   SC_K3D_KEEP=1 keeps the cluster for debugging.
+. "$(dirname "$0")/../wrapper/lib.sh"
+echo "e2e-k3d (02-AC-12)"
+
+K3S_TAG=v1.36.5-k3s1
+K3S_DIGEST=sha256:057cfd5a9d51b89f1f0ee139c28d5d5fdd5aa7ddeac2742a0ba90c6dbc0329bb
+K3D_TOOLS_DIGEST=sha256:c57abce697e66feeb826922718738fe186b47779312d49d4e51e6fb9b8a6f34d
+cluster=sc-psa-$$
+ns=psa-restricted
+cd "$SC_ROOT" || exit 1
+unset SC_IN_CONTAINER SC_TOOLBOX_BUILD SC_TOOLBOX_REQUIRE_PULL
+export SC_CONTAINER_ENGINE=docker
+command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1 || { bad "docker is usable"; finish; exit 1; }
+command -v jq >/dev/null 2>&1 || { bad "jq is installed"; finish; exit 1; }
+
+BIN=$TMP/bin
+mkdir -p "$BIN"
+inputs12=$(id12 "$(ref_inputs_id "$SC_ROOT")")
+extract() { # IMAGE PATH-IN-IMAGE DEST
+	_c=$(docker create "$1") || return 1
+	docker cp "$_c:$2" "$3" >/dev/null 2>&1
+	_rc=$?
+	docker rm -f "$_c" >/dev/null 2>&1
+	return $_rc
+}
+if ! command -v k3d >/dev/null 2>&1 || ! command -v kubectl >/dev/null 2>&1; then
+	./bootstrap exec --image ci -- true >"$TMP/ci.out" 2>&1 || { tail -n 15 "$TMP/ci.out"; bad "the ci image is available"; finish; exit 1; }
+	ci=localhost/strange-company-ci:in-$inputs12
+	for t in k3d kubectl; do
+		command -v "$t" >/dev/null 2>&1 && continue
+		extract "$ci" "/opt/sc/bin/$t" "$BIN/$t" || { bad "$t was copied out of $ci"; finish; exit 1; }
+		chmod +x "$BIN/$t"
+	done
+fi
+PATH=$BIN:$PATH
+export PATH
+ok "tools: $(k3d version | head -n 1), kubectl $(kubectl version --client -o json 2>/dev/null | jq -r .clientVersion.gitVersion)"
+
+# --- the toolbox image of this checkout (the wrapper builds or pulls it)
+RC=0
+./bootstrap exec -- true >"$TMP/toolbox.out" 2>&1 || RC=$?
+expect_eq "02-AC-12 setup: ./bootstrap exec -- true (toolbox image available) exits 0" 0 "$RC"
+[ "$RC" -eq 0 ] || { tail -n 15 "$TMP/toolbox.out"; finish; exit 1; }
+IMG=localhost/strange-company-toolbox:in-$inputs12
+if ! docker image inspect "$IMG" >/dev/null 2>&1; then
+	# a pulled image (image.lock names a published digest): use the reference the wrapper reports
+	IMG=$(./bootstrap exec -- sh -c 'echo "$SC_TOOLBOX_IMAGE_REF"' 2>/dev/null)
+fi
+docker image inspect "$IMG" >/dev/null 2>&1 || { bad "the toolbox image $IMG exists in the Docker engine"; finish; exit 1; }
+echo "  image: $IMG"
+
+cleanup() {
+	[ "${SC_K3D_KEEP:-}" = 1 ] || k3d cluster delete "$cluster" >/dev/null 2>&1 || true
+	rm -rf "$TMP"
+}
+trap cleanup EXIT INT TERM
+
+# --- the cluster: pinned k3s image, no load balancer, no Traefik or ServiceLB
+RC=0
+docker pull "rancher/k3s@$K3S_DIGEST" >"$TMP/pull.out" 2>&1 || RC=$?
+expect_eq "02-AC-12 setup: rancher/k3s@$K3S_DIGEST pulled" 0 "$RC"
+[ "$RC" -eq 0 ] || { tail -n 10 "$TMP/pull.out"; finish; exit 1; }
+docker tag "rancher/k3s@$K3S_DIGEST" "rancher/k3s:$K3S_TAG"
+K3D_IMAGE_TOOLS=ghcr.io/k3d-io/k3d-tools@$K3D_TOOLS_DIGEST
+export K3D_IMAGE_TOOLS
+RC=0
+docker pull "$K3D_IMAGE_TOOLS" >"$TMP/pull-tools.out" 2>&1 || RC=$?
+expect_eq "02-AC-12 setup: $K3D_IMAGE_TOOLS pulled" 0 "$RC"
+[ "$RC" -eq 0 ] || { tail -n 10 "$TMP/pull-tools.out"; finish; exit 1; }
+RC=0
+k3d cluster create "$cluster" --image "rancher/k3s:$K3S_TAG" --servers 1 --agents 0 --no-lb --wait --timeout 300s \
+	--k3s-arg "--disable=traefik@server:*" --k3s-arg "--disable=servicelb@server:*" --k3s-arg "--disable=metrics-server@server:*" \
+	--kubeconfig-update-default=false --kubeconfig-switch-context=false >"$TMP/cluster.out" 2>&1 || RC=$?
+expect_eq "02-AC-12 k3d cluster create exits 0" 0 "$RC"
+[ "$RC" -eq 0 ] || { tail -n 20 "$TMP/cluster.out"; finish; exit 1; }
+# No k3d helper image other than the pinned k3d-tools may be present (nothing was pulled by tag).
+k3d_extra=$(docker images --digests --format '{{.Repository}}:{{.Tag}} {{.Digest}}' 2>/dev/null | grep '^ghcr\.io/k3d-io/' | grep -v " $K3D_TOOLS_DIGEST\$" || true)
+expect_eq "02-AC-12 no ghcr.io/k3d-io image other than the digest-pinned k3d-tools is present" "" "$k3d_extra"
+KUBECONFIG=$TMP/kubeconfig
+export KUBECONFIG
+k3d kubeconfig get "$cluster" >"$KUBECONFIG"
+chmod 600 "$KUBECONFIG"
+RC=0
+kubectl wait --for=condition=Ready node --all --timeout=180s >"$TMP/node.out" 2>&1 || RC=$?
+expect_eq "02-AC-12 the node is Ready" 0 "$RC"
+[ "$RC" -eq 0 ] || { cat "$TMP/node.out"; finish; exit 1; }
+
+# --- import the toolbox image
+RC=0
+k3d image import "$IMG" -c "$cluster" --mode direct >"$TMP/import.out" 2>&1 || RC=$?
+expect_eq "02-AC-12 k3d image import of the toolbox image exits 0" 0 "$RC"
+[ "$RC" -eq 0 ] || { tail -n 15 "$TMP/import.out"; finish; exit 1; }
+
+# --- the namespace enforces PSA restricted
+kubectl create namespace "$ns" >/dev/null
+kubectl label namespace "$ns" pod-security.kubernetes.io/enforce=restricted pod-security.kubernetes.io/enforce-version=latest >/dev/null
+expect_eq "02-AC-12 the namespace enforces PSA restricted" restricted "$(kubectl get namespace "$ns" -o jsonpath='{.metadata.labels.pod-security\.kubernetes\.io/enforce}')"
+
+# Negative control: the same namespace rejects a privileged Pod, so admission is really active.
+RC=0
+kubectl apply -n "$ns" -f - >"$TMP/neg.out" 2>&1 <<EOT || RC=$?
+apiVersion: v1
+kind: Pod
+metadata:
+  name: control-privileged
+spec:
+  restartPolicy: Never
+  containers:
+    - name: c
+      image: $IMG
+      imagePullPolicy: Never
+      args: ["sc-bootstrap", "version"]
+      securityContext:
+        privileged: true
+EOT
+[ "$RC" -ne 0 ] && ok "02-AC-12 control: a privileged Pod is rejected in the namespace" || bad "02-AC-12 control: a privileged Pod is rejected in the namespace" "the API server admitted it"
+expect_match "02-AC-12 control: the rejection names PodSecurity" 'PodSecurity|violates' "$(cat "$TMP/neg.out")"
+
+# --- the Pod of the criterion
+RC=0
+kubectl apply -n "$ns" -f - >"$TMP/pod.out" 2>&1 <<EOT || RC=$?
+apiVersion: v1
+kind: Pod
+metadata:
+  name: toolbox-version
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: toolbox
+      image: $IMG
+      imagePullPolicy: Never
+      args: ["sc-bootstrap", "version"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      volumeMounts:
+        - {name: tmp, mountPath: /tmp}
+        - {name: run-sc, mountPath: /run/sc}
+  volumes:
+    - name: tmp
+      emptyDir: {}
+    - name: run-sc
+      emptyDir: {}
+EOT
+expect_eq "02-AC-12 the PSA-restricted Pod is admitted" 0 "$RC"
+[ "$RC" -eq 0 ] || { cat "$TMP/pod.out"; finish; exit 1; }
+RC=0
+kubectl wait -n "$ns" --for=jsonpath='{.status.phase}'=Succeeded pod/toolbox-version --timeout=240s >"$TMP/wait.out" 2>&1 || RC=$?
+expect_eq "02-AC-12 the Pod reaches phase Succeeded" 0 "$RC"
+if [ "$RC" -ne 0 ]; then
+	kubectl get pod -n "$ns" toolbox-version -o wide 2>&1 | sed 's/^/       /'
+	kubectl describe pod -n "$ns" toolbox-version 2>&1 | tail -n 25 | sed 's/^/       /'
+	kubectl logs -n "$ns" toolbox-version 2>&1 | tail -n 15 | sed 's/^/       /'
+fi
+expect_eq "02-AC-12 the container's exit code is 0" 0 "$(kubectl get pod -n "$ns" toolbox-version -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}')"
+LOG=$(kubectl logs -n "$ns" toolbox-version 2>&1 || true)
+expect_match "02-AC-12 sc-bootstrap version printed something (the entrypoint ran the arguments)" '[0-9A-Za-z]' "$LOG"
+echo "  pod log: $(printf '%s' "$LOG" | head -n 3)"
+finish

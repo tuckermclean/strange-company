@@ -1,0 +1,24 @@
+# Passed explicitly to `gitleaks dir --config` over the exported image filesystem (02-AC-9); the image does not
+# carry it, so the scan cannot be weakened from inside. It keeps the default rules and allowlists only vendored
+# third-party documentation and examples that contain published placeholder credentials. Nothing this
+# repository adds is allowlisted: /opt/sc/bin, /usr/share/strange-company and /etc are scanned in full.
+title = "toolbox image filesystem scan"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "AWS CLI v2 bundled command examples and botocore API model files (AKIAIOSFODNN7EXAMPLE style placeholders)"
+paths = [
+	'''/opt/sc/aws-cli/.+/awscli/botocore/data/.+/(service-2|examples-1)\.json''',
+	'''/opt/sc/aws-cli/.+/awscli/botocore/data/(ec2|redshift)/[0-9-]+/paginators-1\.json''',
+	'''/opt/sc/aws-cli/.+/awscli/examples/[^/]+/[^/]+\.rst''',
+]
+
+[[allowlists]]
+description = "community.general module and plugin documentation blocks of the pinned release (api_key: placeholder examples); named per file"
+paths = ['''/opt/sc/ansible-collections/ansible_collections/community/general/(docs/docsite/rst/guide_packet\.rst|plugins/(callback/(loganalytics|logentries|splunk)|lookup/(bitwarden_secrets_manager|consul_kv)|modules/(bitbucket_pipeline_known_host|consul_acl_bootstrap|consul_token|datadog_event|datadog_monitor|github_deploy_key|grove|ipa_otptoken|jenkins_job_info|jenkins_node|memset_dns_reload|memset_memstore_info|memset_server_info|memset_zone|memset_zone_domain|memset_zone_record|nmcli|nomad_token|online_server_info|pmem|scaleway_sshkey|solaris_zone|utm_aaa_group|utm_aaa_group_info|utm_ca_host_key_cert|utm_ca_host_key_cert_info|utm_dns_host|utm_network_interface_address|utm_network_interface_address_info|utm_proxy_auth_profile|utm_proxy_exception|utm_proxy_frontend|utm_proxy_frontend_info|utm_proxy_location|utm_proxy_location_info))\.py)''']
+
+[[allowlists]]
+description = "Debian perl-base apidoc comment in CORE/cop.h"
+paths = ['''/usr/lib/[^/]+/perl/[0-9.]+/CORE/cop\.h''']

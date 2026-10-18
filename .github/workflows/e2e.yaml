@@ -1,6 +1,7 @@
 # Tier-E jobs (plan 52 section 8.4). On pull requests a path filter selects the jobs whose inputs changed;
 # `e2e-gate` always runs and succeeds iff every selected job succeeded (no required check stuck in "expected").
-# At F01 the only tier-E job is `toolbox`: the real-engine checks of the seed ci image on Docker rootful.
+# F03 jobs: `toolbox` (images and wrapper on Docker rootful), the engine matrix `toolbox-podman` and `toolbox-selinux`,
+# `toolbox-pull-equivalence` (02-AC-4) and `e2e-k3d` (02-AC-12); `verify-e2e` runs make verify offline twice.
 # Scheduled runs skip a commit that already passed a scheduled run, using a cache marker keyed by the
 # commit SHA rather than a query of earlier runs, so no permission beyond `contents: read` is needed (CD-52).
 name: e2e
@@ -30,6 +31,7 @@ jobs:
     outputs:
       toolbox: ${{ steps.select.outputs.toolbox }}
       verify-e2e: ${{ steps.select.outputs.verify_e2e }}
+      cluster: ${{ steps.select.outputs.e2e_k3d }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -58,11 +60,16 @@ jobs:
         run: |
           toolbox=true
           verify_e2e=true
+          e2e_k3d=true
           if [ "$EVENT" = pull_request ]; then
             changed=$(git diff --name-only "$BASE_SHA" HEAD)
             toolbox=false
             verify_e2e=false
+            e2e_k3d=false
+            # toolbox also selects the engine matrix (toolbox-podman, toolbox-selinux) and toolbox-pull-equivalence.
             if grep -q -e '^toolbox/' -e '^bootstrap$' -e '^test/e2e/wrapper/' -e '^\.github/workflows/e2e\.yaml$' \
+              -e '^test/e2e/selinux/' \
+              -e '^Makefile$' -e '^mk/toolbox\.mk$' -e '^src/' -e '^\.dockerignore$' -e '^tools/stage0/requirements\.txt$' \
               <<<"$changed"; then
               toolbox=true
             fi
@@ -70,13 +77,22 @@ jobs:
               -e '^test/e2e/verify/' -e '^versions/' -e '^gitops/' -e '^\.github/workflows/e2e\.yaml$' <<<"$changed"; then
               verify_e2e=true
             fi
+            # Plan 52 section 8.4 e2e-k3d paths, plus the toolbox image it runs (02-AC-12).
+            if [ "$toolbox" = true ] || grep -q -e '^charts/' -e '^gitops/' -e '^src/' -e '^policy/' \
+              -e '^test/e2e/k3d/' <<<"$changed"; then
+              e2e_k3d=true
+            fi
           elif [ "$EVENT" = schedule ] && [ "$UNCHANGED" = true ]; then
             toolbox=false
             verify_e2e=false
+            e2e_k3d=false
             echo "skipped: unchanged" >> "$GITHUB_STEP_SUMMARY"
           fi
-          echo "toolbox=$toolbox" >> "$GITHUB_OUTPUT"
-          echo "verify_e2e=$verify_e2e" >> "$GITHUB_OUTPUT"
+          {
+            echo "toolbox=$toolbox"
+            echo "verify_e2e=$verify_e2e"
+            echo "e2e_k3d=$e2e_k3d"
+          } >> "$GITHUB_OUTPUT"
 
   toolbox:
     needs: changes
@@ -84,7 +100,7 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
-    timeout-minutes: 60
+    timeout-minutes: 120
     env:
       SC_CONTAINER_ENGINE: docker
     steps:
@@ -94,6 +110,13 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # The toolbox and ci images need about 10 GB with their build cache; the hosted image ships unused SDKs.
+      - name: Free runner disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          docker image prune -af
+          df -h /
+
       # 02-AC-14, 02-AC-15 (build side), 02-AC-16 on Docker rootful.
       - name: Real-engine checks of the ci image and ./bootstrap exec
         run: sh test/e2e/wrapper/real-engine.sh
@@ -101,6 +124,17 @@ jobs:
       # 02-AC-15 (static side): toolbox-check rejects a FROM without a digest.
       - name: Containerfile pin checks
         run: sh test/e2e/wrapper/check-pins.sh
+
+      # 02-AC-1, 02-AC-2, 02-AC-3 (build side), 02-AC-8, 02-AC-9: make toolbox (both targets, --no-cache) on Docker.
+      # SC_IMG_FLAG is empty, so the criteria's literal `./bootstrap exec --` commands run on the default toolbox image.
+      - name: Toolbox and ci images
+        env:
+          SC_IMG_FLAG: ''
+        run: sh test/e2e/wrapper/toolbox-image.sh
+
+      # 02-AC-5 (Docker rootful leg), 02-AC-6, 02-AC-7, 02-AC-10, 02-AC-11, 02-AC-13 with the literal commands.
+      - name: Wrapper contract on the toolbox image
+        run: sh test/e2e/wrapper/wrapper-real.sh
 
   # 52-AC-5, 01-AC-6, 52-AC-8: two offline `make verify` runs with SC_FORBID_PAID=1, identical summaries.
   verify-e2e:
@@ -130,8 +164,134 @@ jobs:
           path: out/verify-e2e/
           if-no-files-found: ignore
 
+  # 02-AC-5, rootless Podman on Ubuntu (plan 02 section 22 engine matrix).
+  toolbox-podman:
+    needs: changes
+    if: needs.changes.outputs.toolbox == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 120
+    env:
+      SC_CONTAINER_ENGINE: podman
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # The hosted image ships unused SDKs; the toolbox and ci images need about 10 GB with their build cache.
+      - name: Free runner disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          docker image prune -af
+          df -h /
+
+      # Ubuntu 24.04 restricts unprivileged user namespaces through AppArmor; rootless Podman needs them and a
+      # subordinate id range for the runner user.
+      - name: Enable rootless Podman
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          grep -q "^$(id -un):" /etc/subuid || echo "$(id -un):100000:65536" | sudo tee -a /etc/subuid
+          grep -q "^$(id -un):" /etc/subgid || echo "$(id -un):100000:65536" | sudo tee -a /etc/subgid
+          podman system migrate
+          podman info --format '{{.Host.Security.Rootless}}'
+
+      - name: Wrapper contract on rootless Podman
+        run: sh test/e2e/wrapper/wrapper-real.sh
+
+      - name: 02-AC-5 literal command
+        run: sh test/e2e/wrapper/ac5-probe.sh
+
+  # 02-AC-5, rootless Podman with SELinux enforcing: a Fedora Cloud VM under QEMU/KVM (D4).
+  toolbox-selinux:
+    needs: changes
+    if: needs.changes.outputs.toolbox == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 150
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install qemu and cloud-image-utils
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils cloud-image-utils
+
+      # Hosted Linux runners expose /dev/kvm; the runner user needs access to it.
+      - name: Enable KVM for the runner user
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' |
+            sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
+      - name: Fedora VM with SELinux enforcing
+        run: test/e2e/selinux/run
+
+  # 02-AC-4, pull/build equivalence with a local registry standing in for GHCR (D3).
+  toolbox-pull-equivalence:
+    needs: changes
+    if: needs.changes.outputs.toolbox == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 120
+    env:
+      SC_CONTAINER_ENGINE: docker
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # The hosted image ships unused SDKs; the toolbox and ci images need about 10 GB with their build cache.
+      - name: Free runner disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          docker image prune -af
+          df -h /
+
+      - name: Pulled and built toolbox images are equivalent
+        run: sh test/e2e/wrapper/pull-equivalence.sh
+
+  # 02-AC-12 (plan 52 e2e-k3d): the toolbox image as a PSA-restricted Pod.
+  e2e-k3d:
+    needs: changes
+    if: needs.changes.outputs.cluster == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 90
+    env:
+      SC_CONTAINER_ENGINE: docker
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # The hosted image ships unused SDKs; the toolbox and ci images need about 10 GB with their build cache.
+      - name: Free runner disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          docker image prune -af
+          df -h /
+
+      - name: Toolbox image in a restricted Pod
+        run: test/e2e/k3d/run
+
   e2e-gate:
-    needs: [changes, toolbox, verify-e2e]
+    needs: [changes, toolbox, verify-e2e, toolbox-podman, toolbox-selinux, toolbox-pull-equivalence, e2e-k3d]
     if: always()
     runs-on: ubuntu-24.04
     permissions:
@@ -143,10 +303,15 @@ jobs:
           CHANGES: ${{ needs.changes.result }}
           TOOLBOX: ${{ needs.toolbox.result }}
           VERIFY_E2E: ${{ needs.verify-e2e.result }}
+          TOOLBOX_PODMAN: ${{ needs.toolbox-podman.result }}
+          TOOLBOX_SELINUX: ${{ needs.toolbox-selinux.result }}
+          PULL_EQUIVALENCE: ${{ needs.toolbox-pull-equivalence.result }}
+          E2E_K3D: ${{ needs.e2e-k3d.result }}
         run: |
-          echo "changes=$CHANGES toolbox=$TOOLBOX verify-e2e=$VERIFY_E2E"
+          echo "changes=$CHANGES toolbox=$TOOLBOX verify-e2e=$VERIFY_E2E toolbox-podman=$TOOLBOX_PODMAN"
+          echo "toolbox-selinux=$TOOLBOX_SELINUX toolbox-pull-equivalence=$PULL_EQUIVALENCE e2e-k3d=$E2E_K3D"
           [ "$CHANGES" = success ] || exit 1
-          for r in "$TOOLBOX" "$VERIFY_E2E"; do
+          for r in "$TOOLBOX" "$VERIFY_E2E" "$TOOLBOX_PODMAN" "$TOOLBOX_SELINUX" "$PULL_EQUIVALENCE" "$E2E_K3D"; do
             case $r in
               success | skipped) ;;
               *) exit 1 ;;

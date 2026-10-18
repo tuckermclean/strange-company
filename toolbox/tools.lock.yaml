@@ -1,10 +1,231 @@
 apiVersion: strange.company/v1alpha1
 kind: ToolboxLock
 metadata:
-  name: seed-ci
-  description: F01 seed lock (plan 02 section 14.9); later nodes add a tool in the PR of the target that first calls it.
+  name: toolbox
+  description: Toolbox and ci image inputs (plan 02 section 9.2, 9.4). Every sha256 was checked against the vendor's published checksum or signature, never trusted from the first download alone; the source is the comment above each entry.
 spec:
   tools:
+    - name: opentofu
+      set: runtime
+      version: "1.13.1"                      # baseline: OpenTofu v1.13.1
+      selectedBy: "baseline:opentofu"
+      # sha256 source: tofu_1.13.1_SHA256SUMS (vendor); GitHub asset digest agrees
+      url: https://github.com/opentofu/opentofu/releases/download/v{version}/tofu_{version}_linux_{arch}.tar.gz
+      sha256:
+        amd64: "378ada19d4bc70c43732004e8159be771b23b9a5afdf059e5f8a2b3fa2c70a69"
+        arm64: "9c1ef375aa1852db0b2888aa921b640c71f8140d4682aa4fec99378a64fa7dc3"
+      install: {extract: tofu, to: /opt/sc/bin/tofu}
+      versionCommand: [tofu, version, -json]
+      versionRegex: '"terraform_version":\s*"{version}"'
+      verifiedAt: 2026-10-17
+    - name: kubectl
+      set: runtime
+      version: "1.36.5"                      # baseline: kubectl v1.36.5
+      selectedBy: "baseline:kubectl"
+      # sha256 source: kubectl.sha256 beside the binary on dl.k8s.io (vendor)
+      url: https://dl.k8s.io/release/v{version}/bin/linux/{arch}/kubectl
+      sha256:
+        amd64: "33bc88a24c3b09cf55bfd59e6ca977881b61fc3f25ab65bc80c65b430248648e"
+        arm64: "88fc1aca8fd0c1b44fe379f67c39bd6858bdfc50241dc55775f84d0f5b31da3a"
+      install: {to: /opt/sc/bin/kubectl}
+      versionCommand: [kubectl, version, --client]
+      versionRegex: '^Client Version: v{version}$'
+      verifiedAt: 2026-10-17
+    - name: helm
+      set: runtime
+      version: "4.3.0"                      # baseline: Helm v4.3.0
+      selectedBy: "baseline:helm"
+      # sha256 source: helm-v4.3.0-linux-{arch}.tar.gz.sha256sum on get.helm.sh (vendor)
+      url: https://get.helm.sh/helm-v{version}-linux-{arch}.tar.gz
+      sha256:
+        amd64: "86584a54def73570558f66f5111cc53dfed56689637ae32c1201205d494f54fb"
+        arm64: "31c5794dd55c66a51e6b7d2e2ac7a114ae8b1de41ff1d9ba51748ac973b06a08"
+      install: {extract: "linux-{arch}/helm", to: /opt/sc/bin/helm}
+      versionCommand: [helm, version, --short]
+      versionRegex: '^v{version}\+'
+      verifiedAt: 2026-10-17
+    - name: flux
+      set: runtime
+      version: "2.9.6"                      # baseline: Flux v2.9.6
+      selectedBy: "baseline:flux"
+      # sha256 source: flux_2.9.6_checksums.txt (vendor); GitHub asset digest agrees
+      url: https://github.com/fluxcd/flux2/releases/download/v{version}/flux_{version}_linux_{arch}.tar.gz
+      sha256:
+        amd64: "b4d22673e9246cbd628881f1a9ef3b090085dced291e42d804555cee8e8d42c5"
+        arm64: "6663c154755b732f43dc993d72321f71c2fc1ff0bcb94b2696e0a8638fa562b4"
+      install: {extract: flux, to: /opt/sc/bin/flux}
+      versionCommand: [flux, --version]
+      versionRegex: '^flux version {version}$'
+      verifiedAt: 2026-10-17
+    - name: sops
+      set: runtime
+      version: "3.13.3"                      # baseline: SOPS v3.13.3
+      selectedBy: "baseline:sops"
+      # sha256 source: sops-v3.13.3.checksums.txt (vendor); GitHub asset digest agrees
+      url: https://github.com/getsops/sops/releases/download/v{version}/sops-v{version}.linux.{arch}
+      sha256:
+        amd64: "e5bec3346a873ae91d871550f3e698c1aad962aff462a080e40f25fde17fef6b"
+        arm64: "53b0abacd38ef1b12a66d6c100956691b9cefce018d91f81e73ddf7438b94d77"
+      install: {to: /opt/sc/bin/sops}
+      versionCommand: [sops, --version, --disable-version-check]
+      versionRegex: '^sops {version}\b'
+      verifiedAt: 2026-10-17
+    - name: age
+      set: runtime
+      version: "1.3.2"                      # baseline: age v1.3.2
+      selectedBy: "baseline:age"
+      # sha256 source: no vendor checksum file is published; GitHub release-asset digest (API) only, the .proof files are not verified here
+      url: https://github.com/FiloSottile/age/releases/download/v{version}/age-v{version}-linux-{arch}.tar.gz
+      sha256:
+        amd64: "cbe24006683f8eb669266162894b9a522a1af52f2665fbc63a4bb032ed26ac10"
+        arm64: "6b8dc4333c53a5a57c9e5834e3a48f92605d7154014cd07269ff3327db5d37f4"
+      install: {extract: age/age, to: /opt/sc/bin/age}
+      versionCommand: [age, --version]
+      versionRegex: '^v{version}$'
+      verifiedAt: 2026-10-17
+    - name: age-keygen
+      set: runtime
+      version: "1.3.2"                      # baseline: age v1.3.2
+      selectedBy: "baseline:age-keygen"
+      # sha256 source: same archive as age
+      url: https://github.com/FiloSottile/age/releases/download/v{version}/age-v{version}-linux-{arch}.tar.gz
+      sha256:
+        amd64: "cbe24006683f8eb669266162894b9a522a1af52f2665fbc63a4bb032ed26ac10"
+        arm64: "6b8dc4333c53a5a57c9e5834e3a48f92605d7154014cd07269ff3327db5d37f4"
+      install: {extract: age/age-keygen, to: /opt/sc/bin/age-keygen}
+      versionCommand: [age-keygen, --version]
+      versionRegex: '^v{version}$'
+      verifiedAt: 2026-10-17
+    - name: jq
+      set: runtime
+      version: "1.8.2"                      # baseline: jq 1.8.2
+      selectedBy: "baseline:jq"
+      # sha256 source: sha256sum.txt (vendor); GitHub asset digest agrees
+      url: https://github.com/jqlang/jq/releases/download/jq-{version}/jq-linux-{arch}
+      sha256:
+        amd64: "b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f"
+        arm64: "8b85c817833814ddca00a144c33705546355afccf0cf39b188f3cdb48b852309"
+      install: {to: /opt/sc/bin/jq}
+      versionCommand: [jq, --version]
+      versionRegex: '^jq-{version}$'
+      verifiedAt: 2026-10-17
+    - name: yq
+      set: runtime
+      version: "4.54.1"                      # baseline: yq v4.54.1
+      selectedBy: "baseline:yq"
+      # sha256 source: checksums + checksums_hashes_order (vendor, SHA-256 column); GitHub asset digest agrees
+      url: https://github.com/mikefarah/yq/releases/download/v{version}/yq_linux_{arch}
+      sha256:
+        amd64: "8e34fc298390875de416e6a4afcb8cabeceb25d9aa8506c1a2f9353cf702ea5f"
+        arm64: "189088da0c6429ec5178dfaab1a114805f6cab0b61b165ab236efedf1d57a71b"
+      install: {to: /opt/sc/bin/yq}
+      versionCommand: [yq, --version]
+      versionRegex: 'version v{version}$'
+      verifiedAt: 2026-10-17
+    - name: aws
+      set: runtime
+      version: "2.38.1"                      # baseline: AWS CLI 2.38.1
+      selectedBy: "baseline:aws"
+      # sha256 source: awscli zip + .sig verified with gpg against the AWS CLI team key FB5D B77F D5C1 18B8 0511 ADA8 A631 0ACC 4672 475C (AWS docs); no checksum file is published. The Containerfile unpacks the verified zip and runs aws/install
+      url: https://awscli.amazonaws.com/awscli-exe-linux-{arch:amd64=x86_64,arm64=aarch64}-{version}.zip
+      sha256:
+        amd64: "b11ed416d91f4251da363a17706938eeaf0e520745754c104c0c1890dd8363c7"
+        arm64: "91360c0adb2ae508334ff657dce4787b598b443a11cf3dc58e08b74f12e16009"
+      install: {to: /opt/sc/dl/awscliv2.zip}
+      versionCommand: [aws, --version]
+      versionRegex: '^aws-cli/{version} '
+      verifiedAt: 2026-10-17
+    - name: kubectl-cnpg
+      set: runtime
+      version: "1.30.1"                      # baseline: CloudNativePG operator v1.30.1
+      selectedBy: "baseline:kubectl-cnpg"
+      # sha256 source: cnpg-1.30.1-checksums.txt (vendor); GitHub asset digest agrees
+      url: https://github.com/cloudnative-pg/cloudnative-pg/releases/download/v{version}/kubectl-cnpg_{version}_linux_{arch:amd64=x86_64,arm64=arm64}.tar.gz
+      sha256:
+        amd64: "784bc46f176b24a150d5de84d0691f10ff613b59456af86b1a4868e1bacb9953"
+        arm64: "6ffad753bbbf5d353576967233063f2ba0adb843a4e7ef5ff4cb7384b2716d5e"
+      install: {extract: kubectl-cnpg, to: /opt/sc/bin/kubectl-cnpg}
+      versionCommand: [kubectl-cnpg, version]
+      versionRegex: 'Version:{version} '
+      verifiedAt: 2026-10-17
+    - name: etcdutl
+      set: runtime
+      version: "3.6.14"                      # baseline: etcd embedded in k3s v1.36.5+k3s1 (v3.6.14)
+      selectedBy: "baseline:etcdutl"
+      # sha256 source: SHA256SUMS (vendor); GitHub asset digest agrees
+      url: https://github.com/etcd-io/etcd/releases/download/v{version}/etcd-v{version}-linux-{arch}.tar.gz
+      sha256:
+        amd64: "ffe840ff9295808e88cce2794a18a5ac87f12a5203c8314d0bf6aa119b41bac5"
+        arm64: "fa1b80565ee6fc2df1ae6f57a508b221f3ecc7d591c317c581cd8281b0842b3e"
+      install: {extract: "etcd-v{version}-linux-{arch}/etcdutl", to: /opt/sc/bin/etcdutl}
+      versionCommand: [etcdutl, version]
+      versionRegex: '^etcdutl version: {version}$'
+      verifiedAt: 2026-10-17
+    - name: cmctl
+      set: runtime
+      version: "2.6.1"                      # baseline: cert-manager v1.21.2 (cmctl 2.6.1 is the cmctl release built against cert-manager v1.21.2; no cmctl 1.21.x exists)
+      selectedBy: "baseline:cmctl"
+      # sha256 source: checksums.txt (vendor); GitHub asset digest agrees
+      url: https://github.com/cert-manager/cmctl/releases/download/v{version}/cmctl_linux_{arch}.tar.gz
+      sha256:
+        amd64: "ac1f2a38bdf56138e2450192eb68f8181a7a2f8e2f48d0d0ef16a0c813571d33"
+        arm64: "2737daf5381c21506929a30b38786714f83adcef40967a481246d3aa2c62ba48"
+      install: {extract: cmctl, to: /opt/sc/bin/cmctl}
+      versionCommand: [cmctl, version, --client, --short]
+      versionRegex: '^Client Version: v{version}$'
+      verifiedAt: 2026-10-17
+    - name: gitleaks
+      set: runtime
+      version: "8.30.1"                      # baseline: gitleaks v8.30.1
+      selectedBy: "baseline:gitleaks"
+      # sha256 source: gitleaks_8.30.1_checksums.txt (vendor); GitHub asset digest agrees
+      url: https://github.com/gitleaks/gitleaks/releases/download/v{version}/gitleaks_{version}_linux_{arch:amd64=x64,arm64=arm64}.tar.gz
+      sha256:
+        amd64: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+        arm64: "e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080"
+      install: {extract: gitleaks, to: /opt/sc/bin/gitleaks}
+      versionCommand: [gitleaks, version]
+      versionRegex: '^{version}$'
+      verifiedAt: 2026-10-17
+    - name: cosign
+      set: runtime
+      version: "3.1.3"                      # baseline: cosign v3.1.3
+      selectedBy: "baseline:cosign"
+      # sha256 source: cosign_checksums.txt (vendor); GitHub asset digest agrees
+      url: https://github.com/sigstore/cosign/releases/download/v{version}/cosign-linux-{arch}
+      sha256:
+        amd64: "4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71"
+        arm64: "c5d324e091826b0d7a78eb16fef316450b4eb9aaec045611c08ba06f5e73220a"
+      install: {to: /opt/sc/bin/cosign}
+      versionCommand: [cosign, version]
+      versionRegex: 'GitVersion:\s+v{version}$'
+      verifiedAt: 2026-10-17
+    - name: syft
+      set: runtime
+      version: "1.54.1"                      # baseline: syft v1.54.1
+      selectedBy: "baseline:syft"
+      # sha256 source: syft_1.54.1_checksums.txt (vendor); GitHub asset digest agrees
+      url: https://github.com/anchore/syft/releases/download/v{version}/syft_{version}_linux_{arch}.tar.gz
+      sha256:
+        amd64: "c069905b391cc4c20a5ba65ad5c10be2a7ba074f8ea6ad203e24d14e303dad47"
+        arm64: "dfdf0537610113edbefe1f1fc6548bc957b2d77439636ec824fcf0e10d46d054"
+      install: {extract: syft, to: /opt/sc/bin/syft}
+      versionCommand: [syft, --version]
+      versionRegex: '^syft {version}$'
+      verifiedAt: 2026-10-17
+    - name: trivy
+      set: runtime
+      version: "0.76.0"                      # baseline: trivy v0.76.0
+      selectedBy: "baseline:trivy"
+      # sha256 source: trivy_0.76.0_checksums.txt (vendor); GitHub asset digest agrees
+      url: https://github.com/aquasecurity/trivy/releases/download/v{version}/trivy_{version}_{arch:amd64=Linux-64bit,arm64=Linux-ARM64}.tar.gz
+      sha256:
+        amd64: "e24b1c51293c1b15e4ba8d45bbc7891ba053f90278ec2698f3562c993e145fe7"
+        arm64: "aab21e677a7b7071fc79f1711480840754c18a1b9d9cefa7ccd06af63a0e8f4c"
+      install: {extract: trivy, to: /opt/sc/bin/trivy}
+      versionCommand: [trivy, --version]
+      versionRegex: '^Version: {version}$'
+      verifiedAt: 2026-10-17
     - name: shfmt
       set: ci
       version: "3.14.1"                     # baseline: shfmt v3.14.1
@@ -41,12 +262,119 @@ spec:
       versionCommand: [golangci-lint, --version]
       versionRegex: '^golangci-lint has version {version} '
       verifiedAt: 2026-10-15
+    - name: woodpecker-cli
+      set: ci
+      version: "3.19.0"                      # baseline: Woodpecker v3.19.0
+      selectedBy: "baseline:woodpecker-cli"
+      # sha256 source: checksums.txt (vendor); GitHub asset digest agrees
+      url: https://github.com/woodpecker-ci/woodpecker/releases/download/v{version}/woodpecker-cli_linux_{arch}.tar.gz
+      sha256:
+        amd64: "6219f7f68935fd6f335079ced8f2b79aff50acaa637bd20a434037549bc46f58"
+        arm64: "40d47b44df95f1519aecc2fa87fb7f5191f34adbb42dece504ea9d795bc0c300"
+      install: {extract: woodpecker-cli, to: /opt/sc/bin/woodpecker-cli}
+      versionCommand: [woodpecker-cli, --version]
+      versionRegex: '^woodpecker-cli version {version}$'
+      verifiedAt: 2026-10-17
+    - name: kubeconform
+      set: ci
+      version: "0.8.0"                      # baseline: kubeconform v0.8.0
+      selectedBy: "baseline:kubeconform"
+      # sha256 source: CHECKSUMS (vendor); GitHub asset digest agrees
+      url: https://github.com/yannh/kubeconform/releases/download/v{version}/kubeconform-linux-{arch}.tar.gz
+      sha256:
+        amd64: "9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883"
+        arm64: "1f53fc8e81258197a35e8603054162a5af1de8c5af13746c71ab680d9534ed87"
+      install: {extract: kubeconform, to: /opt/sc/bin/kubeconform}
+      versionCommand: [kubeconform, -v]
+      versionRegex: '^v{version}$'
+      verifiedAt: 2026-10-17
+    - name: k3d
+      set: ci
+      version: "5.9.0"                      # baseline: k3d v5.9.0
+      selectedBy: "baseline:k3d"
+      # sha256 source: checksums.txt (vendor); GitHub asset digest agrees
+      url: https://github.com/k3d-io/k3d/releases/download/v{version}/k3d-linux-{arch}
+      sha256:
+        amd64: "06d8f25bc3a971c4eb29e0ff08429b180402db0f4dec838c9eac427e296800a0"
+        arm64: "03cde5cf23e6e8e67de5a039ecf26e5b85aca82fba3e5d13dadf904cd218a250"
+      install: {to: /opt/sc/bin/k3d}
+      versionCommand: [k3d, version]
+      versionRegex: '^k3d version v{version}$'
+      verifiedAt: 2026-10-17
+    - name: promtool
+      set: ci
+      version: "3.15.0"                      # baseline: Prometheus v3.15.0
+      selectedBy: "baseline:promtool"
+      # sha256 source: sha256sums.txt (vendor); GitHub asset digest agrees
+      url: https://github.com/prometheus/prometheus/releases/download/v{version}/prometheus-{version}.linux-{arch}.tar.gz
+      sha256:
+        amd64: "2a542df32eac02ee17b9d844fb2aa1de00dafa5476579ba8a3ba862e9d572ea0"
+        arm64: "f1f90ec08e849d494ca66c611470afc50192f0355f1a61c33f2cbde02d067823"
+      install: {extract: "prometheus-{version}.linux-{arch}/promtool", to: /opt/sc/bin/promtool}
+      versionCommand: [promtool, --version]
+      versionRegex: '^promtool, version {version} '
+      verifiedAt: 2026-10-17
+    - name: helm-unittest
+      set: ci
+      version: "1.2.1"                      # baseline: helm-unittest v1.2.1
+      selectedBy: "baseline:helm-unittest"
+      # sha256 source: helm-unittest-checksum.sha (vendor); GitHub asset digest agrees. The Containerfile unpacks the verified tgz into $HELM_PLUGINS
+      url: https://github.com/helm-unittest/helm-unittest/releases/download/v{version}/helm-unittest-linux-{arch}-{version}.tgz
+      sha256:
+        amd64: "48e86ecc1467b009630e5954375e5d8494139f73b466df5fe8c04fa45b634939"
+        arm64: "c66062713cd3cbb1a80d7098bd1d4a48db8438f56b43fb6377df65447f93f8de"
+      install: {to: /opt/sc/dl/helm-unittest.tgz}
+      versionCommand: [helm, plugin, list]
+      versionRegex: '^unittest\s.*\b{version}\b'
+      verifiedAt: 2026-10-17
+    - name: weed
+      set: ci
+      version: "4.48"                      # baseline: SeaweedFS 4.48
+      selectedBy: "baseline:weed"
+      # sha256 source: vendor linux_<arch>.tar.gz.md5 (md5 only) and the GitHub asset digest; both agree
+      url: https://github.com/seaweedfs/seaweedfs/releases/download/{version}/linux_{arch}.tar.gz
+      sha256:
+        amd64: "4a7d108384d044d95212d1342cdda9533fa55842c1c9b41f606ca3c8a9561124"
+        arm64: "557e92c38c5c7d180748eb8e2b2b45e426f8e5282a4caca8e098a90d09f03a07"
+      install: {extract: weed, to: /opt/sc/bin/weed}
+      versionCommand: [weed, version]
+      versionRegex: '^version \S+ {version} '
+      verifiedAt: 2026-10-17
+    - name: envtest-kube-apiserver
+      set: ci
+      version: "1.36.2"                      # baseline: Kubernetes 1.36 envtest assets (controller-tools envtest-v1.36.2)
+      selectedBy: "baseline:envtest-kube-apiserver"
+      # sha256 source: envtest-v1.36.2-linux-<arch>.tar.gz.sha512 (vendor, sha512); GitHub asset digest agrees
+      url: https://github.com/kubernetes-sigs/controller-tools/releases/download/envtest-v{version}/envtest-v{version}-linux-{arch}.tar.gz
+      sha256:
+        amd64: "5e99f4eef3d6f9d4dd063730299f708c98da8801f2f14d8fc762cb354f30c332"
+        arm64: "d5eebb129f149a68f8b7bbd7b4c8e51a19f280b3bda1743c94de27f82da78d2e"
+      install: {extract: controller-tools/envtest/kube-apiserver, to: /usr/local/kubebuilder/bin/kube-apiserver}
+      versionCommand: [/usr/local/kubebuilder/bin/kube-apiserver, --version]
+      versionRegex: '^Kubernetes v{version}$'
+      verifiedAt: 2026-10-17
+    - name: envtest-etcd
+      set: ci
+      version: "3.6.8"                      # baseline: Kubernetes 1.36 envtest assets (etcd bundled in controller-tools envtest-v1.36.2)
+      selectedBy: "baseline:envtest-etcd"
+      # sha256 source: same archive as envtest-kube-apiserver
+      url: https://github.com/kubernetes-sigs/controller-tools/releases/download/envtest-v1.36.2/envtest-v1.36.2-linux-{arch}.tar.gz
+      sha256:
+        amd64: "5e99f4eef3d6f9d4dd063730299f708c98da8801f2f14d8fc762cb354f30c332"
+        arm64: "d5eebb129f149a68f8b7bbd7b4c8e51a19f280b3bda1743c94de27f82da78d2e"
+      install: {extract: controller-tools/envtest/etcd, to: /usr/local/kubebuilder/bin/etcd}
+      versionCommand: [/usr/local/kubebuilder/bin/etcd, --version]
+      versionRegex: '^etcd Version: {version}$'
+      verifiedAt: 2026-10-17
   baseImages:
     debian: {ref: docker.io/library/debian:trixie-slim, digest: "sha256:918311b7b6c4c6f68b232ba516584925f6c78ad82b6fd534b98979df6438e483"}
     golang: {ref: docker.io/library/golang:1.27.2-trixie, digest: "sha256:2d658507a011f1eadc0114d7a421b312b2e77d9042a24036a26e267cc9231677"}
   debianSnapshot: 20261001T000000Z
   aptPackages:
-    runtime: [ca-certificates, curl, git, python3, python3-venv, tini, libnss-wrapper]
-    ci: [make, shellcheck]
+    runtime: [bash, ca-certificates, curl, git, openssh-client, python3, python3-venv, tini, libnss-wrapper, less, vim-tiny, procps, iproute2, dnsutils, netcat-openbsd, openssl, unzip, xz-utils]
+    ci: [make, shellcheck, gcc, libc6-dev]
   pythonRequirements: toolbox/requirements.txt
-  ansibleCollections: []
+  ansibleCollections:
+    # sha256 source: Galaxy API artifact.sha256 of the published collection; the tarball downloaded from galaxy.ansible.com/download has the same digest.
+    - {name: community.general, version: "13.5.0", url: "https://galaxy.ansible.com/download/community-general-13.5.0.tar.gz", sha256: "54598287e0ea0504aee2d32c884208ddf26f3ac41e0b4e773ff514af210787c4"}
+    - {name: ansible.posix, version: "2.2.2", url: "https://galaxy.ansible.com/download/ansible-posix-2.2.2.tar.gz", sha256: "00a58c5d804c9adc99c3c3dc1b9f2246f4bb5f7337941440e0956f0e31c3b82b"}

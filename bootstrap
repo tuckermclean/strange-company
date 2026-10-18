@@ -1,7 +1,13 @@
 #!/bin/sh
-# Strange Company wrapper, F01 subset (plan 02 sections 7.1, 14.2, 14.9).
-#   ./bootstrap [--engine docker|podman] [--toolbox-build] exec --image ci [--network bridge|host|none] -- <cmd> [args...]
-# Runs <cmd> in the seed `ci` image. No env file, SSH, black-start directory, scopes or `shell` yet (F03).
+# Strange Company wrapper (plan 02 sections 7.1, 14.2 to 14.6).
+#   ./bootstrap [--engine docker|podman] [--toolbox-build] [--env-file PATH] <command> [args...]
+#   ./bootstrap exec  [--image toolbox|ci] [--network bridge|host|none] -- <cmd> [args...]
+#   ./bootstrap shell [--image toolbox|ci] [--network bridge|host|none]
+#   ./bootstrap build [--no-cache] [--platform P] [-f FILE] --target toolbox|ci       (what `make toolbox` calls)
+#   ./bootstrap run|plan|preflight|status|verify|expand|destroy|recover|report|rotate|state|unlock|version [args...]
+# Every command except `build` runs in the toolbox image (the default) with the repository, the black-start directory and
+# the env-file inputs mounted; the verbs are handed unchanged to sc-bootstrap by the image's entrypoint.
+# Not here (plan 50, later nodes): the kube tunnel, --unlock, --kvm and the recovery capsule.
 set -eu
 
 die() { # code message exit-code
@@ -9,8 +15,10 @@ die() { # code message exit-code
 	exit "$3"
 }
 
+warn() { printf 'bootstrap: warning: %s\n' "$1" >&2; }
+
 usage() {
-	die WRAPPER_USAGE "$1 (usage: ./bootstrap [--engine docker|podman] [--toolbox-build] exec --image ci [--network bridge|host|none] -- <cmd> [args...])" 2
+	die WRAPPER_USAGE "$1 (usage: ./bootstrap [--engine docker|podman] [--toolbox-build] [--env-file PATH] exec [--image toolbox|ci] [--network bridge|host|none] -- <cmd> [args...]; shell [--image toolbox|ci] [--network N]; build [--no-cache] [--platform P] [-f FILE] --target toolbox|ci; or a sc-bootstrap command: run plan preflight status verify expand destroy recover report rotate state unlock version)" 2
 }
 
 # --- step 1: repository
@@ -22,8 +30,11 @@ if [ "$(id -u)" = 0 ] && [ "${SC_ALLOW_ROOT:-}" != 1 ]; then
 fi
 
 # --- step 2: flags
+start_dir=$(pwd -P)
 engine=${SC_CONTAINER_ENGINE:-}
 build=${SC_TOOLBOX_BUILD:-0}
+envfile=
+envfile_explicit=0
 while [ $# -gt 0 ]; do
 	case $1 in
 	--engine)
@@ -39,17 +50,59 @@ while [ $# -gt 0 ]; do
 		build=1
 		shift
 		;;
+	--env-file)
+		[ $# -ge 2 ] || usage "--env-file needs a value"
+		envfile=$2
+		envfile_explicit=1
+		shift 2
+		;;
+	--env-file=*)
+		envfile=${1#--env-file=}
+		envfile_explicit=1
+		shift
+		;;
 	*) break ;;
 	esac
 done
 [ $# -gt 0 ] || usage "missing command"
 command=$1
 shift
-[ "$command" = exec ] || usage "command '$command' is not available until F03 (only 'exec' is implemented)"
+case $command in
+exec | shell | build) ;;
+run | plan | preflight | status | verify | expand | destroy | recover | report | rotate | state | unlock | version) ;;
+*) usage "unknown command '$command'" ;;
+esac
 
 image=
 network=${SC_TOOLBOX_NETWORK:-bridge}
-while [ $# -gt 0 ]; do
+nocache=
+platform=
+cfile=toolbox/Containerfile
+while [ "$command" = build ] && [ $# -gt 0 ]; do
+	case $1 in
+	--no-cache)
+		nocache=--no-cache
+		shift
+		;;
+	--platform)
+		[ $# -ge 2 ] || usage "--platform needs a value"
+		platform=$2
+		shift 2
+		;;
+	-f | --file)
+		[ $# -ge 2 ] || usage "$1 needs a value"
+		cfile=$2
+		shift 2
+		;;
+	--target)
+		[ $# -ge 2 ] || usage "--target needs a value"
+		image=$2
+		shift 2
+		;;
+	*) usage "unknown build option '$1'" ;;
+	esac
+done
+while { [ "$command" = exec ] || [ "$command" = shell ]; } && [ $# -gt 0 ]; do
 	case $1 in
 	--image)
 		[ $# -ge 2 ] || usage "--image needs a value"
@@ -76,9 +129,13 @@ while [ $# -gt 0 ]; do
 	*) usage "unknown exec option '$1'" ;;
 	esac
 done
-[ "$image" = ci ] || usage "exec requires --image ci (the toolbox image arrives with F03)"
+if [ -z "$image" ] && [ "$command" != build ]; then image=toolbox; fi
+case $image in toolbox | ci) ;; "") usage "build needs --target toolbox|ci" ;; *) usage "the image must be toolbox or ci" ;; esac
 case $network in bridge | host | none) ;; *) usage "--network must be bridge, host or none" ;; esac
-[ $# -gt 0 ] || usage "exec needs a command after --"
+if [ "$command" = exec ]; then
+	[ $# -gt 0 ] || usage "exec needs a command after --"
+fi
+case $cfile in /* | *..*) usage "-f must be a repository-relative path" ;; esac
 
 # --- step 4: engine and mode
 works() { # engine; true if "<engine> info" succeeds (docker: within 10 s when timeout exists)
@@ -114,8 +171,76 @@ else
 	fi
 fi
 
+# --- steps 2 and 3: env file, SSH key and agent, black-start directory (read without evaluating anything)
+envval() { # NAME: last assignment in the env file, whitespace and one level of matching quotes removed
+	[ -n "$envfile" ] || return 0
+	# Only the surrounding whitespace (a CRLF line ending's CR included) goes; an embedded CR stays. One quote level only:
+	# the `b` leaves the script after a double-quote strip so a single-quote strip cannot run on the result.
+	# LC_ALL=C: bytes, not locale characters (invalid UTF-8 inside quotes survives; Unicode spaces are not trimmed).
+	LC_ALL=C sed -n "s/^$1=//p" "$envfile" | tail -n 1 |
+		LC_ALL=C sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e '/^".*"$/{s/^"\(.*\)"$/\1/;b' -e '}' -e "s/^'\\(.*\\)'\$/\\1/"
+}
+hostpath() { # PATH: a leading ~/ is the host $HOME
+	case $1 in \~/*) printf '%s\n' "${HOME:-}/${1#\~/}" ;; *) printf '%s\n' "$1" ;; esac
+}
+# shellcheck disable=SC2012 # the mode string of ls -l is the portable way to read permissions in POSIX sh
+mode_of() { ls -ldL -- "$1" 2>/dev/null | cut -c1-10; }
+group_other_bits() { mode_of "$1" | cut -c5-10; }
+in_mounts=
+bs=
+if [ "$command" != build ] && [ "$image" != toolbox ] && [ "$envfile_explicit" = 1 ]; then
+	# the ci image gets no operator inputs; a missing explicit file is still worth saying
+	case $envfile in /*) ;; *) envfile=$start_dir/$envfile ;; esac
+	[ -f "$envfile" ] || warn "--env-file $envfile does not exist (ignored: the $image image gets no operator inputs)"
+fi
+if [ "$command" != build ] && [ "$image" = toolbox ]; then
+	# CD-67 (a): only the toolbox image gets the operator inputs; the ci image gets none of them and no black-start directory.
+	if [ "$envfile_explicit" = 1 ]; then
+		case $envfile in /*) ;; *) envfile=$start_dir/$envfile ;; esac
+		[ -f "$envfile" ] || usage "--env-file $envfile does not exist"
+	elif [ -f "$REPO/bootstrap.env" ]; then
+		envfile=$REPO/bootstrap.env
+	fi
+	[ -z "$envfile" ] || in_mounts="$in_mounts
+$envfile:/run/sc-input/bootstrap.env:ro"
+	priv=$(hostpath "$(envval SSH_PRIVATE_KEY_PATH)")
+	pub=$(hostpath "$(envval SSH_PUBLIC_KEY_PATH)")
+	if [ -z "$priv" ] && [ -n "${HOME:-}" ]; then priv=$HOME/.ssh/id_ed25519; fi
+	if [ -n "$priv" ] && [ -f "$priv" ]; then
+		[ -n "$pub" ] || pub=$priv.pub
+		in_mounts="$in_mounts
+$priv:/run/sc-input/ssh/id_key:ro"
+		[ ! -f "$pub" ] || in_mounts="$in_mounts
+$pub:/run/sc-input/ssh/id_key.pub:ro"
+		case $(group_other_bits "$priv") in
+		------ | "") ;;
+		*) warn "SSH private key $priv is accessible by group or others (mode $(mode_of "$priv")); run chmod 600 on it (PF-06 fails otherwise)" ;;
+		esac
+	fi
+	case $(envval SSH_USE_AGENT) in
+	[Tt][Rr][Uu][Ee])
+		if [ -n "${SSH_AUTH_SOCK:-}" ] && [ -e "$SSH_AUTH_SOCK" ]; then
+			in_mounts="$in_mounts
+$SSH_AUTH_SOCK:/run/sc-input/ssh-agent.sock"
+		fi
+		;;
+	esac
+	bs=${SC_BLACKSTART_DIR:-}
+	if [ -z "$bs" ]; then
+		[ -n "${HOME:-}" ] || die WRAPPER_BLACKSTART_UNSAFE "HOME is unset and SC_BLACKSTART_DIR is not set; cannot place the black-start directory" 2
+		bs=$HOME/.strange-company
+	fi
+	if [ ! -d "$bs" ]; then
+		if ! { mkdir -p "$(dirname "$bs")" && mkdir -m 0700 "$bs"; }; then
+			die WRAPPER_BLACKSTART_UNSAFE "cannot create the black-start directory $bs" 2
+		fi
+	fi
+	case $(mode_of "$bs") in
+	?????w???? | ????????w?) die WRAPPER_BLACKSTART_UNSAFE "the black-start directory $bs is writable by group or others; run chmod 700 on it" 2 ;;
+	esac
+fi
+
 # --- step 5: inputs id
-start_dir=$(pwd -P)
 cd "$REPO"
 listing=$(git ls-files -co --exclude-standard -- toolbox src .dockerignore tools/stage0/requirements.txt |
 	grep -v -e '^toolbox/image\.lock$' -e '/testdata/' -e '_test\.go$' |
@@ -126,7 +251,7 @@ listing=$(git ls-files -co --exclude-standard -- toolbox src .dockerignore tools
 	done)
 inputs_id=$(printf '%s\n' "$listing" | git hash-object --stdin)
 inputs12=$(printf '%s' "$inputs_id" | cut -c1-12)
-tag=localhost/strange-company-ci:in-$inputs12
+tag=localhost/strange-company-$image:in-$inputs12
 label_key=strange.company/toolbox-inputs-id
 
 # --- step 6 (a), (c): resolve the image
@@ -135,8 +260,8 @@ have_image() {
 }
 build_image() {
 	# Every FROM in the Containerfile must be pinned by digest (plan 02 section 14.9); refuse before building from one that is not.
-	if [ ! -f "$REPO/toolbox/Containerfile" ] || [ ! -r "$REPO/toolbox/Containerfile" ]; then
-		die WRAPPER_TOOLBOX_BUILD_FAILED "toolbox/Containerfile is missing or unreadable" 3
+	if [ ! -f "$REPO/$cfile" ] || [ ! -r "$REPO/$cfile" ]; then
+		die WRAPPER_TOOLBOX_BUILD_FAILED "$cfile is missing or unreadable" 3
 	fi
 	unpinned=$(awk 'function pinned(r, p) {
 		p = index(r, "@sha256:")
@@ -153,28 +278,110 @@ build_image() {
 			exit
 		}
 		if (toupper($(i + 1)) == "AS") stage[tolower($(i + 2))] = 1
-	}' "$REPO/toolbox/Containerfile" 2>/dev/null)
-	[ -z "$unpinned" ] || die WRAPPER_TOOLBOX_BUILD_FAILED "toolbox/Containerfile:$unpinned" 3
+	}' "$REPO/$cfile" 2>/dev/null)
+	[ -z "$unpinned" ] || die WRAPPER_TOOLBOX_BUILD_FAILED "$cfile:$unpinned" 3
 	logdir=$REPO/.bootstrap/toolbox
-	log=$logdir/build-$inputs12.log
+	log=$logdir/build-$image-$inputs12.log
 	mkdir -p "$logdir"
 	echo "bootstrap: toolbox: building $tag (log: $log)" >&2
 	# Rootless Podman without a systemd user session cannot reach the session bus from buildah's runtime.
 	cg=
 	if [ "$mode" = podman-rootless ] && [ ! -S "${XDG_RUNTIME_DIR:-/nonexistent}/bus" ]; then cg=--cgroup-manager=cgroupfs; fi
-	# shellcheck disable=SC2086 # cg is empty or one flag
-	if "$engine" build $cg --target ci -f "$REPO/toolbox/Containerfile" -t "$tag" \
-		--label "$label_key=$inputs_id" --build-arg "SC_INPUTS_ID=$inputs_id" "$REPO" >"$log" 2>&1; then
+	built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+	commit=$(git -C "$REPO" rev-parse HEAD 2>/dev/null || echo unknown)
+	# shellcheck disable=SC2086 # cg, nocache and platform are empty or one flag (the platform value has no spaces)
+	if "$engine" build $cg $nocache ${platform:+--platform "$platform"} --target "$image" -f "$REPO/$cfile" -t "$tag" \
+		--label "$label_key=$inputs_id" --build-arg "SC_INPUTS_ID=$inputs_id" \
+		--build-arg "SC_SOURCE_COMMIT=$commit" --build-arg "SC_BUILT_AT=$built_at" "$REPO" >"$log" 2>&1; then
 		return 0
 	fi
+	# A checksum, version or download failure names its tool; show those lines first, then the tail of the log.
+	grep -h -m 5 -E 'TOOLBOX_[A-Z_]+:' "$log" >&2 || true
 	tail -n 40 "$log" >&2
 	die WRAPPER_TOOLBOX_BUILD_FAILED "image build failed; full log: $log" 3
 }
-if [ "$build" = 1 ] || ! have_image; then
+if [ "$command" = build ]; then
 	build_image
+	exit 0
 fi
-image_id=$("$engine" image inspect --format '{{.Id}}' "$tag" 2>/dev/null || true)
-image_ref=$tag${image_id:+@$image_id}
+lockval() { # KEY: value of a flat image.lock line, empty when the file or the key is absent
+	[ -f "$REPO/toolbox/image.lock" ] || return 0
+	LC_ALL=C sed -n "s/^$1:[[:space:]]*//p" "$REPO/toolbox/image.lock" | tail -n 1 | tr -d '\r' |
+		LC_ALL=C sed -e 's/[[:space:]]*$//' -e '/^".*"$/{s/^"\(.*\)"$/\1/;b' -e '}' -e "s/^'\\(.*\\)'\$/\\1/"
+}
+pull_image() { # REF: 3 attempts, waiting 10 s and 30 s between them (plan 02 section 16); pull output goes to stderr
+	attempt=1
+	while :; do
+		if "$engine" pull "$1" >&2; then return 0; fi
+		[ "$attempt" -lt 3 ] || return 1
+		echo "bootstrap: toolbox: pulling $1 failed (attempt $attempt of 3); retrying" >&2
+		if [ "$attempt" = 1 ]; then sleep 10; else sleep 30; fi
+		attempt=$((attempt + 1))
+	done
+}
+source=built
+runimg=$tag
+image_ref=
+if [ "$build" = 1 ]; then
+	# CD-67 (b): SC_TOOLBOX_REQUIRE_PULL=1 accepts only a pulled image.
+	if [ "${SC_TOOLBOX_REQUIRE_PULL:-}" = 1 ]; then
+		die WRAPPER_TOOLBOX_PULL_FAILED "--toolbox-build builds locally and SC_TOOLBOX_REQUIRE_PULL=1 forbids building" 3
+	fi
+	build_image
+else
+	case $image in
+	toolbox) lock_image=$(lockval toolboxImage) lock_digest=$(lockval toolboxDigest) ;;
+	*) lock_image=$(lockval ciImage) lock_digest=$(lockval ciDigest) ;;
+	esac
+	if [ -n "$lock_digest" ] && [ "$(lockval inputsId)" = "$inputs_id" ]; then
+		# (b) the published image for exactly these inputs
+		if ! printf '%s\n' "$lock_digest" | grep -Eq '^sha256:[0-9a-f]{64}$' ||
+			! printf '%s\n' "$lock_image" | grep -Eq '^[a-z0-9.-]+(:[0-9]+)?(/[a-z0-9._-]+)+$'; then
+			die WRAPPER_LOCK_INVALID "toolbox/image.lock: the $image image or digest is malformed" 2
+		fi
+		pullref=$lock_image@$lock_digest
+		if "$engine" image inspect --format '{{.Id}}' "$pullref" >/dev/null 2>&1 || pull_image "$pullref"; then
+			source=pulled
+			runimg=$pullref
+			image_ref=$pullref
+		elif [ "${SC_TOOLBOX_REQUIRE_PULL:-}" = 1 ]; then
+			die WRAPPER_TOOLBOX_PULL_FAILED "could not pull $pullref and SC_TOOLBOX_REQUIRE_PULL=1 forbids building" 3
+		else
+			echo "bootstrap: toolbox: pull of $pullref failed after 3 attempts; building locally instead (source built-fallback)" >&2
+			build_image
+			source=built-fallback
+		fi
+	else
+		# (c) a development checkout: reuse the local tag, else build; neither is a pulled image
+		if [ "${SC_TOOLBOX_REQUIRE_PULL:-}" = 1 ]; then
+			die WRAPPER_TOOLBOX_PULL_FAILED "toolbox/image.lock names no published $image image for inputs id $inputs_id and SC_TOOLBOX_REQUIRE_PULL=1 accepts only a pulled image" 3
+		fi
+		have_image || build_image
+	fi
+fi
+if [ -z "$image_ref" ]; then
+	image_id=$("$engine" image inspect --format '{{.Id}}' "$tag" 2>/dev/null || true)
+	image_ref=$tag${image_id:+@$image_id}
+fi
+
+# --- step 7: the OCI archive that a later in-cluster run, expand or recover imports (plan 02 section 14.8)
+case $source:$image:$command in
+built*:toolbox:run | built*:toolbox:expand | built*:toolbox:recover)
+	oci=$REPO/.bootstrap/toolbox/$inputs_id.oci.tar
+	if [ ! -f "$oci" ]; then
+		mkdir -p "$REPO/.bootstrap/toolbox"
+		if [ "$engine" = podman ]; then
+			"$engine" save --format oci-archive -o "$oci.tmp$$" "$tag" >&2
+		else
+			"$engine" save -o "$oci.tmp$$" "$tag" >&2
+		fi || {
+			rm -f "$oci.tmp$$"
+			die WRAPPER_TOOLBOX_BUILD_FAILED "could not save $tag to $oci" 3
+		}
+		mv "$oci.tmp$$" "$oci"
+	fi
+	;;
+esac
 
 # --- step 8: mounts (14.3), user mapping (14.4), flags (14.5)
 tmpfs_run='/run/sc:rw,nosuid,nodev,size=64m,mode=0700'
@@ -193,6 +400,11 @@ podman-rootless)
 	;;
 esac
 
+# SELinux (ADR-0103, 02-R-4): never relabel the repository, ~/.ssh or the black-start directory; always with Podman.
+selinux=0
+case $mode in podman-*) selinux=1 ;; esac
+if [ "$(cat /sys/fs/selinux/enforce 2>/dev/null || true)" = 1 ]; then selinux=1; fi
+
 workdir=$start_dir
 case $workdir in
 "$REPO" | "$REPO"/*) ;;
@@ -203,16 +415,28 @@ common=$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir 2>/dev
 tty=
 if [ -t 0 ] && [ -t 1 ]; then tty=-t; fi
 
+# The command words follow the image unchanged; an exec command that is also an entrypoint verb gets the explicit "exec --".
+case $command in
+exec)
+	case $1 in
+	exec | shell | run | plan | preflight | status | verify | expand | destroy | recover | report | rotate | state | unlock | version) set -- exec -- "$@" ;;
+	esac
+	;;
+*) set -- "$command" "$@" ;;
+esac
+
 # Build the engine arguments after the command words in "$@", then rotate the command words to the end.
 n=$#
 set -- "$@" run --rm -i
 [ -z "$tty" ] || set -- "$@" "$tty"
 # shellcheck disable=SC2086 # user_flags is a fixed, space-separated flag list
-set -- "$@" $user_flags --cap-drop ALL --security-opt no-new-privileges --security-opt label=disable \
+set -- "$@" $user_flags --cap-drop ALL --security-opt no-new-privileges
+[ "$selinux" != 1 ] || set -- "$@" --security-opt label=disable
+set -- "$@" \
 	--network "$network" --hostname sc-toolbox --name "sc-toolbox-$$" \
 	-v "$REPO:$REPO" -w "$workdir" \
 	--tmpfs "$tmpfs_run" --tmpfs /tmp:rw,exec,nosuid,nodev,size=1g \
-	-e "SC_REPO_ROOT=$REPO" -e SC_TOOLBOX_SOURCE=built -e "SC_TOOLBOX_IMAGE_REF=$image_ref" \
+	-e "SC_REPO_ROOT=$REPO" -e "SC_TOOLBOX_SOURCE=$source" -e "SC_TOOLBOX_IMAGE_REF=$image_ref" \
 	-e "SC_ENGINE=$mode" -e "SC_HOST_OS=$(uname -s)" -e "TERM=${TERM:-dumb}" -e LANG=C.UTF-8 -e TZ=UTC \
 	-e "GIT_CONFIG_COUNT=1" -e "GIT_CONFIG_KEY_0=safe.directory" -e "GIT_CONFIG_VALUE_0=$REPO"
 case $common in
@@ -223,7 +447,13 @@ for v in HTTP_PROXY HTTPS_PROXY NO_PROXY; do
 	eval "val=\${$v:-}"
 	[ -z "$val" ] || set -- "$@" -e "$v=$val"
 done
-set -- "$@" "$tag"
+if [ -n "$bs" ]; then set -- "$@" -v "$bs:/blackstart"; fi
+while IFS= read -r m; do
+	[ -z "$m" ] || set -- "$@" -v "$m"
+done <<EOT
+$in_mounts
+EOT
+set -- "$@" "$runimg"
 while [ "$n" -gt 0 ]; do
 	a=$1
 	shift

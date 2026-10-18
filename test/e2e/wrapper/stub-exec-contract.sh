@@ -136,10 +136,7 @@ kill -KILL "$(cat "$TMP/wrap.pid" 2>/dev/null)" "$bg" 2>/dev/null
 wait "$bg" 2>/dev/null
 
 # Usage and repository errors (plan 02 7.1).
-reset_log
-wrap "$fx" exec -- true
-expect_eq "02 exec without --image ci exits 2 (usage)" 2 "$RC"
-[ "$RC" -ne 2 ] || expect_eq "02 exec without --image ci runs no container" 0 "$(grep -Ec '^(run|container run) ' "$STUB_LOG" || true)"
+# (exec without --image exited 2 until F03 S3; toolbox is now the default image, see stub-s3-wrapper.sh)
 mkdir -p "$TMP/notrepo"
 cp -p "$fx/bootstrap" "$TMP/notrepo/bootstrap"
 wrap "$TMP/notrepo" exec --image ci -- true
