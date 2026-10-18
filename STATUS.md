@@ -442,3 +442,117 @@ Follow-ups (not blocking GATE-F02):
 - Crosscheck: the ci image's Python `jsonschema` asserts no `date-time` or `uri` format (no `rfc3339-validator`, `rfc3987` in `tools/stage0/requirements.txt`), so Go/Python leniency on those formats is invisible; the Python loader differs from go.yaml.in on overflow floats (`1e400`) and `.1_5`; a Go-only metaschema rejection carries no `pair`; an empty `pair` object is skipped.
 - Licences: licensecheck v0.3.1 has no `-or-later` ids, so any GPL/LGPL/AGPL module needs an exception; versions are not case-escaped when locating the module cache (prerelease tags) and `go list` `Replace` is ignored; excepted rows are not marked in `report.json`; separate licence files combine as OR; the missing-module message is misleading; the `sc-lint` usage string omits `licenses`.
 - Role guard: `test/contracts/crosscheck.py` is check logic under a test path, so implementers cannot edit it after it exists; the orchestrator commits such edits.
+
+### F03 — toolbox-image
+
+Branch `node/F03-toolbox-image`, built with `/sc-node F03`. It is based on `main` 665a3a9, after PR #150 (issue #149, CI authority from the PR base) and PR #151 (CD-63, a fourth implementer attempt escalates to Opus). Four slices:
+- S1: `sc-bootstrap` toolbox commands, preflight PF-01/PF-06, the env-file parser.
+- S2: the `toolbox` and `ci` images.
+- S3: the `./bootstrap` wrapper.
+- S4: pull/build equivalence, the engine matrix and k3d.
+
+Decisions:
+- D1–D4 (orchestrator scoping, below).
+- CD-64: `make toolbox` runs on the host.
+- CD-65: cmctl gets its own baseline entry.
+- CD-66: plan 02 records the S2 interface details.
+- CD-67: operator inputs go only to the toolbox image, and `SC_TOOLBOX_REQUIRE_PULL` accepts only a pulled image.
+
+**Status: all four slices approved; every GATE-F03 criterion has CI evidence below; PR CI pending.** SHAs are those after the final rebase onto 665a3a9; e2e runs ran on the pre-rebase SHAs. The rebased tree equals the reviewed tree plus `main`'s CD-63 commit. The pre-rebase heads are 988973b (S1), 4b45983 (S2), 7c6197b (S3) and 6d9ec16 (S4).
+
+Orchestrator scoping (brief, D1–D4):
+- **D1:** `sc-bootstrap preflight` runs only PF-01 and PF-06; plan 50's framework and the other checks come with F08.
+- **D2:** the exec scopes are the env file, SSH and `s3`. The `kube` tunnel and `unlock` scopes need F08/F10 inputs and are left out.
+- **D3:** a local OCI registry stands in for GHCR in 02-AC-4. Re-run it at the first real release (plan 23).
+- **D4:** the 02-AC-5 SELinux leg runs in a Fedora Cloud VM under QEMU/KVM on the hosted runner.
+
+#### S1 — `sc-bootstrap` toolbox fetch/selfcheck/init, preflight PF-01/PF-06, env s3 (02-AC-3 fetch side, 02-AC-10, 02-AC-11 PF-06 side)
+
+| Commit | Role |
+|---|---|
+| d5b64f7 → c9c37db | RED (22 fail) → GREEN attempt 1 (`src/cmd/sc-bootstrap`, `src/internal/toolbox`) |
+| 08217dd → 5f64a64 | review 1 request_changes. Blocker: `install.extract` lacked `{version}`/`{arch}` expansion. Non-blockers: PF-06 key handling, version-mismatch codes, env grammar, a sleeper that evaded forbidigo. RED (13 fail) → attempt 2 |
+| c09709e → 690b7df | review 2 request_changes. Blocker: the mounted key was used only when the test-only `SC_INPUT_DIR` was set. RED (6 fail) → attempt 3 (`ProductionEnv`, default `~/.ssh/id_ed25519`, agent socket dialled, fixed 5 s/15 s waits) |
+| — | review 3 **approve** at 690b7df. The reviewer also ran the binary in the ci image on the production path |
+
+#### S2 — toolbox and ci images (02-AC-1, 02-AC-2, 02-AC-3 build side, 02-AC-8, 02-AC-9)
+
+| Commit | Role |
+|---|---|
+| b0bec4c | RED (69 of 81 static checks fail; tier-E `toolbox-image.sh`) |
+| 6a10d77 | docs: CD-64 |
+| 96936fd, 122dc27, 401c3de, cfd94fa | GREEN: full lock (every §9.4 tool, sha256 per arch verified against vendor checksum files, AWS CLI by GPG signature), hash-locked ansible closure, the five §14.1 stages, `./bootstrap build`, `--image toolbox`, host-run `make toolbox`, gcc for `-race`, gitleaks image config |
+| e35b52e, 0c32321 | the implementer found plan 02's `(verify)` "cmctl version matching cert-manager" false: cmctl is versioned separately (v2.x). CD-65 pins cmctl v2.6.1, the release built against cert-manager v1.21.2; chore corrects the test mapping and the selfcheck row key (`.tool`) |
+| c9c8242, 78dbf15 | ci: e2e `toolbox` job runs `toolbox-image.sh`, frees disk first, is selected by every image input |
+| 589eb70 | docs: CD-66 (review non-blockers) |
+| — | review **approve** at c9c8242 (supply chain re-verified independently) |
+
+#### S3 — wrapper (02-AC-5 Docker/Podman legs, 02-AC-6, 02-AC-7, 02-AC-10, 02-AC-11, 02-AC-13)
+
+| Commit | Role |
+|---|---|
+| a95a7f9, 50f8885 | RED Go (4 fail) and wrapper (176 fail); tier-E `wrapper-real.sh` |
+| 7ffd8e1 | chore: removes the two F01 assertions that `exec` without `--image` exits 2 ("until F03", plan 02 §14.9). **This modifies base tests; it needs explicit human sign-off.** Its `TDD-Superseded` lines name base tests, so they are inert and are not repeated on the head |
+| 873f4e9, 55067b0 | GREEN attempt 1: env file without evaluation, §14.3 mounts, default toolbox image, `image.lock` branch (b) with retries/fallback/REQUIRE_PULL, OCI archive, `shell`, entrypoint dispatch |
+| c367b33 | chore: test correction. An empty digest may be written `""`, because the protected ToolboxImageLock schema types it as string |
+| 0972efc | ci: e2e runs `wrapper-real.sh` and the literal default-image commands |
+| 3f74189, c712ef2, 97defd7 → c76549a | review 1 request_changes. **Blocker:** shellrc put env-file `CLUSTER_NAME` into `PS1`, so bash prompt expansion executed `$(…)`. CD-67, RED (5 Go + 22 wrapper fail) → attempt 2 (sanitised prompt, sh/Go parser parity, CD-67) |
+| — | review 2 **approve** at c76549a (11 hostile prompt values probed in a real `./bootstrap shell`, none executed) |
+
+#### S4 — pull/build equivalence, engine matrix, k3d (02-AC-4, 02-AC-5 matrix, 02-AC-12)
+
+| Commit | Role |
+|---|---|
+| 27c9211, 5c5930d, 9276fc9 | RED Go (N3), lint workflow shape, wrapper (13 + 4 fail); tier-E `pull-equivalence.sh`, `ac5-probe.sh`, `test/e2e/selinux/run`, `test/e2e/k3d/run` |
+| bb285e8, a66e7d9 | ci: jobs `toolbox-podman`, `toolbox-selinux`, `toolbox-pull-equivalence`, `e2e-k3d`, awaited by `e2e-gate`; plan 52 §8.4 table |
+| 7f9d2d7 | GREEN attempt 1: `image.lock` accepts registry `host:port`, `LC_ALL=C` env reading, ci env-file warning, shellrc `CLUSTER_NAME` grammar |
+| 2f47b67, 485b8d5, e6a99ed → 5dc3c48 | review 1 request_changes. Blocker: `stub-shellrc.sh` depended on cwd length. Chore test corrections: cwd-independent, built sha via `--toolbox-build`, SELinux snapshot before the first run, k3d-tools pinned by digest. RED (locale) → attempt 2 (`LC_ALL=C` filters) |
+| — | review 2 **approve** at 5dc3c48 |
+
+#### F03 — gate evidence
+
+CI runs on GitHub-hosted ubuntu-24.04 (`e2e.yaml`, `workflow_dispatch` on the branch):
+- [39095330782](https://github.com/tuckermclean/strange-company/actions/runs/39095330782) on 6d9ec16 (= 5dc3c48): every job succeeded.
+- [39092416709](https://github.com/tuckermclean/strange-company/actions/runs/39092416709) on 9c30b7e and [39087906768](https://github.com/tuckermclean/strange-company/actions/runs/39087906768) on 7c6197b: every job succeeded.
+
+| Criterion | Test(s) / evidence | Status |
+|---|---|---|
+| 02-AC-1 | `toolbox-static.sh` (stages, `make toolbox` shape, final `selfcheck --embedded-only`), `toolbox-image.sh` (`make toolbox` `--no-cache` both targets; the literal `selfcheck --json \| jq -e 'all(.tools[]; .ok)'`); toolbox 17 rows, ci 28 rows ok | pass (Docker CI 26/0; rootless Podman) |
+| 02-AC-2 | `toolbox-static.py` inventory; `toolbox-image.sh` literal `command -v` loop plus ci tools, `helm unittest`, `$KUBEBUILDER_ASSETS` | pass |
+| 02-AC-3 | `TestFetch_*` (mismatch → `TOOLBOX_CHECKSUM_MISMATCH:<tool>`, no install, no retry); `toolbox-image.sh` fixture lock (`TOOLBOX_CHECKSUM_MISMATCH:jq`, no tag); `stub-s3-*` build-failure path | pass |
+| 02-AC-4 | `pull-equivalence.sh`: an independent `--no-cache` build pushed to a local `registry:3.0.0` (pinned by digest), pulled with `SC_TOOLBOX_REQUIRE_PULL=1` (`SC_TOOLBOX_SOURCE=pulled`); selfcheck rows and `sha256sum /opt/sc/bin/sc-bootstrap` identical to a `--toolbox-build` image | pass (D3 stand-in; re-run at first release) |
+| 02-AC-5 | `wrapper-real.sh` on Docker rootful (job `toolbox`); `wrapper-real.sh` + `ac5-probe.sh` on rootless Podman, Ubuntu (`toolbox-podman`); `ac5-probe.sh` in a Fedora 44 VM, `getenforce=Enforcing`, rootless Podman, `ls -Z` of `$REPO` and `~/.ssh` unchanged, no `container_file_t` (`toolbox-selinux`, 10/0) | pass |
+| 02-AC-6 | `wrapper-real.sh` (canary env incl. the s3 scope: none in inspect, engine argument log or `env`; `AWS_CONFIG_FILE` set), `stub-s3-wrapper.sh` | pass |
+| 02-AC-7 | `wrapper-real.sh`, `stub-s3-wrapper.sh`, `stub-s3-entrypoint.sh` | pass |
+| 02-AC-8 | `toolbox-image.sh`: toolbox 1,603,785,562 B (1.49 GiB ≤ 1.6), ci 2,711,337,121 B (2.53 GiB ≤ 3.5) on Docker | pass |
+| 02-AC-9 | `toolbox-image.sh`: `gitleaks dir` over the exported toolbox filesystem with the explicit `--config toolbox/gitleaks-image.toml` (allowlists limited to vendored AWS CLI/botocore/community.general files), no `/.gitleaks.toml` in the image; image `Env` clean | pass |
+| 02-AC-10 | `TestSelfcheck_Stale*`, `TestPreflight_StaleToolboxExits3`; `wrapper-real.sh` (image built from a different lock → `./bootstrap preflight` exit 3 `PF-01 TOOLBOX_STALE`) | pass |
+| 02-AC-11 | `TestPreflight_EnvFileValueIsNotEvaluated`, `TestPF06_*`, `stub-s3-wrapper.sh`, `stub-shellrc*.sh`, `wrapper-real.sh` (literal path used, PF-06 fails, `/tmp/pwned` absent on the host) | pass |
+| 02-AC-12 | `test/e2e/k3d/run`: k3s v1.36.5+k3s1 by digest, namespace PSA `restricted` enforced (privileged control rejected), Pod `runAsNonRoot`, `readOnlyRootFilesystem`, drop ALL, `RuntimeDefault`, emptyDir `/tmp` and `/run/sc`, `args: [sc-bootstrap, version]` → Succeeded, exit 0 (`e2e-k3d`, 15/0) | pass |
+| 02-AC-13 | `wrapper-real.sh`, `stub-s3-wrapper.sh` | pass |
+| F01 02-AC-14..17 (regression) | `real-engine.sh` 22/0 on Docker; `stub-exec-contract.sh`, `stub-image-reuse.sh`, `stub-unpinned-from.sh` | pass |
+| TDD discipline | local `make tdd-discipline-check` on the final head | see below |
+
+Deviations and disclosures:
+- 7ffd8e1 removes two base F01 assertions (plan 02 §14.9 limited that behaviour to "until F03"). It needs human sign-off.
+- The following edit this PR's own RED tests after RED; check names are unchanged and no assertion is loosened. The checker warns `TDD_RED_TEST_MODIFIED` for them.
+  - c367b33 and 0c32321;
+  - 485b8d5 (cwd-independent shellrc test, built sha via `--toolbox-build`, SELinux snapshot before the first run, k3d-tools pin);
+  - wrapper-real.sh fixture additions in 97defd7 and 9276fc9.
+- Interface details not in the plans: the S1 PF-06/PF-01 failure codes (`SSH_KEY_*`, `SSH_PUBKEY_MISMATCH`, `SSH_AGENT_UNAVAILABLE`, `TOOLBOX_TOOL_MISMATCH`) and the wrapper codes `WRAPPER_BLACKSTART_UNSAFE`, `WRAPPER_LOCK_INVALID`. `toolbox/image.lock` names `ghcr.io/tuckermclean/…`.
+- The `toolbox-selinux` job installs qemu with unpinned apt, and `toolbox-podman` relaxes the AppArmor userns sysctl. Both run on ephemeral hosted runners.
+
+Follow-ups (not blocking GATE-F03):
+- **F08:**
+  - plan 50 §7.1 verbs (`configure`, `node`, `upgrade`, `storage`, `forge-init`, …), bare `./bootstrap` = `run`, and the global flags `--non-interactive`, `--log-format`, `-v`;
+  - the kube and unlock scopes and `SC_RECOVERY_PASSPHRASE_FILE` (D2);
+  - PF-06's agent check should list identities like `ssh-add -l`;
+  - `./bootstrap version` should print the toolbox ref, source and selfcheck table (§21).
+- **Procedures:** `procedures/bootstrap-preflight-failure.md` §D needs the new PF-06/PF-01 and `WRAPPER_*` codes and the §15 subuid/SELinux hints.
+- **Wrapper:** §11 old OCI archives are not pruned. `HTTP_PROXY` credentials appear in run arguments and inspect output (the plan requires the passthrough; document it). A `:` in a key path breaks `-v` (use `--mount type=bind,readonly`).
+- **Tests:**
+  - the k3d check should also require the `<none>` tag column, to prove `K3D_IMAGE_TOOLS` was honoured;
+  - `stub-shellrc-locale.sh`'s shim check assumes `sed`;
+  - the `TestMainBinary_UsesProductionEnv` source-text check could become a behavioural one;
+  - the `toolbox` image has about 110 MiB of headroom against its 1.6 GiB budget.
+- **Release:** re-run 02-AC-4 against GHCR at the first release (D3); the Fedora 44 image moves to `archives.fedoraproject.org` at EOL.
