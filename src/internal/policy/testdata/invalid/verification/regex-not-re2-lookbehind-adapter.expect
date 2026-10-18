@@ -1,0 +1,2 @@
+POLICY_REGEX_INVALID:/spec/adapters/go-test-json/assertionTypes/0
+msg (?<=x)assert

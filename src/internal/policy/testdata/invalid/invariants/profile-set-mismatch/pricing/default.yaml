@@ -1,0 +1,61 @@
+"apiVersion": "strange.company/v1alpha1"
+"kind": "PricingTable"
+"metadata":
+  "name": "deepseek"
+"spec":
+  "provider": "deepseek"
+  "currency": "USD"
+  "entries":
+  - "model": "deepseek-v4-flash"
+    "version": "2026-09-01"
+    "effectiveFrom": "2026-09-01T00:00:00Z"
+    "effectiveTo": null
+    "status": "priced"
+    "source":
+      "url": "https://api-docs.deepseek.com/quick_start/pricing"
+      "retrievedAt": "2026-09-01"
+      "note": "Off-peak is the base rate; peak windows Mon-Fri UTC."
+    "windowBasis": "request_start"
+    "rates":
+      "inputPerMillion": "0.22"
+      "cachedInputPerMillion": "0.007"
+      "cacheWritePerMillion": "0"
+      "outputPerMillion": "0.66"
+    "timeWindows":
+    - "name": "peak-early"
+      "days":
+      - "Mon"
+      - "Tue"
+      - "Wed"
+      - "Thu"
+      - "Fri"
+      "from": "01:00"
+      "to": "04:00"
+      "rates":
+        "inputPerMillion": "0.44"
+        "cachedInputPerMillion": "0.014"
+        "cacheWritePerMillion": "0"
+        "outputPerMillion": "1.32"
+    - "name": "peak-morning"
+      "days":
+      - "Mon"
+      - "Tue"
+      - "Wed"
+      - "Thu"
+      - "Fri"
+      "from": "06:00"
+      "to": "10:00"
+      "rates":
+        "inputPerMillion": "0.44"
+        "cachedInputPerMillion": "0.014"
+        "cacheWritePerMillion": "0"
+        "outputPerMillion": "1.32"
+  - "model": "deepseek-v4-pro"
+    "version": "2026-09-01"
+    "effectiveFrom": "2026-09-01T00:00:00Z"
+    "effectiveTo": null
+    "status": "unpriced"
+    "unpricedReason": "Rate card not yet verified against the provider pricing page; requests are denied until priced."
+    "source":
+      "url": "https://api-docs.deepseek.com/quick_start/pricing"
+      "retrievedAt": "2026-09-01"

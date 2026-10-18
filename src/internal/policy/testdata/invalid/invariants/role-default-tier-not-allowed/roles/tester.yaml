@@ -1,0 +1,79 @@
+"apiVersion": "strange.company/v1alpha1"
+"kind": "RoleDefinition"
+"metadata":
+  "name": "tester"
+"spec":
+  "description": "Turns acceptance criteria into executable failing tests before implementation (SPEC \xA748\u2013\xA749)."
+  "instructions": |
+    You are the tester. Write tests that fail because the behavior described by the
+    acceptance criteria is absent. Map each test to an AC id in a comment `// AC-n`.
+    Do not implement the behavior. Do not change files outside the test paths.
+    If the behavior already appears to exist, still write the tests; trusted CI decides.
+  "forgeAccess": "write"
+  "allowedHarnesses":
+  - "claude"
+  - "codex"
+  - "fake-red-valid"
+  "defaultModelTier": "standard"
+  "allowedModelTiers":
+  - "bargain"
+  - "standard"
+  - "frontier"
+  "defaultProfile": "tests"
+  "allowedProfiles":
+  - "tiny"
+  - "tests"
+  - "implementation"
+  "accounting":
+    "firstAttemptPhase": "test_authoring"
+    "retryPhase": "test_authoring"
+  "diffRules":
+    "mode": "allowlist"
+    "allow":
+    - "@testPaths"
+    - "@fixturePaths"
+    - "@testInfraPaths"
+    - "@stubPaths"
+    "deny":
+    - "@protectedPaths"
+    "maxFilesChanged": 40
+    "maxDiffBytes": 262144
+    "allowDeletions": false
+  "contextProjection":
+    "include":
+    - "company_rules"
+    - "repository_context"
+    - "agents_md"
+    - "architecture"
+    - "decisions"
+    - "role_instructions"
+    - "task_spec"
+    - "acceptance_criteria"
+    - "validation_rules"
+    - "context_files"
+    - "research_reports"
+    - "prior_attempt_evidence"
+    - "conflict_decision"
+    - "orchestrator_notes"
+    "forbid":
+    - "implementation_diff"
+    - "implementer_handoff"
+    - "green_evidence"
+    - "conflict_report"
+    - "reviewer_findings"
+    "maxTotalBytes": 262144
+    "sectionBudgets":
+      "context_files": 131072
+      "orchestrator_notes": 4096
+  "expectedOutput":
+    "allowedResultStates":
+    - "completed"
+    - "failed"
+    - "blocked"
+    - "already_satisfied"
+    "commitRequiredOnCompleted": true
+    "roleOutput": "tester"
+  "verification":
+    "triggers": "red"
+    "expectations":
+    - "At least one new requirement-specific assertion fails on the base code (SPEC \xA750)."

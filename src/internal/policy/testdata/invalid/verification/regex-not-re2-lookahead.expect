@@ -1,0 +1,2 @@
+POLICY_REGEX_INVALID:/spec/staticChecks/skipMarkers/go/1
+msg (?=x)y

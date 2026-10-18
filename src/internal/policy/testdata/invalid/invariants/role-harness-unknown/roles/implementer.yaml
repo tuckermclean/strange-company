@@ -1,0 +1,51 @@
+"apiVersion": "strange.company/v1alpha1"
+"kind": "RoleDefinition"
+"metadata":
+  "name": "implementer"
+"spec":
+  "description": "Turns acceptance criteria into executable failing tests before implementation (SPEC \xA748\u2013\xA749)."
+  "instructions": "You are the implementer. Make the failing tests pass without changing protected tests. Follow the acceptance criteria exactly and report through the structured result."
+  "forgeAccess": "write"
+  "allowedHarnesses":
+  - "claude"
+  - "codex"
+  - "ghost"
+  "defaultModelTier": "bargain"
+  "allowedModelTiers":
+  - "bargain"
+  - "standard"
+  - "frontier"
+  "defaultProfile": "implementation"
+  "allowedProfiles":
+  - "tiny"
+  - "implementation"
+  "accounting":
+    "firstAttemptPhase": "implementation"
+    "retryPhase": "green_retry"
+  "diffRules":
+    "mode": "denylist"
+    "deny":
+    - "@protectedPaths"
+    - "@protectedTests"
+    "maxFilesChanged": 40
+    "maxDiffBytes": 262144
+    "allowDeletions": false
+  "contextProjection":
+    "include":
+    - "company_rules"
+    - "repository_context"
+    - "role_instructions"
+    - "task_spec"
+    - "acceptance_criteria"
+    "forbid": []
+    "maxTotalBytes": 262144
+  "expectedOutput":
+    "allowedResultStates":
+    - "completed"
+    - "failed"
+    - "blocked"
+    - "test_spec_conflict"
+    "commitRequiredOnCompleted": true
+    "roleOutput": "implementer"
+  "verification":
+    "triggers": "green"

@@ -1,0 +1,8 @@
+"apiVersion": "strange.company/v1alpha1"
+"kind": "TestQuarantine"
+"metadata":
+  "name": "strange-company"
+"spec":
+  "maxEntries": 10
+  "maxDays": 14
+  "entries": []
