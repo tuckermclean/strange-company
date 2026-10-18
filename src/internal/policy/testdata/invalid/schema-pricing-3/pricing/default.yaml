@@ -1,0 +1,40 @@
+# x-invalid-examples[3] of contracts/pricing.schema.yaml: Time windows without windowBasis, combined with long-context tiers.
+"apiVersion": "strange.company/v1alpha1"
+"kind": "PricingTable"
+"metadata":
+  "name": "deepseek"
+"spec":
+  "provider": "deepseek"
+  "currency": "USD"
+  "entries":
+  - "model": "deepseek-v4-flash"
+    "version": "v1"
+    "effectiveFrom": "2026-01-01T00:00:00Z"
+    "effectiveTo": null
+    "status": "priced"
+    "source":
+      "url": "https://api-docs.deepseek.com/quick_start/pricing"
+      "retrievedAt": "2026-01-01"
+    "rates":
+      "inputPerMillion": "0.22"
+      "cachedInputPerMillion": "0.007"
+      "cacheWritePerMillion": "0"
+      "outputPerMillion": "0.66"
+    "timeWindows":
+    - "name": "peak"
+      "days":
+      - "Mon"
+      "from": "01:00"
+      "to": "04:00"
+      "rates":
+        "inputPerMillion": "0.44"
+        "cachedInputPerMillion": "0.014"
+        "cacheWritePerMillion": "0"
+        "outputPerMillion": "1.32"
+    "longContextTiers":
+    - "aboveInputTokens": 100000
+      "rates":
+        "inputPerMillion": "1"
+        "cachedInputPerMillion": "0.1"
+        "cacheWritePerMillion": "0"
+        "outputPerMillion": "2"

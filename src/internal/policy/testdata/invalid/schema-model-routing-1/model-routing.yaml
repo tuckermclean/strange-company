@@ -1,0 +1,91 @@
+# x-invalid-examples[1] of contracts/model-routing.schema.yaml: Missing tier `frontier` and plaintext http upstream to a public host.
+"apiVersion": "strange.company/v1alpha1"
+"kind": "ModelRouting"
+"metadata":
+  "name": "default"
+"spec":
+  "providers":
+    "deepseek":
+      "displayName": "DeepSeek"
+      "enabled": true
+      "stage": "production"
+      "upstream":
+        "baseUrl": "http://api.deepseek.com/v1"
+      "credential":
+        "kind": "api-key"
+        "secretKey": "deepseek"
+        "authScheme": "bearer"
+      "apiFamilies":
+        "openai-chat-completions":
+          "usageDialect": "deepseek-chat"
+          "outputCapField": "max_tokens"
+          "inputBound":
+            "method": "upper_bound"
+            "tokensPerByteUpperBound": 1.0
+            "perMessageOverhead": 8
+            "perRequestOverhead": 1024
+          "requestPolicy":
+            "bodyMembers":
+            - "model"
+            - "messages"
+            - "max_tokens"
+            "toolTypes":
+            - "function"
+  "models":
+    "deepseek/deepseek-v4-flash":
+      "provider": "deepseek"
+      "apiModel": "deepseek-v4-flash"
+      "apiFamily": "openai-chat-completions"
+      "maxOutputTokens": 8192
+      "contextWindowTokens": 128000
+      "outputCapCoversReasoning": true
+      "responseModelMatch":
+        "exact":
+        - "deepseek-v4-flash"
+      "enabled": true
+  "tiers":
+    "clerical":
+      "candidates": []
+    "bargain":
+      "candidates":
+      - "deepseek/deepseek-v4-flash"
+    "standard":
+      "candidates": []
+  "roles":
+    "researcher":
+      "defaultTier": "bargain"
+      "allowedTiers":
+      - "bargain"
+      "ladder": null
+    "planner":
+      "defaultTier": "bargain"
+      "allowedTiers":
+      - "bargain"
+      "ladder": null
+    "tester":
+      "defaultTier": "bargain"
+      "allowedTiers":
+      - "bargain"
+      "ladder": null
+    "implementer":
+      "defaultTier": "bargain"
+      "allowedTiers":
+      - "bargain"
+      "ladder": null
+    "reviewer":
+      "defaultTier": "bargain"
+      "allowedTiers":
+      - "bargain"
+      "ladder": null
+  "escalationLadders":
+    "none":
+    - "tier": "bargain"
+      "meritFailuresBeforeEscalation": 1
+  "orchestrator":
+    "tier": "bargain"
+    "apiFamilies":
+    - "openai-chat-completions"
+    "maxConcurrentRequests": 4
+  "infrastructureFallback":
+    "enabled": false
+    "maxFallbacksPerTask": 0

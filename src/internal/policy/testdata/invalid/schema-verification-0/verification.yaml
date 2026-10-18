@@ -1,0 +1,7 @@
+# x-invalid-examples[0] of contracts/verification.schema.yaml: Test-first may not be replaced as the default mode.
+"apiVersion": "strange.company/v1alpha1"
+"kind": "VerificationPolicy"
+"metadata":
+  "name": "bad"
+"spec":
+  "defaultMode": "verification-first"

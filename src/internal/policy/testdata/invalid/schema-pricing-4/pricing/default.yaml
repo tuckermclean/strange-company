@@ -1,0 +1,22 @@
+# x-invalid-examples[4] of contracts/pricing.schema.yaml: Price with more than 6 fractional digits (not representable in micro-USD).
+"apiVersion": "strange.company/v1alpha1"
+"kind": "PricingTable"
+"metadata":
+  "name": "fake"
+"spec":
+  "provider": "fake"
+  "currency": "USD"
+  "entries":
+  - "model": "fake-model"
+    "version": "v1"
+    "effectiveFrom": "2026-01-01T00:00:00Z"
+    "effectiveTo": null
+    "status": "priced"
+    "source":
+      "url": "https://strange.company/fake-provider"
+      "retrievedAt": "2026-01-01"
+    "rates":
+      "inputPerMillion": "0.0000001"
+      "cachedInputPerMillion": "0"
+      "cacheWritePerMillion": "0"
+      "outputPerMillion": "1"

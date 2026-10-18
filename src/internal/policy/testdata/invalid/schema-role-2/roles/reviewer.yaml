@@ -1,0 +1,36 @@
+# x-invalid-examples[2] of contracts/role.schema.yaml: Read-only role (diff mode none) that nonetheless allows changed files.
+"apiVersion": "strange.company/v1alpha1"
+"kind": "RoleDefinition"
+"metadata":
+  "name": "reviewer"
+"spec":
+  "description": "x"
+  "instructions": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  "forgeAccess": "read"
+  "allowedHarnesses":
+  - "claude"
+  "defaultModelTier": "standard"
+  "allowedModelTiers":
+  - "standard"
+  "defaultProfile": "reasoning"
+  "allowedProfiles":
+  - "reasoning"
+  "accounting":
+    "firstAttemptPhase": "review"
+    "retryPhase": "review"
+  "diffRules":
+    "mode": "none"
+    "maxFilesChanged": 5
+    "maxDiffBytes": 1000
+  "contextProjection":
+    "include":
+    - "task_spec"
+    "forbid": []
+    "maxTotalBytes": 65536
+  "expectedOutput":
+    "allowedResultStates":
+    - "completed"
+    "commitRequiredOnCompleted": false
+    "roleOutput": "reviewer"
+  "verification":
+    "triggers": "none"

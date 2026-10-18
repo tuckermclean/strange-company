@@ -1,0 +1,22 @@
+# x-invalid-examples[0] of contracts/pricing.schema.yaml: Float price instead of a decimal string (money must never be float).
+"apiVersion": "strange.company/v1alpha1"
+"kind": "PricingTable"
+"metadata":
+  "name": "openai"
+"spec":
+  "provider": "openai"
+  "currency": "USD"
+  "entries":
+  - "model": "gpt-x"
+    "version": "v1"
+    "effectiveFrom": "2026-01-01T00:00:00Z"
+    "effectiveTo": null
+    "status": "priced"
+    "source":
+      "url": "https://openai.com/api/pricing"
+      "retrievedAt": "2026-01-01"
+    "rates":
+      "inputPerMillion": 1.25
+      "cachedInputPerMillion": "0.125"
+      "cacheWritePerMillion": "0"
+      "outputPerMillion": "10"

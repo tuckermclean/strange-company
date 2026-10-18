@@ -1,0 +1,41 @@
+# x-invalid-examples[0] of contracts/role.schema.yaml: Role that may be dispatched with arbitrary resources (unknown field).
+"apiVersion": "strange.company/v1alpha1"
+"kind": "RoleDefinition"
+"metadata":
+  "name": "tester"
+"spec":
+  "description": "x"
+  "instructions": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  "forgeAccess": "write"
+  "allowedHarnesses":
+  - "claude"
+  "defaultModelTier": "standard"
+  "allowedModelTiers":
+  - "standard"
+  "defaultProfile": "tests"
+  "allowedProfiles":
+  - "tests"
+  "resources":
+    "limits":
+      "memory": "64Gi"
+  "accounting":
+    "firstAttemptPhase": "test_authoring"
+    "retryPhase": "test_authoring"
+  "diffRules":
+    "mode": "allowlist"
+    "allow":
+    - "@testPaths"
+    "maxFilesChanged": 40
+    "maxDiffBytes": 1000
+  "contextProjection":
+    "include":
+    - "task_spec"
+    "forbid": []
+    "maxTotalBytes": 65536
+  "expectedOutput":
+    "allowedResultStates":
+    - "completed"
+    "commitRequiredOnCompleted": true
+    "roleOutput": "tester"
+  "verification":
+    "triggers": "red"

@@ -1,0 +1,24 @@
+# x-invalid-examples[1] of contracts/resource-profile.schema.yaml: Raw Kubernetes resource block instead of profile fields (Hermes-style arbitrary resources are not a profile).
+"apiVersion": "strange.company/v1alpha1"
+"kind": "ResourceProfiles"
+"metadata":
+  "name": "default"
+"spec":
+  "activeSet": "standard"
+  "concurrency":
+    "maxWorkers": 1
+    "queue":
+      "maxQueued": 20
+  "sets":
+    "standard":
+      "tiny":
+        "resources":
+          "limits":
+            "cpu": "1"
+            "memory": "1Gi"
+    "constrained":
+      "tiny":
+        "resources":
+          "limits":
+            "cpu": "1"
+            "memory": "1Gi"
