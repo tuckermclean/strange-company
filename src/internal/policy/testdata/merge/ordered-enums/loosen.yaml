@@ -1,0 +1,7 @@
+apiVersion: strange.company/v1alpha1
+kind: RepositoryPolicy
+metadata: {name: fixture}
+spec:
+  testPaths: ["tests/**"]
+  testProtection: {existingTestModification: flag}
+  testSpecConflict: {resolutionApproval: adjudicator}

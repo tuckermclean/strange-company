@@ -1,0 +1,5 @@
+/spec/task/maxBaseLag/age: 12h
+/spec/watchdog/groups/approval/alertAfter: 24h
+/spec/watchdog/groups/noExecution/alertAfter: 30m
+/spec/watchdog/groups/verification/alertAfter: 30m
+/spec/watchdog/groups/verification/escalateAfter: 2h

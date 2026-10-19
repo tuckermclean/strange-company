@@ -1,0 +1,9 @@
+POLICY_LOOSENING:/spec/retry/maxAutonomousAttempts
+POLICY_LOOSENING:/spec/retry/maxTesterAttempts
+POLICY_LOOSENING:/spec/retry/maxReviewExecutions
+POLICY_LOOSENING:/spec/retry/maxAuxiliaryExecutions
+POLICY_LOOSENING:/spec/testSpecConflict/maxConflictsPerTask
+POLICY_LOOSENING:/spec/task/maxBaseLag/commits
+POLICY_LOOSENING:/spec/diffLimits/tester/maxFilesChanged
+POLICY_LOOSENING:/spec/diffLimits/implementer/maxDiffBytes
+POLICY_LOOSENING:/spec/modelRouting/maxTier
