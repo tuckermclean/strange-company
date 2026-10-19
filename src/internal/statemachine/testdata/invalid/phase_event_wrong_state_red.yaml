@@ -1,0 +1,8 @@
+# Invalid fixture (29-AC-2, D8): red_classified, with full outcome coverage, is also handled from GREEN_VERIFYING (not its phase state RED_VERIFYING)
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_OUTCOME_GUARD_INVALID
+ops:
+  - {op: replace, path: spec/transitions/id=T020/from, value: [RED_VERIFYING, GREEN_VERIFYING]}
+  - {op: replace, path: spec/transitions/id=T021/from, value: [RED_VERIFYING, GREEN_VERIFYING]}
+  - {op: replace, path: spec/transitions/id=T022/from, value: [RED_VERIFYING, GREEN_VERIFYING]}
+  - {op: replace, path: spec/transitions/id=T023/from, value: [RED_VERIFYING, GREEN_VERIFYING]}

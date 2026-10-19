@@ -1,0 +1,10 @@
+# Invalid fixture (29-AC-2, D8): execution_failed, with all four failure classes covered, is also handled from an activeExecution verification state (RED_VERIFYING), which is not an activeExecution required state
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_OUTCOME_GUARD_INVALID
+ops:
+  - {op: replace, path: spec/transitions/id=T100/from, value: [TEST_AUTHORING, IMPLEMENTING, REVIEW, JUDGE_AUTHORING, PRODUCING, RED_VERIFYING]}
+  - {op: replace, path: spec/transitions/id=T101/from, value: [TEST_AUTHORING, IMPLEMENTING, REVIEW, JUDGE_AUTHORING, PRODUCING, RED_VERIFYING]}
+  - {op: replace, path: spec/transitions/id=T103/from, value: [TEST_AUTHORING, IMPLEMENTING, REVIEW, JUDGE_AUTHORING, PRODUCING, RED_VERIFYING]}
+  - {op: replace, path: spec/transitions/id=T104/from, value: [TEST_AUTHORING, IMPLEMENTING, REVIEW, JUDGE_AUTHORING, PRODUCING, RED_VERIFYING]}
+  - {op: replace, path: spec/transitions/id=T105/from, value: [TEST_AUTHORING, IMPLEMENTING, REVIEW, JUDGE_AUTHORING, PRODUCING, RED_VERIFYING]}
+  - {op: replace, path: spec/transitions/id=T106/from, value: [TEST_AUTHORING, IMPLEMENTING, REVIEW, JUDGE_AUTHORING, PRODUCING, RED_VERIFYING]}
