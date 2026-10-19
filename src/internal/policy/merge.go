@@ -14,8 +14,9 @@ import (
 // CodeRepoPolicyInvalid is the code of a repository policy that fails its schema (plan 22 section 9.4).
 const CodeRepoPolicyInvalid = "REPO_POLICY_INVALID"
 
-// CodePlatformPolicyInvalid reports a platform value the merge cannot compare with (a malformed number or
-// duration). The platform tree is validated by Check, so this signals a caller error; the merge fails closed.
+// CodePlatformPolicyInvalid reports a platform value the merge cannot compare with (a missing value or role, an
+// empty or un-marshalable document, a malformed number or duration). The platform tree is validated by Check, so
+// this signals a caller error; the merge fails closed.
 const CodePlatformPolicyInvalid = "PLATFORM_POLICY_INVALID"
 
 // Platform is the platform side of a merge: the VerificationPolicy document, the optional ModelRouting document
@@ -107,29 +108,51 @@ func (m *merger) normalize(opts Options, repo map[string]any) (map[string]any, b
 	}
 	m.schema(opts, doc)
 	p := &m.platform
-	for _, d := range []*map[string]any{&p.Verification, &p.ModelRouting} {
+	if p.Verification == nil {
+		m.add(CodePlatformPolicyInvalid, "", "the platform verification policy is empty")
+		return nil, false
+	}
+	for _, e := range []struct {
+		name string
+		d    *map[string]any
+	}{{"verification", &p.Verification}, {"model routing", &p.ModelRouting}} {
+		name, d := e.name, e.d
 		if *d == nil {
 			continue
 		}
-		if n, err := jsonRoundTrip(*d); err == nil {
-			if nm, ok := n.(map[string]any); ok {
-				*d = nm
-			}
+		nm, err := normalizePlatformDoc(*d)
+		if err != nil {
+			m.add(CodePlatformPolicyInvalid, "", "the platform %s policy cannot be compared with: %s", name, oneLine(err.Error()))
+			return nil, false
 		}
+		*d = nm
 	}
 	if p.Roles != nil {
 		roles := map[string]map[string]any{}
 		for k, d := range p.Roles {
-			roles[k] = d
-			if n, err := jsonRoundTrip(d); err == nil {
-				if nm, ok := n.(map[string]any); ok {
-					roles[k] = nm
-				}
+			nm, err := normalizePlatformDoc(d)
+			if err != nil {
+				m.add(CodePlatformPolicyInvalid, "", "the platform role %q cannot be compared with: %s", k, oneLine(err.Error()))
+				return nil, false
 			}
+			roles[k] = nm
 		}
 		p.Roles = roles
 	}
 	return rm, true
+}
+
+// normalizePlatformDoc returns the JSON-normalised copy of a platform document.
+func normalizePlatformDoc(d map[string]any) (map[string]any, error) {
+	n, err := jsonRoundTrip(d)
+	if err != nil {
+		return nil, err
+	}
+	nm, ok := n.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("not an object")
+	}
+	return nm, nil
 }
 
 func (m *merger) schema(opts Options, doc any) {
@@ -348,7 +371,7 @@ func toNum(v any) (float64, bool) {
 }
 
 // bound merges a number: a maximum (min wins, larger is loosening) or, when isMax is false, a minimum (max wins,
-// smaller is loosening). A missing platform value does not bound the repository.
+// smaller is loosening). A missing platform value fails closed (PLATFORM_POLICY_INVALID).
 func (m *merger) bound(ptr string, platform, repo any, isMax bool) {
 	if repo == nil {
 		return
