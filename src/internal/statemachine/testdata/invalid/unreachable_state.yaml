@@ -1,0 +1,7 @@
+# Invalid fixture (29-AC-2): every state is reachable from initialState
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_UNREACHABLE
+ops:
+  - {op: add, path: spec/states, value: {name: ISLAND, modes: [test-first, verification-first], terminal: false, activeExecution: required, description: A state nothing transitions into and resume does not reach.}}
+  - {op: add, path: spec/transitions, value: {id: T200, from: [ISLAND], to: CANCELLED, event: cancel_requested, actors: [hermes], modes: [test-first, verification-first], guards: [], effects: [], description: Leaves the island so only reachability is violated.}}
+  - {op: add, path: spec/humanProjection/6/states, value: ISLAND}

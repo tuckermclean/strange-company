@@ -1,0 +1,5 @@
+# Invalid fixture (29-AC-2): every state named anywhere is declared (transition source)
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_STATE_UNDECLARED
+ops:
+  - {op: add, path: spec/transitions/id=T060/from, value: NOWHERE}

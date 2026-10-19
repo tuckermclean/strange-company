@@ -1,0 +1,5 @@
+# Invalid fixture (29-AC-2): metadata.revision must be at least 1
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_SCHEMA_INVALID
+ops:
+  - {op: replace, path: metadata/revision, value: 0}

@@ -1,0 +1,5 @@
+# Invalid fixture (29-AC-2): transition ids are unique
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_TRANSITION_ID_DUPLICATE
+ops:
+  - {op: replace, path: spec/transitions/id=T002/id, value: T001}

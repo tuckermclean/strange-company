@@ -1,0 +1,5 @@
+# Invalid fixture (29-AC-2): a terminalStates entry must be a terminal state
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_TERMINAL_MISMATCH
+ops:
+  - {op: add, path: spec/terminalStates, value: BLOCKED}

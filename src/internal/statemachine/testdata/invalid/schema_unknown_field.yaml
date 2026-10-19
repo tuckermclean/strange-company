@@ -1,0 +1,5 @@
+# Invalid fixture (29-AC-2): unknown fields are refused (additionalProperties false)
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_SCHEMA_INVALID
+ops:
+  - {op: add, path: spec/bogus, value: 1}

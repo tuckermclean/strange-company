@@ -1,0 +1,5 @@
+# Invalid fixture (29-AC-2): execution_failed covers all four failure classes (policy missing everywhere)
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_FAILURE_CLASS_INCOMPLETE
+ops:
+  - {op: replace, path: spec/transitions/id=T104/guards/0, value: "G_FAILURE_CLASS:merit"}

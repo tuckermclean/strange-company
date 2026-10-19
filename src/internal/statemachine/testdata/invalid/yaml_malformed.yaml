@@ -1,0 +1,6 @@
+# Invalid fixture (29-AC-2): malformed YAML fails closed
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_YAML_INVALID
+text:
+  - old: "kind: TaskStateMachine\n"
+    new: "kind: [TaskStateMachine\n"

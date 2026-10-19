@@ -1,0 +1,5 @@
+# Invalid fixture (29-AC-2): every state in a humanProjection entry is declared
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_PROJECTION_STATE_UNDECLARED
+ops:
+  - {op: add, path: spec/humanProjection/6/states, value: GHOST}
