@@ -597,7 +597,7 @@ Decisions:
 
 | Commit | Role |
 |---|---|
-| 0921d00 | RED (cross-file, §9.5 and repository-side fixtures; review-3 items) |
+| 0921d00 | RED (64 fail; cross-file, §9.5 and repository-side fixtures; review-3 items) |
 | f1590e2, c3a2497, 2e43575 | docs CD-68 (documentation-only denies, exact semantics); chore aligns 39 testdata copies; RED: exact intersection and inclusion (87 fail in total) |
 | daed229, d8b7171, 247015c | GREEN attempt 1 (`invariants.go`, `glob.go` product-automaton algebra); docs CD-68 repository side; chore D8. CI [39177055694](https://github.com/tuckermclean/strange-company/actions/runs/39177055694) success |
 | ee39d43, c44be44 → (attempt 2: test-spec conflict, no commit) → 90d6f70, d0bf8d8 → 3fdf43e | review 1 request_changes. Blocker: `**/` behaved like `**`, so deny globs over-matched and overlaps were missed (fail-open). Chore (fallback shape) + RED (8 fail, including an exhaustive brute-force cross-check against the reference regex). Attempt 2 found the newline contradiction; operator decided CD-68 newline, test corrected → attempt 3. CI [39189093759](https://github.com/tuckermclean/strange-company/actions/runs/39189093759) success |
@@ -610,8 +610,8 @@ Decisions:
 | a961949 → a73cb23 | RED (21 fail) → GREEN attempt 1. CI [39193457747](https://github.com/tuckermclean/strange-company/actions/runs/39193457747) success |
 | 6f57506, 15a3b4b → c2ba522 | review 1 request_changes. Blocker: Go-typed lists (`[]string`) bypassed every set row (fail-open). Non-blockers: missing required platform values accepted the repository value; non-RE2 staticChecks patterns were accepted. Chore (schema-valid `frontier`) + RED (16 fail) → attempt 2. CI [39198487843](https://github.com/tuckermclean/strange-company/actions/runs/39198487843) success |
 | — | review 2 **approve** at c2ba522; non-blocker N1': a nil or un-marshalable platform document was used as given |
-| 076a5a3 → 031b031 | RED (5 cases) → attempt 3 (`normalize` fails closed with `PLATFORM_POLICY_INVALID`). CI [39202440947](https://github.com/tuckermclean/strange-company/actions/runs/39202440947) success |
-| — | final review **approve** at 031b031 (PR head), including a whole-node pass; every GATE-F04 criterion passes |
+| 076a5a3 → 031b031 | RED (7 fail, 5 cases) → attempt 3 (`normalize` fails closed with `PLATFORM_POLICY_INVALID`). CI [39202440947](https://github.com/tuckermclean/strange-company/actions/runs/39202440947) success |
+| — | final review **approve** at 031b031 (pre-STATUS head; reviewed as 651633e), including a whole-node pass; every GATE-F04 criterion passes |
 
 #### F04 — gate evidence
 
