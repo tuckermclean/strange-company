@@ -95,15 +95,16 @@ type state struct {
 }
 
 type transition struct {
-	id           string
-	from         []string
-	to           string
-	event        string
-	actors       []string
-	modes        []string
-	guards       []string
-	effects      []string
-	humanCommand string
+	id            string
+	from          []string
+	to            string
+	event         string
+	actors        []string
+	modes         []string
+	guards        []string
+	effects       []string
+	humanCommand  string
+	countsAttempt bool // the dispatch consumes an attempt (autonomous_used or tester_used)
 }
 
 // ModeReport is the reachability and termination result for one verification mode.
@@ -338,7 +339,7 @@ func build(doc any) (*Machine, *LoadError) {
 	for _, t := range list(spec["transitions"]) {
 		m.transitions = append(m.transitions, transition{
 			id: str(t, "id"), from: strs(t["from"]), to: str(t, "to"), event: str(t, "event"), actors: strs(t["actors"]),
-			modes: strs(t["modes"]), guards: strs(t["guards"]), effects: strs(t["effects"]), humanCommand: str(t, "humanCommand"),
+			modes: strs(t["modes"]), guards: strs(t["guards"]), effects: strs(t["effects"]), humanCommand: str(t, "humanCommand"), countsAttempt: t["countsAttempt"] == true,
 		})
 	}
 	return m, nil

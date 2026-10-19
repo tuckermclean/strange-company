@@ -132,14 +132,21 @@ var dispatchEvents = map[string]bool{
 }
 
 // attemptGuards are the guards that map to ATTEMPTS_EXHAUSTED when they alone fail.
-var attemptGuards = map[string]bool{"G_ATTEMPTS_REMAIN": true, "G_REVIEWS_REMAIN": true, "G_AUXILIARY_REMAIN": true}
+var attemptGuards = map[string]bool{"G_ATTEMPTS_REMAIN": true, "G_REVIEWS_REMAIN": true, "G_AUXILIARY_REMAIN": true, "G_NOT_IDENTICAL_REPLAY": true}
 
 // Fire evaluates ev against snap (plan 29 section 8.1). Candidates are the transitions whose from contains the
 // snapshot state ("$none" for a task that does not exist yet), whose event matches and whose modes contain the
-// task's mode, in ascending id order. Every guard of every candidate is evaluated (the implicit
-// G_ACTOR_AUTHORIZED first, which also requires the actor class to be listed); the first candidate whose guards
-// all pass fires. Otherwise the event is Rejected. Malformed input is a *FireError and the zero Decision. Fire
-// reads nothing but its arguments and never modifies them.
+// task's mode, narrowed to those that list the actor class (step 1); when only that narrowing empties the set the
+// event is Rejected naming G_ACTOR_AUTHORIZED alone. For a dispatch event a non-empty Event.Role must map to the
+// event (section 7.2) and be one of the state's dispatchableRoles, else the event is Rejected. The remaining
+// candidates are taken in ascending id order; every guard of every candidate is evaluated (the implicit
+// G_ACTOR_AUTHORIZED first); the first candidate whose guards all pass fires, with its counter deltas
+// (Applied.Deltas). Otherwise the event is Rejected, with the code and the failed guards computed from the
+// actor-filtered candidates only. Each fact is asked of facts at most once per call (the answer is cached), so
+// facts that answer inconsistently cannot produce a decision that no single fact set yields. Malformed input is a
+// *FireError and the zero Decision. Fire reads nothing but its arguments and never modifies them. A Facts
+// implementation that panics propagates the panic out of Fire; nothing has been applied, because Fire applies
+// nothing (Advance does).
 func Fire(m *Machine, snap TaskSnapshot, ev Event, facts Facts) (Decision, error) {
 	if m == nil {
 		return Decision{}, ferr(FireMachineNil, "the machine is nil")
@@ -167,12 +174,23 @@ func Fire(m *Machine, snap TaskSnapshot, ev Event, facts Facts) (Decision, error
 		from = "$none"
 	}
 	var cands []*transition
+	listed := false
 	for i := range m.transitions {
 		t := &m.transitions[i]
 		if t.event == ev.Name && has(t.modes, snap.Mode) && has(t.from, from) {
-			cands = append(cands, t)
+			listed = true
+			if has(t.actors, ev.Actor) {
+				cands = append(cands, t)
+			}
 		}
 	}
+	if listed && len(cands) == 0 {
+		return Decision{Rejected: &Rejected{Code: CodeGateNotSatisfied, FailedGuards: []string{"G_ACTOR_AUTHORIZED"}}}, nil
+	}
+	if dispatchEvents[ev.Name] && ev.Role != "" && (cur == nil || roleEvent(ev.Role, snap.State, snap.Mode) != ev.Name || !has(cur.dispatchable, ev.Role)) {
+		return Decision{Rejected: &Rejected{Code: CodeGateNotSatisfied, FailedGuards: []string{"G_DISPATCH_PREREQUISITES"}}}, nil
+	}
+	facts = newFactCache(facts)
 	sort.SliceStable(cands, func(i, j int) bool { return cands[i].id < cands[j].id })
 	var failed []string
 	var winner *transition
@@ -198,7 +216,44 @@ func Fire(m *Machine, snap TaskSnapshot, ev Event, facts Facts) (Decision, error
 	a := &Applied{TransitionID: winner.id, From: from, To: to, Effects: append([]string(nil), winner.effects...)}
 	a.FailureClass = effectArg(winner.effects, "E_COUNT_FAILURE")
 	a.ReasonCode = effectArg(winner.effects, "E_NOTIFY_HUMAN")
+	a.Deltas = m.deltas(winner, cur, snap, ev, facts)
 	return Decision{Applied: a}, nil
+}
+
+// factCache answers each fact of the wrapped Facts at most once.
+type factCache struct {
+	f Facts
+	b map[string]boolAnswer
+	v map[string]valueAnswer
+}
+
+type boolAnswer struct{ value, known bool }
+
+type valueAnswer struct {
+	value string
+	known bool
+}
+
+func newFactCache(f Facts) *factCache {
+	return &factCache{f: f, b: map[string]boolAnswer{}, v: map[string]valueAnswer{}}
+}
+
+func (c *factCache) Bool(ev Event, guard string) (bool, bool) {
+	if a, ok := c.b[guard]; ok {
+		return a.value, a.known
+	}
+	v, k := c.f.Bool(ev, guard)
+	c.b[guard] = boolAnswer{v, k}
+	return v, k
+}
+
+func (c *factCache) Value(ev Event, guard string) (string, bool) {
+	if a, ok := c.v[guard]; ok {
+		return a.value, a.known
+	}
+	v, k := c.f.Value(ev, guard)
+	c.v[guard] = valueAnswer{v, k}
+	return v, k
 }
 
 // failedGuards evaluates every guard of t (implicit G_ACTOR_AUTHORIZED first) and returns the failed ids in order.
