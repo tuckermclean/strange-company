@@ -1,0 +1,6 @@
+# Invalid fixture (29-AC-2, D6): a verification-first transition SPECIFIED to TEST_AUTHORING, a state that exists only in test-first
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_MODE_MISMATCH
+mode: verification-first
+ops:
+  - {op: add, path: spec/transitions, value: {id: T200, from: [SPECIFIED], to: TEST_AUTHORING, event: escalate, actors: [hermes], modes: [verification-first], guards: [], effects: [], description: Targets a test-first state while declared for verification-first only.}}

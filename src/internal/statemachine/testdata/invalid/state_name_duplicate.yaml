@@ -1,0 +1,5 @@
+# Invalid fixture (29-AC-2, D6): a state name is declared twice (load.go reports this under the schema code)
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_SCHEMA_INVALID
+ops:
+  - {op: add, path: spec/states, value: {name: DONE, modes: [test-first, verification-first], terminal: true, activeExecution: forbidden, description: A second declaration of DONE.}}

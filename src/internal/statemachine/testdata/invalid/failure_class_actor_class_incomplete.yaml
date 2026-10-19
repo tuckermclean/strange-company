@@ -1,0 +1,5 @@
+# Invalid fixture (29-AC-2, D6): per actor class completeness: runner loses the policy class on execution_failed
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_FAILURE_CLASS_INCOMPLETE
+ops:
+  - {op: replace, path: spec/transitions/id=T104/actors, value: [hermes]}

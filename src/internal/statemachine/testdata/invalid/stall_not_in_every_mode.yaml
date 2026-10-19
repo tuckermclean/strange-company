@@ -1,0 +1,6 @@
+# Invalid fixture (29-AC-2, D6): stall.escalateTo needs a stall_timeout applying in every mode of the state (RED_VERIFIED is test-first)
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_STALL_NO_TRANSITION
+mode: test-first
+ops:
+  - {op: replace, path: spec/transitions/id=T140/modes, value: [verification-first]}

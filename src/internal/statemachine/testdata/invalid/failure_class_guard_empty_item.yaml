@@ -1,0 +1,5 @@
+# Invalid fixture (29-AC-2, D6): an empty item in a G_FAILURE_CLASS argument list
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_OUTCOME_GUARD_INVALID
+ops:
+  - {op: replace, path: spec/transitions/id=T104/guards/0, value: "G_FAILURE_CLASS:policy,"}

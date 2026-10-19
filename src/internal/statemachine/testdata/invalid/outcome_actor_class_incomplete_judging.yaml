@@ -1,0 +1,6 @@
+# Invalid fixture (29-AC-2, D6): per actor class completeness: ci loses tamper_detected on judging_classified
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_OUTCOME_INCOMPLETE
+mode: verification-first
+ops:
+  - {op: replace, path: spec/transitions/id=T130/actors, value: [runner]}

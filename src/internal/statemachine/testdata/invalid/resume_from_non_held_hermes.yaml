@@ -1,0 +1,5 @@
+# Invalid fixture (29-AC-2, D6): $resume from SPECIFIED (not BLOCKED or NEEDS_HUMAN) by a hermes transition
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_RESUME_FROM_NON_HELD
+ops:
+  - {op: add, path: spec/transitions, value: {id: T200, from: [SPECIFIED], to: $resume, event: escalate, actors: [hermes], modes: [test-first, verification-first], guards: [], effects: [], description: Resumes although SPECIFIED is not a held state.}}

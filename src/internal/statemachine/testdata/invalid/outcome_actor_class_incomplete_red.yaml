@@ -1,0 +1,6 @@
+# Invalid fixture (29-AC-2, D6): per actor class completeness: ci covers only three red outcomes
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_OUTCOME_INCOMPLETE
+mode: test-first
+ops:
+  - {op: replace, path: spec/transitions/id=T023/actors, value: [runner]}

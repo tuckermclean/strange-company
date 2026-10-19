@@ -1,0 +1,10 @@
+# Invalid fixture (29-AC-2, D6): the judge verification state has no classification transitions (their events are changed to escalate so the graph stays intact)
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_OUTCOME_INCOMPLETE
+mode: verification-first
+ops:
+  - {op: replace, path: spec/transitions/id=T116/event, value: escalate}
+  - {op: replace, path: spec/transitions/id=T117/event, value: escalate}
+  - {op: replace, path: spec/transitions/id=T118/event, value: escalate}
+  - {op: replace, path: spec/transitions/id=T119/event, value: escalate}
+  - {op: replace, path: spec/transitions/id=T120/event, value: escalate}

@@ -1,0 +1,5 @@
+# Invalid fixture (29-AC-2, D6): the stall_timeout transition must have actor runner
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_STALL_NO_TRANSITION
+ops:
+  - {op: replace, path: spec/transitions/id=T140/actors, value: [hermes]}

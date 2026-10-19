@@ -1,0 +1,5 @@
+# Invalid fixture (29-AC-2, D6): two G_FAILURE_CLASS guards on one transition
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_OUTCOME_GUARD_INVALID
+ops:
+  - {op: add, path: spec/transitions/id=T106/guards, value: "G_FAILURE_CLASS:policy"}
