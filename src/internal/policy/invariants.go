@@ -305,10 +305,9 @@ func crossFileInvariants(resources map[string]Resource, names map[string]map[str
 
 	// Exactly the five roles of SPEC section 65, once any RoleDefinition is present.
 	if len(names["RoleDefinition"]) > 0 {
-		anchor := roleAnchor(roles)
 		for _, rn := range requiredRoles {
 			if !names["RoleDefinition"][rn] {
-				c.add(CodeRoleMissing, "", anchor, "role %q is not defined; exactly the five roles of SPEC section 65 must exist", rn)
+				c.add(CodeRoleMissing, "", "roles/"+rn+".yaml", "role %q is not defined; exactly the five roles of SPEC section 65 must exist", rn)
 			}
 		}
 		for _, v := range byKind["VerificationPolicy"] {
@@ -343,13 +342,6 @@ func crossFileInvariants(resources map[string]Resource, names map[string]map[str
 		}
 	}
 	return c.issues
-}
-
-func roleAnchor(roles []doc) string {
-	if len(roles) > 0 {
-		return roles[0].file
-	}
-	return "roles"
 }
 
 func sortedSetNames(m map[string]map[string]any) []string {

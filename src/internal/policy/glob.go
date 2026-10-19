@@ -31,6 +31,7 @@ const (
 	tokStar                 // *  : any run of runes except '/'
 	tokAny                  // ** : any run of runes
 	tokDirs                 // **/: zero or more directories
+	tokDirsIn
 )
 
 type globTok struct {
@@ -44,7 +45,7 @@ func parseGlob(pat string) []globTok {
 	for i := 0; i < len(rs); {
 		switch {
 		case rs[i] == '*' && i+2 < len(rs) && rs[i+1] == '*' && rs[i+2] == '/':
-			toks = append(toks, globTok{kind: tokDirs})
+			toks = append(toks, globTok{kind: tokDirs}, globTok{kind: tokDirsIn})
 			i += 3
 		case rs[i] == '*' && i+1 < len(rs) && rs[i+1] == '*':
 			toks = append(toks, globTok{kind: tokAny})
@@ -97,9 +98,9 @@ func newGlobSet(globs []string) *globSet {
 		g.alpha = append(g.alpha, r)
 	}
 	sort.Slice(g.alpha, func(i, j int) bool { return g.alpha[i] < g.alpha[j] })
-	// One representative of every character that no glob mentions: not '/', not '\n', not a literal.
+	// One representative of every character that no glob mentions: not '/' and not a literal.
 	other := rune(0x1)
-	for lits[other] || other == '\n' {
+	for lits[other] {
 		other++
 	}
 	g.alpha = append(g.alpha, other)
@@ -126,8 +127,10 @@ func (g *globSet) closure(b bitset) {
 				continue
 			}
 			switch toks[i].kind {
-			case tokStar, tokAny, tokDirs:
+			case tokStar, tokAny:
 				b.set(g.off[gi] + i + 1)
+			case tokDirs:
+				b.set(g.off[gi] + i + 2)
 			}
 		}
 	}
@@ -164,13 +167,14 @@ func (g *globSet) step(b bitset, c rune) bitset {
 					n.set(g.off[gi] + i)
 				}
 			case tokAny:
-				if c != '\n' {
-					n.set(g.off[gi] + i)
-				}
+				n.set(g.off[gi] + i)
 			case tokDirs:
-				if c != '\n' {
-					n.set(g.off[gi] + i)
+				n.set(g.off[gi] + i + 1)
+				if c == '/' {
+					n.set(g.off[gi] + i + 2)
 				}
+			case tokDirsIn:
+				n.set(g.off[gi] + i)
 				if c == '/' {
 					n.set(g.off[gi] + i + 1)
 				}

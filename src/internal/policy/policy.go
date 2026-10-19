@@ -262,10 +262,10 @@ func check(dir string, opts Options) (string, map[string]Resource, []Issue) {
 			continue
 		}
 		if rstem, isRepo := repoSide(f.path); isRepo {
-			if len(validate(schemas[rstem], doc)) == 0 {
+			if errs := validate(schemas[rstem], doc); len(errs) == 0 {
 				repoDocs[f.path], _ = doc.(map[string]any)
 			} else {
-				for _, e := range validate(schemas[rstem], doc) {
+				for _, e := range errs {
 					add(CodeSchemaInvalid, e[0], f.path, e[1])
 				}
 			}
