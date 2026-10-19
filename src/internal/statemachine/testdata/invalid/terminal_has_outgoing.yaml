@@ -2,4 +2,4 @@
 # Base: contracts/state-machine.yaml; valid except for the one invariant named here.
 code: SM_TERMINAL_HAS_OUTGOING
 ops:
-  - {op: add, path: spec/transitions, value: {id: T200, from: [DONE], to: SPECIFIED, event: escalate, actors: [hermes], modes: [test-first, verification-first], guards: [], effects: [], description: Reopen a finished task, which terminal states forbid.}}
+  - {op: add, path: spec/transitions, value: {id: T200, from: [DONE], to: SPECIFIED, event: escalate, actors: [hermes], modes: [test-first, verification-first], guards: [], effects: [], description: "Reopen a finished task, which terminal states forbid."}}
