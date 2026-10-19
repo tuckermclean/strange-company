@@ -1,0 +1,9 @@
+apiVersion: strange.company/v1alpha1
+kind: RepositoryPolicy
+metadata: {name: fixture}
+spec:
+  testPaths: ["src/**", ".github/**"]
+  fixturePaths: ["policy/**/*.yaml"]
+  testInfraPaths: [".claude/**/helpers/**"]
+  stubPaths: ["vendor/gen/**"]
+  protectedPaths: ["vendor/**"]

@@ -1,0 +1,10 @@
+/spec/fixturePaths:
+- '**/testdata/**'
+/spec/stubPaths:
+- src/**/*.go
+/spec/testInfraPaths:
+- src/internal/testutil/**
+/spec/testPaths:
+- '**/*_test.go'
+- '**/*.yaml'
+- tests/**

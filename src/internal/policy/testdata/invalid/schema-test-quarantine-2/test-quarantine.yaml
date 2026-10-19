@@ -1,0 +1,16 @@
+# x-invalid-examples[2] of contracts/test-quarantine.schema.yaml: An entry without an issue reference.
+"apiVersion": "strange.company/v1alpha1"
+"kind": "TestQuarantine"
+"metadata":
+  "name": "strange-company"
+"spec":
+  "maxEntries": 10
+  "maxDays": 14
+  "entries":
+  - "id": "pkg.TestX"
+    "target": "test"
+    "reason": "flaky on the small node under load"
+    "issue": ""
+    "added": "2026-10-13"
+    "expires": "2026-10-20"
+    "owner": "bob"

@@ -1,0 +1,4 @@
+POLICY_LOOSENING:/spec/verification/allowedExemptionClasses/1
+POLICY_LOOSENING:/spec/verification/stubPanicLanguages/1
+POLICY_LOOSENING:/spec/humanAuthority/forgejoTeams/1
+POLICY_LOOSENING:/spec/modelRouting/allowedProviders/1

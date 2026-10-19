@@ -1,0 +1,10 @@
+apiVersion: strange.company/v1alpha1
+kind: RepositoryPolicy
+metadata: {name: fixture}
+spec:
+  testPaths: ["tests/**"]
+  task: {maxBaseLag: {age: 25h}}
+  watchdog:
+    groups:
+      verification: {alertAfter: 2h, escalateAfter: 5h}
+      hermesWait: {alertAfter: 25h}

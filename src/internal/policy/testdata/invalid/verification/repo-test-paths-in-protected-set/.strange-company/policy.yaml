@@ -1,0 +1,9 @@
+apiVersion: strange.company/v1alpha1
+kind: RepositoryPolicy
+metadata: {name: strange-company}
+spec:
+  testPaths: ["**/*_test.go", "test/integration/**", "src/**/testdata/**", "policy/tests/**"]
+  fixturePaths: ["**/testdata/**"]
+  testInfraPaths: ["src/internal/testutil/**"]
+  stubPaths: ["src/**/*.go"]
+  protectedPaths: ["Makefile", "mk/**"]

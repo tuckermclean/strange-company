@@ -48,6 +48,16 @@ const (
 	CheckKindAmbiguous   = "CONTRACT_KIND_AMBIGUOUS"
 )
 
+// newCompiler returns the compiler configuration shared by sc-contracts and CompileSchemas: draft 2020-12,
+// asserted formats and the ECMA-262 regexp engine.
+func newCompiler() *jsonschema.Compiler {
+	c := jsonschema.NewCompiler()
+	c.DefaultDraft(jsonschema.Draft2020)
+	c.AssertFormat()
+	c.UseRegexpEngine(compileECMA)
+	return c
+}
+
 type runner struct {
 	root string
 	rows []Row
@@ -136,10 +146,7 @@ type schemaFile struct {
 // Run validates every contract under root and returns the report rows.
 func Run(root string) []Row {
 	r := &runner{root: root}
-	r.c = jsonschema.NewCompiler()
-	r.c.DefaultDraft(jsonschema.Draft2020)
-	r.c.AssertFormat()
-	r.c.UseRegexpEngine(compileECMA)
+	r.c = newCompiler()
 
 	var schemas []*schemaFile
 	for _, rel := range glob(root, "contracts/*.schema.yaml") {

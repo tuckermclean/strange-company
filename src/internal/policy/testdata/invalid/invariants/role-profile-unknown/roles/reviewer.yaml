@@ -1,0 +1,44 @@
+"apiVersion": "strange.company/v1alpha1"
+"kind": "RoleDefinition"
+"metadata":
+  "name": "reviewer"
+"spec":
+  "description": "Turns acceptance criteria into executable failing tests before implementation (SPEC \xA748\u2013\xA749)."
+  "instructions": "You are the reviewer. Produce your deliverable without modifying the repository. Follow the acceptance criteria exactly and report through the structured result."
+  "forgeAccess": "read"
+  "allowedHarnesses":
+  - "claude"
+  - "codex"
+  "defaultModelTier": "standard"
+  "allowedModelTiers":
+  - "standard"
+  - "frontier"
+  "defaultProfile": "reasoning"
+  "allowedProfiles":
+  - "tiny"
+  - "reasoning"
+  "accounting":
+    "firstAttemptPhase": "review"
+    "retryPhase": "review"
+  "diffRules":
+    "mode": "none"
+    "maxFilesChanged": 0
+    "maxDiffBytes": 0
+  "contextProjection":
+    "include":
+    - "company_rules"
+    - "repository_context"
+    - "role_instructions"
+    - "task_spec"
+    - "acceptance_criteria"
+    "forbid": []
+    "maxTotalBytes": 262144
+  "expectedOutput":
+    "allowedResultStates":
+    - "completed"
+    - "failed"
+    - "blocked"
+    "commitRequiredOnCompleted": false
+    "roleOutput": "reviewer"
+  "verification":
+    "triggers": "none"

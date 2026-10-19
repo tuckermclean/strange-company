@@ -1,0 +1,4 @@
+POLICY_LOOSENING:/spec/task/maxBaseLag/age
+POLICY_LOOSENING:/spec/watchdog/groups/verification/alertAfter
+POLICY_LOOSENING:/spec/watchdog/groups/verification/escalateAfter
+POLICY_LOOSENING:/spec/watchdog/groups/hermesWait/alertAfter

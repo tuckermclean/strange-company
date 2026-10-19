@@ -1,0 +1,32 @@
+# x-invalid-examples[2] of contracts/resource-profile.schema.yaml: Memory quantity in bytes without a binary unit, and a fractional-second deadline.
+"apiVersion": "strange.company/v1alpha1"
+"kind": "ResourceProfiles"
+"metadata":
+  "name": "default"
+"spec":
+  "activeSet": "standard"
+  "concurrency":
+    "maxWorkers": 1
+    "queue":
+      "maxQueued": 20
+  "sets":
+    "standard":
+      "tiny":
+        "cpuRequest": "250m"
+        "cpuLimit": "1"
+        "memoryRequest": "1073741824"
+        "memoryLimit": "1Gi"
+        "ephemeralStorageLimit": "1Gi"
+        "workspaceSize": "2Gi"
+        "deadline": "0.5m"
+        "harnessReserve": "3m"
+    "constrained":
+      "tiny":
+        "cpuRequest": "250m"
+        "cpuLimit": "1"
+        "memoryRequest": "768Mi"
+        "memoryLimit": "768Mi"
+        "ephemeralStorageLimit": "1Gi"
+        "workspaceSize": "2Gi"
+        "deadline": "10m"
+        "harnessReserve": "3m"

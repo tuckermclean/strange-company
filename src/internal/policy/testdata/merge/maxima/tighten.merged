@@ -1,0 +1,11 @@
+/spec/diffLimits/implementer/maxDiffBytes: 5000
+/spec/diffLimits/implementer/maxFilesChanged: 40
+/spec/diffLimits/tester/maxDiffBytes: 1000
+/spec/diffLimits/tester/maxFilesChanged: 10
+/spec/modelRouting/maxTier: standard
+/spec/retry/maxAutonomousAttempts: 3
+/spec/retry/maxAuxiliaryExecutions: 4
+/spec/retry/maxReviewExecutions: 3
+/spec/retry/maxTesterAttempts: 2
+/spec/task/maxBaseLag/commits: 10
+/spec/testSpecConflict/maxConflictsPerTask: 1

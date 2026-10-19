@@ -1,0 +1,7 @@
+apiVersion: strange.company/v1alpha1
+kind: TestQuarantine
+metadata: {name: strange-company}
+spec: &defaults
+  maxEntries: 10
+  maxDays: 14
+  entries: []

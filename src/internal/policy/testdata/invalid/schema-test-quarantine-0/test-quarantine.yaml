@@ -1,0 +1,16 @@
+# x-invalid-examples[0] of contracts/test-quarantine.schema.yaml: Quarantining a SPEC §106 acceptance test (Q2).
+"apiVersion": "strange.company/v1alpha1"
+"kind": "TestQuarantine"
+"metadata":
+  "name": "strange-company"
+"spec":
+  "maxEntries": 10
+  "maxDays": 14
+  "entries":
+  - "id": "strange.company/sc/src/internal/statemachine.TestSpec106ImplementerBlockedBeforeRed"
+    "target": "test"
+    "reason": "fails intermittently on CI runners"
+    "issue": "strange-company/strange-company#9"
+    "added": "2026-10-13"
+    "expires": "2026-10-20"
+    "owner": "bob"

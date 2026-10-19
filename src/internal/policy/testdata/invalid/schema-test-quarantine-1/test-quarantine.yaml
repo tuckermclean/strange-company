@@ -1,0 +1,9 @@
+# x-invalid-examples[1] of contracts/test-quarantine.schema.yaml: maxDays above the 14-day policy ceiling.
+"apiVersion": "strange.company/v1alpha1"
+"kind": "TestQuarantine"
+"metadata":
+  "name": "strange-company"
+"spec":
+  "maxEntries": 10
+  "maxDays": 30
+  "entries": []

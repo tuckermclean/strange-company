@@ -1,0 +1,9 @@
+/spec/humanAuthority/forgejoTeams:
+- Owners
+/spec/modelRouting/allowedProviders:
+- anthropic
+- deepseek
+/spec/verification/allowedExemptionClasses:
+- documentation-only
+- research
+/spec/verification/stubPanicLanguages: []

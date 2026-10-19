@@ -556,3 +556,100 @@ Follow-ups (not blocking GATE-F03):
   - the `TestMainBinary_UsesProductionEnv` source-text check could become a behavioural one;
   - the `toolbox` image has about 110 MiB of headroom against its 1.6 GiB budget.
 - **Release:** re-run 02-AC-4 against GHCR at the first release (D3); the Fedora 44 image moves to `archives.fedoraproject.org` at EOL.
+
+### F04 — policy-lib
+
+Branch `node/F04-policy-lib`, built with `/sc-node F04` from `main` 61d38fa. Library `src/internal/policy` (loader, revision digest, invariants, exact glob algebra, `MergePolicy`), CLI `src/cmd/sc-policy`, `make policy-check` (`mk/policy.mk`, in `VERIFY_TARGETS`) and the committed `policy/verification.yaml`. Three slices:
+- S1: loader core (schema by kind, plan 26 §9.2 step 1, digest, last-known-good, `sc-policy check`).
+- S2: cross-file invariants (plan 26 §9.2 step 3) and verification-policy invariants (plan 22 §9.5).
+- S3: `MergePolicy` (plan 22 §9.4).
+
+**Status: all three slices approved; every GATE-F04 criterion has passing evidence below.**
+
+SHAs are those after one operator-approved rewrite. The first RED's stubs failed `TDD_STUB_INVALID`: `main` was unmarked and had a body, and `NewLoader` returned non-zero. The rewrite amended only that commit; the head tree is byte-identical to the reviewed pre-rewrite head 651633e (tag `f04-pre-rewrite`). CI runs and reviews ran on the pre-rewrite SHAs.
+
+Pre-rewrite → rewritten: 83187d5→f27788c, 49e362b→e94f6bc, 6b27092→0772a43, 20f1921→208c18c, b41bef5→130f707, 4692d86→c3b079e, 2934c6a→1667cae, ab5d5b7→6502520, 93ce467→7609d0e, a8a0ff5→0921d00, 9270b25→f1590e2, d660fc2→c3a2497, 7342130→2e43575, 4d41398→daed229, 5c6daa0→d8b7171, bfe677e→247015c, 7a2f663→ee39d43, e1334f3→c44be44, ad721a3→90d6f70, f7827ba→d0bf8d8, 3f8b785→3fdf43e, bc9c181→a961949, 6e734a3→a73cb23, 5172d7d→6f57506, 09a5e9b→15a3b4b, 059dbcd→c2ba522, 2e2e1ab→076a5a3, 651633e→031b031.
+
+Decisions:
+- **D1:** F04 commits only `policy/verification.yaml`. The other Runner kinds ship with their owning nodes (F07/C02, C05, C06, C07). `make policy-check` (CI mode) checks the kinds present; the five-roles rule applies once any `RoleDefinition` exists. Runner mode (`Options.Runner`) also requires every Runner kind (`POLICY_KIND_MISSING`). `testdata/valid/` is a complete Runner-mode tree.
+- **D2:** `CIPolicy` and `TestQuarantine` are known kinds, validated by schema only.
+- **D3:** the loader covers plan 26 §9.2 steps 1–4 and the in-memory parts of 6–7. Commit resolution, `policy_revisions`, metrics, alerts and step 8 are C01. `MANAGED_REPOSITORY_NOT_IN_FORGE` (22-AC-36) and `ENFORCEMENT_PLANE_NOT_ELEVATED` (22-AC-33) belong to their own gates.
+- **D4:** `src/policy/testdata/…` in the criteria means `src/internal/policy/testdata/…` (plan 01 OQ-01-4).
+- **D5:** `sc-policy check [--root R] [--dir D]` prints `<CODE>[:<pointer>] <file>: <message>`. `make policy-check POLICY_DIR=<dir>` checks another tree or fixture.
+- **CD-68** (operator-approved; three parts):
+  - `documentation-only` also denies `gitops/**`, `deploy/**`, `ansible/**`, `tofu/**` and `**/migrations/**`. The shipped `examples[0]` overlapped human classes under exact glob semantics.
+  - §9.5 path checks are exact language intersection and inclusion over the checker's glob semantics. A repository definition glob is rejected only when it lies entirely inside the protected set.
+  - A newline in a path is an ordinary character for `*`, `?` and `**`.
+- **D6 — `maxTier` ceiling:** the platform ceiling for routing `maxTier`/`roleMaxTier` is the highest `ModelRouting` tier with candidates. Plan 31 §14.3 names no platform cap other than "frontier when absent". `roleMaxTier` is checked against that global ceiling, not the role's allowed tiers.
+- **D7 — `MergePolicy` signature:** the signature is `MergePolicy(opts Options, platform Platform, repo map[string]any) (Effective, []Issue)`, not plan 22 §7.2's `(platform, repo) (Effective, error)`. It reads the contract schemas through a per-directory cache. F06 may wrap it.
+- **D8 (operator):** `TestCheck_ManyPropertyNamesViolationsAreBounded` runs without a wall clock (forbidigo D8). Its time bound is `go test -timeout 20m`. A separate test pins the >32-candidate fallback shape.
+
+#### S1 — loader core (26-AC-2, 26-AC-3, 22-AC-1 committed file, 26-AC-1 schema by kind and step 1)
+
+| Commit | Role |
+|---|---|
+| f27788c → e94f6bc | RED (165 fail) → GREEN attempt 1. CI [39154759893](https://github.com/tuckermclean/strange-company/actions/runs/39154759893) success |
+| 0772a43, 208c18c → 130f707..1667cae | review 1 request_changes. Blockers: schema-error pointers varied between runs (jsonschema v6.0.3 shares the `InstanceLocation` slice); a top-level `__` file overwrote a nested path; non-YAML files were not validated. RED (46 fail) + chore → attempt 2 (leaf walk, schema cache, collisions, every file is a document). CI [39165586740](https://github.com/tuckermclean/strange-company/actions/runs/39165586740) success |
+| 6502520 → 7609d0e | review 2 request_changes. Blocker: additionalProperties messages listed keys in map order. RED (6 fail) → attempt 3 (sorted lists; propertyNames locations found by a key-removal experiment). CI [39168461414](https://github.com/tuckermclean/strange-company/actions/runs/39168461414) success |
+| — | review 3 **approve** at 7609d0e |
+
+#### S2 — invariants (26-AC-1 §9.2 step 3, 26-AC-5, 22-AC-1 §9.5)
+
+| Commit | Role |
+|---|---|
+| 0921d00 | RED (64 fail; cross-file, §9.5 and repository-side fixtures; review-3 items) |
+| f1590e2, c3a2497, 2e43575 | docs CD-68 (documentation-only denies, exact semantics); chore aligns 39 testdata copies; RED: exact intersection and inclusion (87 fail in total) |
+| daed229, d8b7171, 247015c | GREEN attempt 1 (`invariants.go`, `glob.go` product-automaton algebra); docs CD-68 repository side; chore D8. CI [39177055694](https://github.com/tuckermclean/strange-company/actions/runs/39177055694) success |
+| ee39d43, c44be44 → (attempt 2: test-spec conflict, no commit) → 90d6f70, d0bf8d8 → 3fdf43e | review 1 request_changes. Blocker: `**/` behaved like `**`, so deny globs over-matched and overlaps were missed (fail-open). Chore (fallback shape) + RED (8 fail, including an exhaustive brute-force cross-check against the reference regex). Attempt 2 found the newline contradiction; operator decided CD-68 newline, test corrected → attempt 3. CI [39189093759](https://github.com/tuckermclean/strange-company/actions/runs/39189093759) success |
+| — | review 2 **approve** at 3fdf43e (two 30,000-case brute-force runs against the dotall reference: 0 mismatches) |
+
+#### S3 — `MergePolicy` (22-AC-2, 26-AC-4)
+
+| Commit | Role |
+|---|---|
+| a961949 → a73cb23 | RED (21 fail) → GREEN attempt 1. CI [39193457747](https://github.com/tuckermclean/strange-company/actions/runs/39193457747) success |
+| 6f57506, 15a3b4b → c2ba522 | review 1 request_changes. Blocker: Go-typed lists (`[]string`) bypassed every set row (fail-open). Non-blockers: missing required platform values accepted the repository value; non-RE2 staticChecks patterns were accepted. Chore (schema-valid `frontier`) + RED (16 fail) → attempt 2. CI [39198487843](https://github.com/tuckermclean/strange-company/actions/runs/39198487843) success |
+| — | review 2 **approve** at c2ba522; non-blocker N1': a nil or un-marshalable platform document was used as given |
+| 076a5a3 → 031b031 | RED (7 fail, 5 cases) → attempt 3 (`normalize` fails closed with `PLATFORM_POLICY_INVALID`). CI [39202440947](https://github.com/tuckermclean/strange-company/actions/runs/39202440947) success |
+| — | final review **approve** at 031b031 (pre-STATUS head; reviewed as 651633e), including a whole-node pass; every GATE-F04 criterion passes |
+
+#### F04 — gate evidence
+
+| Criterion | Test(s) / evidence | Status |
+|---|---|---|
+| 22-AC-1 | `TestCommittedVerificationPolicyEqualsExample_22AC1` (no local overrides), `sc-policy` `TestCheck_CommittedPolicyExitsZero_26AC1`, `make policy-check` exit 0; `TestVerificationInvariantFixtures_22AC1` over `invalid/verification/` (one per §9.5 invariant, including the repository side), `TestExactGlob*_22AC1` (exact overlap, dead entry, brute force), `TestCheckPrintsInvariantCodes_*` (CLI prints each code) | pass |
+| 22-AC-2 | `TestMergePolicy_Rows_22AC2` (each §9.4 row: tightening fixture with merged value, loosening fixture with `POLICY_LOOSENING:<pointer>`), `_OrderedEnumsStricterWins`, `_EqualToPlatformIsNotLoosening`, `_UnionKeepsPlatformEntries`, `_DoesNotMutatePlatform`, `_SharedLoosenFixture_22AC2`, `merge_review1_test.go` | pass |
+| 26-AC-1 | `TestCheck_SchemaInvalidExamples_26AC1` (41 fixtures, one per policy-kind `x-invalid-examples`), `TestCheck_Step1Rejections_26AC1`, `TestCheck_EveryInvalidFixtureIsRejected_26AC1`, `TestInvariantFixtures_26AC1` (18 step-3 fixtures), `sc-policy` `TestCheck_InvalidFixturesPrintExpectedCode_26AC1`, determinism and pointer tests | pass |
+| 26-AC-2 | `TestDigest_ValidTreeEqualsRecorded` (`valid.digest` computed independently), `_RenameOrByteChangeChangesIt`, `_DirectoryOrderDoesNotMatter`, `_ConfigMapKeysMapToPaths` | pass |
+| 26-AC-3 | `TestLoader_InvalidRevisionKeepsLastKnownGood_26AC3`, `TestLoader_FirstRevisionInvalid_26AC3` | pass |
+| 26-AC-4 | `TestMergePolicy_RejectsLooseningFixture_26AC4`, `TestMergePolicy_SharedLoosenFixture_22AC2` (`repo-policy-loosen.yaml` → `POLICY_LOOSENING:/spec/retry/maxAutonomousAttempts`) | pass |
+| 26-AC-5 | `TestFourNamedRunnerFixturesGiveFourDistinctCodes_26AC5`: `ROLE_HARNESS_ROLE_UNSUPPORTED`, `ROLE_PROFILE_MISSING`, `HARNESS_REPO_CONFIG_NOT_IGNORED`, `HARNESS_WORKER_TIMEOUT_NOT_TEST_ONLY` | pass |
+| TDD discipline | local `make tdd-discipline-check` on 031b031 (checker and policy from base `origin/main` 61d38fa): `pass`, 9 RED commits, 354 RED failures, `build_ok`, 42 warnings (`TDD_RED_TEST_MODIFIED`, the post-RED corrections listed below), 0 superseded | pass; PR run pending |
+
+Error codes not named by the plans:
+- loader: `POLICY_SCHEMA_INVALID`, `POLICY_UNKNOWN_KIND`, `POLICY_DUPLICATE_RESOURCE`, `POLICY_FILE_TOO_LARGE`, `POLICY_YAML_ANCHOR`, `POLICY_NOT_UTF8`, `POLICY_RESERVED_FILENAME`, `POLICY_KIND_MISSING`, `POLICY_YAML_INVALID`, `POLICY_UNREADABLE`;
+- invariants: the plan 26 §9.2 step-3 and plan 22 §9.5 codes listed in 0921d00, plus `POLICY_GLOB_TOO_COMPLEX` (fails closed beyond 200,000 automaton states);
+- merge: `REPO_POLICY_INVALID`, `PLATFORM_POLICY_INVALID`.
+
+Deviations and disclosures:
+- Plan and contract changes (CD-68) touch protected paths: `contracts/verification.schema.yaml` `examples[0]`, `policy/verification.yaml`, plan 22 §9.2, §9.4 and §9.5. Operator-approved; they need human review in the PR.
+- The following correct this PR's own RED tests after RED; test names are unchanged and no assertion is loosened beyond the operator decisions. The checker warns `TDD_RED_TEST_MODIFIED`:
+  - c3a2497: CD-68 testdata;
+  - 247015c: D8;
+  - d0bf8d8: CD-68 newline;
+  - 6f57506: schema-valid `frontier`.
+- `src/internal/contracts/compile.go` exports the shared schema compiler (`newCompiler`) and a cache for `sc-policy`.
+- `golang.org/x/text` moved from indirect to direct (BSD-3-Clause, `licenses-check` pass).
+
+Follow-ups (not blocking GATE-F04):
+- **Glob matcher:** `globRegexp` in `src/internal/lint/tdd/gitutil.go` lets `**` miss a newline (Go's `.`), so `.github/x\ny` escapes `.github/**` in the tdd-discipline checker (CD-68). This needs a separate fix with tests.
+- **Contract:** `contracts/verification.schema.yaml` `x-invalid-examples[3]` still carries the pre-CD-68 `documentation-only` denies. It is invalid for another reason (catch-all `auto`); align it, together with `testdata/invalid/schema-verification-3`, in a human PR.
+- **Loader:**
+  - the flat-vs-nested `__` heuristic accepts a real `x__y.yaml` in a tree without subdirectories; a ConfigMap's `..data` entry would be a sturdier signal;
+  - the propertyNames key-removal experiment could misattribute if a schema made one object's propertyNames depend on a sibling key (not reachable with today's schemas).
+- **`MergePolicy` hardening (before F06 wires it; final-review non-blockers):**
+  - validate `Platform.Verification` against `verification.schema.yaml` and fail closed with `PLATFORM_POLICY_INVALID`. Today `Verification: {}` or a platform without `spec.protectedPaths` judges definitions against an empty protected set. Loader-built platforms are schema-checked, so only a Go caller passing an unchecked document reaches this;
+  - iterate `Platform.Roles` in sorted order so the `PLATFORM_POLICY_INVALID` message is byte-deterministic when several roles are bad.
+- **Later gates:**
+  - the per-kind invariants of plans 25/28/31/33 (ladder anchoring, image-digest uniqueness, budget invariants, profile quota against the chart);
+  - `make policy-check` validating this repository's `.strange-company/` through `sc-verify lint-policy` (F06/C04).

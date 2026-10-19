@@ -1,0 +1,95 @@
+# x-invalid-examples[4] of contracts/model-routing.schema.yaml: Model whose output cap does not cover reasoning and has no separately enforced reasoning cap (worst case would be unbounded; CD-28).
+"apiVersion": "strange.company/v1alpha1"
+"kind": "ModelRouting"
+"metadata":
+  "name": "default"
+"spec":
+  "providers":
+    "deepseek":
+      "displayName": "DeepSeek"
+      "enabled": true
+      "stage": "production"
+      "upstream":
+        "baseUrl": "https://api.deepseek.com/v1"
+      "credential":
+        "kind": "api-key"
+        "secretKey": "deepseek"
+        "authScheme": "bearer"
+      "apiFamilies":
+        "openai-chat-completions":
+          "usageDialect": "deepseek-chat"
+          "outputCapField": "max_tokens"
+          "inputBound":
+            "method": "upper_bound"
+            "tokensPerByteUpperBound": 1.0
+            "perMessageOverhead": 8
+            "perRequestOverhead": 1024
+          "requestPolicy":
+            "bodyMembers":
+            - "model"
+            - "messages"
+            - "max_tokens"
+            - "stream"
+            - "tools"
+            "toolTypes":
+            - "function"
+  "models":
+    "deepseek/deepseek-v4-flash":
+      "provider": "deepseek"
+      "apiModel": "deepseek-v4-flash"
+      "apiFamily": "openai-chat-completions"
+      "maxOutputTokens": 8192
+      "contextWindowTokens": 128000
+      "outputCapCoversReasoning": false
+      "responseModelMatch":
+        "exact":
+        - "deepseek-v4-flash"
+      "enabled": true
+  "tiers":
+    "clerical":
+      "candidates": []
+    "bargain":
+      "candidates":
+      - "deepseek/deepseek-v4-flash"
+    "standard":
+      "candidates": []
+    "frontier":
+      "candidates": []
+  "roles":
+    "researcher":
+      "defaultTier": "bargain"
+      "allowedTiers":
+      - "bargain"
+      "ladder": null
+    "planner":
+      "defaultTier": "bargain"
+      "allowedTiers":
+      - "bargain"
+      "ladder": null
+    "tester":
+      "defaultTier": "bargain"
+      "allowedTiers":
+      - "bargain"
+      "ladder": null
+    "implementer":
+      "defaultTier": "bargain"
+      "allowedTiers":
+      - "bargain"
+      "ladder": null
+    "reviewer":
+      "defaultTier": "bargain"
+      "allowedTiers":
+      - "bargain"
+      "ladder": null
+  "escalationLadders":
+    "none":
+    - "tier": "bargain"
+      "meritFailuresBeforeEscalation": 1
+  "orchestrator":
+    "tier": "bargain"
+    "apiFamilies":
+    - "openai-chat-completions"
+    "maxConcurrentRequests": 4
+  "infrastructureFallback":
+    "enabled": false
+    "maxFallbacksPerTask": 0

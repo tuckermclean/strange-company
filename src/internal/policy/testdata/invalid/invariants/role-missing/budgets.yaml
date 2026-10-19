@@ -1,0 +1,62 @@
+"apiVersion": "strange.company/v1alpha1"
+"kind": "BudgetPolicy"
+"metadata":
+  "name": "default"
+"spec":
+  "currency": "USD"
+  "calendarTimezone": "UTC"
+  "perRequest":
+    "maxCostUsd": "3.00"
+    "maxOutputTokens": 32000
+    "maxRequestBodyBytes": 8388608
+  "perExecution":
+    "maxCostUsd": "8.00"
+    "maxTotalTokens": 10000000
+    "maxRequests": 1000
+    "maxWallTimeSeconds": 3600
+    "maxConcurrentRequests": 4
+    "maxCountTokensPerMinute": 60
+  "perTask":
+    "maxCostUsd": "20.00"
+    "maxAttempts": 15
+  "providers":
+    "anthropic":
+      "dailyUsd": "30.00"
+      "monthlyUsd": "250.00"
+    "deepseek":
+      "dailyUsd": "10.00"
+      "monthlyUsd": "80.00"
+    "fake":
+      "dailyUsd": "1000.00"
+      "monthlyUsd": "10000.00"
+  "global":
+    "hourlyUsd": "20.00"
+    "dailyUsd": "60.00"
+    "monthlyUsd": "300.00"
+  "orchestration":
+    "dailyUsd": "10.00"
+    "monthlyUsd": "120.00"
+  "thresholds":
+    "warnPercents":
+    - 50
+    - 80
+  "dispatch":
+    "minimumHeadroomUsd":
+      "clerical": "0.50"
+      "bargain": "0.50"
+      "standard": "1.50"
+      "frontier": "3.00"
+  "anomaly":
+    "windowMinutes": 15
+    "baselineDays": 7
+    "baselineQuantile": 0.95
+    "multiplier": 4
+    "minimumSpendUsd": "0.50"
+    "absoluteWindowCapUsd": "8.00"
+    "autoStop": true
+  "repositories":
+    "sc-e2e/fake-target":
+      "perTask":
+        "maxCostUsd": "5.00"
+  "emergencyStop":
+    "level": "none"

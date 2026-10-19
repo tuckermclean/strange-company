@@ -1,0 +1,38 @@
+# x-invalid-examples[1] of contracts/role.schema.yaml: Unknown role name.
+"apiVersion": "strange.company/v1alpha1"
+"kind": "RoleDefinition"
+"metadata":
+  "name": "deployer"
+"spec":
+  "description": "x"
+  "instructions": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  "forgeAccess": "write"
+  "allowedHarnesses":
+  - "claude"
+  "defaultModelTier": "standard"
+  "allowedModelTiers":
+  - "standard"
+  "defaultProfile": "tests"
+  "allowedProfiles":
+  - "tests"
+  "accounting":
+    "firstAttemptPhase": "implementation"
+    "retryPhase": "green_retry"
+  "diffRules":
+    "mode": "denylist"
+    "deny":
+    - "@protectedPaths"
+    "maxFilesChanged": 40
+    "maxDiffBytes": 1000
+  "contextProjection":
+    "include":
+    - "task_spec"
+    "forbid": []
+    "maxTotalBytes": 65536
+  "expectedOutput":
+    "allowedResultStates":
+    - "completed"
+    "commitRequiredOnCompleted": true
+    "roleOutput": "implementer"
+  "verification":
+    "triggers": "green"

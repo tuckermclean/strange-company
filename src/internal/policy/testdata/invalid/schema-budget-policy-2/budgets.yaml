@@ -1,0 +1,50 @@
+# x-invalid-examples[2] of contracts/budget-policy.schema.yaml: Missing global monthly budget and non-UTC calendar.
+"apiVersion": "strange.company/v1alpha1"
+"kind": "BudgetPolicy"
+"metadata":
+  "name": "default"
+"spec":
+  "currency": "USD"
+  "calendarTimezone": "Europe/Paris"
+  "perRequest":
+    "maxCostUsd": "5.00"
+    "maxOutputTokens": 64000
+    "maxRequestBodyBytes": 33554432
+  "perExecution":
+    "maxCostUsd": "8.00"
+    "maxTotalTokens": 20000000
+    "maxRequests": 1500
+    "maxWallTimeSeconds": 3600
+    "maxConcurrentRequests": 8
+  "perTask":
+    "maxCostUsd": "25.00"
+    "maxAttempts": 10
+  "providers":
+    "anthropic":
+      "dailyUsd": "40.00"
+      "monthlyUsd": "400.00"
+  "global":
+    "hourlyUsd": "15.00"
+    "dailyUsd": "50.00"
+  "orchestration":
+    "dailyUsd": "5.00"
+    "monthlyUsd": "60.00"
+  "thresholds":
+    "warnPercents":
+    - 50
+    - 80
+  "dispatch":
+    "minimumHeadroomUsd":
+      "clerical": "0.10"
+      "bargain": "0.50"
+      "standard": "2.00"
+      "frontier": "5.00"
+  "anomaly":
+    "windowMinutes": 15
+    "baselineDays": 7
+    "baselineQuantile": 0.95
+    "multiplier": 4
+    "minimumSpendUsd": "0.50"
+    "absoluteWindowCapUsd": "10.00"
+  "emergencyStop":
+    "level": "none"

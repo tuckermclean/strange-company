@@ -1,0 +1,9 @@
+apiVersion: strange.company/v1alpha1
+kind: RepositoryPolicy
+metadata: {name: fixture}
+spec:
+  testPaths: ["tests/**"]
+  testProtection: {existingTestModification: deny}
+  testSpecConflict: {resolutionApproval: human}
+  verification:
+    requireHumanApproval: [documentation-only, research]

@@ -1,0 +1,5 @@
+apiVersion: strange.company/v1alpha1
+kind: TestQuarantine
+metadata: {name: strange-company}
+# invalid UTF-8 byte follows: ÿþ
+spec: {maxEntries: 10, maxDays: 14, entries: []}

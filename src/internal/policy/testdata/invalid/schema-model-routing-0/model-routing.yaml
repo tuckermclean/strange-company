@@ -1,0 +1,93 @@
+# x-invalid-examples[0] of contracts/model-routing.schema.yaml: Subscription/OAuth credential kind (SPEC §77 forbids consumer-subscription dependencies).
+"apiVersion": "strange.company/v1alpha1"
+"kind": "ModelRouting"
+"metadata":
+  "name": "default"
+"spec":
+  "providers":
+    "anthropic":
+      "displayName": "Anthropic"
+      "enabled": true
+      "stage": "production"
+      "upstream":
+        "baseUrl": "https://api.anthropic.com/v1"
+      "credential":
+        "kind": "oauth-subscription"
+        "secretKey": "anthropic"
+        "authScheme": "bearer"
+      "apiFamilies":
+        "anthropic-messages":
+          "usageDialect": "anthropic"
+          "outputCapField": "max_tokens"
+          "inputBound":
+            "method": "upper_bound"
+            "tokensPerByteUpperBound": 1.0
+            "perMessageOverhead": 8
+            "perRequestOverhead": 1024
+          "requestPolicy":
+            "bodyMembers":
+            - "model"
+            - "messages"
+            - "max_tokens"
+            "toolTypes":
+            - "function"
+  "models":
+    "anthropic/claude-sonnet-x":
+      "provider": "anthropic"
+      "apiModel": "claude-sonnet-x"
+      "apiFamily": "anthropic-messages"
+      "maxOutputTokens": 64000
+      "contextWindowTokens": 200000
+      "outputCapCoversReasoning": true
+      "responseModelMatch":
+        "exact":
+        - "claude-sonnet-x"
+      "enabled": true
+  "tiers":
+    "clerical":
+      "candidates": []
+    "bargain":
+      "candidates": []
+    "standard":
+      "candidates":
+      - "anthropic/claude-sonnet-x"
+    "frontier":
+      "candidates": []
+  "roles":
+    "researcher":
+      "defaultTier": "standard"
+      "allowedTiers":
+      - "standard"
+      "ladder": null
+    "planner":
+      "defaultTier": "standard"
+      "allowedTiers":
+      - "standard"
+      "ladder": null
+    "tester":
+      "defaultTier": "standard"
+      "allowedTiers":
+      - "standard"
+      "ladder": null
+    "implementer":
+      "defaultTier": "standard"
+      "allowedTiers":
+      - "standard"
+      "ladder": null
+    "reviewer":
+      "defaultTier": "standard"
+      "allowedTiers":
+      - "standard"
+      "ladder": null
+  "escalationLadders":
+    "none":
+    - "tier": "standard"
+      "meritFailuresBeforeEscalation": 1
+  "orchestrator":
+    "tier": "standard"
+    "apiFamilies":
+    - "anthropic-messages"
+    "maxConcurrentRequests": 4
+  "infrastructureFallback":
+    "enabled": false
+    "maxFallbacksPerTask": 0

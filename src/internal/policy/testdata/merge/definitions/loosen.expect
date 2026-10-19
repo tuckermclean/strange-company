@@ -1,0 +1,4 @@
+POLICY_LOOSENING:/spec/testPaths/1
+POLICY_LOOSENING:/spec/fixturePaths/0
+POLICY_LOOSENING:/spec/testInfraPaths/0
+POLICY_LOOSENING:/spec/stubPaths/0

@@ -1,0 +1,2 @@
+POLICY_LOOSENING:/spec/stubPaths/1
+msg contracts/**/*.go

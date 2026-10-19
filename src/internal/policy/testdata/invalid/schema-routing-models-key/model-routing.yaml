@@ -1,0 +1,374 @@
+apiVersion: strange.company/v1alpha1
+kind: ModelRouting
+metadata:
+  name: default
+spec:
+  providers:
+    anthropic:
+      displayName: Anthropic
+      enabled: true
+      stage: production
+      upstream:
+        baseUrl: https://api.anthropic.com/v1
+      credential:
+        kind: api-key
+        secretKey: anthropic
+        authScheme: x-api-key
+        forbiddenKeyPrefixes:
+        - sk-ant-oat
+      apiFamilies:
+        anthropic-messages:
+          usageDialect: anthropic
+          outputCapField: max_tokens
+          inputBound:
+            method: upper_bound
+            tokensPerByteUpperBound: 1.0
+            perMessageOverhead: 8
+            perRequestOverhead: 1024
+          requestPolicy:
+            bodyMembers:
+            - model
+            - messages
+            - system
+            - max_tokens
+            - metadata
+            - stop_sequences
+            - stream
+            - temperature
+            - top_p
+            - top_k
+            - tools
+            - tool_choice
+            - thinking
+            - service_tier
+            toolTypes:
+            - custom
+            anthropicBeta:
+            - claude-code-*
+            - interleaved-thinking-*
+            - fine-grained-tool-streaming-*
+            - token-efficient-tools-*
+            pinnedParameters:
+              service_tier: standard_only
+      headerPolicy:
+        anthropicBetaDenyPrefixes:
+        - oauth-
+    openai:
+      displayName: OpenAI
+      enabled: false
+      stage: production
+      upstream:
+        baseUrl: https://api.openai.com/v1
+      credential:
+        kind: api-key
+        secretKey: openai
+        authScheme: bearer
+      apiFamilies:
+        openai-responses:
+          usageDialect: openai-responses
+          outputCapField: max_output_tokens
+          inputBound:
+            method: upper_bound
+            tokensPerByteUpperBound: 1.0
+            perMessageOverhead: 8
+            perRequestOverhead: 1024
+          requestPolicy:
+            bodyMembers:
+            - model
+            - input
+            - instructions
+            - max_output_tokens
+            - tools
+            - tool_choice
+            - parallel_tool_calls
+            - reasoning
+            - stream
+            - temperature
+            - top_p
+            - text
+            - include
+            - store
+            - service_tier
+            - metadata
+            - prompt_cache_key
+            toolTypes:
+            - function
+            - custom
+            - local_shell
+            pinnedParameters:
+              store: false
+              service_tier: default
+        openai-chat-completions:
+          usageDialect: openai-chat
+          outputCapField: max_completion_tokens
+          injectStreamUsage: true
+          inputBound:
+            method: upper_bound
+            tokensPerByteUpperBound: 1.0
+            perMessageOverhead: 8
+            perRequestOverhead: 1024
+          requestPolicy:
+            bodyMembers:
+            - model
+            - messages
+            - max_tokens
+            - max_completion_tokens
+            - stream
+            - stream_options
+            - temperature
+            - top_p
+            - stop
+            - tools
+            - tool_choice
+            - parallel_tool_calls
+            - response_format
+            - seed
+            - presence_penalty
+            - frequency_penalty
+            - user
+            - reasoning_effort
+            toolTypes:
+            - function
+    deepseek:
+      displayName: DeepSeek
+      enabled: true
+      stage: production
+      upstream:
+        baseUrl: https://api.deepseek.com/v1
+      credential:
+        kind: api-key
+        secretKey: deepseek
+        authScheme: bearer
+      apiFamilies:
+        openai-chat-completions:
+          usageDialect: deepseek-chat
+          outputCapField: max_tokens
+          injectStreamUsage: true
+          inputBound:
+            method: upper_bound
+            tokensPerByteUpperBound: 1.0
+            perMessageOverhead: 8
+            perRequestOverhead: 1024
+          requestPolicy:
+            bodyMembers:
+            - model
+            - messages
+            - max_tokens
+            - max_completion_tokens
+            - stream
+            - stream_options
+            - temperature
+            - top_p
+            - stop
+            - tools
+            - tool_choice
+            - parallel_tool_calls
+            - response_format
+            - seed
+            - presence_penalty
+            - frequency_penalty
+            - user
+            - reasoning_effort
+            toolTypes:
+            - function
+    fake:
+      displayName: Fake upstream (CI and live fake flows)
+      enabled: true
+      stage: test-only
+      upstream:
+        baseUrl: http://fake-model-upstream.strange-company.svc.cluster.local:8080/v1
+      credential:
+        kind: api-key
+        secretKey: fake
+        authScheme: bearer
+      apiFamilies:
+        fake:
+          usageDialect: openai-chat
+          outputCapField: max_tokens
+          injectStreamUsage: true
+          inputBound:
+            method: upper_bound
+            tokensPerByteUpperBound: 1.0
+            perMessageOverhead: 8
+            perRequestOverhead: 1024
+          requestPolicy:
+            bodyMembers:
+            - model
+            - messages
+            - max_tokens
+            - max_completion_tokens
+            - stream
+            - stream_options
+            - temperature
+            - top_p
+            - stop
+            - tools
+            - tool_choice
+            - parallel_tool_calls
+            - response_format
+            - seed
+            - presence_penalty
+            - frequency_penalty
+            - user
+            - reasoning_effort
+            toolTypes:
+            - function
+  models:
+    anthropic/claude-haiku-x:
+      provider: anthropic
+      apiModel: claude-haiku-x
+      apiFamily: anthropic-messages
+      maxOutputTokens: 32000
+      contextWindowTokens: 200000
+      imageTokensUpperBound: 1600
+      outputCapCoversReasoning: true
+      responseModelMatch:
+        exact:
+        - claude-haiku-x
+        prefixes:
+        - claude-haiku-x-
+      enabled: true
+    anthropic/claude-sonnet-x:
+      provider: anthropic
+      apiModel: claude-sonnet-x
+      apiFamily: anthropic-messages
+      maxOutputTokens: 64000
+      contextWindowTokens: 200000
+      imageTokensUpperBound: 1600
+      outputCapCoversReasoning: true
+      responseModelMatch:
+        exact:
+        - claude-sonnet-x
+        prefixes:
+        - claude-sonnet-x-
+      enabled: true
+    anthropic/claude-opus-x:
+      provider: anthropic
+      apiModel: claude-opus-x
+      apiFamily: anthropic-messages
+      maxOutputTokens: 32000
+      contextWindowTokens: 200000
+      imageTokensUpperBound: 1600
+      outputCapCoversReasoning: true
+      responseModelMatch:
+        exact:
+        - claude-opus-x
+        prefixes:
+        - claude-opus-x-
+      enabled: true
+    deepseek/deepseek-v4-flash:
+      provider: deepseek
+      apiModel: deepseek-v4-flash
+      apiFamily: openai-chat-completions
+      maxOutputTokens: 8192
+      contextWindowTokens: 128000
+      outputCapCoversReasoning: true
+      responseModelMatch:
+        exact:
+        - deepseek-v4-flash
+      enabled: true
+    fake/fake-model:
+      provider: fake
+      apiModel: fake-model
+      apiFamily: fake
+      maxOutputTokens: 4096
+      contextWindowTokens: 32000
+      outputCapCoversReasoning: true
+      responseModelMatch:
+        exact:
+        - fake-model
+      enabled: true
+    anthropic:
+      provider: fake
+      apiModel: fake-model
+      apiFamily: fake
+      maxOutputTokens: 4096
+      contextWindowTokens: 32000
+      outputCapCoversReasoning: true
+      responseModelMatch:
+        exact:
+        - fake-model
+      enabled: true
+  tiers:
+    clerical:
+      candidates:
+      - anthropic/claude-haiku-x
+      - deepseek/deepseek-v4-flash
+      - fake/fake-model
+    bargain:
+      candidates:
+      - anthropic/claude-haiku-x
+      - deepseek/deepseek-v4-flash
+      - fake/fake-model
+    standard:
+      candidates:
+      - anthropic/claude-sonnet-x
+      - fake/fake-model
+    frontier:
+      candidates:
+      - anthropic/claude-opus-x
+      - fake/fake-model
+  harnesses:
+    claude:
+      providers:
+      - anthropic
+      auxiliary:
+        tier: clerical
+        envHint: ANTHROPIC_SMALL_FAST_MODEL
+  roles:
+    researcher:
+      defaultTier: standard
+      allowedTiers:
+      - bargain
+      - standard
+      - frontier
+      ladder: null
+    planner:
+      defaultTier: frontier
+      allowedTiers:
+      - standard
+      - frontier
+      ladder: null
+    tester:
+      defaultTier: standard
+      allowedTiers:
+      - bargain
+      - standard
+      - frontier
+      ladder: tests
+    implementer:
+      defaultTier: bargain
+      allowedTiers:
+      - bargain
+      - standard
+      - frontier
+      ladder: implementation
+    reviewer:
+      defaultTier: standard
+      allowedTiers:
+      - standard
+      - frontier
+      ladder: null
+  escalationLadders:
+    implementation:
+    - tier: bargain
+      meritFailuresBeforeEscalation: 2
+    - tier: standard
+      meritFailuresBeforeEscalation: 2
+    - tier: frontier
+      meritFailuresBeforeEscalation: 1
+    tests:
+    - tier: standard
+      meritFailuresBeforeEscalation: 2
+    - tier: frontier
+      meritFailuresBeforeEscalation: 1
+  orchestrator:
+    tier: standard
+    apiFamilies:
+    - openai-chat-completions
+    - anthropic-messages
+    maxConcurrentRequests: 4
+    auxiliaryTier: clerical
+  infrastructureFallback:
+    enabled: false
+    maxFallbacksPerTask: 1

@@ -1,0 +1,12 @@
+apiVersion: strange.company/v1alpha1
+kind: RepositoryPolicy
+metadata: {name: fixture}
+spec:
+  testPaths: ["tests/**"]
+  verification:
+    allowedExemptionClasses: [documentation-only, research]
+    stubPanicLanguages: []
+  humanAuthority:
+    forgejoTeams: [Owners]
+  modelRouting:
+    allowedProviders: [anthropic, deepseek]

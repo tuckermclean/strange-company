@@ -1,0 +1,34 @@
+# x-invalid-examples[4] of contracts/harness.schema.yaml: Unknown fake scenario.
+"apiVersion": "strange.company/v1alpha1"
+"kind": "HarnessRegistry"
+"metadata":
+  "name": "default"
+"spec":
+  "harnesses":
+    "fake-chaos":
+      "displayName": "Fake"
+      "adapter": "fake"
+      "image": "git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+      "cliVersion": "0.1.0"
+      "apiFamilies":
+      - "fake"
+      "supportedRoles":
+      - "tester"
+      "gateway":
+        "baseUrlEnv":
+          "fake": "SC_FAKE_GATEWAY_URL"
+        "tokenDelivery":
+          "mode": "env"
+          "envVar": "SC_FAKE_GATEWAY_TOKEN"
+      "capabilities":
+        "terminalResultEvent": true
+        "permissionDenialReport": false
+        "toolAllowlist": false
+        "ignoresRepoConfig": true
+      "fake":
+        "scenario": "chaos-monkey"
+      "signature":
+        "keyRef": "cosign:strange-company/release"
+        "required": true
+      "enabled": true
+      "stage": "test-only"

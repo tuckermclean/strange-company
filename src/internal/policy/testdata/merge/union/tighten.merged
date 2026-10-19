@@ -1,0 +1,105 @@
+/spec/discoveryConfig/semanticKeys:
+- format: json
+  keys:
+  - scripts.test
+  - jest
+  - vitest
+  - mocha
+  - devDependencies
+  path: '**/package.json'
+- format: ini
+  keys:
+  - replace
+  - module
+  path: '**/go.mod'
+- format: json
+  keys:
+  - compilerOptions.paths
+  - compilerOptions.baseUrl
+  - compilerOptions.rootDirs
+  path: '**/tsconfig*.json'
+- format: toml
+  keys:
+  - tool.pytest
+  - tool.pytest.ini_options
+  path: '**/pyproject.toml'
+- format: ini
+  keys:
+  - tool:pytest
+  path: '**/setup.cfg'
+- format: toml
+  keys:
+  - test
+  - '[[test]]'
+  - lib.test
+  - lib.harness
+  - patch
+  - dev-dependencies
+  path: '**/Cargo.toml'
+- format: json
+  keys:
+  - scripts.build
+  path: '**/app.json'
+/spec/discoveryConfig/wholeFiles:
+- '**/pytest.ini'
+- '**/conftest.py'
+- '**/tox.ini'
+- '**/jest.config.*'
+- '**/vitest.config.*'
+- '**/vitest.workspace.*'
+- '**/.mocharc*'
+- '**/karma.conf.*'
+- '**/babel.config.*'
+- '**/.babelrc*'
+- '**/build.rs'
+- .nextest.toml
+- .config/nextest.toml
+- .cargo/config.toml
+- go.work
+- custom.cfg
+/spec/humanAuthority/machineAccounts:
+- sc-runner
+- sc-woodpecker
+- sc-renovate
+- sc-backup
+- sc-admin
+- sc-ci-config
+- sc-extra
+/spec/protectedBranches:
+- main
+- release/*
+- develop
+/spec/protectedPaths:
+- .woodpecker/**
+- .strange-company/**
+- AGENTS.md
+- '**/AGENTS.md'
+- CLAUDE.md
+- '**/CLAUDE.md'
+- .claude/**
+- '**/.claude/**'
+- .codex/**
+- '**/.codex/**'
+- .opencode/**
+- '**/.opencode/**'
+- policy/**
+- contracts/**
+- CODEOWNERS
+- '**/CODEOWNERS'
+- .forgejo/**
+- .gitea/**
+- .github/**
+- .gitmodules
+- .gitattributes
+- .sops.yaml
+- '**/*.sops.yaml'
+- forge/**
+- gitops/**/generated/**
+- gitops/platform/admission/**
+- vendor/**
+/spec/staticChecks/skipMarkers/go:
+- \bt\.Skip(Now|f)?\(
+- testing\.Short\(\)
+- \bmySkip\(
+/spec/staticChecks/skipMarkers/shell:
+- 'exit 0 # skip'

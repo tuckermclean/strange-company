@@ -1,0 +1,12 @@
+apiVersion: strange.company/v1alpha1
+kind: RepositoryPolicy
+metadata: {name: fixture}
+spec:
+  testPaths: ["tests/**"]
+  retry: {maxAutonomousAttempts: 3, maxTesterAttempts: 2, maxReviewExecutions: 3, maxAuxiliaryExecutions: 4}
+  testSpecConflict: {maxConflictsPerTask: 1}
+  task: {maxBaseLag: {commits: 10}}
+  diffLimits:
+    tester: {maxFilesChanged: 10, maxDiffBytes: 1000}
+    implementer: {maxFilesChanged: 40, maxDiffBytes: 5000}
+  modelRouting: {maxTier: standard}

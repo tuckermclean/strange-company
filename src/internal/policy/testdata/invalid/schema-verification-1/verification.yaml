@@ -1,0 +1,139 @@
+# x-invalid-examples[1] of contracts/verification.schema.yaml: Merge policy that drops the TDD provenance status context.
+"apiVersion": "strange.company/v1alpha1"
+"kind": "VerificationPolicy"
+"metadata":
+  "name": "bad"
+"spec":
+  "defaultMode": "test-first"
+  "task":
+    "maxBaseLag":
+      "commits": 20
+      "age": "24h"
+  "protectedPaths": []
+  "protectedBranches":
+  - "main"
+  "testProtection":
+    "existingTestModification": "deny"
+    "testDeletion": "deny"
+    "discoveryConfig":
+      "wholeFiles": []
+      "semanticKeys": []
+      "protectValidationReferencedFiles": true
+  "staticChecks":
+    "skipMarkers": {}
+    "testEnvDetection": {}
+    "unconditionalFailure": {}
+    "literalLeakage":
+      "enabled": false
+      "minLength": 12
+  "stubPolicy":
+    "marker": "SC-STUB"
+    "panicMessage": "SC-STUB-NOT-IMPLEMENTED"
+    "maxAddedLinesPerStub": 12
+    "maxStubsPerTask": 20
+    "allowPanicStubsFor": []
+    "staticallyTypedLanguages":
+    - "go"
+  "adapters":
+    "go-test-json":
+      "format": "go-test-json"
+      "idTemplate": "x"
+      "errorTypes": []
+      "assertionTypes":
+      - "x"
+      "buildFailurePatterns": []
+      "timeoutPatterns": []
+    "junit-xml":
+      "format": "junit-xml"
+      "idTemplate": "x"
+      "errorTypes": []
+      "assertionTypes":
+      - "x"
+      "buildFailurePatterns": []
+      "timeoutPatterns": []
+    "pytest-junit":
+      "format": "junit-xml"
+      "idTemplate": "x"
+      "errorTypes": []
+      "assertionTypes":
+      - "x"
+      "buildFailurePatterns": []
+      "timeoutPatterns": []
+    "jest-junit":
+      "format": "junit-xml"
+      "idTemplate": "x"
+      "errorTypes": []
+      "assertionTypes":
+      - "x"
+      "buildFailurePatterns": []
+      "timeoutPatterns": []
+    "vitest-junit":
+      "format": "junit-xml"
+      "idTemplate": "x"
+      "errorTypes": []
+      "assertionTypes":
+      - "x"
+      "buildFailurePatterns": []
+      "timeoutPatterns": []
+    "cargo-nextest-junit":
+      "format": "junit-xml"
+      "idTemplate": "x"
+      "errorTypes": []
+      "assertionTypes":
+      - "x"
+      "buildFailurePatterns": []
+      "timeoutPatterns": []
+  "red":
+    "pipelineTimeout": "30m"
+    "maxInfraRetriggers": 2
+    "baseline": "run"
+    "requirePerAcCoverage": true
+    "repeatNewTests": 3
+  "green":
+    "pipelineTimeout": "60m"
+    "maxInfraRetriggers": 2
+    "repeatProtectedTests": 3
+    "isolationRun": true
+    "redReplay": true
+  "judge":
+    "pipelineTimeout": "30m"
+    "maxInfraRetriggers": 2
+    "maxChecks": 50
+  "exemptionClasses": []
+  "testSpecConflict":
+    "resolutionApproval": "human"
+    "maxConflictsPerTask": 2
+    "maxGenerations": 3
+  "retry":
+    "maxAutonomousAttempts": 5
+    "maxTesterAttempts": 3
+    "maxReviewExecutions": 3
+    "maxAuxiliaryExecutions": 8
+    "maxBlockedResults": 2
+    "infrastructure":
+      "maxConsecutive": 3
+      "maxTotal": 8
+      "maxConsecutiveTimeouts": 2
+      "backoffSeconds":
+      - 60
+    "policy":
+      "maxViolations": 0
+    "identicalReplay": "forbid"
+    "humanGrant": 3
+  "watchdog":
+    "groups": {}
+  "humanAuthority":
+    "forgejoTeams":
+    - "Owners"
+    "machineAccounts":
+    - "sc-runner"
+    "maxCommandsPerTaskPerHour": 10
+  "merge":
+    "requiredStatusContexts":
+    - "ci/woodpecker/pr/ci"
+    - "strange-company/review"
+    "reviewRequired": true
+    "humanApprovalsRequired": 1
+    "elevatedApprovals": 2
+    "singleOperatorCoolingOff": "24h"
+    "nonTaskPullRequests": "failure"

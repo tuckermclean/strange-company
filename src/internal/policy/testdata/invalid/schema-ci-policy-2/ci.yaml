@@ -1,0 +1,39 @@
+# x-invalid-examples[2] of contracts/ci-policy.schema.yaml: A tag-only clone image (not digest-pinned).
+"apiVersion": "strange.company/v1alpha1"
+"kind": "CIPolicy"
+"metadata":
+  "name": "platform"
+"spec":
+  "managedOwners":
+  - "strange-company"
+  "protectedBranches":
+  - "main"
+  "releaseTagPattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+(-rc\\.[0-9]+)?$"
+  "imageRegistries":
+  - "ghcr.io/example/"
+  "cloneImage": "docker.io/woodpeckerci/plugin-git:latest"
+  "stepSecurityContext":
+    "runAsNonRoot": true
+    "runAsUser": 65532
+    "allowPrivilegeEscalation": false
+    "privileged": false
+    "seccompProfile":
+      "type": "RuntimeDefault"
+    "capabilities":
+      "drop":
+      - "ALL"
+  "lanes":
+    "ci":
+      "heavySlotUnits": 1
+      "workspacePvcMax": "8Gi"
+    "build":
+      "heavySlotUnits": 8
+      "workspacePvcMax": "10Gi"
+  "repoSettings":
+    "timeoutMinutes": 45
+    "maxTimeoutMinutes": 90
+    "requireApproval": "forks"
+  "verify":
+    "installerImage": "git.example.org/strange-company/sc-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+  "retention":
+    "logDays": 30

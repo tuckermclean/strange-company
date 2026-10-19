@@ -1,0 +1,20 @@
+apiVersion: strange.company/v1alpha1
+kind: RepositoryValidation
+metadata: {name: strange-company}
+spec:
+  verification:
+    image: "git.example.org/strange-company/ci@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+    suites:
+      - name: unit
+        adapter: junit-xml
+        language: go
+        argv: [make, test, "JUNIT={report}"]
+        report: {path: out/sc-verify/unit.xml}
+        timeoutSeconds: 1500
+        phases: [red, green]
+        redScope: ["GO_TEST_PKGS={protected_test_packages}"]
+        selectArgv: ["GO_TEST_RUN={test_ids}"]
+    checks:
+      - {name: lint, argv: [make, lint], timeoutSeconds: 900, toolingFrom: base}
+  local:
+    - {name: unit, argv: [make, test], timeoutSeconds: 900}

@@ -1,0 +1,91 @@
+"apiVersion": "strange.company/v1alpha1"
+"kind": "ResourceProfiles"
+"metadata":
+  "name": "default"
+"spec":
+  "activeSet": "standard"
+  "concurrency":
+    "maxWorkers": 1
+    "sharedHeavySlot": false
+    "queue":
+      "maxQueued": 20
+  "sets":
+    "standard":
+      "tiny":
+        "description": "Research, planning summaries, review of small diffs."
+        "cpuRequest": "250m"
+        "cpuLimit": "1"
+        "memoryRequest": "512Mi"
+        "memoryLimit": "1Gi"
+        "ephemeralStorageLimit": "1Gi"
+        "workspaceSize": "2Gi"
+        "deadline": "10m"
+        "harnessReserve": "3m"
+        "maxHarnessTurns": 40
+      "tests":
+        "cpuRequest": "500m"
+        "cpuLimit": "2"
+        "memoryRequest": "2Gi"
+        "memoryLimit": "2Gi"
+        "ephemeralStorageLimit": "2Gi"
+        "workspaceSize": "4Gi"
+        "deadline": "20m"
+        "harnessReserve": "4m"
+        "maxHarnessTurns": 80
+      "implementation":
+        "cpuRequest": "500m"
+        "cpuLimit": "2"
+        "memoryRequest": "4Gi"
+        "memoryLimit": "4Gi"
+        "ephemeralStorageLimit": "2Gi"
+        "workspaceSize": "6Gi"
+        "deadline": "30m"
+        "harnessReserve": "5m"
+        "maxHarnessTurns": 120
+      "reasoning":
+        "cpuRequest": "500m"
+        "cpuLimit": "2"
+        "memoryRequest": "4Gi"
+        "memoryLimit": "4Gi"
+        "ephemeralStorageLimit": "2Gi"
+        "workspaceSize": "6Gi"
+        "deadline": "45m"
+        "harnessReserve": "5m"
+        "maxHarnessTurns": 160
+    "constrained":
+      "tiny":
+        "cpuRequest": "250m"
+        "cpuLimit": "1"
+        "memoryRequest": "768Mi"
+        "memoryLimit": "768Mi"
+        "ephemeralStorageLimit": "1Gi"
+        "workspaceSize": "2Gi"
+        "deadline": "10m"
+        "harnessReserve": "3m"
+      "tests":
+        "cpuRequest": "500m"
+        "cpuLimit": "2"
+        "memoryRequest": "1536Mi"
+        "memoryLimit": "1536Mi"
+        "ephemeralStorageLimit": "1Gi"
+        "workspaceSize": "3Gi"
+        "deadline": "25m"
+        "harnessReserve": "4m"
+      "implementation":
+        "cpuRequest": "500m"
+        "cpuLimit": "2"
+        "memoryRequest": "2560Mi"
+        "memoryLimit": "2560Mi"
+        "ephemeralStorageLimit": "1Gi"
+        "workspaceSize": "4Gi"
+        "deadline": "40m"
+        "harnessReserve": "5m"
+      "reasoning":
+        "cpuRequest": "500m"
+        "cpuLimit": "2"
+        "memoryRequest": "2560Mi"
+        "memoryLimit": "2560Mi"
+        "ephemeralStorageLimit": "1Gi"
+        "workspaceSize": "4Gi"
+        "deadline": "50m"
+        "harnessReserve": "5m"

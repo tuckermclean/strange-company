@@ -1,0 +1,150 @@
+"apiVersion": "strange.company/v1alpha1"
+"kind": "HarnessRegistry"
+"metadata":
+  "name": "default"
+"spec":
+  "testRepositories":
+  - "sc-e2e/fake-target"
+  "harnesses":
+    "claude":
+      "displayName": "Claude Code"
+      "adapter": "claude-code"
+      "image": "git.example.org/strange-company/harness-claude-code@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      "cliVersion": "2.1.290"
+      "apiFamilies":
+      - "anthropic-messages"
+      "supportedRoles":
+      - "researcher"
+      - "planner"
+      - "tester"
+      - "implementer"
+      - "reviewer"
+      "gateway":
+        "baseUrlEnv":
+          "anthropic-messages": "ANTHROPIC_BASE_URL"
+        "tokenDelivery":
+          "mode": "env"
+          "envVar": "ANTHROPIC_API_KEY"
+      "capabilities":
+        "terminalResultEvent": true
+        "permissionDenialReport": true
+        "toolAllowlist": true
+        "ignoresRepoConfig": true
+        "reportsUsage": true
+      "defaults":
+        "permissionMode": "dontAsk"
+        "allowedTools":
+        - "Read"
+        - "Edit"
+        - "Write"
+        - "Glob"
+        - "Grep"
+        - "Bash(go test *)"
+        - "Bash(go build *)"
+        - "Bash(git status)"
+        - "Bash(git diff *)"
+        "disallowedTools":
+        - "WebFetch"
+        - "WebSearch"
+        - "mcp__*"
+        - "Bash(git push *)"
+        - "Bash(git commit *)"
+        - "Bash(curl *)"
+        "extraArgs":
+        - "--bare"
+        - "--strict-mcp-config"
+        - "--no-session-persistence"
+        "environment":
+          "CLAUDE_CODE_ENABLE_TELEMETRY": "0"
+          "DISABLE_TELEMETRY": "1"
+          "DISABLE_ERROR_REPORTING": "1"
+          "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
+          "DISABLE_AUTOUPDATER": "1"
+      "signature":
+        "keyRef": "cosign:strange-company/release"
+        "required": true
+      "enabled": true
+      "stage": "production"
+    "codex":
+      "displayName": "OpenAI Codex CLI"
+      "adapter": "codex"
+      "image": "git.example.org/strange-company/harness-codex@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      "cliVersion": "0.149.1"
+      "apiFamilies":
+      - "openai-responses"
+      "supportedRoles":
+      - "tester"
+      - "implementer"
+      - "reviewer"
+      "gateway":
+        "baseUrlEnv":
+          "openai-responses": "SC_CODEX_BASE_URL"
+        "tokenDelivery":
+          "mode": "env"
+          "envVar": "SC_GATEWAY_API_KEY"
+      "capabilities":
+        "terminalResultEvent": true
+        "permissionDenialReport": false
+        "toolAllowlist": false
+        "ignoresRepoConfig": true
+        "reportsUsage": true
+      "signature":
+        "keyRef": "cosign:strange-company/release"
+        "required": true
+      "enabled": false
+      "stage": "production"
+    "fake-red-valid":
+      "displayName": "Fake harness, scenario red-valid"
+      "adapter": "fake"
+      "image": "git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+      "cliVersion": "0.1.0"
+      "apiFamilies":
+      - "fake"
+      "supportedRoles":
+      - "tester"
+      "gateway":
+        "baseUrlEnv":
+          "fake": "SC_FAKE_GATEWAY_URL"
+        "tokenDelivery":
+          "mode": "env"
+          "envVar": "SC_FAKE_GATEWAY_TOKEN"
+      "capabilities":
+        "terminalResultEvent": true
+        "permissionDenialReport": false
+        "toolAllowlist": false
+        "ignoresRepoConfig": true
+      "fake":
+        "scenario": "red-valid"
+      "signature":
+        "keyRef": "cosign:strange-company/release"
+        "required": true
+      "enabled": true
+      "stage": "test-only"
+    "fake-timeout":
+      "displayName": "Fake harness, test-only stage with the timeout hook"
+      "adapter": "fake"
+      "image": "git.example.org/strange-company/harness-fake@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+      "cliVersion": "0.1.2"
+      "apiFamilies":
+      - "fake"
+      "supportedRoles":
+      - "tester"
+      "gateway":
+        "baseUrlEnv":
+          "fake": "SC_FAKE_GATEWAY_URL"
+        "tokenDelivery":
+          "mode": "env"
+          "envVar": "SC_FAKE_GATEWAY_TOKEN"
+      "capabilities":
+        "terminalResultEvent": true
+        "permissionDenialReport": false
+        "toolAllowlist": false
+        "ignoresRepoConfig": true
+      "fake":
+        "scenario": "red-valid"
+        "disableWorkerTimeout": true
+      "signature":
+        "keyRef": "cosign:strange-company/release"
+        "required": true
+      "enabled": true
+      "stage": "test-only"

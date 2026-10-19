@@ -1,0 +1,23 @@
+# x-invalid-examples[1] of contracts/pricing.schema.yaml: Unpriced entry carrying zero rates (unpriced and 0 must stay distinct).
+"apiVersion": "strange.company/v1alpha1"
+"kind": "PricingTable"
+"metadata":
+  "name": "openai"
+"spec":
+  "provider": "openai"
+  "currency": "USD"
+  "entries":
+  - "model": "gpt-x"
+    "version": "v1"
+    "effectiveFrom": "2026-01-01T00:00:00Z"
+    "effectiveTo": null
+    "status": "unpriced"
+    "unpricedReason": "unknown"
+    "source":
+      "url": "https://openai.com/api/pricing"
+      "retrievedAt": "2026-01-01"
+    "rates":
+      "inputPerMillion": "0"
+      "cachedInputPerMillion": "0"
+      "cacheWritePerMillion": "0"
+      "outputPerMillion": "0"

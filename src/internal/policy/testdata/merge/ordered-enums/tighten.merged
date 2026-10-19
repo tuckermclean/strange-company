@@ -1,0 +1,9 @@
+/spec/testProtection/existingTestModification: deny
+/spec/testSpecConflict/resolutionApproval: human
+/spec/verification/requireHumanApproval:
+- infrastructure-config
+- migration
+- benchmark
+- refactor
+- documentation-only
+- research

@@ -1,0 +1,6 @@
+apiVersion: strange.company/v1alpha1
+kind: RepositoryPolicy
+metadata: {name: fixture}
+spec:
+  testPaths: ["tests/**"]
+  retry: {maxAutonomousAttempts: 6, maxTesterAttempts: 2}
