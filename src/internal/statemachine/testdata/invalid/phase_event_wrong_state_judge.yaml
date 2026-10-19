@@ -1,0 +1,9 @@
+# Invalid fixture (29-AC-2, D8): judge_classified, with full outcome coverage, is also handled from JUDGING (not its phase state JUDGE_VALIDATING)
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_OUTCOME_GUARD_INVALID
+ops:
+  - {op: replace, path: spec/transitions/id=T116/from, value: [JUDGE_VALIDATING, JUDGING]}
+  - {op: replace, path: spec/transitions/id=T117/from, value: [JUDGE_VALIDATING, JUDGING]}
+  - {op: replace, path: spec/transitions/id=T118/from, value: [JUDGE_VALIDATING, JUDGING]}
+  - {op: replace, path: spec/transitions/id=T119/from, value: [JUDGE_VALIDATING, JUDGING]}
+  - {op: replace, path: spec/transitions/id=T120/from, value: [JUDGE_VALIDATING, JUDGING]}
