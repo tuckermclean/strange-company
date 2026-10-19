@@ -1,0 +1,7 @@
+# Invalid fixture (29-AC-2, D7a): execution_failed transition without any G_FAILURE_CLASS guard
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_OUTCOME_GUARD_INVALID
+ops:
+  - op: add
+    path: spec/transitions
+    value: {id: T099, from: [IMPLEMENTING], to: "$return", event: execution_failed, actors: [runner], modes: [test-first, verification-first], guards: [], effects: [], description: Fixture transition.}
