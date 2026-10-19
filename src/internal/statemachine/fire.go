@@ -1,7 +1,13 @@
 package statemachine
 
-// This file declares the evaluation API of plan 29 section 7.1 (F05 slice S2). The function and method bodies
-// are declared stubs that only return zero values; the evaluation behavior is specified by the tests.
+import (
+	"fmt"
+	"sort"
+)
+
+// This file implements the evaluation API of plan 29 section 7.1 (F05 slice S2): Fire (section 8.1), NextAllowedRoles
+// and Project. Everything here is pure: no I/O, no clock, no randomness. It runs on the elevated path and fails
+// closed: unknown identifiers, missing facts and malformed input never pass.
 
 // Attempts is the retry accounting of a task (contracts/task.schema.yaml Attempts, plan 29 section 16.1).
 type Attempts struct {
@@ -75,14 +81,42 @@ type Decision struct {
 	Rejected *Rejected
 }
 
+// Rejection codes.
+const (
+	CodeGateNotSatisfied = "GATE_NOT_SATISFIED"
+	CodeAlreadyRunning   = "ALREADY_RUNNING"
+	CodeAttemptsExhaust  = "ATTEMPTS_EXHAUSTED"
+)
+
+// Fire error codes: malformed input fails closed with a *FireError and a zero Decision.
+const (
+	FireMachineNil    = "SM_FIRE_MACHINE_NIL"
+	FireFactsNil      = "SM_FIRE_FACTS_NIL"
+	FireUnknownMode   = "SM_FIRE_UNKNOWN_MODE"
+	FireUnknownState  = "SM_FIRE_UNKNOWN_STATE"
+	FireUnknownEvent  = "SM_FIRE_UNKNOWN_EVENT"
+	FireUnknownActor  = "SM_FIRE_UNKNOWN_ACTOR"
+	FireReturnInvalid = "SM_FIRE_RETURN_INVALID"
+	FireResumeInvalid = "SM_FIRE_RESUME_INVALID"
+)
+
 // FireError is a malformed Fire input.
 type FireError struct {
 	Code    string
 	Message string
 }
 
-// SC-STUB(F05 29-AC-3)
-func (e *FireError) Error() string { return "" }
+// Error renders the code and message.
+func (e *FireError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return e.Code + " " + e.Message
+}
+
+func ferr(code, format string, a ...any) error {
+	return &FireError{Code: code, Message: fmt.Sprintf(format, a...)}
+}
 
 // Role is a dispatchable role (researcher, planner, tester, implementer, reviewer).
 type Role string
@@ -90,31 +124,256 @@ type Role string
 // HumanState is a human projection state (plan 29 section 14.13).
 type HumanState string
 
-// SC-STUB(F05 29-AC-3 29-AC-5 29-AC-6)
-func Fire(m *Machine, snap TaskSnapshot, ev Event, facts Facts) (Decision, error) {
-	return Decision{}, nil
+// dispatchEvents are the events of MCP agent_start (plan 29 section 7.2); only they map a failed gate to
+// ALREADY_RUNNING or ATTEMPTS_EXHAUSTED.
+var dispatchEvents = map[string]bool{
+	"dispatch_tester": true, "dispatch_implementer": true, "dispatch_producer": true,
+	"dispatch_reviewer": true, "dispatch_auxiliary": true,
 }
 
-// SC-STUB(F05 29-AC-3)
-func NextAllowedRoles(m *Machine, snap TaskSnapshot, facts Facts) []Role { return nil }
+// attemptGuards are the guards that map to ATTEMPTS_EXHAUSTED when they alone fail.
+var attemptGuards = map[string]bool{"G_ATTEMPTS_REMAIN": true, "G_REVIEWS_REMAIN": true, "G_AUXILIARY_REMAIN": true}
 
-// SC-STUB(F05 29-AC-9)
-func Project(m *Machine, snap TaskSnapshot) (HumanState, string) { return "", "" }
+// Fire evaluates ev against snap (plan 29 section 8.1). Candidates are the transitions whose from contains the
+// snapshot state ("$none" for a task that does not exist yet), whose event matches and whose modes contain the
+// task's mode, in ascending id order. Every guard of every candidate is evaluated (the implicit
+// G_ACTOR_AUTHORIZED first, which also requires the actor class to be listed); the first candidate whose guards
+// all pass fires. Otherwise the event is Rejected. Malformed input is a *FireError and the zero Decision. Fire
+// reads nothing but its arguments and never modifies them.
+func Fire(m *Machine, snap TaskSnapshot, ev Event, facts Facts) (Decision, error) {
+	if m == nil {
+		return Decision{}, ferr(FireMachineNil, "the machine is nil")
+	}
+	if facts == nil {
+		return Decision{}, ferr(FireFactsNil, "the facts are nil")
+	}
+	if !has(m.modes, snap.Mode) {
+		return Decision{}, ferr(FireUnknownMode, "mode %q is not a mode of the table", snap.Mode)
+	}
+	var cur *state
+	if snap.State != "" {
+		if cur = m.findState(snap.State); cur == nil || !has(cur.modes, snap.Mode) {
+			return Decision{}, ferr(FireUnknownState, "state %q does not exist in mode %s", snap.State, snap.Mode)
+		}
+	}
+	if !m.events[ev.Name] {
+		return Decision{}, ferr(FireUnknownEvent, "event %q is not declared by the table", ev.Name)
+	}
+	if !has(m.actors, ev.Actor) {
+		return Decision{}, ferr(FireUnknownActor, "actor class %q is not one of %v", ev.Actor, m.actors)
+	}
+	from := snap.State
+	if cur == nil {
+		from = "$none"
+	}
+	var cands []*transition
+	for i := range m.transitions {
+		t := &m.transitions[i]
+		if t.event == ev.Name && has(t.modes, snap.Mode) && has(t.from, from) {
+			cands = append(cands, t)
+		}
+	}
+	sort.SliceStable(cands, func(i, j int) bool { return cands[i].id < cands[j].id })
+	var failed []string
+	var winner *transition
+	for _, t := range cands {
+		bad := failedGuards(t, ev, facts)
+		if len(bad) == 0 {
+			winner = t
+			break
+		}
+		for _, g := range bad {
+			if !has(failed, g) {
+				failed = append(failed, g)
+			}
+		}
+	}
+	if winner == nil {
+		return Decision{Rejected: &Rejected{Code: rejectionCode(ev.Name, failed), FailedGuards: failed}}, nil
+	}
+	to, err := m.target(winner, cur, snap)
+	if err != nil {
+		return Decision{}, err
+	}
+	a := &Applied{TransitionID: winner.id, From: from, To: to, Effects: append([]string(nil), winner.effects...)}
+	a.FailureClass = effectArg(winner.effects, "E_COUNT_FAILURE")
+	a.ReasonCode = effectArg(winner.effects, "E_NOTIFY_HUMAN")
+	return Decision{Applied: a}, nil
+}
 
-// Guards is the library's guard implementation set; it implements GuardRegistry.
-type Guards struct{}
+// failedGuards evaluates every guard of t (implicit G_ACTOR_AUTHORIZED first) and returns the failed ids in order.
+func failedGuards(t *transition, ev Event, facts Facts) []string {
+	var bad []string
+	add := func(id string) {
+		if !has(bad, id) {
+			bad = append(bad, id)
+		}
+	}
+	if v, known := facts.Bool(ev, "G_ACTOR_AUTHORIZED"); !has(t.actors, ev.Actor) || !known || !v {
+		add("G_ACTOR_AUTHORIZED")
+	}
+	for _, ref := range t.guards {
+		if !guardHolds(ref, ev, facts) {
+			add(idOf(ref))
+		}
+	}
+	return bad
+}
 
-// SC-STUB(F05 29-AC-3)
-func (Guards) HasGuard(id string) bool { return false }
+// guardHolds evaluates one guard reference. A missing fact (known=false), an unknown identifier and an argument
+// on a boolean guard all evaluate false.
+func guardHolds(ref string, ev Event, facts Facts) bool {
+	id, args := idOf(ref), argsOf(ref)
+	switch base, derived := derivedGuards[id]; {
+	case valuedGuards[id]:
+		v, known := facts.Value(ev, id)
+		return known && v != "" && has(args, v)
+	case derived:
+		v, known := facts.Bool(ev, base)
+		return len(args) == 0 && known && !v
+	case guardSet[id]:
+		v, known := facts.Bool(ev, id)
+		return len(args) == 0 && known && v
+	}
+	return false
+}
 
-// SC-STUB(F05 29-AC-3)
-func (Guards) GuardIDs() []string { return nil }
+func rejectionCode(event string, failed []string) string {
+	if !dispatchEvents[event] || len(failed) == 0 {
+		return CodeGateNotSatisfied
+	}
+	if len(failed) == 1 && failed[0] == "G_NO_ACTIVE_EXECUTION" {
+		return CodeAlreadyRunning
+	}
+	for _, g := range failed {
+		if !attemptGuards[g] {
+			return CodeGateNotSatisfied
+		}
+	}
+	return CodeAttemptsExhaust
+}
 
-// Effects is the library's effect implementation set; it implements EffectRegistry.
-type Effects struct{}
+// effectArg returns the first argument of the first effect with the given id ("" when absent).
+func effectArg(effects []string, id string) string {
+	for _, e := range effects {
+		if idOf(e) == id {
+			if a := argsOf(e); len(a) > 0 {
+				return a[0]
+			}
+		}
+	}
+	return ""
+}
 
-// SC-STUB(F05 29-AC-3)
-func (Effects) HasEffect(id string) bool { return false }
+func (m *Machine) findState(name string) *state {
+	for i := range m.states {
+		if m.states[i].name == name {
+			return &m.states[i]
+		}
+	}
+	return nil
+}
 
-// SC-STUB(F05 29-AC-3)
-func (Effects) EffectIDs() []string { return nil }
+// target resolves the transition's target: $same is the snapshot state, $return the snapshot's ReturnState (one
+// of the state's returnTargets that exists in the mode) and $resume the recorded ResumeState (a declared,
+// non-held, non-terminal, non-execution state of the mode).
+func (m *Machine) target(t *transition, cur *state, snap TaskSnapshot) (string, error) {
+	switch t.to {
+	case "$same":
+		return snap.State, nil
+	case "$return":
+		rs := m.findState(snap.ReturnState)
+		if cur == nil || rs == nil || !has(cur.returnTargets, snap.ReturnState) || !has(rs.modes, snap.Mode) {
+			return "", ferr(FireReturnInvalid, "%s: ReturnState %q is not a return target of %s in mode %s", t.id, snap.ReturnState, snap.State, snap.Mode)
+		}
+		return snap.ReturnState, nil
+	case "$resume":
+		rs := m.findState(snap.ResumeState)
+		if rs == nil || isHeld(rs.name) || rs.terminal || rs.active == "required" || !has(rs.modes, snap.Mode) {
+			return "", ferr(FireResumeInvalid, "%s: ResumeState %q is not a resumable state in mode %s", t.id, snap.ResumeState, snap.Mode)
+		}
+		return snap.ResumeState, nil
+	}
+	return t.to, nil
+}
+
+// roleEvent maps an agent_start of the role to its dispatch event (plan 29 section 7.2): tester to
+// dispatch_tester, implementer to dispatch_implementer in test-first, implementer and researcher to
+// dispatch_producer in verification-first from JUDGE_APPROVED, CHANGES_REQUESTED and TEST_SPEC_CONFLICT,
+// reviewer from GREEN_VERIFIED to dispatch_reviewer, and every other role and state to dispatch_auxiliary.
+// (The producerRoles check is the G_PRODUCER_ROLE_ALLOWED fact.)
+func roleEvent(role, state, mode string) string {
+	switch {
+	case role == "tester":
+		return "dispatch_tester"
+	case role == "implementer" && mode == "test-first":
+		return "dispatch_implementer"
+	case (role == "implementer" || role == "researcher") && mode == "verification-first" &&
+		(state == "JUDGE_APPROVED" || state == "CHANGES_REQUESTED" || state == "TEST_SPEC_CONFLICT"):
+		return "dispatch_producer"
+	case role == "reviewer" && state == "GREEN_VERIFIED":
+		return "dispatch_reviewer"
+	}
+	return "dispatch_auxiliary"
+}
+
+// NextAllowedRoles returns, in ascending order, the roles of the state's dispatchableRoles for which a dispatch
+// event by Hermes would currently fire. A nil machine or facts, an unknown mode or state yield none.
+func NextAllowedRoles(m *Machine, snap TaskSnapshot, facts Facts) []Role {
+	if m == nil || facts == nil || snap.State == "" {
+		return nil
+	}
+	st := m.findState(snap.State)
+	if st == nil || !has(st.modes, snap.Mode) {
+		return nil
+	}
+	var out []Role
+	for _, role := range sorted(st.dispatchable) {
+		d, err := Fire(m, snap, Event{Name: roleEvent(role, snap.State, snap.Mode), Actor: "hermes", Role: role}, facts)
+		if err == nil && d.Applied != nil {
+			out = append(out, Role(role))
+		}
+	}
+	return out
+}
+
+// projection is one humanProjection entry of the table.
+type projection struct {
+	humanState, label, when string
+	states                  []string
+	priority                int
+}
+
+// Project returns the human state and status label of the task (plan 29 section 14.13): the entry of the table's
+// humanProjection with the lowest priority number that lists the state and whose condition holds. Conditions are
+// open_conflict.awaiting_human_approval and no_execution_dispatched; an unknown condition never holds. A nil
+// machine or a state that does not exist in the task's mode projects to nothing.
+func Project(m *Machine, snap TaskSnapshot) (HumanState, string) {
+	if m == nil {
+		return "", ""
+	}
+	st := m.findState(snap.State)
+	if st == nil || !has(st.modes, snap.Mode) {
+		return "", ""
+	}
+	for _, p := range m.projection {
+		if !has(p.states, snap.State) {
+			continue
+		}
+		switch p.when {
+		case "":
+		case "open_conflict.awaiting_human_approval":
+			if !snap.ConflictAwaitingApproval {
+				continue
+			}
+		case "no_execution_dispatched":
+			if snap.ExecutionDispatched {
+				continue
+			}
+		default:
+			continue
+		}
+		return HumanState(p.humanState), p.label
+	}
+	return "", ""
+}

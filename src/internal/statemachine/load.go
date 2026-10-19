@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -77,6 +78,10 @@ type Machine struct {
 	states      []state
 	transitions []transition
 	report      Report
+	modes       []string
+	actors      []string
+	events      map[string]bool
+	projection  []projection // ascending priority
 }
 
 type state struct {
@@ -86,6 +91,7 @@ type state struct {
 	active        string
 	returnTargets []string
 	escalateTo    string
+	dispatchable  []string
 }
 
 type transition struct {
@@ -311,9 +317,18 @@ func build(doc any) (*Machine, *LoadError) {
 	if !ok || rev < 1 {
 		return nil, fail(CodeSchemaInvalid, "/metadata/revision", "revision is not an integer >= 1")
 	}
-	m := &Machine{revision: rev, initial: str(spec, "initialState")}
+	m := &Machine{revision: rev, initial: str(spec, "initialState"), modes: strs(spec["modes"]), actors: strs(spec["actorClasses"]), events: map[string]bool{}}
+	evcat, _ := spec["events"].(map[string]any)
+	for name := range evcat {
+		m.events[name] = true
+	}
+	for _, p := range list(spec["humanProjection"]) {
+		pr, _ := p["priority"].(int)
+		m.projection = append(m.projection, projection{humanState: str(p, "humanState"), label: str(p, "label"), when: str(p, "when"), states: strs(p["states"]), priority: pr})
+	}
+	sort.SliceStable(m.projection, func(i, j int) bool { return m.projection[i].priority < m.projection[j].priority })
 	for _, s := range list(spec["states"]) {
-		st := state{name: str(s, "name"), modes: strs(s["modes"]), active: str(s, "activeExecution"), returnTargets: strs(s["returnTargets"])}
+		st := state{name: str(s, "name"), modes: strs(s["modes"]), active: str(s, "activeExecution"), returnTargets: strs(s["returnTargets"]), dispatchable: strs(s["dispatchableRoles"])}
 		st.terminal, _ = s["terminal"].(bool)
 		if sm, ok := s["stall"].(map[string]any); ok {
 			st.escalateTo = str(sm, "escalateTo")
@@ -725,7 +740,11 @@ func coverage(m *Machine) *LoadError {
 // strayGuards rejects outcome and failure-class guards on events they do not classify. It runs after the
 // coverage rules so a table that re-labels a phase event reports the missing coverage first.
 func strayGuards(m *Machine) *LoadError {
+	idx := m.stateIndex()
 	for i, t := range m.transitions {
+		if le := misplacedEvent(m, idx, i, t); le != nil {
+			return le
+		}
 		_, isPhase := phaseOf(t.event)
 		for j, g := range t.guards {
 			id := idOf(g)
@@ -739,6 +758,38 @@ func strayGuards(m *Machine) *LoadError {
 		}
 	}
 	return nil
+}
+
+// misplacedEvent enforces D8: a phase event's from is a subset of {its phase state} and execution_failed's from
+// a subset of the activeExecution required states.
+func misplacedEvent(m *Machine, idx map[string]int, i int, t transition) *LoadError {
+	for j, f := range t.from {
+		want, ok := "", true
+		if _, isPhase := phaseOf(t.event); isPhase {
+			want = phaseState[t.event]
+			ok = f == want
+		} else if t.event == "execution_failed" {
+			si, known := idx[f]
+			ok = known && m.states[si].active == "required"
+			want = "an activeExecution required state"
+		} else {
+			return nil
+		}
+		if !ok {
+			le := fail(CodeOutcomeGuardInvalid, ptr("spec", "transitions", i, "from", j), "%s: event %s must leave only %s, not %s", t.id, t.event, want, f)
+			if len(t.modes) == 1 {
+				le.Mode = t.modes[0]
+			}
+			return le
+		}
+	}
+	return nil
+}
+
+// phaseState is the verification state each classification event leaves.
+var phaseState = map[string]string{
+	"red_classified": "RED_VERIFYING", "green_classified": "GREEN_VERIFYING",
+	"judge_classified": "JUDGE_VALIDATING", "judging_classified": "JUDGING",
 }
 
 // phaseEvent is the classification event each activeExecution verification state must handle.
@@ -907,13 +958,6 @@ func bfs(start string, inMode map[string]bool, adj map[string][]string) map[stri
 	return seen
 }
 
-// catalogueRegistry accepts exactly the identifiers the table's own catalogues declare. Check uses it until the
-// guard and effect implementations exist (plan 29 section 7.1, S2); Load then runs against the real registries.
-type catalogueRegistry map[string]bool
-
-func (r catalogueRegistry) HasGuard(id string) bool  { return r[id] }
-func (r catalogueRegistry) HasEffect(id string) bool { return r[id] }
-
 // Check loads the table at tablePath and writes the per-mode reachability report to w. It is the Go entry point
 // of `make state-machine-check`; any load failure is returned as a *LoadError.
 func Check(w io.Writer, tablePath string, opts Options) error {
@@ -921,20 +965,7 @@ func Check(w io.Writer, tablePath string, opts Options) error {
 	if err != nil {
 		return fail(CodeUnreadable, "", "%s: %s", tablePath, oneLine(err.Error()))
 	}
-	g, e := catalogueRegistry{}, catalogueRegistry{}
-	if doc, perr := contracts.ParseYAML(b); perr == nil {
-		root, _ := doc.(map[string]any)
-		spec, _ := root["spec"].(map[string]any)
-		gc, _ := spec["guards"].(map[string]any)
-		ec, _ := spec["effects"].(map[string]any)
-		for k := range gc {
-			g[k] = true
-		}
-		for k := range ec {
-			e[k] = true
-		}
-	}
-	m, err := Load(b, g, e, opts)
+	m, err := Load(b, Guards{}, Effects{}, opts)
 	if err != nil {
 		var le *LoadError
 		if errors.As(err, &le) {
