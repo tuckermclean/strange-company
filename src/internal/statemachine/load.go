@@ -61,7 +61,7 @@ type EffectRegistry interface{ HasEffect(id string) bool }
 // Options configures Load and Check. ContractsDir holds state-machine.schema.yaml (the single source).
 type Options struct{ ContractsDir string }
 
-// LoadError is a load failure: Code is one of the Code constants; Mode is set for per-mode graph failures.
+// LoadError is a load failure: Code is one of the Code constants; Mode is set for per-mode failures (graph, coverage, stall, mode-mismatch, guard and creation errors).
 type LoadError struct {
 	Code    string
 	Pointer string
@@ -202,13 +202,21 @@ func Load(table []byte, guards GuardRegistry, effects EffectRegistry, opts Optio
 	if le := transitionRules(m); le != nil {
 		return nil, le
 	}
+	modes := strs(spec["modes"])
+	if le := creation(m, modes); le != nil {
+		return nil, le
+	}
 	if le := coverage(m); le != nil {
 		return nil, le
 	}
-	modes := strs(spec["modes"])
 	var le *LoadError
 	m.report, le = graph(m, modes)
 	if le != nil {
+		return nil, le
+	}
+	// Every reachable-or-not required state must be an execution_failed source; checked after the graph rules so
+	// an unreachable island reports SM_UNREACHABLE first.
+	if le := coverEvent(m, m.stateIndex(), "execution_failed", "G_FAILURE_CLASS", failureClasses, CodeFailureClassIncomplete, "failure class", true); le != nil {
 		return nil, le
 	}
 	return m, nil
@@ -591,10 +599,12 @@ func guardArgs(t transition, p func(string) string) *LoadError {
 		}
 		return le
 	}
+	_, isPhase := phaseOf(t.event)
 	for _, spec := range []struct {
-		guard string
-		want  []string
-	}{{"G_VERIFICATION_OUTCOME", outcomesFor(t.event)}, {"G_FAILURE_CLASS", failureClasses}} {
+		guard    string
+		want     []string
+		required bool
+	}{{"G_VERIFICATION_OUTCOME", outcomesFor(t.event), isPhase}, {"G_FAILURE_CLASS", failureClasses, t.event == "execution_failed"}} {
 		n := 0
 		for j, g := range t.guards {
 			if idOf(g) != spec.guard {
@@ -602,6 +612,9 @@ func guardArgs(t transition, p func(string) string) *LoadError {
 			}
 			n++
 			gp := p("guards") + "/" + strconv.Itoa(j)
+			if !spec.required {
+				continue // strayGuards rejects it after coverage
+			}
 			if n > 1 {
 				return bad(gp, "%s: more than one %s guard", t.id, spec.guard)
 			}
@@ -615,21 +628,43 @@ func guardArgs(t transition, p func(string) string) *LoadError {
 				}
 			}
 		}
+		if n == 0 && spec.required {
+			return bad(p("guards"), "%s: event %s requires exactly one %s guard", t.id, t.event, spec.guard)
+		}
+	}
+	return nil
+}
+
+func phaseOf(event string) ([]string, bool) {
+	for _, o := range outcomes {
+		if o.event == event {
+			return o.list, true
+		}
+	}
+	return nil, false
+}
+
+// creation checks that every mode has a $none creation transition.
+func creation(m *Machine, modes []string) *LoadError {
+	for _, mode := range modes {
+		found := false
+		for _, t := range m.transitions {
+			if has(t.from, "$none") && has(t.modes, mode) {
+				found = true
+			}
+		}
+		if !found {
+			le := fail(CodeCreationInvalid, "/spec/transitions", "no $none creation transition applies in mode %s", mode)
+			le.Mode = mode
+			return le
+		}
 	}
 	return nil
 }
 
 func outcomesFor(event string) []string {
-	for _, o := range outcomes {
-		if o.event == event {
-			return o.list
-		}
-	}
-	var all []string // not a classification event: any known outcome
-	for _, o := range outcomes {
-		all = append(all, o.list...)
-	}
-	return all
+	l, _ := phaseOf(event)
+	return l
 }
 
 // modeRules checks that a transition's from and to states exist in the modes it declares.
@@ -671,12 +706,39 @@ func appliesIn(t transition, s state, mode string) bool {
 // coverage checks outcome and failure-class completeness for every (state, mode) handling the event.
 func coverage(m *Machine) *LoadError {
 	idx := m.stateIndex()
+	for i, s := range m.states {
+		if s.active == "verification" && phaseEvent[s.name] == "" {
+			return fail(CodeOutcomeIncomplete, ptr("spec", "states", i, "activeExecution"), "%s is an activeExecution verification state with no phase event", s.name)
+		}
+	}
 	for _, o := range outcomes {
-		if le := coverEvent(m, idx, o.event, "G_VERIFICATION_OUTCOME", o.list, CodeOutcomeIncomplete, "outcome"); le != nil {
+		if le := coverEvent(m, idx, o.event, "G_VERIFICATION_OUTCOME", o.list, CodeOutcomeIncomplete, "outcome", false); le != nil {
 			return le
 		}
 	}
-	return coverEvent(m, idx, "execution_failed", "G_FAILURE_CLASS", failureClasses, CodeFailureClassIncomplete, "failure class")
+	if le := coverEvent(m, idx, "execution_failed", "G_FAILURE_CLASS", failureClasses, CodeFailureClassIncomplete, "failure class", false); le != nil {
+		return le
+	}
+	return strayGuards(m)
+}
+
+// strayGuards rejects outcome and failure-class guards on events they do not classify. It runs after the
+// coverage rules so a table that re-labels a phase event reports the missing coverage first.
+func strayGuards(m *Machine) *LoadError {
+	for i, t := range m.transitions {
+		_, isPhase := phaseOf(t.event)
+		for j, g := range t.guards {
+			id := idOf(g)
+			if (id == "G_VERIFICATION_OUTCOME" && !isPhase) || (id == "G_FAILURE_CLASS" && t.event != "execution_failed") {
+				le := fail(CodeOutcomeGuardInvalid, ptr("spec", "transitions", i, "guards", j), "%s: %s is not allowed on event %s", t.id, id, t.event)
+				if len(t.modes) == 1 {
+					le.Mode = t.modes[0]
+				}
+				return le
+			}
+		}
+	}
+	return nil
 }
 
 // phaseEvent is the classification event each activeExecution verification state must handle.
@@ -685,7 +747,7 @@ var phaseEvent = map[string]string{
 	"JUDGE_VALIDATING": "judge_classified", "JUDGING": "judging_classified",
 }
 
-func coverEvent(m *Machine, idx map[string]int, event, guard string, want []string, code, what string) *LoadError {
+func coverEvent(m *Machine, idx map[string]int, event, guard string, want []string, code, what string, strict bool) *LoadError {
 	for _, s := range m.states {
 		for _, mode := range s.modes {
 			var cands []transition
@@ -695,7 +757,7 @@ func coverEvent(m *Machine, idx map[string]int, event, guard string, want []stri
 				}
 			}
 			if len(cands) == 0 {
-				if s.active == "verification" && phaseEvent[s.name] == event {
+				if (s.active == "verification" && phaseEvent[s.name] == event) || (strict && s.active == "required" && event == "execution_failed") {
 					le := fail(code, "/spec/transitions", "%s has no %s transition in %s", s.name, event, mode)
 					le.Mode = mode
 					return le
