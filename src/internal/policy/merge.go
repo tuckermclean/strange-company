@@ -3,6 +3,7 @@ package policy
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -38,9 +39,12 @@ type Effective struct {
 // POLICY_LOOSENING:<pointer> for each value that would loosen the platform. Issues are sorted; Values is nil
 // whenever there is any issue. Neither input is modified.
 func MergePolicy(opts Options, platform Platform, repo map[string]any) (Effective, []Issue) {
-	m := &merger{platform: platform, repo: repo, values: map[string]any{}}
-	m.schema(opts)
-	if repo != nil {
+	m := &merger{platform: platform, values: map[string]any{}}
+	// Every document is normalised to JSON values first (a deep copy, so no input is modified and Go-native
+	// types such as []string behave like YAML-parsed ones).
+	doc, ok := m.normalize(opts, repo)
+	if ok {
+		m.repo = doc
 		m.run()
 	}
 	if len(m.issues) == 0 {
@@ -84,11 +88,51 @@ func normalizeIssues(is []Issue) []Issue {
 	return out
 }
 
-func (m *merger) schema(opts Options) {
-	if m.repo == nil {
+// normalize validates the repository document against its schema and returns its JSON-normalised copy; ok is
+// false when there is nothing to merge. It also normalises the platform documents.
+func (m *merger) normalize(opts Options, repo map[string]any) (map[string]any, bool) {
+	if repo == nil {
 		m.add(CodeRepoPolicyInvalid, "", "the repository policy is empty")
-		return
+		return nil, false
 	}
+	doc, err := jsonRoundTrip(repo)
+	if err != nil {
+		m.add(CodeRepoPolicyInvalid, "", "%s", err.Error())
+		return nil, false
+	}
+	rm, isMap := doc.(map[string]any)
+	if !isMap {
+		m.add(CodeRepoPolicyInvalid, "", "the repository policy is not an object")
+		return nil, false
+	}
+	m.schema(opts, doc)
+	p := &m.platform
+	for _, d := range []*map[string]any{&p.Verification, &p.ModelRouting} {
+		if *d == nil {
+			continue
+		}
+		if n, err := jsonRoundTrip(*d); err == nil {
+			if nm, ok := n.(map[string]any); ok {
+				*d = nm
+			}
+		}
+	}
+	if p.Roles != nil {
+		roles := map[string]map[string]any{}
+		for k, d := range p.Roles {
+			roles[k] = d
+			if n, err := jsonRoundTrip(d); err == nil {
+				if nm, ok := n.(map[string]any); ok {
+					roles[k] = nm
+				}
+			}
+		}
+		p.Roles = roles
+	}
+	return rm, true
+}
+
+func (m *merger) schema(opts Options, doc any) {
 	schemas, err := contracts.CompileSchemas(opts.ContractsDir)
 	if err != nil || schemas[repoPolicySchemaStem] == nil {
 		msg := "no repo-policy schema"
@@ -96,12 +140,6 @@ func (m *merger) schema(opts Options) {
 			msg = err.Error()
 		}
 		m.add(CodeUnreadable, "", "cannot load the repository policy schema: %s", oneLine(msg))
-		return
-	}
-	// The document is validated as JSON values (the schema library rejects Go-specific number types).
-	doc, err := jsonRoundTrip(m.repo)
-	if err != nil {
-		m.add(CodeRepoPolicyInvalid, "", "%s", err.Error())
 		return
 	}
 	for _, e := range validate(schemas[repoPolicySchemaStem], doc) {
@@ -134,6 +172,11 @@ func (m *merger) run() {
 	m.semanticKeys()
 	for _, check := range []string{"skipMarkers", "testEnvDetection", "unconditionalFailure"} {
 		for _, lang := range sortedKeys(mapAt(r, "spec", "staticChecks", check)) {
+			for i, pat := range strList(r, "spec", "staticChecks", check, lang) {
+				if _, err := regexp.Compile(pat); err != nil {
+					m.add(CodeRegexInvalid, fmt.Sprintf("/spec/staticChecks/%s/%s/%d", check, lang, i), "pattern %q is not valid RE2: %s", pat, oneLine(err.Error()))
+				}
+			}
 			m.union("/spec/staticChecks/"+check+"/"+lang, strList(v, "spec", "staticChecks", check, lang),
 				strList(r, "spec", "staticChecks", check, lang), true)
 		}
@@ -159,6 +202,10 @@ func (m *merger) run() {
 	m.bound("/spec/testSpecConflict/maxConflictsPerTask", valAt(v, "spec", "testSpecConflict", "maxConflictsPerTask"), valAt(r, "spec", "testSpecConflict", "maxConflictsPerTask"), true)
 	m.bound("/spec/task/maxBaseLag/commits", valAt(v, "spec", "task", "maxBaseLag", "commits"), valAt(r, "spec", "task", "maxBaseLag", "commits"), true)
 	for _, role := range sortedKeys(mapAt(r, "spec", "diffLimits")) {
+		if m.platform.Roles[role] == nil {
+			m.add(CodePlatformPolicyInvalid, "/spec/diffLimits/"+role, "the platform has no role definition %q", role)
+			continue
+		}
 		for _, k := range []string{"maxFilesChanged", "maxDiffBytes"} {
 			m.bound("/spec/diffLimits/"+role+"/"+k, valAt(m.platform.Roles[role], "spec", "diffRules", k), valAt(r, "spec", "diffLimits", role, k), true)
 		}
@@ -169,10 +216,10 @@ func (m *merger) run() {
 	m.bound("/spec/merge/humanApprovalsRequired", valAt(v, "spec", "merge", "humanApprovalsRequired"), valAt(r, "spec", "merge", "humanApprovalsRequired"), false)
 
 	// Durations (min by value).
-	m.duration("/spec/task/maxBaseLag/age", valAt(v, "spec", "task", "maxBaseLag", "age"), valAt(r, "spec", "task", "maxBaseLag", "age"))
+	m.duration("/spec/task/maxBaseLag/age", valAt(v, "spec", "task", "maxBaseLag", "age"), valAt(r, "spec", "task", "maxBaseLag", "age"), true)
 	for _, g := range sortedKeys(mapAt(r, "spec", "watchdog", "groups")) {
 		for _, k := range []string{"alertAfter", "escalateAfter"} {
-			m.duration("/spec/watchdog/groups/"+g+"/"+k, valAt(v, "spec", "watchdog", "groups", g, k), valAt(r, "spec", "watchdog", "groups", g, k))
+			m.duration("/spec/watchdog/groups/"+g+"/"+k, valAt(v, "spec", "watchdog", "groups", g, k), valAt(r, "spec", "watchdog", "groups", g, k), false)
 		}
 	}
 
@@ -312,7 +359,7 @@ func (m *merger) bound(ptr string, platform, repo any, isMax bool) {
 		return
 	}
 	if platform == nil {
-		m.values[ptr] = repo
+		m.add(CodePlatformPolicyInvalid, ptr, "the platform policy has no value to compare with")
 		return
 	}
 	pv, ok := toNum(platform)
@@ -340,7 +387,7 @@ func parseDuration(v any) (time.Duration, bool) {
 }
 
 // duration merges a duration (the shorter wins, compared by value; longer is loosening).
-func (m *merger) duration(ptr string, platform, repo any) {
+func (m *merger) duration(ptr string, platform, repo any, required bool) {
 	if repo == nil {
 		return
 	}
@@ -350,7 +397,11 @@ func (m *merger) duration(ptr string, platform, repo any) {
 		return
 	}
 	if platform == nil {
-		m.values[ptr] = repo
+		if required {
+			m.add(CodePlatformPolicyInvalid, ptr, "the platform policy has no value to compare with")
+		} else {
+			m.values[ptr] = repo
+		}
 		return
 	}
 	pd, ok := parseDuration(platform)
