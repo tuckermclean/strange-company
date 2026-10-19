@@ -7,11 +7,11 @@ import (
 	"testing"
 )
 
-// refGlobRegexp is a verbatim copy of globRegexp in src/internal/lint/tdd/gitutil.go (anyStar=false): the
-// reference semantics of CD-68 path globs.
+// refGlobRegexp is a copy of globRegexp in src/internal/lint/tdd/gitutil.go (anyStar=false) with dotall
+// ("(?s)") so `**` matches "\n" like `*` and `?` (CD-68 newline clarification): the reference semantics of path globs.
 func refGlobRegexp(pat string) *regexp.Regexp {
 	var b strings.Builder
-	b.WriteString("^")
+	b.WriteString("(?s)^")
 	for i := 0; i < len(pat); {
 		switch {
 		case strings.HasPrefix(pat[i:], "**/"):
@@ -35,8 +35,8 @@ func refGlobRegexp(pat string) *regexp.Regexp {
 	return regexp.MustCompile(b.String())
 }
 
-// 22-AC-1 (CD-68, review 1 findings 1 and 2): `**/` is zero or more whole directories and never `**`; `*` and
-// `?` match a newline where `**` does not.
+// 22-AC-1 (CD-68, review 1 findings 1 and 2): `**/` is zero or more whole directories and never `**`; a newline
+// is an ordinary character for `*`, `?` and `**`.
 func TestExactGlobOverlap_RecursivePrefixIsNotAnyString_22AC1(t *testing.T) {
 	cases := []struct {
 		name                         string
@@ -77,14 +77,14 @@ func TestExactGlobDead_ProtectedStarStarSlashIsNotAnyString_22AC1(t *testing.T) 
 	}
 }
 
-// 22-AC-1 (CD-68, review 1 finding 2): `?` and `*` match '\n', `**` does not, so the two are not inside each
-// other and the intersections below exist.
+// 22-AC-1 (CD-68, review 1 finding 2): `?`, `*` and `**` all match '\n' (an ordinary non-'/' character), so `?` is
+// inside `**` and docs/* has no path outside docs/**.
 func TestExactGlobNewlineIsInTheAlphabet_22AC1(t *testing.T) {
-	if in, ok := globInsideUnion("?", []string{"**"}); !ok || in {
-		t.Errorf("globInsideUnion(?, [**]) = (%v, %v), want (false, true): \"\\n\" matches ? but not **", in, ok)
+	if in, ok := globInsideUnion("?", []string{"**"}); !ok || !in {
+		t.Errorf("globInsideUnion(?, [**]) = (%v, %v), want (true, true): \"\\n\" matches both ? and **", in, ok)
 	}
-	if f, ok := globsIntersect("docs/*", "docs/*", []string{"docs/**"}); !ok || !f {
-		t.Errorf("globsIntersect(docs/*, docs/*, [docs/**]) = (%v, %v), want (true, true): docs/\\n is matched by * not **", f, ok)
+	if f, ok := globsIntersect("docs/*", "docs/*", []string{"docs/**"}); !ok || f {
+		t.Errorf("globsIntersect(docs/*, docs/*, [docs/**]) = (%v, %v), want (false, true): docs/\\n is matched by ** too", f, ok)
 	}
 }
 
