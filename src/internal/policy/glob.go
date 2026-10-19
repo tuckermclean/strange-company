@@ -7,15 +7,14 @@ import (
 
 // Exact glob algebra for the plan 22 section 9.5 path invariants (CD-68).
 //
-// A glob has the semantics of globRegexp in src/internal/lint/tdd/gitutil.go (anyStar = false):
+// A glob has the semantics of globRegexp in src/internal/lint/tdd/gitutil.go (anyStar = false), except that a
+// newline is an ordinary character everywhere (CD-68):
 //
-//	**/   zero or more directories, i.e. (?:.*/)?
-//	**    any string, i.e. .*
-//	*     any string without '/', i.e. [^/]*
-//	?     one character that is not '/'
+//	**/   zero or more directories (any characters ending in '/', or nothing)
+//	**    any string, newlines included
+//	*     any string without '/' (newlines included)
+//	?     one character that is not '/' (a newline is allowed)
 //	else  the character itself (there are no classes or alternations)
-//
-// ('.' of a Go regexp does not match a newline; the algebra mirrors that.)
 //
 // Each glob is a small NFA whose state i means "tokens 0..i-1 are consumed"; state len(tokens) accepts. The
 // questions the loader asks are decided by a breadth-first search over the subset construction of the product
@@ -26,12 +25,12 @@ import (
 type tokKind uint8
 
 const (
-	tokLit   tokKind = iota // one literal rune
-	tokQuest                // ?  : one rune except '/'
-	tokStar                 // *  : any run of runes except '/'
-	tokAny                  // ** : any run of runes
-	tokDirs                 // **/: zero or more directories
-	tokDirsIn
+	tokLit    tokKind = iota // one literal rune
+	tokQuest                 // ?  : one rune except '/'
+	tokStar                  // *  : any run of runes except '/'
+	tokAny                   // ** : any run of runes
+	tokDirs                  // **/: zero or more directories
+	tokDirsIn                // inside **/: directory characters before the closing '/'
 )
 
 type globTok struct {
