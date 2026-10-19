@@ -1,0 +1,5 @@
+# Invalid fixture (29-AC-2): a transition may only use an event of the events catalogue
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_EVENT_UNDECLARED
+ops:
+  - {op: replace, path: spec/transitions/id=T091/event, value: made_up_event}

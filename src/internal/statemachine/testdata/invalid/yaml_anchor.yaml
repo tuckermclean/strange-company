@@ -1,0 +1,6 @@
+# Invalid fixture (29-AC-2): YAML anchors and aliases are refused
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_YAML_ANCHOR
+text:
+  - old: "  name: strange-company-tasks\n"
+    new: "  name: &n strange-company-tasks\n"

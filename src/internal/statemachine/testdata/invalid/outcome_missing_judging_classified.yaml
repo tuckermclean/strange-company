@@ -1,0 +1,5 @@
+# Invalid fixture (29-AC-2): judging_classified outcome tamper_detected is missing
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_OUTCOME_INCOMPLETE
+ops:
+  - {op: remove, path: spec/transitions/id=T130}

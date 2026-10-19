@@ -1,0 +1,5 @@
+# Invalid fixture (29-AC-2): every state is covered by a humanProjection entry
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_PROJECTION_UNCOVERED
+ops:
+  - {op: remove, path: spec/humanProjection/3}

@@ -1,0 +1,7 @@
+# Invalid fixture (29-AC-2): every non-terminal state has a path to a terminal state
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_NON_TERMINATING
+ops:
+  - {op: add, path: spec/states, value: {name: TRAP, modes: [test-first, verification-first], terminal: false, activeExecution: forbidden, description: Reachable but with no way out to a terminal state.}}
+  - {op: add, path: spec/transitions, value: {id: T200, from: [SPECIFIED], to: TRAP, event: escalate, actors: [hermes], modes: [test-first, verification-first], guards: [], effects: [], description: Enter the trap state.}}
+  - {op: add, path: spec/humanProjection/6/states, value: TRAP}

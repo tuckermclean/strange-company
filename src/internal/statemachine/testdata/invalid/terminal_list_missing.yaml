@@ -1,0 +1,5 @@
+# Invalid fixture (29-AC-2): a terminal state must be listed in terminalStates
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_TERMINAL_MISMATCH
+ops:
+  - {op: remove, path: spec/terminalStates/=CANCELLED}

@@ -1,0 +1,5 @@
+# Invalid fixture (29-AC-2): a terminalStates entry must carry terminal true
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_TERMINAL_MISMATCH
+ops:
+  - {op: replace, path: spec/states/name=DONE/terminal, value: false}

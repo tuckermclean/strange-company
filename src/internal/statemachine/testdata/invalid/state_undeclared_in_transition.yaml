@@ -1,0 +1,5 @@
+# Invalid fixture (29-AC-2): every state named anywhere is declared (transition target)
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_STATE_UNDECLARED
+ops:
+  - {op: replace, path: spec/transitions/id=T001/to, value: NOWHERE}

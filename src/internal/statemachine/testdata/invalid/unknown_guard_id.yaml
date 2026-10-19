@@ -1,0 +1,6 @@
+# Invalid fixture (29-AC-2): a guard declared in the table but unknown to the guard registry is a load error
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_GUARD_UNKNOWN
+ops:
+  - {op: add, path: spec/guards/G_UNREGISTERED_GUARD, value: Declared in the table but implemented nowhere in the library.}
+  - {op: add, path: spec/transitions/id=T010/guards, value: "G_UNREGISTERED_GUARD:arg"}

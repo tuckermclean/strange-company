@@ -1,0 +1,5 @@
+# Invalid fixture (29-AC-2): execution_failed covers all four classes for every source state (REVIEW lacks policy)
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_FAILURE_CLASS_INCOMPLETE
+ops:
+  - {op: remove, path: spec/transitions/id=T104/from/=REVIEW}
