@@ -46,6 +46,10 @@ const (
 	CodeHumanCommandMissing    = "SM_HUMAN_COMMAND_MISSING"
 	CodeOutcomeIncomplete      = "SM_OUTCOME_INCOMPLETE"
 	CodeFailureClassIncomplete = "SM_FAILURE_CLASS_INCOMPLETE"
+	CodeOutcomeGuardInvalid    = "SM_OUTCOME_GUARD_INVALID"
+	CodeCreationInvalid        = "SM_CREATION_INVALID"
+	CodeResumeFromNonHeld      = "SM_RESUME_FROM_NON_HELD"
+	CodeModeMismatch           = "SM_MODE_MISMATCH"
 )
 
 // GuardRegistry knows every guard identifier the library implements (the part after ":" is not part of the id).
@@ -62,6 +66,7 @@ type LoadError struct {
 	Code    string
 	Pointer string
 	Mode    string
+	File    string // set by Check: the table path, rendered before the mode
 	Message string
 }
 
@@ -107,7 +112,7 @@ type ModeReport struct {
 // Report holds one ModeReport per mode, in table order.
 type Report struct{ Modes []ModeReport }
 
-// Error renders the failure as `<CODE>[:<json-pointer>] [mode <mode>: ]<message>`.
+// Error renders the failure as `<CODE>[:<json-pointer>] [<file>: ][mode <mode>: ]<message>`.
 func (e *LoadError) Error() string {
 	if e == nil {
 		return ""
@@ -117,6 +122,9 @@ func (e *LoadError) Error() string {
 		s += ":" + e.Pointer
 	}
 	s += " "
+	if e.File != "" {
+		s += e.File + ": "
+	}
 	if e.Mode != "" {
 		s += "mode " + e.Mode + ": "
 	}
@@ -450,14 +458,18 @@ func declarations(m *Machine, spec map[string]any) *LoadError {
 		if m.states[ti].terminal {
 			return fail(CodeStallEscalateInvalid, ptr("spec", "states", i, "stall", "escalateTo"), "%s: stall.escalateTo %s is a terminal state", s.name, s.escalateTo)
 		}
-		found := false
-		for _, t := range m.transitions {
-			if t.event == "stall_timeout" && t.to == s.escalateTo && has(t.from, s.name) {
-				found = true
+		for _, mode := range s.modes {
+			found := false
+			for _, t := range m.transitions {
+				if t.event == "stall_timeout" && t.to == s.escalateTo && has(t.from, s.name) && appliesIn(t, s, mode) && has(t.actors, "runner") {
+					found = true
+				}
 			}
-		}
-		if !found {
-			return fail(CodeStallNoTransition, ptr("spec", "states", i, "stall"), "%s has stall.escalateTo %s but no stall_timeout transition from it to that state", s.name, s.escalateTo)
+			if !found {
+				le := fail(CodeStallNoTransition, ptr("spec", "states", i, "stall"), "%s has stall.escalateTo %s but no runner stall_timeout transition from it to that state", s.name, s.escalateTo)
+				le.Mode = mode
+				return le
+			}
 		}
 	}
 	return nil
@@ -523,6 +535,22 @@ func transitionRules(m *Machine) *LoadError {
 	idx := m.stateIndex()
 	for i, t := range m.transitions {
 		p := func(f string) string { return ptr("spec", "transitions", i, f) }
+		if le := guardArgs(t, p); le != nil {
+			return le
+		}
+		if has(t.from, "$none") && (len(t.from) != 1 || t.to != m.initial) {
+			return fail(CodeCreationInvalid, p("from"), "%s: a $none transition must have from [$none] and target initialState %s", t.id, m.initial)
+		}
+		if t.to == "$resume" {
+			for _, f := range t.from {
+				if !isHeld(f) {
+					return fail(CodeResumeFromNonHeld, p("from"), "%s: $resume from %s, which is not BLOCKED or NEEDS_HUMAN", t.id, f)
+				}
+			}
+		}
+		if le := modeRules(m, idx, t, p); le != nil {
+			return le
+		}
 		for _, f := range t.from {
 			if f == "$none" {
 				continue
@@ -554,6 +582,87 @@ func transitionRules(m *Machine) *LoadError {
 	return nil
 }
 
+// guardArgs validates the arguments of the outcome and failure-class guards of one transition.
+func guardArgs(t transition, p func(string) string) *LoadError {
+	bad := func(gp, format string, a ...any) *LoadError {
+		le := fail(CodeOutcomeGuardInvalid, gp, format, a...)
+		if len(t.modes) == 1 {
+			le.Mode = t.modes[0]
+		}
+		return le
+	}
+	for _, spec := range []struct {
+		guard string
+		want  []string
+	}{{"G_VERIFICATION_OUTCOME", outcomesFor(t.event)}, {"G_FAILURE_CLASS", failureClasses}} {
+		n := 0
+		for j, g := range t.guards {
+			if idOf(g) != spec.guard {
+				continue
+			}
+			n++
+			gp := p("guards") + "/" + strconv.Itoa(j)
+			if n > 1 {
+				return bad(gp, "%s: more than one %s guard", t.id, spec.guard)
+			}
+			args := argsOf(g)
+			if len(args) == 0 {
+				return bad(gp, "%s: %s has no argument", t.id, spec.guard)
+			}
+			for _, a := range args {
+				if a == "" || !has(spec.want, a) {
+					return bad(gp, "%s: %s argument %q is empty or not valid for event %s", t.id, spec.guard, a, t.event)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func outcomesFor(event string) []string {
+	for _, o := range outcomes {
+		if o.event == event {
+			return o.list
+		}
+	}
+	var all []string // not a classification event: any known outcome
+	for _, o := range outcomes {
+		all = append(all, o.list...)
+	}
+	return all
+}
+
+// modeRules checks that a transition's from and to states exist in the modes it declares.
+func modeRules(m *Machine, idx map[string]int, t transition, p func(string) string) *LoadError {
+	hasFrom := false
+	for _, f := range t.from {
+		if f == "$none" {
+			continue
+		}
+		hasFrom = true
+		ok := false
+		for _, mode := range t.modes {
+			ok = ok || has(m.states[idx[f]].modes, mode)
+		}
+		if !ok {
+			return fail(CodeModeMismatch, p("from"), "%s: source state %s exists in none of the transition's modes %v", t.id, f, t.modes)
+		}
+	}
+	if !hasFrom || strings.HasPrefix(t.to, "$") {
+		return nil
+	}
+	for _, mode := range t.modes {
+		for _, f := range t.from {
+			if f != "$none" && has(m.states[idx[f]].modes, mode) && !has(m.states[idx[t.to]].modes, mode) {
+				le := fail(CodeModeMismatch, p("to"), "%s: target %s does not exist in mode %s where source %s does", t.id, t.to, mode, f)
+				le.Mode = mode
+				return le
+			}
+		}
+	}
+	return nil
+}
+
 // appliesIn reports whether the transition applies to the mode and the state belongs to it.
 func appliesIn(t transition, s state, mode string) bool {
 	return has(t.modes, mode) && has(s.modes, mode)
@@ -570,32 +679,57 @@ func coverage(m *Machine) *LoadError {
 	return coverEvent(m, idx, "execution_failed", "G_FAILURE_CLASS", failureClasses, CodeFailureClassIncomplete, "failure class")
 }
 
+// phaseEvent is the classification event each activeExecution verification state must handle.
+var phaseEvent = map[string]string{
+	"RED_VERIFYING": "red_classified", "GREEN_VERIFYING": "green_classified",
+	"JUDGE_VALIDATING": "judge_classified", "JUDGING": "judging_classified",
+}
+
 func coverEvent(m *Machine, idx map[string]int, event, guard string, want []string, code, what string) *LoadError {
 	for _, s := range m.states {
 		for _, mode := range s.modes {
-			handled := false
-			got := map[string]bool{}
+			var cands []transition
 			for _, t := range m.transitions {
-				if t.event != event || !has(t.from, s.name) || !appliesIn(t, s, mode) {
-					continue
+				if t.event == event && has(t.from, s.name) && appliesIn(t, s, mode) {
+					cands = append(cands, t)
 				}
-				handled = true
-				for _, g := range t.guards {
-					if idOf(g) == guard {
-						for _, a := range argsOf(g) {
-							got[a] = true
-						}
+			}
+			if len(cands) == 0 {
+				if s.active == "verification" && phaseEvent[s.name] == event {
+					le := fail(code, "/spec/transitions", "%s has no %s transition in %s", s.name, event, mode)
+					le.Mode = mode
+					return le
+				}
+				continue
+			}
+			var classes []string
+			for _, t := range cands {
+				for _, a := range t.actors {
+					if !has(classes, a) {
+						classes = append(classes, a)
 					}
 				}
 			}
-			if !handled {
-				continue
-			}
-			for _, w := range want {
-				if !got[w] {
-					le := fail(code, "/spec/transitions", "%s in %s (%s) has no transition covering %s %s", event, s.name, mode, what, w)
-					le.Mode = mode
-					return le
+			for _, class := range classes {
+				got := map[string]bool{}
+				for _, t := range cands {
+					if !has(t.actors, class) {
+						continue
+					}
+					for _, g := range t.guards {
+						if idOf(g) == guard {
+							for _, a := range argsOf(g) {
+								got[a] = true
+							}
+						}
+					}
+				}
+				for _, w := range want {
+					if !got[w] {
+						le := fail(code, "/spec/transitions", "%s in %s (%s) has no %s transition covering %s %s", event, s.name, mode, class, what, w)
+						le.Mode = mode
+						return le
+					}
 				}
 			}
 		}
@@ -743,7 +877,7 @@ func Check(w io.Writer, tablePath string, opts Options) error {
 		var le *LoadError
 		if errors.As(err, &le) {
 			c := *le
-			c.Message = tablePath + ": " + c.Message
+			c.File = tablePath
 			return &c
 		}
 		return err
