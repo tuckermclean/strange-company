@@ -2,7 +2,7 @@
 # by vstep-begin/vstep-end so out/verify/summary.json records target, result, started_at and duration_ms.
 # A step that fails stays recorded as "fail" and later steps as "skipped" (52-AC-5: the file is identical
 # between runs once duration_ms and started_at are deleted).
-VERIFY_TARGETS := gitops-cache fmt-check lint layout-check locks-check secrets-scan licenses-check contracts policy-check test build toolbox-check dag-check quarantine-check
+VERIFY_TARGETS := gitops-cache fmt-check lint layout-check locks-check secrets-scan licenses-check contracts policy-check state-machine-check test build toolbox-check dag-check quarantine-check
 VERIFY_DIR := out/verify
 .NOTPARALLEL:
 .PHONY: verify toolbox-check vstep-init $(VERIFY_TARGETS)

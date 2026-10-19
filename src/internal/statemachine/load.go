@@ -1,7 +1,20 @@
 // Package statemachine is the pure task state-machine library (plan 29, F05).
 package statemachine
 
-import "io"
+import (
+	"bytes"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"strconv"
+	"strings"
+
+	"github.com/santhosh-tekuri/jsonschema/v6"
+	"go.yaml.in/yaml/v3"
+
+	"strange.company/sc/internal/contracts"
+)
 
 // Error codes returned by Load and Check (plan 29 section 8.2).
 const (
@@ -53,7 +66,34 @@ type LoadError struct {
 }
 
 // Machine is a loaded, validated transition table.
-type Machine struct{}
+type Machine struct {
+	revision    int
+	initial     string
+	states      []state
+	transitions []transition
+	report      Report
+}
+
+type state struct {
+	name          string
+	modes         []string
+	terminal      bool
+	active        string
+	returnTargets []string
+	escalateTo    string
+}
+
+type transition struct {
+	id           string
+	from         []string
+	to           string
+	event        string
+	actors       []string
+	modes        []string
+	guards       []string
+	effects      []string
+	humanCommand string
+}
 
 // ModeReport is the reachability and termination result for one verification mode.
 type ModeReport struct {
@@ -67,19 +107,651 @@ type ModeReport struct {
 // Report holds one ModeReport per mode, in table order.
 type Report struct{ Modes []ModeReport }
 
-// SC-STUB(F05 29-AC-2)
-func (e *LoadError) Error() string { return "" }
-
-// SC-STUB(F05 29-AC-1 29-AC-2)
-func Load(table []byte, guards GuardRegistry, effects EffectRegistry, opts Options) (*Machine, error) {
-	return nil, nil
+// Error renders the failure as `<CODE>[:<json-pointer>] [mode <mode>: ]<message>`.
+func (e *LoadError) Error() string {
+	if e == nil {
+		return ""
+	}
+	s := e.Code
+	if e.Pointer != "" {
+		s += ":" + e.Pointer
+	}
+	s += " "
+	if e.Mode != "" {
+		s += "mode " + e.Mode + ": "
+	}
+	return s + e.Message
 }
 
-// SC-STUB(F05 29-AC-1)
-func Revision(m *Machine) int { return 0 }
+func fail(code, ptr, format string, a ...any) *LoadError {
+	return &LoadError{Code: code, Pointer: ptr, Message: fmt.Sprintf(format, a...)}
+}
 
-// SC-STUB(F05 29-AC-1)
-func (m *Machine) Report() Report { return Report{} }
+// Revision returns metadata.revision of the loaded table; 0 for a nil Machine.
+func Revision(m *Machine) int {
+	if m == nil {
+		return 0
+	}
+	return m.revision
+}
 
-// SC-STUB(F05 29-AC-1)
-func Check(w io.Writer, tablePath string, opts Options) error { return nil }
+// Report returns the per-mode reachability and termination report; the zero Report for a nil Machine.
+func (m *Machine) Report() Report {
+	if m == nil {
+		return Report{}
+	}
+	return m.report
+}
+
+// outcomes lists, per classification event, the outcomes every state that handles the event must cover
+// (plan 29 section 8.2).
+var outcomes = []struct {
+	event string
+	list  []string
+}{
+	{"red_classified", []string{"red_valid", "red_invalid", "already_satisfied", "partially_satisfied", "baseline_failing", "inconclusive"}},
+	{"green_classified", []string{"green_pass", "green_fail", "tamper_detected"}},
+	{"judge_classified", []string{"judge_valid", "judge_invalid", "already_satisfied", "partially_satisfied", "baseline_failing", "inconclusive"}},
+	{"judging_classified", []string{"judging_pass", "judging_fail", "tamper_detected"}},
+}
+
+var failureClasses = []string{"merit", "infrastructure", "policy", "budget"}
+
+// Load validates a transition table: YAML, schema, declarations, catalogue membership, registry membership,
+// per-transition rules and graph rules, in that order; the first failure is returned as a *LoadError. The
+// schema is compiled from opts.ContractsDir (the single source); nil registries reject every identifier.
+func Load(table []byte, guards GuardRegistry, effects EffectRegistry, opts Options) (*Machine, error) {
+	if msg, bad := findAnchor(table); bad {
+		return nil, fail(CodeYAMLAnchor, "", "%s", msg)
+	}
+	doc, err := contracts.ParseYAML(table)
+	if err != nil {
+		return nil, fail(CodeYAMLInvalid, "", "%s", oneLine(err.Error()))
+	}
+	schemas, err := contracts.CompileSchemas(opts.ContractsDir)
+	if err != nil {
+		return nil, fail(CodeSchemaUnavailable, "", "%s", oneLine(err.Error()))
+	}
+	sch := schemas["state-machine"]
+	if sch == nil {
+		return nil, fail(CodeSchemaUnavailable, "", "state-machine.schema.yaml not found in %q", opts.ContractsDir)
+	}
+	if err := sch.Validate(doc); err != nil {
+		return nil, schemaError(err)
+	}
+	m, ble := build(doc)
+	if ble != nil {
+		return nil, ble
+	}
+	root, _ := doc.(map[string]any)
+	spec, _ := root["spec"].(map[string]any)
+	if le := declarations(m, spec); le != nil {
+		return nil, le
+	}
+	if le := membership(m, spec, guards, effects); le != nil {
+		return nil, le
+	}
+	if le := transitionRules(m); le != nil {
+		return nil, le
+	}
+	if le := coverage(m); le != nil {
+		return nil, le
+	}
+	modes := strs(spec["modes"])
+	var le *LoadError
+	m.report, le = graph(m, modes)
+	if le != nil {
+		return nil, le
+	}
+	return m, nil
+}
+
+func schemaError(err error) *LoadError {
+	msg := oneLine(err.Error())
+	p := ""
+	var ve *jsonschema.ValidationError
+	if errors.As(err, &ve) {
+		for len(ve.Causes) > 0 {
+			ve = ve.Causes[0]
+		}
+		if len(ve.InstanceLocation) > 0 {
+			parts := make([]any, len(ve.InstanceLocation))
+			for i, x := range ve.InstanceLocation {
+				parts[i] = x
+			}
+			p = ptr(parts...)
+		}
+	}
+	return fail(CodeSchemaInvalid, p, "%s", msg)
+}
+
+func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+func findAnchor(b []byte) (string, bool) {
+	dec := yaml.NewDecoder(bytes.NewReader(b))
+	for {
+		var n yaml.Node
+		if err := dec.Decode(&n); err != nil {
+			return "", false // syntax errors are reported by the parser
+		}
+		if msg, bad := walkAnchor(&n); bad {
+			return msg, true
+		}
+	}
+}
+
+func walkAnchor(n *yaml.Node) (string, bool) {
+	if n.Kind == yaml.AliasNode {
+		return fmt.Sprintf("line %d: YAML aliases are not allowed", n.Line), true
+	}
+	if n.Anchor != "" {
+		return fmt.Sprintf("line %d: YAML anchors are not allowed (&%s)", n.Line, n.Anchor), true
+	}
+	for _, c := range n.Content {
+		if msg, bad := walkAnchor(c); bad {
+			return msg, true
+		}
+	}
+	return "", false
+}
+
+func strs(v any) []string {
+	l, _ := v.([]any)
+	out := make([]string, 0, len(l))
+	for _, e := range l {
+		s, _ := e.(string)
+		out = append(out, s)
+	}
+	return out
+}
+
+func str(m map[string]any, k string) string {
+	s, _ := m[k].(string)
+	return s
+}
+
+func list(v any) []map[string]any {
+	l, _ := v.([]any)
+	out := make([]map[string]any, 0, len(l))
+	for _, e := range l {
+		m, _ := e.(map[string]any)
+		out = append(out, m)
+	}
+	return out
+}
+
+// build extracts the typed table from a schema-valid document.
+func build(doc any) (*Machine, *LoadError) {
+	root, ok := doc.(map[string]any)
+	if !ok {
+		return nil, fail(CodeSchemaInvalid, "", "document is not a mapping")
+	}
+	meta, _ := root["metadata"].(map[string]any)
+	spec, _ := root["spec"].(map[string]any)
+	if meta == nil || spec == nil {
+		return nil, fail(CodeSchemaInvalid, "", "metadata or spec missing")
+	}
+	rev, ok := meta["revision"].(int)
+	if !ok || rev < 1 {
+		return nil, fail(CodeSchemaInvalid, "/metadata/revision", "revision is not an integer >= 1")
+	}
+	m := &Machine{revision: rev, initial: str(spec, "initialState")}
+	for _, s := range list(spec["states"]) {
+		st := state{name: str(s, "name"), modes: strs(s["modes"]), active: str(s, "activeExecution"), returnTargets: strs(s["returnTargets"])}
+		st.terminal, _ = s["terminal"].(bool)
+		if sm, ok := s["stall"].(map[string]any); ok {
+			st.escalateTo = str(sm, "escalateTo")
+		}
+		m.states = append(m.states, st)
+	}
+	for _, t := range list(spec["transitions"]) {
+		m.transitions = append(m.transitions, transition{
+			id: str(t, "id"), from: strs(t["from"]), to: str(t, "to"), event: str(t, "event"), actors: strs(t["actors"]),
+			modes: strs(t["modes"]), guards: strs(t["guards"]), effects: strs(t["effects"]), humanCommand: str(t, "humanCommand"),
+		})
+	}
+	return m, nil
+}
+
+func (m *Machine) stateIndex() map[string]int {
+	idx := make(map[string]int, len(m.states))
+	for i, s := range m.states {
+		idx[s.name] = i
+	}
+	return idx
+}
+
+func ptr(parts ...any) string {
+	var b strings.Builder
+	for _, p := range parts {
+		b.WriteByte('/')
+		switch v := p.(type) {
+		case int:
+			b.WriteString(strconv.Itoa(v))
+		case string:
+			b.WriteString(strings.NewReplacer("~", "~0", "/", "~1").Replace(v))
+		}
+	}
+	return b.String()
+}
+
+func has(l []string, s string) bool {
+	for _, e := range l {
+		if e == s {
+			return true
+		}
+	}
+	return false
+}
+
+func idOf(ref string) string {
+	id, _, _ := strings.Cut(ref, ":")
+	return id
+}
+
+func argsOf(ref string) []string {
+	_, a, ok := strings.Cut(ref, ":")
+	if !ok {
+		return nil
+	}
+	return strings.Split(a, ",")
+}
+
+// declarations checks every state named anywhere, the initial and terminal states, stall targets, projection
+// coverage and transition id uniqueness.
+func declarations(m *Machine, spec map[string]any) *LoadError {
+	idx := m.stateIndex()
+	if len(idx) != len(m.states) {
+		seen := map[string]bool{}
+		for i, s := range m.states {
+			if seen[s.name] {
+				return fail(CodeSchemaInvalid, ptr("spec", "states", i, "name"), "state %s is declared twice", s.name)
+			}
+			seen[s.name] = true
+		}
+	}
+	if i, ok := idx[m.initial]; !ok {
+		return fail(CodeInitialStateInvalid, "/spec/initialState", "initialState %s is not a declared state", m.initial)
+	} else if m.states[i].terminal {
+		return fail(CodeInitialStateInvalid, "/spec/initialState", "initialState %s is a terminal state", m.initial)
+	}
+	listed := map[string]bool{}
+	for i, name := range strs(spec["terminalStates"]) {
+		si, ok := idx[name]
+		if !ok {
+			return fail(CodeStateUndeclared, ptr("spec", "terminalStates", i), "terminal state %s is not declared", name)
+		}
+		if !m.states[si].terminal {
+			return fail(CodeTerminalMismatch, ptr("spec", "terminalStates", i), "%s is listed in terminalStates but its terminal flag is false", name)
+		}
+		listed[name] = true
+	}
+	for i, s := range m.states {
+		if s.terminal && !listed[s.name] {
+			return fail(CodeTerminalMismatch, ptr("spec", "states", i, "terminal"), "terminal state %s is not listed in terminalStates", s.name)
+		}
+	}
+	for i, s := range m.states {
+		for j, rt := range s.returnTargets {
+			if _, ok := idx[rt]; !ok {
+				return fail(CodeReturnTargetUndeclared, ptr("spec", "states", i, "returnTargets", j), "%s returnTargets names undeclared state %s", s.name, rt)
+			}
+		}
+	}
+	seenID := map[string]bool{}
+	for i, t := range m.transitions {
+		if seenID[t.id] {
+			return fail(CodeTransitionIDDuplicate, ptr("spec", "transitions", i, "id"), "transition id %s is used twice", t.id)
+		}
+		seenID[t.id] = true
+		for j, f := range t.from {
+			if f == "$none" {
+				continue
+			}
+			if _, ok := idx[f]; !ok {
+				return fail(CodeStateUndeclared, ptr("spec", "transitions", i, "from", j), "%s: source state %s is not declared", t.id, f)
+			}
+		}
+		if !strings.HasPrefix(t.to, "$") {
+			if _, ok := idx[t.to]; !ok {
+				return fail(CodeStateUndeclared, ptr("spec", "transitions", i, "to"), "%s: target state %s is not declared", t.id, t.to)
+			}
+		}
+	}
+	for i, p := range list(spec["humanProjection"]) {
+		for j, name := range strs(p["states"]) {
+			if _, ok := idx[name]; !ok {
+				return fail(CodeProjectionStateUndecl, ptr("spec", "humanProjection", i, "states", j), "projection names undeclared state %s", name)
+			}
+		}
+	}
+	covered := map[string]bool{}
+	for _, p := range list(spec["humanProjection"]) {
+		if _, cond := p["when"]; cond {
+			continue
+		}
+		for _, name := range strs(p["states"]) {
+			covered[name] = true
+		}
+	}
+	for _, s := range m.states {
+		if !covered[s.name] {
+			return fail(CodeProjectionUncovered, "/spec/humanProjection", "state %s is not covered by a humanProjection entry without a when condition", s.name)
+		}
+	}
+	for i, s := range m.states {
+		if s.escalateTo == "" {
+			continue
+		}
+		ti, ok := idx[s.escalateTo]
+		if !ok {
+			return fail(CodeStallEscalateInvalid, ptr("spec", "states", i, "stall", "escalateTo"), "%s: stall.escalateTo %s is not declared", s.name, s.escalateTo)
+		}
+		if m.states[ti].terminal {
+			return fail(CodeStallEscalateInvalid, ptr("spec", "states", i, "stall", "escalateTo"), "%s: stall.escalateTo %s is a terminal state", s.name, s.escalateTo)
+		}
+		found := false
+		for _, t := range m.transitions {
+			if t.event == "stall_timeout" && t.to == s.escalateTo && has(t.from, s.name) {
+				found = true
+			}
+		}
+		if !found {
+			return fail(CodeStallNoTransition, ptr("spec", "states", i, "stall"), "%s has stall.escalateTo %s but no stall_timeout transition from it to that state", s.name, s.escalateTo)
+		}
+	}
+	return nil
+}
+
+// membership checks catalogue declarations (guards, effects, events) and then the registries.
+func membership(m *Machine, spec map[string]any, guards GuardRegistry, effects EffectRegistry) *LoadError {
+	gcat, _ := spec["guards"].(map[string]any)
+	ecat, _ := spec["effects"].(map[string]any)
+	evcat, _ := spec["events"].(map[string]any)
+	for i, t := range m.transitions {
+		for j, g := range t.guards {
+			if _, ok := gcat[idOf(g)]; !ok {
+				return fail(CodeGuardUndeclared, ptr("spec", "transitions", i, "guards", j), "%s: guard %s is not declared in spec.guards", t.id, idOf(g))
+			}
+		}
+		for j, e := range t.effects {
+			if _, ok := ecat[idOf(e)]; !ok {
+				return fail(CodeEffectUndeclared, ptr("spec", "transitions", i, "effects", j), "%s: effect %s is not declared in spec.effects", t.id, idOf(e))
+			}
+		}
+		if _, ok := evcat[t.event]; !ok {
+			return fail(CodeEventUndeclared, ptr("spec", "transitions", i, "event"), "%s: event %s is not declared in spec.events", t.id, t.event)
+		}
+	}
+	for j, e := range strs(spec["implicitEffects"]) {
+		if _, ok := ecat[idOf(e)]; !ok {
+			return fail(CodeEffectUndeclared, ptr("spec", "implicitEffects", j), "implicit effect %s is not declared in spec.effects", idOf(e))
+		}
+	}
+	for _, id := range sortedKeys(gcat) {
+		if guards == nil || !guards.HasGuard(id) {
+			return fail(CodeGuardUnknown, ptr("spec", "guards", id), "guard %s has no implementation in the guard registry", id)
+		}
+	}
+	for _, id := range sortedKeys(ecat) {
+		if effects == nil || !effects.HasEffect(id) {
+			return fail(CodeEffectUnknown, ptr("spec", "effects", id), "effect %s has no implementation in the effect registry", id)
+		}
+	}
+	return nil
+}
+
+func sortedKeys(m map[string]any) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	for i := 1; i < len(out); i++ {
+		for j := i; j > 0 && out[j] < out[j-1]; j-- {
+			out[j], out[j-1] = out[j-1], out[j]
+		}
+	}
+	return out
+}
+
+func isHeld(name string) bool { return name == "BLOCKED" || name == "NEEDS_HUMAN" }
+
+func humanOnly(t transition) bool { return len(t.actors) == 1 && t.actors[0] == "human" }
+
+// transitionRules applies the per-transition invariants.
+func transitionRules(m *Machine) *LoadError {
+	idx := m.stateIndex()
+	for i, t := range m.transitions {
+		p := func(f string) string { return ptr("spec", "transitions", i, f) }
+		for _, f := range t.from {
+			if f == "$none" {
+				continue
+			}
+			s := m.states[idx[f]]
+			if s.terminal {
+				return fail(CodeTerminalHasOutgoing, p("from"), "%s leaves terminal state %s", t.id, f)
+			}
+			if t.to == "$return" && (s.active != "required" || len(s.returnTargets) == 0) {
+				return fail(CodeReturnFromNonExecution, p("to"), "%s uses $return from %s, which is not an activeExecution required state with returnTargets", t.id, f)
+			}
+		}
+		if t.to != "$same" {
+			for _, f := range t.from {
+				if isHeld(f) && !humanOnly(t) {
+					return fail(CodeHeldExitNotHuman, p("actors"), "%s leaves %s with actors %v; only human may", t.id, f, t.actors)
+				}
+			}
+		}
+		if humanOnly(t) {
+			if !strings.HasPrefix(t.to, "$") && m.states[idx[t.to]].active == "required" {
+				return fail(CodeHumanTargetsExecution, p("to"), "%s is human-only and targets %s (activeExecution required)", t.id, t.to)
+			}
+			if t.humanCommand == "" && t.event != "pr_closed_by_human" {
+				return fail(CodeHumanCommandMissing, p("humanCommand"), "%s is human-only and has no humanCommand", t.id)
+			}
+		}
+	}
+	return nil
+}
+
+// appliesIn reports whether the transition applies to the mode and the state belongs to it.
+func appliesIn(t transition, s state, mode string) bool {
+	return has(t.modes, mode) && has(s.modes, mode)
+}
+
+// coverage checks outcome and failure-class completeness for every (state, mode) handling the event.
+func coverage(m *Machine) *LoadError {
+	idx := m.stateIndex()
+	for _, o := range outcomes {
+		if le := coverEvent(m, idx, o.event, "G_VERIFICATION_OUTCOME", o.list, CodeOutcomeIncomplete, "outcome"); le != nil {
+			return le
+		}
+	}
+	return coverEvent(m, idx, "execution_failed", "G_FAILURE_CLASS", failureClasses, CodeFailureClassIncomplete, "failure class")
+}
+
+func coverEvent(m *Machine, idx map[string]int, event, guard string, want []string, code, what string) *LoadError {
+	for _, s := range m.states {
+		for _, mode := range s.modes {
+			handled := false
+			got := map[string]bool{}
+			for _, t := range m.transitions {
+				if t.event != event || !has(t.from, s.name) || !appliesIn(t, s, mode) {
+					continue
+				}
+				handled = true
+				for _, g := range t.guards {
+					if idOf(g) == guard {
+						for _, a := range argsOf(g) {
+							got[a] = true
+						}
+					}
+				}
+			}
+			if !handled {
+				continue
+			}
+			for _, w := range want {
+				if !got[w] {
+					le := fail(code, "/spec/transitions", "%s in %s (%s) has no transition covering %s %s", event, s.name, mode, what, w)
+					le.Mode = mode
+					return le
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// graph computes reachability from initialState and termination per mode.
+func graph(m *Machine, modes []string) (Report, *LoadError) {
+	var rep Report
+	idx := m.stateIndex()
+	for _, mode := range modes {
+		inMode := map[string]bool{}
+		for _, s := range m.states {
+			if has(s.modes, mode) {
+				inMode[s.name] = true
+			}
+		}
+		fwd := map[string][]string{}
+		rev := map[string][]string{}
+		edge := func(a, b string) {
+			if inMode[a] && inMode[b] {
+				fwd[a] = append(fwd[a], b)
+				rev[b] = append(rev[b], a)
+			}
+		}
+		for _, t := range m.transitions {
+			if !has(t.modes, mode) {
+				continue
+			}
+			for _, f := range t.from {
+				if f == "$none" || !inMode[f] {
+					continue
+				}
+				switch t.to {
+				case "$same":
+					edge(f, f)
+				case "$return":
+					for _, r := range m.states[idx[f]].returnTargets {
+						edge(f, r)
+					}
+				case "$resume":
+					for _, s := range m.states {
+						if !isHeld(s.name) && !s.terminal && s.active != "required" {
+							edge(f, s.name)
+						}
+					}
+				default:
+					edge(f, t.to)
+				}
+			}
+		}
+		seen := bfs(m.initial, inMode, fwd)
+		terminals := map[string]bool{}
+		for _, s := range m.states {
+			if inMode[s.name] && s.terminal {
+				terminals[s.name] = true
+			}
+		}
+		canEnd := map[string]bool{}
+		for name := range terminals {
+			for k := range bfs(name, inMode, rev) {
+				canEnd[k] = true
+			}
+		}
+		mr := ModeReport{Mode: mode}
+		for _, s := range m.states {
+			if !inMode[s.name] {
+				continue
+			}
+			mr.States++
+			if seen[s.name] {
+				mr.Reachable++
+			} else {
+				mr.Unreachable = append(mr.Unreachable, s.name)
+			}
+			if !s.terminal && !canEnd[s.name] {
+				mr.NonTerminating = append(mr.NonTerminating, s.name)
+			}
+		}
+		rep.Modes = append(rep.Modes, mr)
+		if len(mr.Unreachable) > 0 {
+			le := fail(CodeUnreachable, "/spec/states", "states unreachable from %s: %s", m.initial, strings.Join(mr.Unreachable, ", "))
+			le.Mode = mode
+			return rep, le
+		}
+		if len(mr.NonTerminating) > 0 {
+			le := fail(CodeNonTerminating, "/spec/states", "states with no path to a terminal state: %s", strings.Join(mr.NonTerminating, ", "))
+			le.Mode = mode
+			return rep, le
+		}
+	}
+	return rep, nil
+}
+
+func bfs(start string, inMode map[string]bool, adj map[string][]string) map[string]bool {
+	seen := map[string]bool{}
+	if !inMode[start] {
+		return seen
+	}
+	seen[start] = true
+	queue := []string{start}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		for _, n := range adj[cur] {
+			if !seen[n] {
+				seen[n] = true
+				queue = append(queue, n)
+			}
+		}
+	}
+	return seen
+}
+
+// catalogueRegistry accepts exactly the identifiers the table's own catalogues declare. Check uses it until the
+// guard and effect implementations exist (plan 29 section 7.1, S2); Load then runs against the real registries.
+type catalogueRegistry map[string]bool
+
+func (r catalogueRegistry) HasGuard(id string) bool  { return r[id] }
+func (r catalogueRegistry) HasEffect(id string) bool { return r[id] }
+
+// Check loads the table at tablePath and writes the per-mode reachability report to w. It is the Go entry point
+// of `make state-machine-check`; any load failure is returned as a *LoadError.
+func Check(w io.Writer, tablePath string, opts Options) error {
+	b, err := os.ReadFile(tablePath)
+	if err != nil {
+		return fail(CodeUnreadable, "", "%s: %s", tablePath, oneLine(err.Error()))
+	}
+	g, e := catalogueRegistry{}, catalogueRegistry{}
+	if doc, perr := contracts.ParseYAML(b); perr == nil {
+		root, _ := doc.(map[string]any)
+		spec, _ := root["spec"].(map[string]any)
+		gc, _ := spec["guards"].(map[string]any)
+		ec, _ := spec["effects"].(map[string]any)
+		for k := range gc {
+			g[k] = true
+		}
+		for k := range ec {
+			e[k] = true
+		}
+	}
+	m, err := Load(b, g, e, opts)
+	if err != nil {
+		var le *LoadError
+		if errors.As(err, &le) {
+			c := *le
+			c.Message = tablePath + ": " + c.Message
+			return &c
+		}
+		return err
+	}
+	fmt.Fprintf(w, "state machine %s revision %d: schema valid, invariants hold\n", tablePath, m.revision)
+	for _, mr := range m.report.Modes {
+		fmt.Fprintf(w, "mode %s: states=%d reachable=%d unreachable=%d non-terminating=%d\n",
+			mr.Mode, mr.States, mr.Reachable, len(mr.Unreachable), len(mr.NonTerminating))
+	}
+	return nil
+}
