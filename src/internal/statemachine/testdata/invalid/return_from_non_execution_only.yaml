@@ -1,0 +1,5 @@
+# Invalid fixture (29-AC-2, D6): $return used from SPECIFIED (not an execution state); execution_blocked is outside completeness rules so only this invariant breaks
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_RETURN_FROM_NON_EXECUTION
+ops:
+  - {op: add, path: spec/transitions/id=T107/from, value: SPECIFIED}

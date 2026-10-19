@@ -1,0 +1,5 @@
+# Invalid fixture (29-AC-2, D6): a transition whose from state (RED_VERIFYING, test-first only) is in none of its modes
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_MODE_MISMATCH
+ops:
+  - {op: add, path: spec/transitions, value: {id: T200, from: [RED_VERIFYING], to: NEEDS_HUMAN, event: escalate, actors: [hermes], modes: [verification-first], guards: [], effects: [], description: Leaves a test-first state while declared for verification-first only.}}

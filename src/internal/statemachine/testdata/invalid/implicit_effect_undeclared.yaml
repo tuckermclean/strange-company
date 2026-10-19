@@ -1,0 +1,5 @@
+# Invalid fixture (29-AC-2, D6): an implicitEffects entry is not declared in the effects catalogue
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_EFFECT_UNDECLARED
+ops:
+  - {op: add, path: spec/implicitEffects, value: E_MADE_UP}

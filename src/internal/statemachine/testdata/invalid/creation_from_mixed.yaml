@@ -1,0 +1,5 @@
+# Invalid fixture (29-AC-2, D6): $none shares a from list with SPECIFIED
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_CREATION_INVALID
+ops:
+  - {op: replace, path: spec/transitions/id=T001/from, value: ['$none', SPECIFIED]}
