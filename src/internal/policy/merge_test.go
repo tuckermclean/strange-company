@@ -178,7 +178,8 @@ type mergeRow struct {
 
 func withoutFrontier(t testing.TB, p Platform) Platform {
 	q := clonePlatform(t, p)
-	delete(q.ModelRouting["spec"].(map[string]any)["tiers"].(map[string]any), "frontier")
+	// tiers.frontier is schema-required: keep it, with no candidates.
+	q.ModelRouting["spec"].(map[string]any)["tiers"].(map[string]any)["frontier"] = map[string]any{"candidates": []any{}}
 	return q
 }
 
@@ -356,5 +357,20 @@ func TestMergePolicy_DoesNotMutatePlatform_22AC2(t *testing.T) {
 	}
 	if canon(plat.Verification) != before {
 		t.Error("MergePolicy modified the platform document")
+	}
+}
+
+// 22-AC-2 (guard, review N1): an optional platform value (a watchdog group) that is absent keeps the repository value.
+func TestMergePolicy_AbsentOptionalWatchdogGroupAccepted_22AC2(t *testing.T) {
+	plat := clonePlatform(t, basePlatform(t))
+	groups := plat.Verification["spec"].(map[string]any)["watchdog"].(map[string]any)["groups"].(map[string]any)
+	delete(groups, "approval")
+	repo := mergeDoc(t, td("merge", "durations", "tighten.yaml"))
+	eff, is := MergePolicy(opts(t, false), plat, repo)
+	if len(is) != 0 {
+		t.Fatalf("absent optional watchdog group rejected: %v", is)
+	}
+	if got := eff.Values["/spec/watchdog/groups/approval/alertAfter"]; canon(got) != canon("24h") {
+		t.Errorf("merged approval alertAfter = %v, want 24h", got)
 	}
 }
