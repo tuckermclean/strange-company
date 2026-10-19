@@ -1,0 +1,5 @@
+# Invalid fixture (29-AC-2, D7b): G_VERIFICATION_OUTCOME on a non-classification event (strengthen_tests)
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_OUTCOME_GUARD_INVALID
+ops:
+  - {op: add, path: spec/transitions/id=T016/guards, value: "G_VERIFICATION_OUTCOME:red_valid"}
