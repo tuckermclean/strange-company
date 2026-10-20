@@ -111,6 +111,11 @@ func AnalyzeStubs(p StubPolicy, f StubFile) ([]StubFact, error) {
 			h.shape != "unknown" && h.bodyLines <= p.MaxAddedLinesPerStub
 		facts = append(facts, StubFact{Path: f.Path, Symbol: h.symbol, Marker: marker, Shape: h.shape, WellFormed: wf})
 	}
+	residual, err := residualFacts(f, head, baseSyms, headLines, unmatchedLines(splitLines(f.Base), headLines))
+	if err != nil {
+		return nil, err
+	}
+	facts = append(facts, residual...)
 	if len(facts) == 0 && !additionsOnly {
 		// The file changed other than by additions and holds no new declaration: not a stub.
 		facts = append(facts, StubFact{Path: f.Path, Symbol: "(modified existing code)", Shape: "unknown", WellFormed: false})

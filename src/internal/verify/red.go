@@ -559,6 +559,7 @@ func ClassifyRed(in RedInput) (RedClassification, error) {
 	}
 
 	headOK := len(r3) == 0
+	r11Idx, hiddenDeclared := -1, false
 	if headOK {
 		// R4: new tests exist.
 		if len(nm) == 0 {
@@ -648,13 +649,18 @@ func ClassifyRed(in RedInput) (RedClassification, error) {
 		cl.NewTests = []string{}
 	}
 	if len(groups) > 0 {
-		if headOK && unsatisfiedChange > 0 {
-			// R10 never decides here, but its reason is still listed (plan 22 section 14.3).
-			groups = append(groups, reasonGroup{outcome: outcomeAlreadySatisfied, reasons: []string{"change_ac_not_failing"}})
-		}
 		cl.Outcome = groups[0].outcome
-		for _, g := range groups {
+		// R10 never decides here, but its reason is still listed (plan 22 section 14.3), before R11's and not at
+		// all when truncation hides a declared test (its verdict would rest on missing data).
+		r10 := headOK && unsatisfiedChange > 0 && !hiddenDeclared
+		for i, g := range groups {
+			if r10 && i == r11Idx {
+				cl.Reasons = appendUnique(cl.Reasons, "change_ac_not_failing")
+			}
 			cl.Reasons = appendUnique(cl.Reasons, g.reasons...)
+		}
+		if r10 && r11Idx < 0 {
+			cl.Reasons = appendUnique(cl.Reasons, "change_ac_not_failing")
 		}
 		return cl, nil
 	}
