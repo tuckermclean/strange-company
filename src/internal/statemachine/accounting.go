@@ -80,6 +80,10 @@ type Execution struct {
 	Refunded    bool
 	Outcome     string
 	Signature   string
+	// Dispatch is the name of the dispatch event that created the execution (dispatch_producer,
+	// dispatch_auxiliary, dispatch_tester, ...). It tells an auxiliary execution from a producer, which the role
+	// cannot (a researcher can be either; D17 N2).
+	Dispatch string
 }
 
 // Step is one applied event in the task history.
@@ -108,8 +112,8 @@ type Task struct {
 }
 
 // ConflictRecord is the open test-spec conflict of a task (plan 29 section 14.6). Verdicts are the adjudicator
-// verdicts in the order recorded, as given (an unknown verdict is kept, it never approves and counts as a
-// disagreement). HumanApproved is test_change_approved set by a human (T083). The approval and rejection the guards
+// verdicts in the order recorded (Advance refuses an unknown one). HumanApproved is test_change_approved set by a
+// human (T083); it is authoritative, also over a test_valid adjudication. The approval and rejection the guards
 // need are derived from it under the policy, see Task.conflictOutcome.
 type ConflictRecord struct {
 	Open          bool
@@ -145,7 +149,7 @@ func (t Task) conflictOutcome(p RetryPolicy) (approved, rejected, awaiting bool)
 	}
 	disputed := len(distinct) > 1
 	approved = c.HumanApproved || (p.ResolutionApproval == "adjudicator" && effective == verdictInvalid && !disputed)
-	rejected = effective == verdictValid
+	rejected = effective == verdictValid && !c.HumanApproved // a human approval is authoritative (D17 N4)
 	awaiting = effective == verdictInvalid && !approved
 	return approved, rejected, awaiting
 }
@@ -208,7 +212,9 @@ type accountingFacts struct {
 // AccountingFacts answers G_ATTEMPTS_REMAIN, G_NOT_IDENTICAL_REPLAY, G_INFRA_REQUEUE_ALLOWED, G_REVIEWS_REMAIN
 // and G_AUXILIARY_REMAIN (always known) from the task, the policy and the step input, answers G_FAILURE_CODE
 // from in.FailureCode when that is set, and answers the task-state guards of D14 from the task alone, whatever the
-// base says: G_NO_IMPLEMENTER_DISPATCHED_IN_GENERATION (no implementer execution in the current generation),
+// base says: G_NO_ACTIVE_EXECUTION (no execution without an outcome), G_NO_PRODUCER_DISPATCHED_IN_GENERATION and
+// G_NO_PRODUCTION_IN_GENERATION (no execution dispatched by dispatch_producer in the current generation; D17),
+// G_NO_IMPLEMENTER_DISPATCHED_IN_GENERATION (no implementer execution in the current generation),
 // G_TEST_CHANGE_APPROVED and G_CONFLICT_REJECTED (the conflict record) and G_STRENGTHEN_AUTHORIZED (the strengthen
 // decision of the current episode). Every other guard goes to base (a nil base knows nothing).
 func AccountingFacts(t Task, p RetryPolicy, in StepInput, base Facts) Facts {
@@ -241,6 +247,20 @@ func (f *accountingFacts) Bool(ev Event, guard string) (bool, bool) {
 		return a.AuxiliaryUsed < f.p.MaxAuxiliaryExecutions, true
 	case "G_NOT_IDENTICAL_REPLAY":
 		return !f.identicalReplay(ev), true
+	case "G_NO_ACTIVE_EXECUTION":
+		for _, e := range f.t.Executions {
+			if e.Outcome == "" {
+				return false, true
+			}
+		}
+		return true, true
+	case "G_NO_PRODUCER_DISPATCHED_IN_GENERATION", "G_NO_PRODUCTION_IN_GENERATION":
+		for _, e := range f.t.Executions {
+			if e.Dispatch == "dispatch_producer" && e.Generation == f.t.Snapshot.Generation {
+				return false, true
+			}
+		}
+		return true, true
 	case "G_NO_IMPLEMENTER_DISPATCHED_IN_GENERATION":
 		for _, e := range f.t.Executions {
 			if e.Role == "implementer" && e.Generation == f.t.Snapshot.Generation {
@@ -673,9 +693,9 @@ func (m *Machine) transitionByID(id string) *transition {
 // Fire followed by Advance (D13 c).
 //
 // Advance maintains the conflict record and the strengthen decision of the task (D14): see Task.Conflict and
-// Task.StrengthenState. A verdict that is not test_valid, test_invalid or spec_ambiguous (also an empty one) is
-// recorded as given; it never approves and never rejects (fail closed), and disagrees with every other verdict.
-// adjudication_recorded ends the running (adjudicator) execution.
+// Task.StrengthenState. adjudication_recorded needs a running auxiliary execution with role reviewer, an open
+// conflict and a verdict that is test_valid, test_invalid or spec_ambiguous (SM_ADVANCE_NOT_APPLIED otherwise; D17);
+// it ends the running (adjudicator) execution and never opens a conflict.
 func Advance(m *Machine, t Task, ev Event, d Decision, in StepInput, p RetryPolicy) (Task, error) {
 	if m == nil {
 		return adverr(FireMachineNil, "the machine is nil")
@@ -717,6 +737,9 @@ func Advance(m *Machine, t Task, ev Event, d Decision, in StepInput, p RetryPoli
 	}
 	if err := m.recheckGuards(tr, t, ev, in, p, from); err != nil {
 		return Task{}, err
+	}
+	if msg := adjudicationRefusal(t, in); msg != "" && ev.Name == "adjudication_recorded" {
+		return adverr(AdvanceNotApplied, "%s: %s", tr.id, msg)
 	}
 	want := m.deltas(tr, fromSt, t.Snapshot, ev, codeFacts{in.FailureCode}, runningRole(t), true)
 	if len(want) != len(a.Deltas) {
@@ -816,7 +839,6 @@ func updateTaskState(n *Task, tr *transition, a *Applied, in StepInput, p RetryP
 		n.Conflict = ConflictRecord{Open: true}
 	}
 	if hasEffect(tr.effects, "E_RECORD_ADJUDICATION") {
-		n.Conflict.Open = true // an adjudication without a recorded conflict opens one: the verdict is never lost
 		n.Conflict.Verdicts = append(n.Conflict.Verdicts, in.Verdict)
 	}
 	if hasEffect(tr.effects, "E_APPROVE_TEST_CHANGE") {
@@ -937,9 +959,24 @@ func (m *Machine) recordExecutions(n *Task, tr *transition, ev Event, a *Applied
 		}
 		n.Executions = append(n.Executions, Execution{
 			Role: role, Generation: n.Snapshot.Generation, Fingerprint: Fingerprint(in.Dispatch), Harness: in.Dispatch.Harness,
-			Model: in.Dispatch.Model, Profile: in.Dispatch.Profile, NotesDigest: hexSHA256(in.Dispatch.OrchestratorNotes), Counted: tr.countsAttempt,
+			Model: in.Dispatch.Model, Profile: in.Dispatch.Profile, NotesDigest: hexSHA256(in.Dispatch.OrchestratorNotes), Counted: tr.countsAttempt, Dispatch: ev.Name,
 		})
 	}
+}
+
+// adjudicationRefusal says why an adjudication_recorded event cannot be recorded (D17 N3): it needs a running
+// auxiliary execution with role reviewer, an open conflict and a known verdict. "" when it can.
+func adjudicationRefusal(t Task, in StepInput) string {
+	i := lastExecution(t.Executions, func(e Execution) bool { return e.Outcome == "" })
+	switch {
+	case i < 0 || t.Executions[i].Role != "reviewer" || t.Executions[i].Dispatch != "dispatch_auxiliary":
+		return "no running auxiliary reviewer execution to record an adjudication"
+	case !t.Conflict.Open:
+		return "no open conflict to adjudicate"
+	case in.Verdict != verdictValid && in.Verdict != verdictInvalid && in.Verdict != verdictAmbiguous:
+		return fmt.Sprintf("the verdict %q is not test_valid, test_invalid or spec_ambiguous", in.Verdict)
+	}
+	return ""
 }
 
 // Apply is AccountingFacts, Fire and Advance in one call. A Rejected decision leaves the task unchanged; a
@@ -952,6 +989,10 @@ func Apply(m *Machine, t Task, ev Event, in StepInput, p RetryPolicy, base Facts
 	}
 	if d.Applied == nil {
 		return d, t, nil
+	}
+	// An adjudication without its preconditions is a rejected event, not a malformed one (D17 N3).
+	if ev.Name == "adjudication_recorded" && adjudicationRefusal(t, in) != "" {
+		return Decision{Rejected: &Rejected{Code: CodeGateNotSatisfied}}, t, nil
 	}
 	// The step records the failure code the decision used and the role-keyed merit counter of the task.
 	if ev.Name == "execution_failed" {
