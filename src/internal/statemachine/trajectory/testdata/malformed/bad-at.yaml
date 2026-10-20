@@ -1,0 +1,7 @@
+# expect: TRAJ_BAD_VALUE
+trajectory: bad-at
+events:
+  - {event: task_created, actor: hermes, at: "yesterday"}
+expected_states: [SPECIFIED]
+expected_transitions: [T001]
+expected_reasons: [""]

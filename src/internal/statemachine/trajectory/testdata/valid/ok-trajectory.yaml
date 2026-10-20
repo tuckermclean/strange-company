@@ -1,0 +1,18 @@
+# A minimal valid trajectory: one event, optional live-only fields present.
+trajectory: ok-trajectory
+title: minimal
+refs: ["21-AC-20"]
+mode: test-first
+live:
+  fake_scenarios: [fake-red-valid]
+events:
+  - event: task_created
+    actor: hermes
+    at: "2026-10-13T12:00:00Z"
+    facts: {G_REPOSITORY_MANAGED: true}
+    live: {note: ignored by the library runner}
+expected_states: [SPECIFIED]
+expected_transitions: [T001]
+expected_reasons: [""]
+expected_failed_guards: [~]
+expected_attempts: {autonomous_used: 0}

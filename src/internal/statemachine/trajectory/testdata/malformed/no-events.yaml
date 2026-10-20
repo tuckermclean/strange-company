@@ -1,0 +1,6 @@
+# expect: TRAJ_MISSING_FIELD
+trajectory: no-events
+events: []
+expected_states: []
+expected_transitions: []
+expected_reasons: []

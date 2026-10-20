@@ -1,0 +1,7 @@
+# expect: TRAJ_MISSING_FIELD
+trajectory: event-without-actor
+events:
+  - {event: task_created, at: "2026-10-13T12:00:00Z"}
+expected_states: [SPECIFIED]
+expected_transitions: [T001]
+expected_reasons: [""]

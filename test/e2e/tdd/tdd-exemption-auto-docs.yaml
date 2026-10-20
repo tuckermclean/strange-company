@@ -1,0 +1,18 @@
+# documentation-only exemption: judge, auto approval, production, judging
+trajectory: tdd-exemption-auto-docs
+title: "documentation-only exemption: judge, auto approval, production, judging"
+refs: ["plan 21 22.2 tdd-exemption-auto-docs", "plan 29 14.8", "SPEC 106 item 9"]
+mode: verification-first
+live: {"fake_scenarios": ["fake-judge-docs", "fake-produce-docs"]}
+events:
+  - {event: "task_created", actor: "hermes", at: "2026-10-13T12:01:00Z"}
+  - {event: "dispatch_tester", actor: "hermes", role: "tester", at: "2026-10-13T12:02:00Z", facts: {G_JUDGE_SOURCE: "artifact"}}
+  - {event: "tester_result_accepted", actor: "runner", at: "2026-10-13T12:03:00Z", pipeline: 401}
+  - {event: "judge_classified", actor: "ci", at: "2026-10-13T12:04:00Z", facts: {G_VERIFICATION_OUTCOME: "judge_valid", G_APPROVAL: "auto"}}
+  - {event: "dispatch_producer", actor: "hermes", role: "implementer", at: "2026-10-13T12:05:00Z"}
+  - {event: "producer_result_accepted", actor: "runner", at: "2026-10-13T12:06:00Z", pipeline: 402}
+  - {event: "judging_classified", actor: "ci", at: "2026-10-13T12:07:00Z", facts: {G_VERIFICATION_OUTCOME: "judging_pass"}}
+expected_states: ["SPECIFIED", "JUDGE_AUTHORING", "JUDGE_VALIDATING", "JUDGE_APPROVED", "PRODUCING", "JUDGING", "GREEN_VERIFIED"]
+expected_transitions: ["T001", "T110", "T114", "T116", "T124", "T126", "T127"]
+expected_reasons: ["", "", "", "", "", "", ""]
+expected_attempts: {"tester_used": 1, "autonomous_used": 1}

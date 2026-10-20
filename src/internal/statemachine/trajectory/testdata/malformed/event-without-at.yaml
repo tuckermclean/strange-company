@@ -1,0 +1,7 @@
+# expect: TRAJ_MISSING_FIELD
+trajectory: event-without-at
+events:
+  - {event: task_created, actor: hermes}
+expected_states: [SPECIFIED]
+expected_transitions: [T001]
+expected_reasons: [""]
