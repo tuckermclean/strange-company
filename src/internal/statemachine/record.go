@@ -1,5 +1,10 @@
 package statemachine
 
+import (
+	"fmt"
+	"regexp"
+)
+
 // RecordStep is what the Runner knows about one applied step beyond the library's own history.
 type RecordStep struct {
 	At       string // RFC 3339 time of the transition (the library never reads a clock)
@@ -15,6 +20,9 @@ type RecordMeta struct {
 	Steps      []RecordStep
 	ModelTiers map[string]string
 }
+
+// RecordInvalid is the code of a *FireError that Record returns for input that cannot be serialized.
+const RecordInvalid = "SM_RECORD_INVALID"
 
 // Record serializes the task as the record view of contracts/task.schema.yaml (plan 29 sections 4 and 6.2, F05
 // slice S4, 29-AC-10): a JSON-shaped map (strings, integers, booleans, nil, map[string]any, []any) that must
@@ -34,6 +42,180 @@ type RecordMeta struct {
 // step (seq, at, actor, actor_class, from_state null for creation, to_state, event, transition_id, reason,
 // reason_code, failure_class, policy_revision and policy_commit from Fields["policy"], state_machine_revision,
 // event_key).
-//
-// SC-STUB(F05 29-AC-10)
-func Record(m *Machine, t Task, meta RecordMeta) (map[string]any, error) { return nil, nil }
+func Record(m *Machine, t Task, meta RecordMeta) (map[string]any, error) {
+	if m == nil {
+		return nil, ferr(FireMachineNil, "the machine is nil")
+	}
+	bad := func(format string, a ...any) (map[string]any, error) { return nil, ferr(RecordInvalid, format, a...) }
+	n := len(t.History)
+	if n == 0 {
+		return bad("the task has no history (task.schema.yaml needs history)")
+	}
+	if len(meta.Steps) != n {
+		return bad("%d step metas for %d history steps", len(meta.Steps), n)
+	}
+	snap := t.Snapshot
+	if last := t.History[n-1].Applied.To; last != snap.State {
+		return bad("the last history state %s is not the task state %s", last, snap.State)
+	}
+	st := m.findState(snap.State)
+	if st == nil {
+		return bad("state %q is not a state of the table", snap.State)
+	}
+	taskID, _ := meta.Fields["task_id"].(string)
+	if !taskIDPattern.MatchString(taskID) {
+		return bad("Fields[task_id] %q is not a task id (sc-<n>)", taskID)
+	}
+	policy, _ := meta.Fields["policy"].(map[string]any)
+	rev := Revision(m)
+
+	rec := make(map[string]any, len(meta.Fields)+24)
+	for k, v := range meta.Fields {
+		rec[k] = v
+	}
+	// history
+	hist := make([]any, 0, n)
+	for i, step := range t.History {
+		ms := meta.Steps[i]
+		if len(ms.Reason) < 3 {
+			return bad("step %d: the reason %q is shorter than 3 characters", i+1, ms.Reason)
+		}
+		a := step.Applied
+		var from any
+		if a.From != "$none" {
+			from = a.From
+		}
+		row := map[string]any{
+			"seq": i + 1, "at": ms.At, "actor": ms.Actor, "actor_class": step.Event.Actor, "from_state": from, "to_state": a.To,
+			"event": step.Event.Name, "transition_id": a.TransitionID, "reason": ms.Reason, "state_machine_revision": rev,
+			"event_key": ms.EventKey, "policy_revision": policy["revision"], "policy_commit": policy["commit"],
+		}
+		if a.ReasonCode != "" {
+			row["reason_code"] = a.ReasonCode
+		}
+		if a.FailureClass != "" {
+			row["failure_class"] = a.FailureClass
+		}
+		hist = append(hist, row)
+	}
+	first, last := meta.Steps[0], meta.Steps[n-1]
+	// the step that entered the current state: the last one that changed it
+	entered := 0
+	for i, step := range t.History {
+		if step.Applied.From != step.Applied.To {
+			entered = i
+		}
+	}
+	enteredAt := meta.Steps[entered].At
+	hs, _ := Project(m, snap)
+	rec["schema_version"] = "v1alpha1"
+	rec["state"] = snap.State
+	rec["state_entered_at"] = enteredAt
+	rec["created_at"] = first.At
+	rec["updated_at"] = last.At
+	rec["version"] = n
+	rec["state_machine_revision"] = rev
+	rec["human_state"] = string(hs)
+	rec["history"] = hist
+	delete(rec, "closed_at")
+	delete(rec, "needs_human")
+	delete(rec, "blocked")
+	delete(rec, "resume_state")
+	if st.terminal {
+		rec["closed_at"] = last.At
+	}
+	held := snap.State == "NEEDS_HUMAN" || snap.State == "BLOCKED"
+	if held {
+		rec["resume_state"] = snap.ResumeState
+	}
+	if snap.State == "NEEDS_HUMAN" {
+		rec["needs_human"] = map[string]any{"reason": t.NeedsHumanReason, "since": enteredAt}
+	}
+	if snap.State == "BLOCKED" {
+		rec["blocked"] = map[string]any{"by": meta.Steps[entered].Actor, "since": enteredAt, "reason": meta.Steps[entered].Reason, "reason_code": t.BlockedReason}
+	}
+	// attempts
+	at := snap.Attempts
+	merit := map[string]any{}
+	for k, v := range at.MeritByGeneration {
+		merit[k] = v
+	}
+	rec["attempts"] = map[string]any{
+		"autonomous_used": at.AutonomousUsed, "autonomous_max": at.AutonomousMax, "tester_used": at.TesterUsed, "tester_max": at.TesterMax,
+		"by_class":            map[string]any{"merit": at.ByClass["merit"], "infrastructure": at.ByClass["infrastructure"], "policy": at.ByClass["policy"], "budget": at.ByClass["budget"]},
+		"merit_by_generation": merit, "consecutive_infrastructure": at.ConsecutiveInfrastructure, "consecutive_timeouts": at.ConsecutiveTimeouts,
+		"reviews_used": at.ReviewsUsed, "auxiliary_used": at.AuxiliaryUsed, "blocked_results": 0, "conflicts_raised": 0,
+	}
+	rec["tdd"] = map[string]any{"required": snap.Mode == "test-first", "current_generation": snap.Generation, "generations": []any{}}
+	// executions
+	delete(rec, "current_execution")
+	var claim any
+	running := -1
+	for i, e := range t.Executions {
+		if e.Outcome == "" {
+			running = i
+		}
+	}
+	if k := len(t.Executions); k > 0 {
+		e := t.Executions[k-1]
+		tier := meta.ModelTiers[e.Model]
+		if tier == "" {
+			return bad("the model %q of the latest execution has no entry in ModelTiers", e.Model)
+		}
+		attempt := 0
+		for _, o := range t.Executions {
+			if o.Role == e.Role {
+				attempt++
+			}
+		}
+		ref := map[string]any{
+			"execution_id": fmt.Sprintf("%s-x%d", taskID, k), "role": e.Role, "kind": executionKind(e.Role), "harness": e.Harness, "model": e.Model,
+			"model_tier": tier, "profile": e.Profile, "attempt": attempt, "state": executionState(e.Outcome),
+		}
+		if e.Fingerprint != "" {
+			ref["fingerprint"] = "sha256:" + e.Fingerprint
+		}
+		if e.Outcome == "merit" || e.Outcome == "infrastructure" || e.Outcome == "policy" || e.Outcome == "budget" {
+			ref["failure_class"] = e.Outcome
+		}
+		rec["current_execution"] = ref
+	}
+	switch {
+	case running >= 0:
+		claim = fmt.Sprintf("execution:%s-x%d", taskID, running+1)
+	case st.active == "verification":
+		if p := last.Pipeline; p > 0 {
+			claim = fmt.Sprintf("ci:woodpecker/%d", p)
+		} else {
+			// the pipeline is not known yet: a deterministic pending claim derived from the task and the step count
+			h := hexSHA256(fmt.Sprintf("%s/%d", taskID, n))
+			claim = fmt.Sprintf("ci:pending/%s-%s-%s-%s-%s", h[0:8], h[8:12], h[12:16], h[16:20], h[20:32])
+		}
+	}
+	rec["claimed_by"] = claim
+	return rec, nil
+}
+
+var taskIDPattern = regexp.MustCompile(`^sc-[0-9]+$`)
+
+func executionKind(role string) string {
+	switch role {
+	case "reviewer":
+		return "reviewing"
+	case "auxiliary":
+		return "auxiliary"
+	}
+	return "producing"
+}
+
+func executionState(outcome string) string {
+	switch outcome {
+	case "":
+		return "RUNNING"
+	case "succeeded":
+		return "SUCCEEDED"
+	case "cancelled":
+		return "CANCELLED"
+	}
+	return "FAILED"
+}
