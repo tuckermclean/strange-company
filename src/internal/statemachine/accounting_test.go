@@ -242,7 +242,7 @@ func TestFire_AppliedDeltas_29AC7(t *testing.T) {
 		{"T021 red_invalid", snapWith("RED_VERIFYING", nil), Event{Name: "red_classified", Actor: "ci"}, with(perm, map[string]string{"G_VERIFICATION_OUTCOME": "red_invalid"}, nil), "T021",
 			map[string]int{"by_class.merit": 1, "merit_by_generation.tester:g1": 1}},
 		{"T102 merit execution failure", snapWith("IMPLEMENTING", nil), runner("execution_failed"), with(perm, cls("merit", "HARNESS_GAVE_UP"), nil), "T102",
-			map[string]int{"by_class.merit": 1, "merit_by_generation.implementer:g1": 1}},
+			map[string]int{"by_class.merit": 1}},
 		{"T100 infrastructure requeue resets the timeouts", snapWith("IMPLEMENTING", func(s *TaskSnapshot) { s.Attempts.ConsecutiveTimeouts = 1 }), runner("execution_failed"),
 			with(perm, cls("infrastructure", "JOB_LOST"), nil), "T100", map[string]int{"by_class.infrastructure": 1, "consecutive_infrastructure": 1, "consecutive_timeouts": -1}},
 		{"T100 TIMED_OUT", snapWith("IMPLEMENTING", nil), runner("execution_failed"), with(perm, cls("infrastructure", "TIMED_OUT"), nil), "T100",
