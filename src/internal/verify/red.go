@@ -633,9 +633,11 @@ func ClassifyRed(in RedInput) (RedClassification, error) {
 			}
 			for id := range declaredResolved {
 				_, ok := reported[id]
-				hidden = hidden || !ok
+				hiddenDeclared = hiddenDeclared || !ok
 			}
+			hidden = hidden || hiddenDeclared
 			if hidden {
+				r11Idx = len(groups)
 				add(outcomeInconclusive, "tests_truncated")
 			}
 		}

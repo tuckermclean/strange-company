@@ -17,7 +17,17 @@ func residualFacts(f StubFile, head []stubCandidate, baseSyms map[string]bool, h
 	benign := make([]bool, n+2) // 1-based
 	skip := make([]bool, n+2)   // lines owned by candidates (new: judged on their own; old: judged by additionsOnly)
 	for _, c := range head {
-		for ln := c.declLine; ln <= c.endLine && ln <= n; ln++ {
+		end := c.endLine
+		if c.nonFunc && f.Language != "go" && c.declLine <= n {
+			// A declaration may span lines (an arrow function, an object literal): it is one malformed fact.
+			if f.Language == "python" {
+				e, _ := pythonBody(headLines, c.declLine-1)
+				end = max(end, e+1)
+			} else if e, ok := consumeStmt(f.Language, headLines, c.declLine-1, false); ok {
+				end = max(end, e+1)
+			}
+		}
+		for ln := c.declLine; ln <= end && ln <= n; ln++ {
 			skip[ln] = true
 		}
 	}
@@ -107,12 +117,12 @@ func goBenign(path string, src []byte, lines []string, benign []bool) error {
 }
 
 var (
-	pyImportRe   = regexp.MustCompile(`^(?:import\s+\S|from\s+\S+\s+import\b)`)
-	tsImportRe   = regexp.MustCompile(`^import(?:\s+|[{*"'])[^(\s]`)
-	rustUseRe    = regexp.MustCompile(`^(?:pub(?:\([^)]*\))?\s+)?use\s`)
-	tsTypeRe     = regexp.MustCompile(`^(?:export\s+)?(?:declare\s+)?(?:interface\s+[A-Za-z_$]|type\s+[A-Za-z_$][A-Za-z0-9_$]*\s*(?:<[^=]*>)?\s*=)`)
-	rustTypeRe   = regexp.MustCompile(`^(?:pub(?:\([^)]*\))?\s+)?(?:struct|enum)\s+[A-Za-z_]`)
-	rustAttrRe   = regexp.MustCompile(`^#!?\[`)
+	pyImportRe = regexp.MustCompile(`^(?:import\s+\S|from\s+\S+\s+import\b)`)
+	tsImportRe = regexp.MustCompile(`^import(?:\s+|[{*"'])[^(\s]`)
+	rustUseRe  = regexp.MustCompile(`^(?:pub(?:\([^)]*\))?\s+)?use\s`)
+	tsTypeRe   = regexp.MustCompile(`^(?:export\s+)?(?:declare\s+)?(?:interface\s+[A-Za-z_$]|type\s+[A-Za-z_$][A-Za-z0-9_$]*\s*(?:<[^=]*>)?\s*=)`)
+	rustTypeRe = regexp.MustCompile(`^(?:pub(?:\([^)]*\))?\s+)?(?:struct|enum)\s+[A-Za-z_]`)
+	rustAttrRe = regexp.MustCompile(`^#!?\[`)
 )
 
 // lineBenign classifies the lines of a non-Go file (see residualFacts).
