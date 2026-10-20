@@ -516,16 +516,25 @@ func d15LongInput(t *testing.T, nameLen int, changedExtra ...ChangedFile) Genera
 // 22-AC-32 (D15 e): a test id longer than the schema's per-item maximum, or a path that violates the RepoPath
 // pattern (a space) or length (401 characters), makes the manifest too large for the schema.
 func TestClassifyRedGen_R14PerItemLimits_D15_22AC32(t *testing.T) {
+	// The schema check is omitted for the over-limit cases: their input is outside the red-result schema by construction.
+	checkNoSchema := func(t *testing.T, in GenerationInput) {
+		t.Helper()
+		got, err := ClassifyRedGen(in)
+		if err != nil {
+			t.Fatalf("ClassifyRedGen: %v", err)
+		}
+		reasons := []string{"manifest_too_large"}
+		checkRed(t, in.RedInput, got, nil, redExpect{Outcome: "red_invalid", Reasons: &reasons, SchemaValid: false})
+	}
 	t.Run("test_id_over_maximum", func(t *testing.T) {
-		checkGen(t, d15LongInput(t, d15NameLen()+1), "red_invalid", []string{"manifest_too_large"})
+		checkNoSchema(t, d15LongInput(t, d15NameLen()+1))
 	})
 	t.Run("path_with_space", func(t *testing.T) {
-		in := d15LongInput(t, 20, goChange("internal/httpx/testdata/a b.txt", "added", "fixture"))
-		checkGen(t, in, "red_invalid", []string{"manifest_too_large"})
+		checkNoSchema(t, d15LongInput(t, 20, goChange("internal/httpx/testdata/a b.txt", "added", "fixture")))
 	})
 	t.Run("path_over_400", func(t *testing.T) {
 		long := "internal/httpx/testdata/" + strings.Repeat("d", 400) + ".txt"
-		checkGen(t, d15LongInput(t, 20, goChange(long, "added", "fixture")), "red_invalid", []string{"manifest_too_large"})
+		checkNoSchema(t, d15LongInput(t, 20, goChange(long, "added", "fixture")))
 	})
 	t.Run("twin_test_id_at_maximum", func(t *testing.T) {
 		checkGen(t, d15LongInput(t, d15NameLen()), "red_valid", []string{})
