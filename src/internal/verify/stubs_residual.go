@@ -6,53 +6,40 @@ import (
 	"go/parser"
 	"go/token"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
-// residualFacts makes the stub check fail closed (decision D10): in a stub-class file every added head line that is
-// not blank, a comment, a plain import, part of a pure type declaration or inside a new function or declaration
-// candidate is code the stub forms do not allow, and becomes one malformed fact per run of such lines.
-func residualFacts(f StubFile, head []stubCandidate, baseSyms map[string]bool, headLines []string, unmatched map[int]bool) ([]StubFact, error) {
-	n := len(headLines)
-	benign := make([]bool, n+2) // 1-based
-	skip := make([]bool, n+2)   // lines owned by candidates (new: judged on their own; old: judged by additionsOnly)
+// goResidual makes the Go stub check fail closed (decisions D10, D11): every added head line that is not blank,
+// comment-only, the package clause, a plain import or a type declaration, and not inside a function or value
+// declaration (which has its own fact), is code the stub forms do not allow. Each run of such lines becomes one
+// malformed fact.
+func goResidual(f StubFile, head []stubCandidate, lines []string, added []bool) ([]lineFact, error) {
+	n := len(lines)
+	owned := make([]bool, n) // lines of a declaration: judged by its own fact (new) or by additions-only (existing)
 	for _, c := range head {
-		end := c.endLine
-		if c.nonFunc && f.Language != "go" && c.declLine <= n {
-			// A declaration may span lines (an arrow function, an object literal): it is one malformed fact.
-			if f.Language == "python" {
-				e, _ := pythonBody(headLines, c.declLine-1)
-				end = max(end, e+1)
-			} else if e, ok := consumeStmt(f.Language, headLines, c.declLine-1, false); ok {
-				end = max(end, e+1)
-			}
-		}
-		for ln := c.declLine; ln <= end && ln <= n; ln++ {
-			skip[ln] = true
+		for ln := c.declLine; ln <= c.endLine && ln <= n; ln++ {
+			owned[ln-1] = true
 		}
 	}
-	var err error
-	if f.Language == "go" {
-		err = goBenign(f.Path, f.Head, headLines, benign)
-	} else {
-		lineBenign(f.Language, headLines, skip, benign)
-	}
+	benign, err := goBenign(f.Path, f.Head, n)
 	if err != nil {
 		return nil, err
 	}
-	var facts []StubFact
-	start := 0
+	var facts []lineFact
+	start := -1
 	flush := func() {
-		if start > 0 {
-			facts = append(facts, StubFact{Path: f.Path, Symbol: fmt.Sprintf("(added code @%d)", start), Shape: "unknown", WellFormed: false})
-			start = 0
+		if start >= 0 {
+			facts = append(facts, lineFact{line: start + 1, f: StubFact{
+				Path: f.Path, Symbol: fmt.Sprintf("(added code @%d)", start+1), Shape: "unknown", WellFormed: false,
+			}})
+			start = -1
 		}
 	}
-	for ln := 1; ln <= n; ln++ {
-		added := f.Base == nil || unmatched[ln]
-		if added && !benign[ln] && !skip[ln] && strings.TrimSpace(headLines[ln-1]) != "" {
-			if start == 0 {
-				start = ln
+	for k := 0; k < n; k++ {
+		if added[k] && !benign[k] && !owned[k] && strings.TrimSpace(lines[k]) != "" {
+			if start < 0 {
+				start = k
 			}
 			continue
 		}
@@ -62,20 +49,30 @@ func residualFacts(f StubFile, head []stubCandidate, baseSyms map[string]bool, h
 	return facts, nil
 }
 
-// goBenign marks the lines of a Go file that carry no behavior: the package clause, plain imports, type
-// declarations, comments (except directives) and blank lines.
-func goBenign(path string, src []byte, lines []string, benign []bool) error {
+// goDirectiveRe matches the comments the Go toolchain reads as instructions: //go: directives (linkname, embed,
+// build, generate), //line, cgo //export, gccgo //extern and legacy // +build constraints.
+var goDirectiveRe = regexp.MustCompile(`^(?://go:|//line |/\*line |//export |//extern |//\s*\+build)`)
+
+// goBenign marks (0-based) the lines of a Go file that carry no behavior: the package clause, plain imports, type
+// declarations that shadow no predeclared identifier, and lines holding nothing but comment text (directives are
+// code). Imports that run code — `_` and `.` imports and `import "C"` with its cgo preamble — are marked code last,
+// after the comment pass.
+func goBenign(path string, src []byte, n int) ([]bool, error) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, path, src, parser.ParseComments)
 	if err != nil {
-		return fmt.Errorf("%s: %w", path, err)
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
-	mark := func(from, to token.Pos) {
-		for ln := fset.Position(from).Line; ln <= fset.Position(to).Line && ln < len(benign); ln++ {
-			benign[ln] = true
+	tf := fset.File(file.Pos())
+	benign := make([]bool, n)
+	mark := func(from, to token.Pos, v bool) {
+		for ln := tf.Line(from); ln <= tf.Line(to) && ln <= n; ln++ {
+			benign[ln-1] = v
 		}
 	}
-	mark(file.Package, file.Name.End())
+	mark(file.Package, file.Name.End(), true)
+	type span struct{ from, to token.Pos }
+	var code []span
 	for _, d := range file.Decls {
 		gd, ok := d.(*ast.GenDecl)
 		if !ok {
@@ -83,193 +80,66 @@ func goBenign(path string, src []byte, lines []string, benign []bool) error {
 		}
 		switch gd.Tok {
 		case token.TYPE:
-			mark(gd.Pos(), gd.End())
-		case token.IMPORT:
-			mark(gd.Pos(), gd.End())
+			shadows := false
 			for _, sp := range gd.Specs {
-				if is, ok := sp.(*ast.ImportSpec); ok && is.Name != nil && (is.Name.Name == "_" || is.Name.Name == ".") {
-					for ln := fset.Position(is.Pos()).Line; ln <= fset.Position(is.End()).Line; ln++ {
-						benign[ln] = false
-					}
-					benign[fset.Position(gd.Pos()).Line] = benign[fset.Position(gd.Pos()).Line] && fset.Position(gd.Pos()).Line != fset.Position(is.Pos()).Line
+				if ts, ok := sp.(*ast.TypeSpec); ok && goPredeclared[ts.Name.Name] {
+					shadows = true
+				}
+			}
+			if !shadows {
+				mark(gd.Pos(), gd.End(), true)
+			}
+		case token.IMPORT:
+			mark(gd.Pos(), gd.End(), true)
+			for _, sp := range gd.Specs {
+				is, ok := sp.(*ast.ImportSpec)
+				if !ok {
+					continue
+				}
+				p, _ := strconv.Unquote(is.Path.Value)
+				if is.Name == nil && p != "C" || is.Name != nil && is.Name.Name != "_" && is.Name.Name != "." {
+					continue
+				}
+				code = append(code, span{is.Pos(), is.End()})
+				if is.Doc != nil {
+					code = append(code, span{is.Doc.Pos(), is.Doc.End()})
+				}
+				if gd.Doc != nil {
+					code = append(code, span{gd.Doc.Pos(), gd.Doc.End()})
 				}
 			}
 		}
 	}
+	// A line is comment-only when every non-blank byte lies in a (non-directive) comment.
+	inComment := make([]bool, len(src))
 	for _, cg := range file.Comments {
 		for _, c := range cg.List {
-			first, last := fset.Position(c.Pos()).Line, fset.Position(c.End()).Line
-			if first >= len(lines)+1 || !strings.HasPrefix(strings.TrimSpace(lines[first-1]), "/") {
-				continue // trailing comment of a code line
-			}
-			if strings.HasPrefix(c.Text, "//go:") || strings.HasPrefix(c.Text, "//export ") {
+			if goDirectiveRe.MatchString(c.Text) {
 				continue
 			}
-			if last > first && !strings.HasSuffix(strings.TrimSpace(lines[last-1]), "*/") {
-				continue
-			}
-			for ln := first; ln <= last && ln < len(benign); ln++ {
-				benign[ln] = true
+			for o := tf.Offset(c.Pos()); o < tf.Offset(c.End()) && o < len(src); o++ {
+				inComment[o] = true
 			}
 		}
 	}
-	return nil
-}
-
-var (
-	pyImportRe = regexp.MustCompile(`^(?:import\s+\S|from\s+\S+\s+import\b)`)
-	tsImportRe = regexp.MustCompile(`^import(?:\s+|[{*"'])[^(\s]`)
-	rustUseRe  = regexp.MustCompile(`^(?:pub(?:\([^)]*\))?\s+)?use\s`)
-	tsTypeRe   = regexp.MustCompile(`^(?:export\s+)?(?:declare\s+)?(?:interface\s+[A-Za-z_$]|type\s+[A-Za-z_$][A-Za-z0-9_$]*\s*(?:<[^=]*>)?\s*=)`)
-	rustTypeRe = regexp.MustCompile(`^(?:pub(?:\([^)]*\))?\s+)?(?:struct|enum)\s+[A-Za-z_]`)
-	rustAttrRe = regexp.MustCompile(`^#!?\[`)
-)
-
-// lineBenign classifies the lines of a non-Go file (see residualFacts).
-func lineBenign(language string, lines []string, skip, benign []bool) {
-	lang := stubLangs[language]
-	n := len(lines)
-	for i := 0; i < n; i++ {
-		ln := i + 1
-		if skip[ln] {
+	ln, onlyComment, sawComment := 0, true, false
+	for o := 0; o <= len(src); o++ {
+		if o == len(src) || src[o] == '\n' {
+			if ln < n && onlyComment && sawComment {
+				benign[ln] = true
+			}
+			ln, onlyComment, sawComment = ln+1, true, false
 			continue
 		}
-		t := strings.TrimSpace(lines[i])
 		switch {
-		case t == "" || strings.HasPrefix(t, lang.comment):
-			benign[ln] = true
-			continue
-		case !lang.indent && strings.HasPrefix(t, "/*"):
-			j := i
-			for j < n && !strings.Contains(lines[j], "*/") {
-				j++
-			}
-			if j < n && strings.HasSuffix(strings.TrimSpace(lines[j]), "*/") {
-				for k := i; k <= j; k++ {
-					benign[k+1] = true
-				}
-				i = j
-			}
-			continue
+		case inComment[o]:
+			sawComment = true
+		case src[o] != ' ' && src[o] != '\t' && src[o] != '\r':
+			onlyComment = false
 		}
-		var re *regexp.Regexp
-		needSemi := false
-		switch language {
-		case "python":
-			re = pyImportRe
-		case "typescript", "javascript":
-			if tsImportRe.MatchString(t) {
-				re = tsImportRe
-			} else {
-				re = tsTypeRe
-			}
-		case "rust":
-			switch {
-			case rustAttrRe.MatchString(t):
-				benign[ln] = true
-				continue
-			case rustUseRe.MatchString(t):
-				re, needSemi = rustUseRe, true
-			default:
-				re = rustTypeRe
-			}
-		}
-		if re == nil || !re.MatchString(t) {
-			continue
-		}
-		end, ok := consumeStmt(language, lines, i, needSemi)
-		if !ok {
-			continue
-		}
-		for k := i; k <= end; k++ {
-			if !skip[k+1] {
-				benign[k+1] = true
-			}
-		}
-		i = end
 	}
-}
-
-// consumeStmt returns the last line of the statement starting on line i, balancing brackets, skipping string
-// literals and comments. ok is false when other code shares the closing line or the statement is unterminated.
-func consumeStmt(language string, lines []string, i int, needSemi bool) (int, bool) {
-	depth := 0
-	pyStmt := language == "python"
-	for j := i; j < len(lines); j++ {
-		s := lines[j]
-		semi := false
-		var q rune
-		last := ""
-	scan:
-		for k, r := range s {
-			if q != 0 {
-				if r == q && (k == 0 || s[k-1] != '\\') {
-					q = 0
-				}
-				continue
-			}
-			switch r {
-			case '"':
-				q = r
-			case '\'', '`':
-				if language != "rust" {
-					q = r
-				}
-			case '#':
-				if pyStmt {
-					break scan
-				}
-			case '/':
-				if !pyStmt && strings.HasPrefix(s[k:], "//") {
-					break scan
-				}
-			case '{', '[', '(':
-				depth++
-			case '}', ']', ')':
-				depth--
-			case ';':
-				if depth <= 0 {
-					semi = true
-					if rest := strings.TrimSpace(s[k+1:]); rest != "" && !strings.HasPrefix(rest, "//") && !(pyStmt && strings.HasPrefix(rest, "#")) {
-						return 0, false
-					}
-					break scan
-				}
-			}
-			last = strings.TrimSpace(s[:k+1])
-		}
-		if pyStmt && semi {
-			return 0, false
-		}
-		if depth > 0 {
-			continue
-		}
-		if semi {
-			return j, true
-		}
-		if needSemi {
-			continue
-		}
-		// code after the closing brace of a block statement
-		if j+1 < len(lines) && continuesStmt(language, last, lines[j+1]) {
-			continue
-		}
-		if k := strings.LastIndex(last, "}"); k >= 0 && k != len(last)-1 && !strings.HasSuffix(last, "};") {
-			return 0, false
-		}
-		return j, true
+	for _, s := range code {
+		mark(s.from, s.to, false)
 	}
-	return 0, false
-}
-
-// continuesStmt reports whether a type alias or import continues on the next line.
-func continuesStmt(language, last, next string) bool {
-	if language == "python" {
-		return strings.HasSuffix(last, "\\")
-	}
-	if strings.HasSuffix(last, "=") || strings.HasSuffix(last, "|") || strings.HasSuffix(last, "&") || strings.HasSuffix(last, ",") {
-		return true
-	}
-	nt := strings.TrimSpace(next)
-	return strings.HasPrefix(nt, "|") || strings.HasPrefix(nt, "&")
+	return benign, nil
 }

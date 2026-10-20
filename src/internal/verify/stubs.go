@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // LoadStubPolicy reads spec.stubPolicy of the platform verification policy (plan 22 section 14.2). Missing or
@@ -36,100 +37,97 @@ func LoadStubPolicy(verification map[string]any) (StubPolicy, error) {
 	return sp, nil
 }
 
-// stubCandidate is a function-like declaration of a source file.
+// stubCandidate is a top-level Go function or value declaration.
 type stubCandidate struct {
 	symbol     string
-	declLine   int // first line of the declaration (1-based), after any doc comment
+	key        string // base matching key: the symbol, "_" for blank names
+	declLine   int    // first line of the declaration (1-based), after any doc comment
 	endLine    int
 	bodyLines  int
 	shape      string
 	commentTok string // line comment token of the language
 	nonFunc    bool   // a variable, constant or assignment: never a well-formed stub (plan 22 section 14.2)
+	reserved   bool   // a function that cannot be a stub: init, _, or a predeclared identifier it would shadow
+	existing   bool   // the declaration is unchanged from base
 }
+
+// stubLanguages are the languages with a stub form: Go by the AST, the others by canonical line layouts.
+var stubLanguages = map[string]bool{"go": true, "python": true, "typescript": true, "javascript": true, "rust": true}
 
 // AnalyzeStubs derives the stub facts of one stub-path file (plan 22 section 14.2): every declaration that is new
 // in Head is a stub candidate; it is well formed when the marker comment is on the line right before it, the body
 // is zero-value or the panic form and not longer than maxAddedLinesPerStub, and the file change is additions only.
-// Go is analysed through the AST, the other languages through line patterns. A file that cannot be analysed (parse
-// error, language without a stub form) is an error, never an empty result (22-R-3).
+// Every other added line must carry no behavior (decisions D10, D11): Go is analysed through the AST, the other
+// languages through an allowlist of canonical line layouts (stubs_lines.go); anything else is a malformed fact.
+// A file that cannot be analysed (parse error, language without a stub form, a line terminator other than \n or
+// \r\n) is an error, never an empty result (22-R-3). Facts are ordered by head line.
 func AnalyzeStubs(p StubPolicy, f StubFile) ([]StubFact, error) {
-	lang, ok := stubLangs[f.Language]
-	if !ok {
+	if !stubLanguages[f.Language] {
 		return nil, fmt.Errorf("%s: language %q has no stub form", f.Path, f.Language)
 	}
-	var head, base []stubCandidate
+	if err := checkSourceText(f.Path, f.Head); err != nil {
+		return nil, err
+	}
+	var facts []lineFact
+	var additionsOnly bool
 	var err error
 	if f.Language == "go" {
-		if head, err = goCandidates(p, f.Path, f.Head); err != nil {
-			return nil, err
-		}
-		if f.Base != nil {
-			if base, err = goCandidates(p, f.Path, f.Base); err != nil {
-				return nil, fmt.Errorf("base: %w", err)
-			}
-		}
+		facts, additionsOnly, err = analyzeGo(p, f)
 	} else {
-		if head, err = lineCandidates(p, lang, f.Path, f.Head); err != nil {
-			return nil, err
-		}
-		if f.Base != nil {
-			if base, err = lineCandidates(p, lang, f.Path, f.Base); err != nil {
-				return nil, fmt.Errorf("base: %w", err)
-			}
-		}
+		facts, additionsOnly, err = analyzeLines(p, f)
 	}
-	baseSyms := map[string]bool{}
-	for _, b := range base {
-		baseSyms[b.symbol] = true
-	}
-	headLines := splitLines(f.Head)
-	additionsOnly := true
-	if f.Base != nil {
-		unmatched := unmatchedLines(splitLines(f.Base), headLines)
-		// An added line inside a declaration that already exists is a modification, not a stub.
-		for _, h := range head {
-			if !baseSyms[h.symbol] {
-				continue
-			}
-			for ln := h.declLine; ln <= h.endLine; ln++ {
-				if unmatched[ln] {
-					additionsOnly = false
-				}
-			}
-		}
-		if !subsequence(splitLines(f.Base), headLines) {
-			additionsOnly = false
-		}
-	}
-	var facts []StubFact
-	for _, h := range head {
-		if baseSyms[h.symbol] {
-			continue
-		}
-		marker := markerBefore(p, h.commentTok, headLines, h.declLine)
-		wf := !h.nonFunc && additionsOnly && marker != "" && markerFormat(p).MatchString(marker) &&
-			h.shape != "unknown" && h.bodyLines <= p.MaxAddedLinesPerStub
-		facts = append(facts, StubFact{Path: f.Path, Symbol: h.symbol, Marker: marker, Shape: h.shape, WellFormed: wf})
-	}
-	residual, err := residualFacts(f, head, baseSyms, headLines, unmatchedLines(splitLines(f.Base), headLines))
 	if err != nil {
 		return nil, err
 	}
-	facts = append(facts, residual...)
 	if len(facts) == 0 && !additionsOnly {
 		// The file changed other than by additions and holds no new declaration: not a stub.
-		facts = append(facts, StubFact{Path: f.Path, Symbol: "(modified existing code)", Shape: "unknown", WellFormed: false})
+		facts = append(facts, lineFact{f: StubFact{Path: f.Path, Symbol: "(modified existing code)", Shape: "unknown"}})
 	}
-	sort.SliceStable(facts, func(i, j int) bool { return facts[i].Symbol < facts[j].Symbol })
-	return facts, nil
+	sort.SliceStable(facts, func(i, j int) bool {
+		if facts[i].line != facts[j].line {
+			return facts[i].line < facts[j].line
+		}
+		return facts[i].f.Symbol < facts[j].f.Symbol
+	})
+	out := make([]StubFact, len(facts))
+	for i, lf := range facts {
+		out[i] = lf.f
+	}
+	return out, nil
 }
 
+// checkSourceText rejects text whose line structure a language could read differently from the stub check
+// (decision D11(a)): a line terminator other than \n or \r\n (bare \r, U+2028, U+2029, NEL, form feed, vertical
+// tab), any other control character except tab, and invalid UTF-8.
+func checkSourceText(path string, b []byte) error {
+	if !utf8.Valid(b) {
+		return fmt.Errorf("%s: not valid UTF-8", path)
+	}
+	s := string(b)
+	for i, r := range s {
+		switch {
+		case r == '\n' || r == '\t':
+		case r == '\r':
+			if i+1 >= len(s) || s[i+1] != '\n' {
+				return fmt.Errorf("%s: bare carriage return at byte %d", path, i)
+			}
+		case r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) || r == 0x2028 || r == 0x2029:
+			return fmt.Errorf("%s: line terminator or control character %U at byte %d", path, r, i)
+		}
+	}
+	return nil
+}
+
+// splitLines splits source text into lines without their "\n" or "\r\n" terminator.
 func splitLines(b []byte) []string {
 	if len(b) == 0 {
 		return nil
 	}
-	s := strings.TrimSuffix(string(b), "\n")
-	return strings.Split(strings.ReplaceAll(s, "\r\n", "\n"), "\n")
+	lines := strings.Split(strings.TrimSuffix(string(b), "\n"), "\n")
+	for i, l := range lines {
+		lines[i] = strings.TrimSuffix(l, "\r")
+	}
+	return lines
 }
 
 // subsequence reports whether every base line appears in head in order.
@@ -143,16 +141,17 @@ func subsequence(base, head []string) bool {
 	return i == len(base)
 }
 
-// unmatchedLines returns the 1-based head lines not matched by the greedy in-order alignment of base.
-func unmatchedLines(base, head []string) map[int]bool {
-	out := map[int]bool{}
+// addedLines marks the head lines (0-based) not matched by the greedy in-order alignment of base; every line when
+// the file is new.
+func addedLines(base, head []string, newFile bool) []bool {
+	out := make([]bool, len(head))
 	i := 0
 	for n, h := range head {
-		if i < len(base) && base[i] == h {
+		if !newFile && i < len(base) && base[i] == h {
 			i++
 			continue
 		}
-		out[n+1] = true
+		out[n] = true
 	}
 	return out
 }
@@ -179,6 +178,59 @@ func markerFormat(p StubPolicy) *regexp.Regexp {
 	return regexp.MustCompile(`^` + regexp.QuoteMeta(p.Marker) + `\([A-Za-z0-9._-]+( AC-[1-9][0-9]{0,2})+\)$`)
 }
 
+// goPredeclared are Go's predeclared identifiers: a package-level function or type with such a name would shadow
+// it for every existing file of the package.
+var goPredeclared = toSet(`any append bool byte cap clear close comparable complex complex128 complex64 copy delete
+error false float32 float64 imag int int16 int32 int64 int8 iota len make max min new nil panic print println real
+recover rune string true uint uint16 uint32 uint64 uint8 uintptr`)
+
+// analyzeGo derives the facts of a Go file through the AST.
+func analyzeGo(p StubPolicy, f StubFile) ([]lineFact, bool, error) {
+	head, err := goCandidates(p, f.Path, f.Head)
+	if err != nil {
+		return nil, false, err
+	}
+	baseKeys := map[string]bool{}
+	if f.Base != nil {
+		base, err := goCandidates(p, f.Path, f.Base)
+		if err != nil {
+			return nil, false, fmt.Errorf("base: %w", err)
+		}
+		for _, b := range base {
+			baseKeys[b.key] = true
+		}
+	}
+	headLines, baseLines := splitLines(f.Head), splitLines(f.Base)
+	added := addedLines(baseLines, headLines, f.Base == nil)
+	additionsOnly := f.Base == nil || subsequence(baseLines, headLines)
+	for i := range head {
+		h := &head[i]
+		// Unchanged: its first line is matched to base and base declares the symbol. A second `func init` with an
+		// added first line is new even though base has an init.
+		h.existing = f.Base != nil && !added[h.declLine-1] && baseKeys[h.key]
+		for ln := h.declLine; h.existing && ln <= h.endLine && ln <= len(added); ln++ {
+			if added[ln-1] {
+				additionsOnly = false // an added line inside an existing declaration is a modification
+			}
+		}
+	}
+	var facts []lineFact
+	for _, h := range head {
+		if h.existing {
+			continue
+		}
+		marker := markerBefore(p, h.commentTok, headLines, h.declLine)
+		wf := !h.nonFunc && !h.reserved && additionsOnly && marker != "" && markerFormat(p).MatchString(marker) &&
+			h.shape != "unknown" && h.bodyLines <= p.MaxAddedLinesPerStub
+		facts = append(facts, lineFact{line: h.declLine, f: StubFact{Path: f.Path, Symbol: h.symbol, Marker: marker, Shape: h.shape, WellFormed: wf}})
+	}
+	residual, err := goResidual(f, head, headLines, added)
+	if err != nil {
+		return nil, false, err
+	}
+	return append(facts, residual...), additionsOnly, nil
+}
+
 // ---- Go (AST) ----
 
 func goCandidates(p StubPolicy, path string, src []byte) ([]stubCandidate, error) {
@@ -196,12 +248,12 @@ func goCandidates(p StubPolicy, path string, src []byte) ([]stubCandidate, error
 					continue
 				}
 				line := fset.Position(vs.Pos()).Line
-				name := "_@" + strconv.Itoa(line)
+				name, key := "_@"+strconv.Itoa(line), "_"
 				if len(vs.Names) > 0 && vs.Names[0].Name != "_" {
-					name = vs.Names[0].Name
+					name, key = vs.Names[0].Name, vs.Names[0].Name
 				}
 				out = append(out, stubCandidate{
-					symbol: name, declLine: line, endLine: fset.Position(vs.End()).Line,
+					symbol: name, key: key, declLine: line, endLine: fset.Position(vs.End()).Line,
 					bodyLines: 1, shape: "unknown", commentTok: "//", nonFunc: true,
 				})
 			}
@@ -212,6 +264,8 @@ func goCandidates(p StubPolicy, path string, src []byte) ([]stubCandidate, error
 			continue
 		}
 		c := stubCandidate{symbol: goSymbol(fn), commentTok: "//", shape: "unknown"}
+		c.key = c.symbol
+		c.reserved = fn.Recv == nil && (fn.Name.Name == "init" || fn.Name.Name == "_" || goPredeclared[fn.Name.Name])
 		c.declLine = fset.Position(fn.Pos()).Line
 		c.endLine = fset.Position(fn.End()).Line
 		if fn.Body != nil {
@@ -307,160 +361,4 @@ func goZero(e ast.Expr) bool {
 		return goZero(x.X)
 	}
 	return false
-}
-
-// ---- other languages (line patterns) ----
-
-type stubLang struct {
-	comment   string
-	indent    bool // block by indentation (Python) instead of braces
-	fnRe      *regexp.Regexp
-	zeroRe    *regexp.Regexp
-	panicTmpl string         // %s = quoted-regexp of the panic message
-	declRe    *regexp.Regexp // top-level non-function declaration (const, static, module assignment); group 1 = name
-}
-
-var stubLangs = map[string]stubLang{
-	"go": {comment: "//"},
-	"rust": {
-		comment:   "//",
-		fnRe:      regexp.MustCompile(`^\s*(?:pub(?:\([^)]*\))?\s+)?(?:(?:async|const|unsafe)\s+)*fn\s+([A-Za-z_][A-Za-z0-9_]*)`),
-		zeroRe:    regexp.MustCompile(`^(?:return\s+)?(?:Default::default\(\)|None|\(\)|0|0\.0|false|""|String::new\(\)|Vec::new\(\)|vec!\[\]|Ok\(\(\)\)|Ok\(Default::default\(\)\))\s*;?$`),
-		panicTmpl: `^(?:todo|unimplemented|panic)!\(\s*"%s"\s*\)\s*;?$`,
-		declRe:    regexp.MustCompile(`^(?:pub(?:\([^)]*\))?\s+)?(?:const|static)\s+(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)`),
-	},
-	"typescript": tsLang(),
-	"javascript": tsLang(),
-	"python": {
-		comment:   "#",
-		indent:    true,
-		fnRe:      regexp.MustCompile(`^\s*(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(`),
-		zeroRe:    regexp.MustCompile(`^(?:return(?:\s+(?:None|0|0\.0|False|""|''|\[\]|\{\}|\(\)))?|pass|\.\.\.)$`),
-		panicTmpl: `^raise\s+NotImplementedError\(\s*["']%s["']\s*\)$`,
-		declRe:    regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)\s*(?::[^=]+)?=[^=]`),
-	},
-}
-
-func tsLang() stubLang {
-	return stubLang{
-		comment:   "//",
-		fnRe:      regexp.MustCompile(`^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s*([A-Za-z_$][A-Za-z0-9_$]*)`),
-		zeroRe:    regexp.MustCompile(`^return(?:\s+(?:null|undefined|0|false|""|''|\[\]|\{\}))?\s*;?$`),
-		panicTmpl: `^throw\s+new\s+Error\(\s*["']%s["']\s*\)\s*;?$`,
-		declRe:    regexp.MustCompile(`^(?:export\s+)?(?:declare\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)`),
-	}
-}
-
-func lineCandidates(p StubPolicy, lang stubLang, path string, src []byte) ([]stubCandidate, error) {
-	lines := splitLines(src)
-	panicRe, err := regexp.Compile(fmt.Sprintf(lang.panicTmpl, regexp.QuoteMeta(p.PanicMessage)))
-	if err != nil {
-		return nil, err
-	}
-	var out []stubCandidate
-	for i := 0; i < len(lines); i++ {
-		m := lang.fnRe.FindStringSubmatch(lines[i])
-		if m == nil {
-			if d := lang.declRe.FindStringSubmatch(lines[i]); d != nil {
-				out = append(out, stubCandidate{
-					symbol: d[1], declLine: i + 1, endLine: i + 1, bodyLines: 1,
-					shape: "unknown", commentTok: lang.comment, nonFunc: true,
-				})
-			}
-			continue
-		}
-		c := stubCandidate{symbol: m[1], declLine: i + 1, commentTok: lang.comment}
-		var inner []string
-		end := i
-		if lang.indent {
-			end, inner = pythonBody(lines, i)
-		} else {
-			var err error
-			end, inner, err = braceBody(lines, i)
-			if err != nil {
-				return nil, fmt.Errorf("%s:%d: %w", path, i+1, err)
-			}
-		}
-		c.endLine = end + 1
-		c.bodyLines = len(inner)
-		if c.bodyLines == 0 {
-			c.bodyLines = 1
-		}
-		c.shape = "unknown"
-		switch {
-		case len(inner) == 0:
-			c.shape = "zero_value"
-		case len(inner) == 1 && panicRe.MatchString(inner[0]):
-			c.shape = "panic"
-		case len(inner) == 1 && lang.zeroRe.MatchString(inner[0]):
-			c.shape = "zero_value"
-		}
-		out = append(out, c)
-		i = end
-	}
-	return out, nil
-}
-
-// braceBody finds the body of a brace-delimited function starting on line start: the index of the closing line and
-// the trimmed non-empty inner statements (the text after the opening brace and before the closing one included).
-func braceBody(lines []string, start int) (int, []string, error) {
-	depth := 0
-	opened := false
-	var inner []string
-	for i := start; i < len(lines); i++ {
-		text := lines[i]
-		var cur strings.Builder
-		for _, r := range text {
-			switch r {
-			case '{':
-				depth++
-				if depth == 1 && !opened {
-					opened = true
-					cur.Reset()
-					continue
-				}
-			case '}':
-				depth--
-				if depth == 0 && opened {
-					if s := strings.TrimSpace(cur.String()); s != "" {
-						inner = append(inner, s)
-					}
-					return i, inner, nil
-				}
-			}
-			if opened {
-				cur.WriteRune(r)
-			}
-		}
-		if opened {
-			if s := strings.TrimSpace(cur.String()); s != "" {
-				inner = append(inner, s)
-			}
-		} else if strings.HasSuffix(strings.TrimSpace(text), ";") {
-			return 0, nil, errors.New("function declaration without a body")
-		}
-	}
-	return 0, nil, errors.New("unterminated function body")
-}
-
-// pythonBody returns the end line index and the trimmed non-empty body lines of a def starting on line start.
-func pythonBody(lines []string, start int) (int, []string) {
-	indentOf := func(s string) int { return len(s) - len(strings.TrimLeft(s, " \t")) }
-	base := indentOf(lines[start])
-	end := start
-	var inner []string
-	for i := start + 1; i < len(lines); i++ {
-		if strings.TrimSpace(lines[i]) == "" {
-			continue
-		}
-		if indentOf(lines[i]) <= base {
-			break
-		}
-		end = i
-		s := strings.TrimSpace(lines[i])
-		if !strings.HasPrefix(s, "#") {
-			inner = append(inner, s)
-		}
-	}
-	return end, inner
 }
