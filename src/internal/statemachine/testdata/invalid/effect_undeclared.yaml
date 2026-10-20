@@ -1,0 +1,5 @@
+# Invalid fixture (29-AC-2): every effect used is declared in the effects catalogue
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_EFFECT_UNDECLARED
+ops:
+  - {op: add, path: spec/transitions/id=T001/effects, value: E_MADE_UP}

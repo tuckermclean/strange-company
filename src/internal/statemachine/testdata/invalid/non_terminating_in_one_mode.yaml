@@ -1,0 +1,9 @@
+# Invalid fixture (29-AC-2): termination is computed per mode
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_NON_TERMINATING
+mode: verification-first
+ops:
+  - {op: add, path: spec/states, value: {name: TRAP_TWO, modes: [test-first, verification-first], terminal: false, activeExecution: forbidden, description: Has an exit to a terminal state in test-first only.}}
+  - {op: add, path: spec/transitions, value: {id: T200, from: [SPECIFIED], to: TRAP_TWO, event: escalate, actors: [hermes], modes: [test-first, verification-first], guards: [], effects: [], description: Enter the state in both modes.}}
+  - {op: add, path: spec/transitions, value: {id: T201, from: [TRAP_TWO], to: CANCELLED, event: cancel_requested, actors: [hermes], modes: [test-first], guards: [], effects: [], description: Leave the state in test-first only.}}
+  - {op: add, path: spec/humanProjection/6/states, value: TRAP_TWO}

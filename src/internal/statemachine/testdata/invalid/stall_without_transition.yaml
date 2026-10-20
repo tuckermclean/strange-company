@@ -1,0 +1,5 @@
+# Invalid fixture (29-AC-2): a state with stall.escalateTo has a stall_timeout transition
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_STALL_NO_TRANSITION
+ops:
+  - {op: remove, path: spec/transitions/id=T140/from/=RED_VERIFIED}

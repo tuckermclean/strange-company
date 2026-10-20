@@ -1,0 +1,17 @@
+# Implementation cannot silently delete acceptance tests (ingestion violation)
+trajectory: tdd-tamper-delete
+title: "Implementation cannot silently delete acceptance tests (ingestion violation)"
+refs: ["plan 21 22.2 tdd-tamper-delete", "SPEC 106 item 4"]
+live: {"fake_scenarios": ["fake-red-valid", "fake-test-delete"], "violation": "TEST_TAMPER/test_file_deleted", "assert": ["branch head reset to the red commit", "tag sc-quarantine/<execution-id> exists"]}
+events:
+  - {event: "task_created", actor: "hermes", at: "2026-10-13T12:01:00Z"}
+  - {event: "dispatch_tester", actor: "hermes", role: "tester", at: "2026-10-13T12:02:00Z"}
+  - {event: "tester_result_accepted", actor: "runner", at: "2026-10-13T12:03:00Z", pipeline: 401}
+  - {event: "red_classified", actor: "ci", at: "2026-10-13T12:04:00Z", facts: {G_VERIFICATION_OUTCOME: "red_valid"}}
+  - {event: "dispatch_implementer", actor: "hermes", role: "implementer", at: "2026-10-13T12:05:00Z"}
+  - {event: "execution_failed", actor: "runner", at: "2026-10-13T12:06:00Z", failure_code: "TEST_TAMPER", facts: {G_FAILURE_CLASS: "policy"}}
+  - {event: "dispatch_implementer", actor: "hermes", role: "implementer", at: "2026-10-13T12:07:00Z"}
+expected_states: ["SPECIFIED", "TEST_AUTHORING", "RED_VERIFYING", "RED_VERIFIED", "IMPLEMENTING", "NEEDS_HUMAN", "NEEDS_HUMAN"]
+expected_transitions: ["T001", "T010", "T014", "T020", "T030", "T104", "rejected"]
+expected_reasons: ["", "", "", "", "", "policy_violation", "GATE_NOT_SATISFIED"]
+expected_attempts: {"by_class.policy": 1, "autonomous_used": 1}

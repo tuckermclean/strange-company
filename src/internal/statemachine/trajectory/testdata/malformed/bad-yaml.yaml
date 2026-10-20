@@ -1,0 +1,3 @@
+# expect: TRAJ_YAML
+trajectory: bad-yaml
+events: [

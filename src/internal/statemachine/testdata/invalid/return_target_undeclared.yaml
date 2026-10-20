@@ -1,0 +1,5 @@
+# Invalid fixture (29-AC-2): every returnTargets entry is a declared state
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_RETURN_TARGET_UNDECLARED
+ops:
+  - {op: add, path: spec/states/name=IMPLEMENTING/returnTargets, value: GHOST}

@@ -1,0 +1,5 @@
+# Invalid fixture (29-AC-2): hermes actor leaves BLOCKED (lesson L-4)
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_HELD_EXIT_NOT_HUMAN
+ops:
+  - {op: add, path: spec/transitions/id=T065/actors, value: hermes}

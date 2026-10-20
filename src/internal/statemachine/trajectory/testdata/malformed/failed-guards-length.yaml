@@ -1,0 +1,8 @@
+# expect: TRAJ_LENGTH_MISMATCH
+trajectory: failed-guards-length
+events:
+  - {event: task_created, actor: hermes, at: "2026-10-13T12:00:00Z"}
+expected_states: [SPECIFIED]
+expected_transitions: [T001]
+expected_reasons: [""]
+expected_failed_guards: [[], []]

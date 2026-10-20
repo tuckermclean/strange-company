@@ -1,0 +1,5 @@
+# Invalid fixture (29-AC-2): transition id must match T[0-9]{3}
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_SCHEMA_INVALID
+ops:
+  - {op: replace, path: spec/transitions/id=T002/id, value: X002}

@@ -1,0 +1,11 @@
+# Invalid fixture (29-AC-2, D7e): REVIEW (activeExecution required) is not an execution_failed source: removed from T100-T106
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_FAILURE_CLASS_INCOMPLETE
+ops:
+  - {op: replace, path: spec/transitions/id=T100/from, value: [TEST_AUTHORING, IMPLEMENTING, JUDGE_AUTHORING, PRODUCING]}
+  - {op: replace, path: spec/transitions/id=T101/from, value: [TEST_AUTHORING, IMPLEMENTING, JUDGE_AUTHORING, PRODUCING]}
+  - {op: replace, path: spec/transitions/id=T102/from, value: [TEST_AUTHORING, IMPLEMENTING, JUDGE_AUTHORING, PRODUCING]}
+  - {op: replace, path: spec/transitions/id=T103/from, value: [TEST_AUTHORING, IMPLEMENTING, JUDGE_AUTHORING, PRODUCING]}
+  - {op: replace, path: spec/transitions/id=T104/from, value: [TEST_AUTHORING, IMPLEMENTING, JUDGE_AUTHORING, PRODUCING]}
+  - {op: replace, path: spec/transitions/id=T105/from, value: [TEST_AUTHORING, IMPLEMENTING, JUDGE_AUTHORING, PRODUCING]}
+  - {op: replace, path: spec/transitions/id=T106/from, value: [TEST_AUTHORING, IMPLEMENTING, JUDGE_AUTHORING, PRODUCING]}

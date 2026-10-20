@@ -1,0 +1,5 @@
+# Invalid fixture (29-AC-2): coverage needs an entry without a when condition
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_PROJECTION_UNCOVERED
+ops:
+  - {op: remove, path: spec/humanProjection/6/states/=SPECIFIED}

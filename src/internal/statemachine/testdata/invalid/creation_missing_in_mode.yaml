@@ -1,0 +1,6 @@
+# Invalid fixture (29-AC-2, D7d): no $none creation transition in verification-first mode (T001 restricted to test-first)
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_CREATION_INVALID
+mode: verification-first
+ops:
+  - {op: replace, path: spec/transitions/id=T001/modes, value: [test-first]}

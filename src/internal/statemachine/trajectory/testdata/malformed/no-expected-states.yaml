@@ -1,0 +1,6 @@
+# expect: TRAJ_MISSING_FIELD
+trajectory: no-expected-states
+events:
+  - {event: task_created, actor: hermes, at: "2026-10-13T12:00:00Z"}
+expected_transitions: [T001]
+expected_reasons: [""]

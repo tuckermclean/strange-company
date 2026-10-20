@@ -1,0 +1,5 @@
+# Invalid fixture (29-AC-2): initialState is declared
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_INITIAL_STATE_INVALID
+ops:
+  - {op: replace, path: spec/initialState, value: GHOST}

@@ -1,0 +1,35 @@
+# TEST_SPEC_CONFLICT variant: the adjudicator finds the test valid, the implementer is re-dispatched
+trajectory: tdd-conflict-rejected
+title: "TEST_SPEC_CONFLICT variant: the adjudicator finds the test valid, the implementer is re-dispatched"
+refs: ["plan 21 22.2 tdd-conflict-rejected", "plan 29 14.6"]
+live: {"fake_scenarios": ["fake-adjudicate-test-valid"]}
+events:
+  - {event: "task_created", actor: "hermes", at: "2026-10-13T12:01:00Z"}
+  - {event: "dispatch_tester", actor: "hermes", role: "tester", at: "2026-10-13T12:02:00Z"}
+  - {event: "tester_result_accepted", actor: "runner", at: "2026-10-13T12:03:00Z", pipeline: 401}
+  - {event: "red_classified", actor: "ci", at: "2026-10-13T12:04:00Z", facts: {G_VERIFICATION_OUTCOME: "red_valid"}}
+  - {event: "dispatch_implementer", actor: "hermes", role: "implementer", at: "2026-10-13T12:05:00Z"}
+  - {event: "implementer_reported_conflict", actor: "runner", at: "2026-10-13T12:06:00Z"}
+  - {event: "dispatch_auxiliary", actor: "hermes", role: "reviewer", at: "2026-10-13T12:07:00Z", live: {purpose: "adjudication"}}
+  - {event: "adjudication_recorded", actor: "runner", at: "2026-10-13T12:08:00Z", reason: "adjudication test_valid", verdict: "test_valid"}
+  - {event: "dispatch_tester", actor: "hermes", role: "tester", at: "2026-10-13T12:09:00Z"}
+  - {event: "dispatch_implementer", actor: "hermes", role: "implementer", at: "2026-10-13T12:10:00Z"}
+  - {event: "implementer_result_accepted", actor: "runner", at: "2026-10-13T12:11:00Z", pipeline: 402}
+  - {event: "green_classified", actor: "ci", at: "2026-10-13T12:12:00Z", facts: {G_VERIFICATION_OUTCOME: "green_pass"}}
+expected_states: ["SPECIFIED", "TEST_AUTHORING", "RED_VERIFYING", "RED_VERIFIED", "IMPLEMENTING", "TEST_SPEC_CONFLICT", "TEST_SPEC_CONFLICT", "TEST_SPEC_CONFLICT", "TEST_SPEC_CONFLICT", "IMPLEMENTING", "GREEN_VERIFYING", "GREEN_VERIFIED"]
+expected_transitions: ["T001", "T010", "T014", "T020", "T030", "T080", "T090", "T082", "rejected", "T031", "T032", "T033"]
+expected_reasons: ["", "", "", "", "", "", "", "", "GATE_NOT_SATISFIED", "", "", ""]
+expected_failed_guards:
+  - ~
+  - ~
+  - ~
+  - ~
+  - ~
+  - ~
+  - ~
+  - ~
+  - ["G_TEST_CHANGE_APPROVED"]
+  - ~
+  - ~
+  - ~
+expected_attempts: {"tester_used": 1, "autonomous_used": 2, "auxiliary_used": 1}

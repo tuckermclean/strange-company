@@ -1,0 +1,47 @@
+# Human-only commands are refused for runner, ci and hermes (plan 29 29-AC-30)
+trajectory: tdd-human-command-authz
+title: "Human-only commands are refused for runner, ci and hermes (plan 29 29-AC-30)"
+refs: ["plan 21 22.2 tdd-human-command-authz", "29-AC-30", "29-AC-6"]
+events:
+  - {event: "task_created", actor: "hermes", at: "2026-10-13T12:01:00Z"}
+  - {event: "block", actor: "hermes", at: "2026-10-13T12:02:00Z"}
+  - {event: "block", actor: "human", at: "2026-10-13T12:03:00Z"}
+  - {event: "unblock", actor: "runner", at: "2026-10-13T12:04:00Z"}
+  - {event: "unblock", actor: "ci", at: "2026-10-13T12:05:00Z"}
+  - {event: "unblock", actor: "hermes", at: "2026-10-13T12:06:00Z"}
+  - {event: "cancel_requested", actor: "hermes", at: "2026-10-13T12:07:00Z"}
+  - {event: "escalate", actor: "hermes", at: "2026-10-13T12:08:00Z"}
+  - {event: "unblock", actor: "human", at: "2026-10-13T12:09:00Z"}
+  - {event: "escalate", actor: "hermes", at: "2026-10-13T12:10:00Z"}
+  - {event: "retry", actor: "runner", at: "2026-10-13T12:11:00Z"}
+  - {event: "retry", actor: "ci", at: "2026-10-13T12:12:00Z"}
+  - {event: "retry", actor: "hermes", at: "2026-10-13T12:13:00Z"}
+  - {event: "respec", actor: "hermes", at: "2026-10-13T12:14:00Z"}
+  - {event: "declare_done", actor: "hermes", at: "2026-10-13T12:15:00Z"}
+  - {event: "cancel_requested", actor: "hermes", at: "2026-10-13T12:16:00Z"}
+  - {event: "retry", actor: "human", at: "2026-10-13T12:17:00Z"}
+  - {event: "pr_closed_by_human", actor: "human", at: "2026-10-13T12:18:00Z", facts: {G_ACTOR_NOT_MACHINE_ACCOUNT: false}}
+  - {event: "pr_closed_by_human", actor: "human", at: "2026-10-13T12:19:00Z"}
+expected_states: ["SPECIFIED", "SPECIFIED", "BLOCKED", "BLOCKED", "BLOCKED", "BLOCKED", "BLOCKED", "BLOCKED", "SPECIFIED", "NEEDS_HUMAN", "NEEDS_HUMAN", "NEEDS_HUMAN", "NEEDS_HUMAN", "NEEDS_HUMAN", "NEEDS_HUMAN", "NEEDS_HUMAN", "SPECIFIED", "SPECIFIED", "CANCELLED"]
+expected_transitions: ["T001", "rejected", "T063", "rejected", "rejected", "rejected", "rejected", "rejected", "T065", "T062", "rejected", "rejected", "rejected", "rejected", "rejected", "rejected", "T066", "rejected", "T054"]
+expected_reasons: ["", "GATE_NOT_SATISFIED", "human_hold", "GATE_NOT_SATISFIED", "GATE_NOT_SATISFIED", "GATE_NOT_SATISFIED", "GATE_NOT_SATISFIED", "GATE_NOT_SATISFIED", "", "manual_escalation", "GATE_NOT_SATISFIED", "GATE_NOT_SATISFIED", "GATE_NOT_SATISFIED", "GATE_NOT_SATISFIED", "GATE_NOT_SATISFIED", "GATE_NOT_SATISFIED", "", "GATE_NOT_SATISFIED", ""]
+expected_failed_guards:
+  - ~
+  - ["G_ACTOR_AUTHORIZED"]
+  - ~
+  - ["G_ACTOR_AUTHORIZED"]
+  - ["G_ACTOR_AUTHORIZED"]
+  - ["G_ACTOR_AUTHORIZED"]
+  - ~
+  - ~
+  - ~
+  - ~
+  - ["G_ACTOR_AUTHORIZED"]
+  - ["G_ACTOR_AUTHORIZED"]
+  - ["G_ACTOR_AUTHORIZED"]
+  - ["G_ACTOR_AUTHORIZED"]
+  - ["G_ACTOR_AUTHORIZED"]
+  - ["G_ACTOR_AUTHORIZED"]
+  - ~
+  - ["G_ACTOR_NOT_MACHINE_ACCOUNT"]
+  - ~

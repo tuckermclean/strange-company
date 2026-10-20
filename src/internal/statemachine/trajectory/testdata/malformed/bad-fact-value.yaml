@@ -1,0 +1,7 @@
+# expect: TRAJ_BAD_VALUE
+trajectory: bad-fact-value
+events:
+  - {event: task_created, actor: hermes, at: "2026-10-13T12:00:00Z", facts: {G_REPOSITORY_MANAGED: 3}}
+expected_states: [SPECIFIED]
+expected_transitions: [T001]
+expected_reasons: [""]

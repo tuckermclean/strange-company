@@ -1,0 +1,5 @@
+# Invalid fixture (29-AC-2): a human-only transition targets IMPLEMENTING
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_HUMAN_TARGETS_EXECUTION
+ops:
+  - {op: replace, path: spec/transitions/id=T084/to, value: IMPLEMENTING}

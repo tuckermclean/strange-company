@@ -1,0 +1,5 @@
+# Invalid fixture (29-AC-2, D7c): activeExecution verification on a state that has no phase event (GREEN_VERIFIED)
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_OUTCOME_INCOMPLETE
+ops:
+  - {op: replace, path: spec/states/name=GREEN_VERIFIED/activeExecution, value: verification}

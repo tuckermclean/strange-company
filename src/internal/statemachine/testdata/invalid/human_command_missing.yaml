@@ -1,0 +1,5 @@
+# Invalid fixture (29-AC-2): a human-only transition carries humanCommand (except pr_closed_by_human)
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_HUMAN_COMMAND_MISSING
+ops:
+  - {op: remove, path: spec/transitions/id=T083/humanCommand}

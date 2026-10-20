@@ -1,0 +1,6 @@
+# Invalid fixture (29-AC-2): an effect declared in the table but unknown to the effect registry is a load error
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_EFFECT_UNKNOWN
+ops:
+  - {op: add, path: spec/effects/E_UNREGISTERED_EFFECT, value: Declared in the table but implemented nowhere in the library.}
+  - {op: add, path: spec/transitions/id=T001/effects, value: E_UNREGISTERED_EFFECT}

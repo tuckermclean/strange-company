@@ -1,0 +1,5 @@
+# Invalid fixture (29-AC-2): the stall_timeout transition goes to the escalateTo state
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_STALL_NO_TRANSITION
+ops:
+  - {op: replace, path: spec/states/name=RED_VERIFIED/stall/escalateTo, value: BLOCKED}

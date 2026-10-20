@@ -1,0 +1,5 @@
+# Invalid fixture (29-AC-2): every guard used is declared in the guards catalogue
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_GUARD_UNDECLARED
+ops:
+  - {op: add, path: spec/transitions/id=T010/guards, value: G_MADE_UP}

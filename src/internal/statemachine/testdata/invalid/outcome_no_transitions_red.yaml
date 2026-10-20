@@ -1,0 +1,9 @@
+# Invalid fixture (29-AC-2, D6): the red verification state has no classification transitions (their events are changed to escalate so the graph stays intact)
+# Base: contracts/state-machine.yaml; valid except for the one invariant named here.
+code: SM_OUTCOME_INCOMPLETE
+mode: test-first
+ops:
+  - {op: replace, path: spec/transitions/id=T020/event, value: escalate}
+  - {op: replace, path: spec/transitions/id=T021/event, value: escalate}
+  - {op: replace, path: spec/transitions/id=T022/event, value: escalate}
+  - {op: replace, path: spec/transitions/id=T023/event, value: escalate}

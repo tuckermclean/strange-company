@@ -1,0 +1,14 @@
+# An already-passing test produces the ALREADY_SATISFIED investigation state
+trajectory: tdd-already-satisfied
+title: "An already-passing test produces the ALREADY_SATISFIED investigation state"
+refs: ["plan 21 22.2 tdd-already-satisfied", "SPEC 106 item 3"]
+live: {"fake_scenarios": ["fake-already-satisfied"], "assert": ["SCTaskNeedsHuman{reason=already_satisfied} posted"]}
+events:
+  - {event: "task_created", actor: "hermes", at: "2026-10-13T12:01:00Z"}
+  - {event: "dispatch_tester", actor: "hermes", role: "tester", at: "2026-10-13T12:02:00Z"}
+  - {event: "tester_result_accepted", actor: "runner", at: "2026-10-13T12:03:00Z", pipeline: 401}
+  - {event: "red_classified", actor: "ci", at: "2026-10-13T12:04:00Z", facts: {G_VERIFICATION_OUTCOME: "already_satisfied"}}
+  - {event: "dispatch_implementer", actor: "hermes", role: "implementer", at: "2026-10-13T12:05:00Z"}
+expected_states: ["SPECIFIED", "TEST_AUTHORING", "RED_VERIFYING", "ALREADY_SATISFIED", "ALREADY_SATISFIED"]
+expected_transitions: ["T001", "T010", "T014", "T022", "rejected"]
+expected_reasons: ["", "", "", "already_satisfied", "GATE_NOT_SATISFIED"]
