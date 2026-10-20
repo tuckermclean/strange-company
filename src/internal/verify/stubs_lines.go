@@ -63,7 +63,7 @@ func pythonLang() *lineLang {
 		declRe:  regexp.MustCompile(`^def\s+(` + reID + `)\s*()\(([^()]*)\)\s*(?:->\s*([^:]+?)\s*)?:(.*)$`),
 		zeroRe:  regexp.MustCompile(`^(?:return(?:\s+(?:None|0|0\.0|False|""|''|\[\]|\{\}|\(\)))?|pass|\.\.\.)$`),
 		panicRe: `^raise\s+NotImplementedError\(\s*["']%s["']\s*\)$`,
-		typ:     func(s string) bool { return simpleType(s, "_.[], |") },
+		typ:     func(s string) bool { return pySpacesOK(s) && simpleType(s, "_.[], |") },
 		star:    regexp.MustCompile(`^from\s+\S+\s+import\s+\*`),
 		typeOne: func(string) bool { return false },
 		member:  func(string) bool { return false },
@@ -248,6 +248,27 @@ func simpleType(s, extra string) bool {
 		}
 	}
 	return depth == 0
+}
+
+// pySpacesOK reports whether the spaces of a Python annotation sit only around `|` and after `,` (decision D13 N3):
+// `int | None` and `dict[str, int]` are simple types, `x if y else z`, `x in y` and `a .b` are not.
+func pySpacesOK(s string) bool {
+	s = strings.TrimSpace(s)
+	for i := 0; i < len(s); i++ {
+		if s[i] != ' ' && s[i] != '\t' {
+			continue
+		}
+		j := i
+		for j < len(s) && (s[j] == ' ' || s[j] == '\t') {
+			j++
+		}
+		// TrimSpace leaves no space at either end, so 0 < i and j < len(s).
+		if before, after := s[i-1], s[j]; before != '|' && before != ',' && after != '|' {
+			return false
+		}
+		i = j
+	}
+	return true
 }
 
 // splitTop splits s at the separator bytes that are outside <...> and [...].
@@ -526,6 +547,16 @@ func (a *lineAnalysis) fresh(name string) bool {
 	return true
 }
 
+// typeNameRe extracts the name a pure type declaration line binds (the line already matched typeOne or typeBlk).
+var typeNameRe = regexp.MustCompile(`^(?:(?:export|pub(?:\(crate\))?)\s+)?(?:struct|enum|interface|type)\s+(` + reTSID + `)`)
+
+// freshType applies the stub-name freshness rule to the name a pure type declaration binds (decision D13 N1): it is
+// new to the file and no star import or re-export could already provide it.
+func (a *lineAnalysis) freshType(t string) bool {
+	m := typeNameRe.FindStringSubmatch(strings.TrimSpace(t))
+	return m != nil && !a.star && a.fresh(m[1])
+}
+
 func (a *lineAnalysis) isComment(t string) bool {
 	return strings.HasPrefix(strings.TrimSpace(t), a.lang.comment)
 }
@@ -571,7 +602,7 @@ func (a *lineAnalysis) unit(k, i, j int, ctx bool) int {
 		return k + 1
 	}
 	if a.lang.typeOne(t) {
-		if ctx {
+		if ctx && a.freshType(t) {
 			a.flush()
 		} else {
 			a.bad(k)
@@ -591,7 +622,7 @@ func (a *lineAnalysis) unit(k, i, j int, ctx bool) int {
 
 // typeBlock consumes a block type declaration: member lines (blank and comment lines allowed) and a closing `}`.
 func (a *lineAnalysis) typeBlock(k, j int, ctx bool) int {
-	good := ctx
+	good := ctx && a.freshType(strings.TrimRight(a.head[k], " \t"))
 	c := k + 1
 	for ; c < j; c++ {
 		t := strings.TrimRight(a.head[c], " \t")
@@ -635,16 +666,19 @@ func (a *lineAnalysis) stub(k, i, j int, ctx bool, m []string) int {
 	case rest != "":
 		shape = a.shape([]string{rest}, false, false)
 	case a.lang.brace:
+		// The body runs to the closing `}` within the added run; without one (the declaration closes its run or
+		// the file) the stub is open and its shape stays unknown (decision D13 B1). k < j, so k+1 <= c <= j.
 		c := k + 1
 		for c < j && strings.TrimRight(a.head[c], " \t") != "}" {
 			c++
 		}
+		body := a.head[k+1 : c]
 		if c < j {
-			shape = a.shape(a.head[k+1:c], true, true)
+			shape = a.shape(body, true, true)
 		} else {
 			c = j - 1
 		}
-		end, bodyLines = c, max(1, nonBlank(a.head[k+1:c]))
+		end, bodyLines = c, max(1, nonBlank(body))
 	default: // Python: the body is the following indented, blank and comment lines
 		c := k + 1
 		for c < j && (strings.TrimSpace(a.head[c]) == "" || a.head[c][0] == ' ' || a.head[c][0] == '\t') {

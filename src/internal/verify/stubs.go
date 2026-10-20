@@ -61,7 +61,18 @@ var stubLanguages = map[string]bool{"go": true, "python": true, "typescript": tr
 // languages through an allowlist of canonical line layouts (stubs_lines.go); anything else is a malformed fact.
 // A file that cannot be analysed (parse error, language without a stub form, a line terminator other than \n or
 // \r\n) is an error, never an empty result (22-R-3). Facts are ordered by head line.
-func AnalyzeStubs(p StubPolicy, f StubFile) ([]StubFact, error) {
+func AnalyzeStubs(p StubPolicy, f StubFile) (facts []StubFact, err error) {
+	// The analysis never crashes on agent-controlled input (decision D13 B1): an internal fault fails closed as an
+	// error, never a partial result.
+	defer func() {
+		if r := recover(); r != nil {
+			facts, err = nil, fmt.Errorf("%s: stub analysis fault: %v", f.Path, r)
+		}
+	}()
+	return analyzeStubs(p, f)
+}
+
+func analyzeStubs(p StubPolicy, f StubFile) ([]StubFact, error) {
 	if !stubLanguages[f.Language] {
 		return nil, fmt.Errorf("%s: language %q has no stub form", f.Path, f.Language)
 	}
@@ -224,7 +235,7 @@ func analyzeGo(p StubPolicy, f StubFile) ([]lineFact, bool, error) {
 			h.shape != "unknown" && h.bodyLines <= p.MaxAddedLinesPerStub
 		facts = append(facts, lineFact{line: h.declLine, f: StubFact{Path: f.Path, Symbol: h.symbol, Marker: marker, Shape: h.shape, WellFormed: wf}})
 	}
-	residual, err := goResidual(f, head, headLines, added)
+	residual, err := goResidual(p, f, head, headLines, added)
 	if err != nil {
 		return nil, false, err
 	}
