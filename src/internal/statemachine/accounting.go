@@ -33,8 +33,6 @@ type RetryPolicy struct {
 	HumanGrant             int // humanGrant (3)
 	// ResolutionApproval is spec.testSpecConflict.resolutionApproval: "human" (the default, also when empty) or
 	// "adjudicator" (a decisive test_invalid adjudication itself sets test_change_approved; D14).
-	//
-	// SC-STUB(F05 29-AC-11)
 	ResolutionApproval string
 }
 
@@ -63,8 +61,6 @@ type StepInput struct {
 	FailureSignature string
 	// Verdict is the adjudicator verdict of an adjudication_recorded event: test_valid, test_invalid or
 	// spec_ambiguous (plan 21 section 14.6; D14).
-	//
-	// SC-STUB(F05 29-AC-11)
 	Verdict string
 }
 
@@ -101,6 +97,57 @@ type Task struct {
 	History          []Step
 	NeedsHumanReason string
 	BlockedReason    string
+	// Conflict is the conflict record Advance maintains (D14): E_RECORD_CONFLICT opens it, E_RECORD_ADJUDICATION
+	// records the verdicts, E_APPROVE_TEST_CHANGE sets the human approval, E_REJECT_CONFLICT closes it, and it is
+	// dropped when the task leaves TEST_SPEC_CONFLICT (a held state is not leaving).
+	Conflict ConflictRecord
+	// StrengthenState is the state in which a human strengthen_tests decision (E_AUTHORIZE_STRENGTHEN, T016) was
+	// recorded, "" when none is in force. It answers G_STRENGTHEN_AUTHORIZED while the task is in that state (the
+	// stay or generation of the decision); a transition to another state that is not a held one spends it (D14).
+	StrengthenState string
+}
+
+// ConflictRecord is the open test-spec conflict of a task (plan 29 section 14.6). Verdicts are the adjudicator
+// verdicts in the order recorded, as given (an unknown verdict is kept, it never approves and counts as a
+// disagreement). HumanApproved is test_change_approved set by a human (T083). The approval and rejection the guards
+// need are derived from it under the policy, see Task.conflictOutcome.
+type ConflictRecord struct {
+	Open          bool
+	Verdicts      []string
+	HumanApproved bool
+}
+
+// Adjudicator verdicts (plan 21 section 14.6).
+const (
+	verdictValid     = "test_valid"
+	verdictInvalid   = "test_invalid"
+	verdictAmbiguous = "spec_ambiguous"
+)
+
+// conflictOutcome derives, under the policy, whether test_change_approved holds, whether the adjudication found
+// the test valid (G_CONFLICT_REJECTED) and whether a decisive test_invalid awaits the human. The first adjudication
+// is decisive; a later one can only tighten test_invalid to test_valid; adjudications that disagree force human
+// approval whatever the policy says (plan 29 section 14.6, TDD-20). Nothing holds without an open conflict.
+func (t Task) conflictOutcome(p RetryPolicy) (approved, rejected, awaiting bool) {
+	c := t.Conflict
+	if !c.Open {
+		return false, false, false
+	}
+	effective, distinct := "", map[string]bool{}
+	for i, v := range c.Verdicts {
+		distinct[v] = true
+		switch {
+		case i == 0:
+			effective = v
+		case effective == verdictInvalid && v == verdictValid:
+			effective = verdictValid
+		}
+	}
+	disputed := len(distinct) > 1
+	approved = c.HumanApproved || (p.ResolutionApproval == "adjudicator" && effective == verdictInvalid && !disputed)
+	rejected = effective == verdictValid
+	awaiting = effective == verdictInvalid && !approved
+	return approved, rejected, awaiting
 }
 
 // Advance error codes.
@@ -160,7 +207,10 @@ type accountingFacts struct {
 
 // AccountingFacts answers G_ATTEMPTS_REMAIN, G_NOT_IDENTICAL_REPLAY, G_INFRA_REQUEUE_ALLOWED, G_REVIEWS_REMAIN
 // and G_AUXILIARY_REMAIN (always known) from the task, the policy and the step input, answers G_FAILURE_CODE
-// from in.FailureCode when that is set, and delegates every other guard to base (a nil base knows nothing).
+// from in.FailureCode when that is set, and answers the task-state guards of D14 from the task alone, whatever the
+// base says: G_NO_IMPLEMENTER_DISPATCHED_IN_GENERATION (no implementer execution in the current generation),
+// G_TEST_CHANGE_APPROVED and G_CONFLICT_REJECTED (the conflict record) and G_STRENGTHEN_AUTHORIZED (the strengthen
+// decision of the current episode). Every other guard goes to base (a nil base knows nothing).
 func AccountingFacts(t Task, p RetryPolicy, in StepInput, base Facts) Facts {
 	return &accountingFacts{t: t, p: p, in: in, base: base, bools: map[string]boolAnswer{}, values: map[string]valueAnswer{}}
 }
@@ -191,6 +241,21 @@ func (f *accountingFacts) Bool(ev Event, guard string) (bool, bool) {
 		return a.AuxiliaryUsed < f.p.MaxAuxiliaryExecutions, true
 	case "G_NOT_IDENTICAL_REPLAY":
 		return !f.identicalReplay(ev), true
+	case "G_NO_IMPLEMENTER_DISPATCHED_IN_GENERATION":
+		for _, e := range f.t.Executions {
+			if e.Role == "implementer" && e.Generation == f.t.Snapshot.Generation {
+				return false, true
+			}
+		}
+		return true, true
+	case "G_TEST_CHANGE_APPROVED":
+		approved, _, _ := f.t.conflictOutcome(f.p)
+		return approved, true
+	case "G_CONFLICT_REJECTED":
+		_, rejected, _ := f.t.conflictOutcome(f.p)
+		return rejected, true
+	case "G_STRENGTHEN_AUTHORIZED":
+		return f.t.StrengthenState != "" && f.t.StrengthenState == f.t.Snapshot.State, true
 	case "G_INFRA_REQUEUE_ALLOWED":
 		// Evaluated after counting the current failure (plan 29 section 16.6).
 		timeout := f.failureCode(ev) == "TIMED_OUT"
@@ -481,6 +546,14 @@ func (c codeFacts) Value(_ Event, g string) (string, bool) {
 	return c.code, g == "G_FAILURE_CODE" && c.code != ""
 }
 
+// failureCodeFacts is codeFacts for execution_failed: G_FAILURE_CODE is known and equal to the recorded code.
+type failureCodeFacts struct{ code string }
+
+func (failureCodeFacts) Bool(Event, string) (bool, bool) { return false, false }
+func (c failureCodeFacts) Value(_ Event, g string) (string, bool) {
+	return c.code, g == "G_FAILURE_CODE"
+}
+
 // ---- Advance
 
 func cloneAttempts(a Attempts) Attempts {
@@ -515,6 +588,7 @@ func cloneApplied(a Applied) Applied {
 func cloneTask(t Task) Task {
 	t.Snapshot.Attempts = cloneAttempts(t.Snapshot.Attempts)
 	t.Executions = slices.Clone(t.Executions)
+	t.Conflict.Verdicts = slices.Clone(t.Conflict.Verdicts)
 	if t.History != nil {
 		h := make([]Step, len(t.History))
 		for i, s := range t.History {
@@ -592,7 +666,16 @@ func (m *Machine) transitionByID(id string) *transition {
 // rule of that shadowing check: a guard those facts cannot answer counts as passing only when the transition
 // being advanced lists the same guard reference (the decision then vouches for it), else the candidate does not
 // pass. A caller that fires with Fire and then calls Advance must set StepInput.FailureCode to the code the
-// decision used, for an execution_failed event; Apply does so.
+// decision used, for an execution_failed event; Apply does so. For an execution_failed event the failure code is
+// known and equal to StepInput.FailureCode (an empty code satisfies no code guard; D13 b), and a dispatch event
+// with a non-empty Event.Role must map to the event and be dispatchable in the state (D13 a). The merit keys of
+// an execution_failed decision come from the recorded role of the failed execution, so a Runner uses Apply, not
+// Fire followed by Advance (D13 c).
+//
+// Advance maintains the conflict record and the strengthen decision of the task (D14): see Task.Conflict and
+// Task.StrengthenState. A verdict that is not test_valid, test_invalid or spec_ambiguous (also an empty one) is
+// recorded as given; it never approves and never rejects (fail closed), and disagrees with every other verdict.
+// adjudication_recorded ends the running (adjudicator) execution.
 func Advance(m *Machine, t Task, ev Event, d Decision, in StepInput, p RetryPolicy) (Task, error) {
 	if m == nil {
 		return adverr(FireMachineNil, "the machine is nil")
@@ -616,6 +699,10 @@ func Advance(m *Machine, t Task, ev Event, d Decision, in StepInput, p RetryPoli
 	fromSt := m.findState(t.Snapshot.State)
 	if !has(m.actors, ev.Actor) || !has(tr.actors, ev.Actor) {
 		return adverr(AdvanceNotApplied, "actor %q may not fire %s", ev.Actor, a.TransitionID)
+	}
+	// A dispatch repeats Fire's role check (D13 a): a non-empty Event.Role maps to the event and is dispatchable here.
+	if dispatchEvents[ev.Name] && ev.Role != "" && (fromSt == nil || roleEvent(ev.Role, t.Snapshot.State, t.Snapshot.Mode) != ev.Name || !has(fromSt.dispatchable, ev.Role)) {
+		return adverr(AdvanceNotApplied, "role %q may not be dispatched by %s in %s", ev.Role, ev.Name, t.Snapshot.State)
 	}
 	// Re-derive the decision from the table (D11 B2): the target, effects, failure class and reason code are the
 	// transition's, and the deltas are the recomputed ones under the failure code the step carries.
@@ -711,8 +798,37 @@ func Advance(m *Machine, t Task, ev Event, d Decision, in StepInput, p RetryPoli
 		n.BlockedReason = ""
 	}
 	m.recordExecutions(&n, tr, ev, a, in)
+	updateTaskState(&n, tr, a, in, p)
 	n.History = append(n.History, Step{Event: ev, Input: cloneInput(in), Applied: cloneApplied(*a)})
 	return n, nil
+}
+
+// updateTaskState keeps the conflict record and the strengthen decision (D14) in step with the applied transition.
+func updateTaskState(n *Task, tr *transition, a *Applied, in StepInput, p RetryPolicy) {
+	// leaving TEST_SPEC_CONFLICT ends the conflict; a held state is not leaving (the task resumes into it)
+	if a.To != "TEST_SPEC_CONFLICT" && !isHeld(a.To) {
+		n.Conflict = ConflictRecord{}
+	}
+	if n.StrengthenState != "" && n.StrengthenState != a.To && !isHeld(a.To) {
+		n.StrengthenState = ""
+	}
+	if hasEffect(tr.effects, "E_RECORD_CONFLICT") {
+		n.Conflict = ConflictRecord{Open: true}
+	}
+	if hasEffect(tr.effects, "E_RECORD_ADJUDICATION") {
+		n.Conflict.Open = true // an adjudication without a recorded conflict opens one: the verdict is never lost
+		n.Conflict.Verdicts = append(n.Conflict.Verdicts, in.Verdict)
+	}
+	if hasEffect(tr.effects, "E_APPROVE_TEST_CHANGE") {
+		n.Conflict.Open, n.Conflict.HumanApproved = true, true
+	}
+	if hasEffect(tr.effects, "E_REJECT_CONFLICT") {
+		n.Conflict = ConflictRecord{}
+	}
+	if hasEffect(tr.effects, "E_AUTHORIZE_STRENGTHEN") {
+		n.StrengthenState = a.To
+	}
+	_, _, n.Snapshot.ConflictAwaitingApproval = n.conflictOutcome(p)
 }
 
 // guardAnswer evaluates one guard reference like guardHolds and also says whether the facts knew it.
@@ -734,7 +850,11 @@ func guardAnswer(ref string, ev Event, facts Facts) (holds, known bool) {
 
 // recheckGuards is the guard part of Advance (D12 B2): see the Advance comment.
 func (m *Machine) recheckGuards(tr *transition, t Task, ev Event, in StepInput, p RetryPolicy, from string) error {
-	facts := AccountingFacts(t, p, in, codeFacts{in.FailureCode})
+	var base Facts = codeFacts{in.FailureCode}
+	if ev.Name == "execution_failed" {
+		base = failureCodeFacts{in.FailureCode} // known whatever it is, an empty code satisfies no code guard (D13 b)
+	}
+	facts := AccountingFacts(t, p, in, base)
 	for _, ref := range tr.guards {
 		if idOf(ref) == "G_ACTOR_AUTHORIZED" {
 			continue
@@ -773,7 +893,7 @@ func (m *Machine) recordExecutions(n *Task, tr *transition, ev Event, a *Applied
 		k := m.attemptCounter(a.From)
 		return e.Counted && k != "" && a.Deltas[k] < 0
 	}
-	if executionEnds[ev.Name] {
+	if executionEnds[ev.Name] || ev.Name == "adjudication_recorded" {
 		if i := lastExecution(n.Executions, running); i >= 0 {
 			e := &n.Executions[i]
 			switch ev.Name {

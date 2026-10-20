@@ -15,3 +15,12 @@ state-machine-check:
 
 state-machine-coverage:
 	@cd src && go test -count=1 ./internal/statemachine -run '^TestTransitionCoverage_29AC3$$' -v
+
+# Library trajectories (plan 21 section 22.3, 21-AC-20): replays every test/e2e/tdd/*.yaml against
+# contracts/state-machine.yaml with the table-driven fake facts and validates each serialized task record against
+# contracts/task.schema.yaml. The tests are the TestTrajectories_* tests of ./internal/statemachine, a subset of
+# `make test`, so the target is not part of `make verify`.
+.PHONY: test-tdd-library
+
+test-tdd-library:
+	@cd src && go test -count=1 ./internal/statemachine -run '^TestTrajectories_' -v
