@@ -312,11 +312,13 @@ func TestRandomWalks_29AC4(t *testing.T) {
 		t.Fatalf("violations; reproduce with `go test -run TestRandomWalks -seed N`:\n%s", strings.Join(violations, "\n"))
 	}
 	// The walks must be non-vacuous when the whole range ran: they enter IMPLEMENTING (test-first), sit in the
-	// held states and try to leave them as non-human actors, and the accounting refuses dispatches.
+	// held states and try to leave them as non-human actors, and (test-first) the accounting refuses dispatches.
+	// Verification-first attempt-refusal non-vacuity is asserted by TestRandomWalksSteered_29AC4 (D16): D14 derives
+	// G_STRENGTHEN_AUTHORIZED from the task, so those refusals are unreachable in unsteered walks.
 	if hi-lo+1 >= 1000 {
 		for _, mode := range modes {
 			s := stats[mode]
-			if s.applied == 0 || s.held == 0 || s.heldNonHuman == 0 || s.attemptRefusals == 0 || (mode == "test-first" && s.implementing == 0) {
+			if s.applied == 0 || s.held == 0 || s.heldNonHuman == 0 || (mode == "test-first" && (s.attemptRefusals == 0 || s.implementing == 0)) {
 				t.Errorf("%s: the walks are vacuous: %+v", mode, *s)
 			}
 		}
