@@ -4,36 +4,6 @@ package verify
 
 import "strange.company/sc/internal/policy"
 
-// SC-STUB(F06 22-AC-5)
-func LoadAdapters(verification map[string]any) (map[string]Adapter, error) {
-	return nil, nil
-}
-
-// SC-STUB(F06 22-AC-5)
-func NormalizeReport(a Adapter, suite string, report []byte) (Report, error) {
-	return Report{}, nil
-}
-
-// SC-STUB(F06 22-AC-4)
-func LoadStubPolicy(verification map[string]any) (StubPolicy, error) {
-	return StubPolicy{}, nil
-}
-
-// SC-STUB(F06 22-AC-4)
-func AnalyzeStubs(p StubPolicy, f StubFile) ([]StubFact, error) {
-	return nil, nil
-}
-
-// SC-STUB(F06 22-AC-4 22-AC-5 22-AC-6 22-AC-7)
-func ClassifyRed(in RedInput) (RedClassification, error) {
-	return RedClassification{}, nil
-}
-
-// SC-STUB(F06 22-AC-4)
-func (e *NotClassifiedError) Error() string {
-	return ""
-}
-
 // Adapter is one entry of spec.adapters in the platform verification policy (plan 22 section 9.1).
 type Adapter struct {
 	Name                 string
