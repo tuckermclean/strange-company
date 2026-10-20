@@ -26,7 +26,6 @@
     "head_present": [
       "unit::example.com/x/internal/httpx.TestExisting",
       "unit::example.com/x/internal/httpx.TestNew",
-      "unit::example.com/x/internal/httpx.TestBroken",
       "unit::example.com/x/internal/httpx.TestBroken"
     ]
   },

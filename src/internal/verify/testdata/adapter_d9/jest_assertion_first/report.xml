@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<testsuites>
+<testsuite name="s" tests="1">
+<testcase classname="redirect" name="calls helper" file="src/redirect.test.js" time="0.001"><failure message="expect(received).toBe(expected)&#10;&#10;Expected: 1&#10;Received: undefined&#10;TypeError: x is not a function">Error: expect(received).toBe(expected)
+    at Object.&lt;anonymous&gt;</failure></testcase>
+</testsuite>
+</testsuites>

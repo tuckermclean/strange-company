@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<testsuites>
+<testsuite name="s" tests="1">
+<testcase classname="tests.test_x" name="test_a" file="tests/test_x.py" time="0.001"><failure message="AssertionError: assert 1 == 2&#10;NameError: name 'x' is not defined" type="AssertionError"></failure></testcase>
+</testsuite>
+</testsuites>
