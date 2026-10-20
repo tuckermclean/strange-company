@@ -14,7 +14,7 @@ events:
   - {event: "adjudication_recorded", actor: "runner", at: "2026-10-13T12:08:00Z", reason: "adjudication test_valid", live: {verdict: "test_valid"}}
   - {event: "dispatch_auxiliary", actor: "hermes", role: "reviewer", at: "2026-10-13T12:09:00Z", live: {purpose: "adjudication"}}
   - {event: "adjudication_recorded", actor: "runner", at: "2026-10-13T12:10:00Z", reason: "adjudication test_invalid", live: {verdict: "test_invalid"}}
-  - {event: "dispatch_tester", actor: "hermes", role: "tester", at: "2026-10-13T12:11:00Z", facts: {G_TEST_CHANGE_APPROVED: false}}
+  - {event: "dispatch_tester", actor: "hermes", role: "tester", at: "2026-10-13T12:11:00Z"}
 expected_states: ["SPECIFIED", "TEST_AUTHORING", "RED_VERIFYING", "RED_VERIFIED", "IMPLEMENTING", "TEST_SPEC_CONFLICT", "TEST_SPEC_CONFLICT", "TEST_SPEC_CONFLICT", "TEST_SPEC_CONFLICT", "TEST_SPEC_CONFLICT", "TEST_SPEC_CONFLICT"]
 expected_transitions: ["T001", "T010", "T014", "T020", "T030", "T080", "T090", "T082", "T090", "T082", "rejected"]
 expected_reasons: ["", "", "", "", "", "", "", "", "", "", "GATE_NOT_SATISFIED"]

@@ -31,6 +31,11 @@ type RetryPolicy struct {
 	MaxConsecutiveTimeouts int // infrastructure.maxConsecutiveTimeouts (2)
 	MaxPolicyViolations    int // policy.maxViolations (0)
 	HumanGrant             int // humanGrant (3)
+	// ResolutionApproval is spec.testSpecConflict.resolutionApproval: "human" (the default, also when empty) or
+	// "adjudicator" (a decisive test_invalid adjudication itself sets test_change_approved; D14).
+	//
+	// SC-STUB(F05 29-AC-11)
+	ResolutionApproval string
 }
 
 // DispatchSpec is what identifies a dispatch (plan 29 section 16.4): role, harness, resolved model id, profile,
@@ -56,6 +61,11 @@ type StepInput struct {
 	Dispatch         DispatchSpec
 	FailureCode      string
 	FailureSignature string
+	// Verdict is the adjudicator verdict of an adjudication_recorded event: test_valid, test_invalid or
+	// spec_ambiguous (plan 21 section 14.6; D14).
+	//
+	// SC-STUB(F05 29-AC-11)
+	Verdict string
 }
 
 // Execution is one execution of the task as the accounting sees it. Outcome is "" while running, "succeeded"

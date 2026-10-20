@@ -347,6 +347,9 @@ func trajectoryReason(d Decision, task Task) string {
 func trajectoryInput(tr trajectory.Trajectory, i int) StepInput {
 	e := tr.Events[i]
 	in := StepInput{FailureCode: e.FailureCode, FailureSignature: e.FailureSignature}
+	if v, ok := e.Live["verdict"].(string); ok && e.Event == "adjudication_recorded" {
+		in.Verdict = v // the adjudicator verdict reaches the library as StepInput.Verdict (D14)
+	}
 	switch d := e.Dispatch; {
 	case d != nil:
 		in.Dispatch = DispatchSpec{Role: e.Role, Harness: d.Harness, Model: d.Model, Profile: d.Profile, StartCommit: d.StartCommit, ACVersion: d.ACVersion,
@@ -668,6 +671,29 @@ func TestTrajectories_BypassAssertions_29AC11(t *testing.T) {
 			t.Errorf("%s: the human accept_external_commit must follow and fire T072 into GREEN_VERIFYING", tr.Name)
 		}
 	})
+}
+
+// 29-AC-11 (D14): the task-state guards are derived by the library from the task, so no trajectory event may
+// supply them as a fake fact (with or without a role prefix).
+func TestTrajectories_NoTaskStateFacts_29AC11_D14(t *testing.T) {
+	all, err := trajectory.Load(trajectoryDir(t))
+	if err != nil || len(all) == 0 {
+		t.Fatalf("Load(test/e2e/tdd) = %d trajectories, %v", len(all), err)
+	}
+	derived := []string{"G_NO_IMPLEMENTER_DISPATCHED_IN_GENERATION", "G_TEST_CHANGE_APPROVED", "G_STRENGTHEN_AUTHORIZED", "G_CONFLICT_REJECTED"}
+	for _, tr := range all {
+		for i, e := range tr.Events {
+			for k := range e.Facts {
+				_, g, found := strings.Cut(k, "/")
+				if !found {
+					g = k
+				}
+				if slices.Contains(derived, g) {
+					t.Errorf("%s event %d (%s): the fact %s is derived by the library (D14), the file must not supply it", tr.Name, i+1, e.Event, k)
+				}
+			}
+		}
+	}
 }
 
 // 21-AC-20: `make test-tdd-library` exists and runs the trajectory tests of this package.

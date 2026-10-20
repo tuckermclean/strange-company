@@ -10,9 +10,9 @@ events:
   - {event: "red_classified", actor: "ci", at: "2026-10-13T12:04:00Z", facts: {G_VERIFICATION_OUTCOME: "red_valid"}}
   - {event: "dispatch_implementer", actor: "hermes", role: "implementer", at: "2026-10-13T12:05:00Z"}
   - {event: "execution_blocked", actor: "runner", at: "2026-10-13T12:06:00Z"}
-  - {event: "dispatch_tester", actor: "hermes", role: "tester", at: "2026-10-13T12:07:00Z", facts: {G_STRENGTHEN_AUTHORIZED: false, G_NO_IMPLEMENTER_DISPATCHED_IN_GENERATION: false}}
+  - {event: "dispatch_tester", actor: "hermes", role: "tester", at: "2026-10-13T12:07:00Z"}
   - {event: "strengthen_tests", actor: "human", at: "2026-10-13T12:08:00Z"}
-  - {event: "dispatch_tester", actor: "hermes", role: "tester", at: "2026-10-13T12:09:00Z", facts: {G_NO_IMPLEMENTER_DISPATCHED_IN_GENERATION: false}}
+  - {event: "dispatch_tester", actor: "hermes", role: "tester", at: "2026-10-13T12:09:00Z"}
 expected_states: ["SPECIFIED", "TEST_AUTHORING", "RED_VERIFYING", "RED_VERIFIED", "IMPLEMENTING", "RED_VERIFIED", "RED_VERIFIED", "RED_VERIFIED", "RED_VERIFIED"]
 expected_transitions: ["T001", "T010", "T014", "T020", "T030", "T107", "rejected", "T016", "rejected"]
 expected_reasons: ["", "", "", "", "", "", "GATE_NOT_SATISFIED", "", "GATE_NOT_SATISFIED"]
