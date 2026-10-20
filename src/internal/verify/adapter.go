@@ -13,9 +13,6 @@ import (
 	"strings"
 )
 
-// stubPanicMessage is the message every panic stub carries (platform stubPolicy.panicMessage, plan 22 14.2).
-const stubPanicMessage = "SC-STUB-NOT-IMPLEMENTED"
-
 // Normalized per-test statuses (contracts/red-result.schema.yaml TestStatus).
 const (
 	statusPassed          = "passed"
@@ -38,13 +35,17 @@ func LoadAdapters(verification map[string]any) (map[string]Adapter, error) {
 	if !ok || len(raw) == 0 {
 		return nil, errors.New("verification policy has no spec.adapters")
 	}
+	panicMsg := ""
+	if sp, ok := pathMap(verification, "spec", "stubPolicy"); ok {
+		panicMsg, _ = sp["panicMessage"].(string)
+	}
 	out := make(map[string]Adapter, len(raw))
 	for name, v := range raw {
 		m, ok := v.(map[string]any)
 		if !ok {
 			return nil, fmt.Errorf("adapter %q: not a mapping", name)
 		}
-		a := Adapter{Name: name}
+		a := Adapter{Name: name, PanicMessage: panicMsg}
 		a.Format, _ = m["format"].(string)
 		a.IDTemplate, _ = m["idTemplate"].(string)
 		if a.Format == "" || a.IDTemplate == "" {
@@ -262,6 +263,7 @@ func normalizeGoJSON(c *compiledAdapter, suite string, report []byte) (Report, e
 	var order []string
 	pkgAction := map[string]string{}
 	pkgFailedTests := map[string]bool{}
+	pkgSeen := map[string]bool{}
 	var rep Report
 	events := 0
 	for {
@@ -275,6 +277,9 @@ func normalizeGoJSON(c *compiledAdapter, suite string, report []byte) (Report, e
 			return Report{}, errors.New("go test -json report: event without Action")
 		}
 		events++
+		if ev.Package != "" {
+			pkgSeen[ev.Package] = true
+		}
 		line := strings.TrimRight(ev.Output, "\r\n")
 		if ev.Output != "" {
 			if anyMatch(c.buildRe, line) {
@@ -314,6 +319,13 @@ func normalizeGoJSON(c *compiledAdapter, suite string, report []byte) (Report, e
 		// A package that failed without a failing test and without a recorded timeout broke before or between
 		// tests (init panic, TestMain exit, link error): a run-level error, never a pass (22-R-3).
 		if act == "fail" && !pkgFailedTests[pkg] && !rep.TimedOut {
+			rep.BuildFailed = true
+		}
+	}
+	// A package that started but never reported pass, fail or skip (the go command died, a build failure lost its
+	// package result) is a run-level error, never clean (22-R-3).
+	for pkg := range pkgSeen {
+		if _, ok := pkgAction[pkg]; !ok {
 			rep.BuildFailed = true
 		}
 	}
@@ -387,7 +399,7 @@ func classifyGoFailure(c *compiledAdapter, t *goTest, r *TestResult, failedChild
 		r.Message = truncRunes(evidence[0], maxMessageRunes)
 	}
 	switch {
-	case strings.Contains(joined, stubPanicMessage):
+	case c.PanicMessage != "" && strings.Contains(joined, c.PanicMessage):
 		r.Status, r.FailureType = statusStub, "panic"
 	case anyMatch(c.timeoutRe, evidence...):
 		r.Status, r.FailureType = statusFailedError, "timeout"
@@ -471,7 +483,15 @@ func normalizeJUnit(c *compiledAdapter, suite string, report []byte) (Report, er
 	return rep, nil
 }
 
-func collapse(s string) string { return strings.Join(strings.Fields(s), " ") }
+// firstLine returns the first non-blank line of s, trimmed.
+func firstLine(s string) string {
+	for _, l := range strings.Split(s, "\n") {
+		if t := strings.TrimSpace(l); t != "" {
+			return t
+		}
+	}
+	return ""
+}
 
 func junitResult(c *compiledAdapter, suite string, tc junitCase, rep *Report) error {
 	problems := make([]junitProblem, 0, len(tc.Failure)+len(tc.Error))
@@ -518,21 +538,21 @@ func junitProblemStatus(c *compiledAdapter, p junitProblem, kind string, rep *Re
 	if typ == "" {
 		typ = kind
 	}
-	msg := collapse(p.Message)
+	// Classification input is the failure type and the first message line (plan 22 section 14.1 step 5). One
+	// framework convention extends "first line": a Rust panic prints its location on the first line ("thread 'x'
+	// panicked at src/lib.rs:9:5:") and the panic message on the next, so for exactly that shape the next
+	// non-blank line is joined to the first. No other later line is ever consulted.
+	msg := classifyLine(p.Message)
 	if msg == "" {
-		msg = collapse(p.Body)
+		msg = classifyLine(p.Body)
 	}
-	first := ""
-	for _, l := range strings.Split(p.Message+"\n"+p.Body, "\n") {
-		if s := strings.TrimSpace(l); s != "" {
-			first = s
-			break
-		}
-	}
+	first := firstLine(p.Message + "\n" + p.Body)
 	res := TestResult{FailureType: truncRunes(typ, maxFailureTypeRunes), Message: truncRunes(first, maxMessageRunes)}
-	switch {
-	case strings.Contains(p.Message, stubPanicMessage) || strings.Contains(p.Body, stubPanicMessage) || strings.Contains(p.Type, stubPanicMessage):
+	if c.PanicMessage != "" && strings.Contains(p.Message, c.PanicMessage) {
 		res.Status = statusStub
+		return res
+	}
+	switch {
 	case anyMatch(c.timeoutRe, typ, msg):
 		rep.TimedOut = true
 		res.Status = statusFailedError
@@ -544,4 +564,27 @@ func junitProblemStatus(c *compiledAdapter, p junitProblem, kind string, rep *Re
 		res.Status = statusFailedError
 	}
 	return res
+}
+
+var panicLocationRe = regexp.MustCompile(`^thread '[^']*' panicked at [^ ]+:$`)
+
+// classifyLine is the first non-blank line of s; when that line is a Rust panic location, the next non-blank line
+// is appended to it.
+func classifyLine(s string) string {
+	var lines []string
+	for _, l := range strings.Split(s, "\n") {
+		if t := strings.TrimSpace(l); t != "" {
+			lines = append(lines, t)
+			if len(lines) == 2 {
+				break
+			}
+		}
+	}
+	switch {
+	case len(lines) == 0:
+		return ""
+	case len(lines) == 2 && panicLocationRe.MatchString(lines[0]):
+		return lines[0] + " " + lines[1]
+	}
+	return lines[0]
 }

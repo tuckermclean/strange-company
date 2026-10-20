@@ -6,11 +6,14 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"path"
 	"sort"
 	"strings"
+
+	"strange.company/sc/internal/policy"
 )
 
 // verifierLibVersion is stamped on every classification (RedClassification.verifier_lib_version).
@@ -84,7 +87,10 @@ func decodeIDSet(name string, s *TestIDSet) (map[string]bool, error) {
 		return nil, infraErr("%s id set: count %d but %d ids", name, s.Count, len(ids))
 	}
 	out := make(map[string]bool, len(ids))
-	for _, id := range ids {
+	for i, id := range ids {
+		if i > 0 && ids[i-1] >= id {
+			return nil, infraErr("%s id set: ids are not strictly sorted and unique (%q after %q)", name, id, ids[i-1])
+		}
 		out[id] = true
 	}
 	return out, nil
@@ -185,6 +191,30 @@ func sortedKeys(m map[string]bool) []string {
 	return out
 }
 
+// protectedPaths returns the platform spec.protectedPaths plus the effective /spec/protectedPaths (plan 22 section
+// 9.3). The platform list is required; an ill-typed effective list is an error (22-R-3).
+func protectedPaths(in RedInput) ([]string, error) {
+	spec, ok := pathMap(in.Platform.Verification, "spec")
+	if !ok {
+		return nil, errors.New("verification policy has no spec")
+	}
+	list, err := stringList(spec["protectedPaths"])
+	if err != nil {
+		return nil, fmt.Errorf("spec.protectedPaths: %w", err)
+	}
+	if len(list) == 0 {
+		return nil, errors.New("verification policy has no spec.protectedPaths")
+	}
+	if v, ok := in.Effective.Values["/spec/protectedPaths"]; ok {
+		extra, err := stringList(v)
+		if err != nil {
+			return nil, fmt.Errorf("effective /spec/protectedPaths: %w", err)
+		}
+		list = append(list, extra...)
+	}
+	return list, nil
+}
+
 // ClassifyRed applies rules R0-R11 of plan 22 section 14.3 to an observed RED. It is pure and deterministic. The
 // first failing blocking rule (in table order) decides the outcome; every failing rule contributes its reasons, in
 // rule order. R10 (already / partially satisfied) decides only when no other rule fails. R0 identity failure and any
@@ -266,6 +296,10 @@ func ClassifyRed(in RedInput) (RedClassification, error) {
 	if err != nil {
 		return RedClassification{}, infraErr("%v", err)
 	}
+	protected, err := protectedPaths(in)
+	if err != nil {
+		return RedClassification{}, infraErr("%v", err)
+	}
 	var baseRuns, headRuns []RunSummary
 	for _, r := range obs.Runs {
 		switch r.Tree {
@@ -301,12 +335,39 @@ func ClassifyRed(in RedInput) (RedClassification, error) {
 		}
 	}
 	for _, f := range in.Scope.ChangedFiles {
+		for _, g := range protected {
+			if policy.MatchGlob(g, f.Path) {
+				r1 = appendUnique(r1, "scope_violation")
+				break
+			}
+		}
+	}
+	for _, f := range in.Scope.ChangedFiles {
 		if f.Change == "deleted" || f.Change == "renamed" {
 			r1 = appendUnique(r1, "tester_deletion")
 		}
 	}
 	if len(in.Scope.Stubs) > sp.MaxStubsPerTask {
 		r1 = appendUnique(r1, "stub_malformed")
+	}
+	// Every stub-class file holds at least one stub fact and every fact belongs to a stub-class file.
+	stubFiles := map[string]bool{}
+	for _, f := range in.Scope.ChangedFiles {
+		if f.Class == "stub" {
+			stubFiles[f.Path] = true
+		}
+	}
+	factFiles := map[string]bool{}
+	for _, s := range in.Scope.Stubs {
+		factFiles[s.Path] = true
+		if !stubFiles[s.Path] {
+			r1 = appendUnique(r1, "stub_malformed")
+		}
+	}
+	for p := range stubFiles {
+		if !factFiles[p] {
+			r1 = appendUnique(r1, "stub_malformed")
+		}
 	}
 	for _, s := range in.Scope.Stubs {
 		if !s.WellFormed || (s.Shape != "zero_value" && s.Shape != "panic") {
@@ -432,6 +493,13 @@ func ClassifyRed(in RedInput) (RedClassification, error) {
 		}
 	}
 	newTests := sortedKeys(nm)
+	if !obs.TestsTruncated {
+		for _, id := range newTests {
+			if _, ok := reported[id]; !ok && headPresent[id] {
+				return RedClassification{}, infraErr("new test %q is present at head but missing from tests of a complete document", id)
+			}
+		}
+	}
 
 	headStatus := func(id string) string {
 		if t, ok := reported[id]; ok {
@@ -580,6 +648,10 @@ func ClassifyRed(in RedInput) (RedClassification, error) {
 		cl.NewTests = []string{}
 	}
 	if len(groups) > 0 {
+		if headOK && unsatisfiedChange > 0 {
+			// R10 never decides here, but its reason is still listed (plan 22 section 14.3).
+			groups = append(groups, reasonGroup{outcome: outcomeAlreadySatisfied, reasons: []string{"change_ac_not_failing"}})
+		}
 		cl.Outcome = groups[0].outcome
 		for _, g := range groups {
 			cl.Reasons = appendUnique(cl.Reasons, g.reasons...)

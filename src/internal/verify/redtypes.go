@@ -13,6 +13,9 @@ type Adapter struct {
 	AssertionTypes       []string
 	BuildFailurePatterns []string
 	TimeoutPatterns      []string
+	// PanicMessage is spec.stubPolicy.panicMessage of the policy the adapter was loaded from; a failure message
+	// containing it is a stub_unimplemented result. Empty: no result is classified as a stub.
+	PanicMessage string
 }
 
 // TestResult is one test of a normalized report (plan 22 section 14.1 step 5). ID is `<suite>::<id>`.

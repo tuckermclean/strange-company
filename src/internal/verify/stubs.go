@@ -44,6 +44,7 @@ type stubCandidate struct {
 	bodyLines  int
 	shape      string
 	commentTok string // line comment token of the language
+	nonFunc    bool   // a variable, constant or assignment: never a well-formed stub (plan 22 section 14.2)
 }
 
 // AnalyzeStubs derives the stub facts of one stub-path file (plan 22 section 14.2): every declaration that is new
@@ -106,7 +107,7 @@ func AnalyzeStubs(p StubPolicy, f StubFile) ([]StubFact, error) {
 			continue
 		}
 		marker := markerBefore(p, h.commentTok, headLines, h.declLine)
-		wf := additionsOnly && marker != "" && markerFormat(p).MatchString(marker) &&
+		wf := !h.nonFunc && additionsOnly && marker != "" && markerFormat(p).MatchString(marker) &&
 			h.shape != "unknown" && h.bodyLines <= p.MaxAddedLinesPerStub
 		facts = append(facts, StubFact{Path: f.Path, Symbol: h.symbol, Marker: marker, Shape: h.shape, WellFormed: wf})
 	}
@@ -183,6 +184,24 @@ func goCandidates(p StubPolicy, path string, src []byte) ([]stubCandidate, error
 	}
 	var out []stubCandidate
 	for _, d := range file.Decls {
+		if gd, ok := d.(*ast.GenDecl); ok && (gd.Tok == token.VAR || gd.Tok == token.CONST) {
+			for _, sp := range gd.Specs {
+				vs, ok := sp.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				line := fset.Position(vs.Pos()).Line
+				name := "_@" + strconv.Itoa(line)
+				if len(vs.Names) > 0 && vs.Names[0].Name != "_" {
+					name = vs.Names[0].Name
+				}
+				out = append(out, stubCandidate{
+					symbol: name, declLine: line, endLine: fset.Position(vs.End()).Line,
+					bodyLines: 1, shape: "unknown", commentTok: "//", nonFunc: true,
+				})
+			}
+			continue
+		}
 		fn, ok := d.(*ast.FuncDecl)
 		if !ok {
 			continue
@@ -292,7 +311,8 @@ type stubLang struct {
 	indent    bool // block by indentation (Python) instead of braces
 	fnRe      *regexp.Regexp
 	zeroRe    *regexp.Regexp
-	panicTmpl string // %s = quoted-regexp of the panic message
+	panicTmpl string         // %s = quoted-regexp of the panic message
+	declRe    *regexp.Regexp // top-level non-function declaration (const, static, module assignment); group 1 = name
 }
 
 var stubLangs = map[string]stubLang{
@@ -302,6 +322,7 @@ var stubLangs = map[string]stubLang{
 		fnRe:      regexp.MustCompile(`^\s*(?:pub(?:\([^)]*\))?\s+)?(?:(?:async|const|unsafe)\s+)*fn\s+([A-Za-z_][A-Za-z0-9_]*)`),
 		zeroRe:    regexp.MustCompile(`^(?:return\s+)?(?:Default::default\(\)|None|\(\)|0|0\.0|false|""|String::new\(\)|Vec::new\(\)|vec!\[\]|Ok\(\(\)\)|Ok\(Default::default\(\)\))\s*;?$`),
 		panicTmpl: `^(?:todo|unimplemented|panic)!\(\s*"%s"\s*\)\s*;?$`,
+		declRe:    regexp.MustCompile(`^(?:pub(?:\([^)]*\))?\s+)?(?:const|static)\s+(?:mut\s+)?([A-Za-z_][A-Za-z0-9_]*)`),
 	},
 	"typescript": tsLang(),
 	"javascript": tsLang(),
@@ -311,6 +332,7 @@ var stubLangs = map[string]stubLang{
 		fnRe:      regexp.MustCompile(`^\s*(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(`),
 		zeroRe:    regexp.MustCompile(`^(?:return(?:\s+(?:None|0|0\.0|False|""|''|\[\]|\{\}|\(\)))?|pass|\.\.\.)$`),
 		panicTmpl: `^raise\s+NotImplementedError\(\s*["']%s["']\s*\)$`,
+		declRe:    regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)\s*(?::[^=]+)?=[^=]`),
 	},
 }
 
@@ -320,6 +342,7 @@ func tsLang() stubLang {
 		fnRe:      regexp.MustCompile(`^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s*([A-Za-z_$][A-Za-z0-9_$]*)`),
 		zeroRe:    regexp.MustCompile(`^return(?:\s+(?:null|undefined|0|false|""|''|\[\]|\{\}))?\s*;?$`),
 		panicTmpl: `^throw\s+new\s+Error\(\s*["']%s["']\s*\)\s*;?$`,
+		declRe:    regexp.MustCompile(`^(?:export\s+)?(?:declare\s+)?(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)`),
 	}
 }
 
@@ -333,6 +356,12 @@ func lineCandidates(p StubPolicy, lang stubLang, path string, src []byte) ([]stu
 	for i := 0; i < len(lines); i++ {
 		m := lang.fnRe.FindStringSubmatch(lines[i])
 		if m == nil {
+			if d := lang.declRe.FindStringSubmatch(lines[i]); d != nil {
+				out = append(out, stubCandidate{
+					symbol: d[1], declLine: i + 1, endLine: i + 1, bodyLines: 1,
+					shape: "unknown", commentTok: lang.comment, nonFunc: true,
+				})
+			}
 			continue
 		}
 		c := stubCandidate{symbol: m[1], declLine: i + 1, commentTok: lang.comment}

@@ -280,3 +280,14 @@ func isCatchAll(globs []string) bool {
 	}
 	return false
 }
+
+// MatchGlob reports whether the path is matched by the glob, with the exact semantics described above (the same
+// automaton the policy loader uses for its path invariants). A newline is an ordinary character.
+func MatchGlob(glob, path string) bool {
+	g := newGlobSet([]string{glob})
+	b := g.initial()
+	for _, c := range path {
+		b = g.step(b, c)
+	}
+	return b.has(g.finals[0])
+}
