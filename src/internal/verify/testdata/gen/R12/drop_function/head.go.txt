@@ -1,0 +1,15 @@
+package httpx
+
+import "testing"
+
+func TestA(t *testing.T) {
+	if Do(1) != 2 {
+		t.Errorf("a")
+	}
+}
+
+func TestC(t *testing.T) {
+	if Do(4) != 5 {
+		t.Errorf("c")
+	}
+}

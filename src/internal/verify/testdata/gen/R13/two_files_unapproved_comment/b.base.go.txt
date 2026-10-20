@@ -1,0 +1,13 @@
+package httpx
+
+import "testing"
+
+func TestB(t *testing.T) {
+	got := Do(2)
+	if got != 3 {
+		t.Errorf("b: %d", got)
+	}
+	if got < 0 {
+		t.Errorf("negative")
+	}
+}

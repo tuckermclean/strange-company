@@ -1,0 +1,28 @@
+package httpx
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestA(t *testing.T) {
+	if Do(1) != 2 {
+		t.Errorf("a")
+	}
+}
+
+func TestB(t *testing.T) {
+	got := Do(2)
+	if got != 3 {
+		t.Errorf("b: %d", got)
+	}
+	if got < 0 {
+		t.Errorf("negative")
+	}
+}
+
+func TestC(t *testing.T) {
+	if strings.ToLower(Name()) != "x" {
+		t.Errorf("c")
+	}
+}
