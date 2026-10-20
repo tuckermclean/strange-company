@@ -1,8 +1,7 @@
 ---
 name: sc-node
-description: Build one Strange Company DAG node (PLAN.md) with the approved process. Brief, then tester RED, verified RED, implementer GREEN, independent review, and finally gate evidence in STATUS.md. Use when asked to implement, build or start a node such as F01.
+description: Build one Strange Company DAG node (PLAN.md) with the approved process. Brief, then tester RED, verified RED, implementer GREEN, independent review, and finally gate evidence in STATUS.md. Use when asked to implement, build or start a node such as F01, or to continue with the next ready node when the operator has asked for consecutive nodes (step 8).
 argument-hint: "<node-id, e.g. F01> [AC ids to limit the slice]"
-disable-model-invocation: true
 ---
 
 # /sc-node $ARGUMENTS
@@ -73,6 +72,15 @@ Then post the review status (plan 52 §8.2a, CD-47):
 - Any later push to the PR needs a fresh review and a fresh status.
 
 Give the user the PR URL. The user merges; you never approve or merge.
+
+## 8. Next node (only when the operator asked for consecutive nodes)
+Run this step only when the operator has explicitly asked you to keep going node after node (CD-69). Otherwise stop after step 6.
+- Check the PR's CI first. If it fails, fix it with a new implementer (step 3's budget applies) before you leave the node.
+- Pick the next node: the first node in PLAN.md order whose `deps` all have gate evidence in `STATUS.md` on `main`. A node that depends on an open, unmerged PR is not ready.
+- If no node is ready, stop and report every open PR URL and what each waiting node needs.
+- Otherwise invoke `/sc-node <next-id>` with the Skill tool and start again at step 0, from an updated `main`.
+- Context is compacted automatically; the brief and evidence in `out/sc-node/<id>/` carry the state, so write them before you move on.
+- Step 7's stop conditions still apply, and so does every rule above: you still never approve or merge.
 
 ## 7. Stop and ask the user
 Stop for:
