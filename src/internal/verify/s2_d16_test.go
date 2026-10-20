@@ -371,7 +371,7 @@ func TestClassifyRedGen_R14SuiteAndIDLimits_D16_22AC32(t *testing.T) {
 		"suite_field_only_upper": func(fx *redFixture) {
 			fx.Observed.Tests[0].Suite = "Unit"
 		},
-		"id_with_line_separator": func(fx *redFixture) { d16SetID(fx, d16FirstID, d16FirstID+"\u2028x") },
+		"id_with_newline":        func(fx *redFixture) { d16SetID(fx, d16FirstID, d16FirstID+"\nx") },
 		"id_500_after_separator": func(fx *redFixture) { d16SetID(fx, d16FirstID, "unit::"+strings.Repeat("a", 500)) },
 	}
 	for name, mut := range bad {
