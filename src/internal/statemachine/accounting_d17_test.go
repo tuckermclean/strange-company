@@ -43,15 +43,15 @@ func TestAdvance_RejectsDispatchWhileAnExecutionRuns_29AC11_D17N1(t *testing.T) 
 	d := newD14(t, "")
 	d.toRedVerified()
 	d.ok("hermes", "dispatch_auxiliary", "researcher", d.spec("researcher"), "T090", "RED_VERIFIED")
-	d17Forged(t, d, "hermes", "dispatch_implementer", "implementer", d.spec("implementer"), "G_NO_ACTIVE_EXECUTION")
+	d17Forged(t, d, "hermes", "dispatch_implementer", "implementer", d.spec("implementer"), "G_NO_ACTIVE_EXECUTION", nil)
 }
 
 // d17Forged fires the event with raw permissive facts and checks that Advance refuses the decision with
 // SM_ADVANCE_NOT_APPLIED, and that the message names the guard when one is given.
-func d17Forged(t *testing.T, d *d14, actor, event, role string, in StepInput, guard string) {
+func d17Forged(t *testing.T, d *d14, actor, event, role string, in StepInput, guard string, values map[string]string) {
 	t.Helper()
 	ev := Event{Name: event, Actor: actor, Role: role}
-	dec, err := Fire(d.m, d.task.Snapshot, ev, d.facts(nil))
+	dec, err := Fire(d.m, d.task.Snapshot, ev, d.facts(values))
 	if err != nil || dec.Applied == nil {
 		t.Fatalf("setup: raw Fire of %s from %s = %s, %v", event, d.task.Snapshot.State, evDescribe(dec), err)
 	}
@@ -111,7 +111,7 @@ func TestAccountingFacts_NoProducerDispatched_29AC11_D17N2(t *testing.T) {
 	if dec.Rejected.Code != "GATE_NOT_SATISFIED" || !slices.Equal(dec.Rejected.FailedGuards, []string{g}) {
 		t.Errorf("rejected %s with %v, want GATE_NOT_SATISFIED with [%s]", dec.Rejected.Code, dec.Rejected.FailedGuards, g)
 	}
-	d17Forged(t, d, "hermes", "dispatch_tester", "tester", d.spec("tester"), g)
+	d17Forged(t, d, "hermes", "dispatch_tester", "tester", d.spec("tester"), g, map[string]string{"G_JUDGE_SOURCE": "artifact"})
 }
 
 // 29-AC-11 (D17 N2): a producer dispatched with the researcher role (dispatch_producer admits implementer and
@@ -138,7 +138,7 @@ func TestAccountingFacts_NoProduction_29AC11_D17N2(t *testing.T) {
 	d.ok("runner", "execution_blocked", "", StepInput{}, "T107", "JUDGE_APPROVED")
 	d.fact(g, false)
 	d.refused("human", "deny_exemption", "", StepInput{}, g)
-	d17Forged(t, d, "human", "deny_exemption", "", StepInput{}, g)
+	d17Forged(t, d, "human", "deny_exemption", "", StepInput{}, g, nil)
 }
 
 // ---- N3: adjudication_recorded needs a running reviewer auxiliary execution, an open conflict and a known verdict
@@ -168,7 +168,7 @@ func d17NotApplied(t *testing.T, d *d14, verdict string) {
 	if err == nil && dec.Rejected == nil {
 		t.Errorf("Apply(adjudication_recorded, verdict %q) neither applied nor rejected: %+v", verdict, dec)
 	}
-	d17Forged(t, d, "runner", "adjudication_recorded", "", in, "")
+	d17Forged(t, d, "runner", "adjudication_recorded", "", in, "", nil)
 }
 
 // 29-AC-11 (D17 N3, TDD-20, plan 29 section 14.6): an adjudication needs the adjudicator behind it. A lone T082
@@ -254,7 +254,7 @@ func TestConflictRecord_HumanApprovalOverridesTestValid_29AC11_D17N4(t *testing.
 			d.fact("G_CONFLICT_REJECTED", false)
 			d.refused("hermes", "dispatch_implementer", "implementer", d.spec("implementer"), "G_CONFLICT_REJECTED")
 			d.accepted("hermes", "dispatch_tester", "tester", d.spec("tester"), "T013")
-			d17Forged(t, d, "hermes", "dispatch_implementer", "implementer", d.spec("implementer"), "G_CONFLICT_REJECTED")
+			d17Forged(t, d, "hermes", "dispatch_implementer", "implementer", d.spec("implementer"), "G_CONFLICT_REJECTED", nil)
 			d.ok("hermes", "dispatch_tester", "tester", d.spec("tester"), "T013", "TEST_AUTHORING")
 		})
 	}
