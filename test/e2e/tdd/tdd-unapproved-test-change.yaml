@@ -1,0 +1,21 @@
+# Generation 2 that edits a test outside the approved conflict is red_invalid (TDD-8)
+trajectory: tdd-unapproved-test-change
+title: "Generation 2 that edits a test outside the approved conflict is red_invalid (TDD-8)"
+refs: ["plan 21 22.2 tdd-unapproved-test-change", "TDD-8"]
+live: {"expected_evidence_reason": "unapproved_test_change"}
+events:
+  - {event: "task_created", actor: "hermes", at: "2026-10-13T12:01:00Z"}
+  - {event: "dispatch_tester", actor: "hermes", role: "tester", at: "2026-10-13T12:02:00Z"}
+  - {event: "tester_result_accepted", actor: "runner", at: "2026-10-13T12:03:00Z", pipeline: 401}
+  - {event: "red_classified", actor: "ci", at: "2026-10-13T12:04:00Z", facts: {G_VERIFICATION_OUTCOME: "red_valid"}}
+  - {event: "dispatch_implementer", actor: "hermes", role: "implementer", at: "2026-10-13T12:05:00Z"}
+  - {event: "implementer_reported_conflict", actor: "runner", at: "2026-10-13T12:06:00Z"}
+  - {event: "approve_test_change", actor: "human", at: "2026-10-13T12:07:00Z"}
+  - {event: "dispatch_tester", actor: "hermes", role: "tester", at: "2026-10-13T12:08:00Z"}
+  - {event: "tester_result_accepted", actor: "runner", at: "2026-10-13T12:09:00Z", pipeline: 402}
+  - {event: "red_classified", actor: "ci", at: "2026-10-13T12:10:00Z", facts: {G_VERIFICATION_OUTCOME: "red_invalid"}}
+  - {event: "dispatch_implementer", actor: "hermes", role: "implementer", at: "2026-10-13T12:11:00Z"}
+expected_states: ["SPECIFIED", "TEST_AUTHORING", "RED_VERIFYING", "RED_VERIFIED", "IMPLEMENTING", "TEST_SPEC_CONFLICT", "TEST_SPEC_CONFLICT", "TEST_AUTHORING", "RED_VERIFYING", "TEST_NEEDS_WORK", "TEST_NEEDS_WORK"]
+expected_transitions: ["T001", "T010", "T014", "T020", "T030", "T080", "T083", "T013", "T014", "T021", "rejected"]
+expected_reasons: ["", "", "", "", "", "", "", "", "", "", "GATE_NOT_SATISFIED"]
+expected_attempts: {"tester_used": 2, "by_class.merit": 1}

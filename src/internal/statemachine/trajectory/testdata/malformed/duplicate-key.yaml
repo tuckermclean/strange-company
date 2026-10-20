@@ -1,0 +1,8 @@
+# expect: TRAJ_YAML
+trajectory: duplicate-key
+trajectory: duplicate-key
+events:
+  - {event: task_created, actor: hermes, at: "2026-10-13T12:00:00Z"}
+expected_states: [SPECIFIED]
+expected_transitions: [T001]
+expected_reasons: [""]

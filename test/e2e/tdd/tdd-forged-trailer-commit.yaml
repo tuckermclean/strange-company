@@ -1,0 +1,39 @@
+# A human commit with a copied SC-Execution trailer is tamper_detected foreign_commit (TDD-9)
+trajectory: tdd-forged-trailer-commit
+title: "A human commit with a copied SC-Execution trailer is tamper_detected foreign_commit (TDD-9)"
+refs: ["plan 21 22.2 tdd-forged-trailer-commit", "TDD-9"]
+live: {"expected_evidence_reason": "foreign_commit"}
+events:
+  - {event: "task_created", actor: "hermes", at: "2026-10-13T12:01:00Z"}
+  - {event: "dispatch_tester", actor: "hermes", role: "tester", at: "2026-10-13T12:02:00Z"}
+  - {event: "tester_result_accepted", actor: "runner", at: "2026-10-13T12:03:00Z", pipeline: 401}
+  - {event: "red_classified", actor: "ci", at: "2026-10-13T12:04:00Z", facts: {G_VERIFICATION_OUTCOME: "red_valid"}}
+  - {event: "dispatch_implementer", actor: "hermes", role: "implementer", at: "2026-10-13T12:05:00Z"}
+  - {event: "implementer_result_accepted", actor: "runner", at: "2026-10-13T12:06:00Z", pipeline: 402}
+  - {event: "green_classified", actor: "ci", at: "2026-10-13T12:07:00Z", facts: {G_VERIFICATION_OUTCOME: "tamper_detected"}}
+  - {event: "reverify_green", actor: "human", at: "2026-10-13T12:08:00Z", pipeline: 403}
+  - {event: "green_classified", actor: "ci", at: "2026-10-13T12:09:00Z", facts: {G_VERIFICATION_OUTCOME: "tamper_detected"}}
+  - {event: "accept_external_commit", actor: "hermes", at: "2026-10-13T12:10:00Z"}
+  - {event: "accept_external_commit", actor: "human", at: "2026-10-13T12:11:00Z", pipeline: 404}
+  - {event: "green_classified", actor: "ci", at: "2026-10-13T12:12:00Z", facts: {G_VERIFICATION_OUTCOME: "green_pass"}}
+  - {event: "dispatch_reviewer", actor: "hermes", role: "reviewer", at: "2026-10-13T12:13:00Z"}
+  - {event: "review_accepted", actor: "runner", at: "2026-10-13T12:14:00Z", facts: {G_REVIEW_VERDICT: "accept"}}
+expected_states: ["SPECIFIED", "TEST_AUTHORING", "RED_VERIFYING", "RED_VERIFIED", "IMPLEMENTING", "GREEN_VERIFYING", "NEEDS_HUMAN", "GREEN_VERIFYING", "NEEDS_HUMAN", "NEEDS_HUMAN", "GREEN_VERIFYING", "GREEN_VERIFIED", "REVIEW", "AWAITING_MERGE"]
+expected_transitions: ["T001", "T010", "T014", "T020", "T030", "T032", "T036", "T068", "T036", "rejected", "T072", "T033", "T040", "T041"]
+expected_reasons: ["", "", "", "", "", "", "policy_violation", "", "policy_violation", "GATE_NOT_SATISFIED", "", "", "", ""]
+expected_failed_guards:
+  - ~
+  - ~
+  - ~
+  - ~
+  - ~
+  - ~
+  - ~
+  - ~
+  - ~
+  - ["G_ACTOR_AUTHORIZED"]
+  - ~
+  - ~
+  - ~
+  - ~
+expected_attempts: {"by_class.policy": 2, "reviews_used": 1}

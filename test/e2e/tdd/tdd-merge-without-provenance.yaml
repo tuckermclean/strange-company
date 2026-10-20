@@ -1,0 +1,14 @@
+# A merge before AWAITING_MERGE is a bypass (T052)
+trajectory: tdd-merge-without-provenance
+title: "A merge before AWAITING_MERGE is a bypass (T052)"
+refs: ["plan 21 22.2 tdd-merge-without-provenance", "plan 29 14.7"]
+live: {"assert": ["SCTddProvenanceBypass alert fires"]}
+events:
+  - {event: "task_created", actor: "hermes", at: "2026-10-13T12:01:00Z"}
+  - {event: "dispatch_tester", actor: "hermes", role: "tester", at: "2026-10-13T12:02:00Z"}
+  - {event: "tester_result_accepted", actor: "runner", at: "2026-10-13T12:03:00Z", pipeline: 401}
+  - {event: "red_classified", actor: "ci", at: "2026-10-13T12:04:00Z", facts: {G_VERIFICATION_OUTCOME: "red_valid"}}
+  - {event: "pr_merged", actor: "runner", at: "2026-10-13T12:05:00Z"}
+expected_states: ["SPECIFIED", "TEST_AUTHORING", "RED_VERIFYING", "RED_VERIFIED", "NEEDS_HUMAN"]
+expected_transitions: ["T001", "T010", "T014", "T020", "T052"]
+expected_reasons: ["", "", "", "", "merged_without_provenance"]

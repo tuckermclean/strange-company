@@ -1,0 +1,7 @@
+# expect: TRAJ_NAME_MISMATCH
+trajectory: another-name
+events:
+  - {event: task_created, actor: hermes, at: "2026-10-13T12:00:00Z"}
+expected_states: [SPECIFIED]
+expected_transitions: [T001]
+expected_reasons: [""]

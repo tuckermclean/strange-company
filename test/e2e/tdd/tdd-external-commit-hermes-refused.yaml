@@ -1,0 +1,32 @@
+# /sc accept-external-commit is human-only: runner, ci and hermes are refused (TDD-9)
+trajectory: tdd-external-commit-hermes-refused
+title: "/sc accept-external-commit is human-only: runner, ci and hermes are refused (TDD-9)"
+refs: ["29-AC-11", "TDD-9"]
+events:
+  - {event: "task_created", actor: "hermes", at: "2026-10-13T12:01:00Z"}
+  - {event: "dispatch_tester", actor: "hermes", role: "tester", at: "2026-10-13T12:02:00Z"}
+  - {event: "tester_result_accepted", actor: "runner", at: "2026-10-13T12:03:00Z", pipeline: 401}
+  - {event: "red_classified", actor: "ci", at: "2026-10-13T12:04:00Z", facts: {G_VERIFICATION_OUTCOME: "red_valid"}}
+  - {event: "dispatch_implementer", actor: "hermes", role: "implementer", at: "2026-10-13T12:05:00Z"}
+  - {event: "implementer_result_accepted", actor: "runner", at: "2026-10-13T12:06:00Z", pipeline: 402}
+  - {event: "green_classified", actor: "ci", at: "2026-10-13T12:07:00Z", facts: {G_VERIFICATION_OUTCOME: "tamper_detected"}}
+  - {event: "accept_external_commit", actor: "hermes", at: "2026-10-13T12:08:00Z"}
+  - {event: "accept_external_commit", actor: "runner", at: "2026-10-13T12:09:00Z"}
+  - {event: "accept_external_commit", actor: "ci", at: "2026-10-13T12:10:00Z"}
+  - {event: "accept_external_commit", actor: "human", at: "2026-10-13T12:11:00Z", pipeline: 403}
+expected_states: ["SPECIFIED", "TEST_AUTHORING", "RED_VERIFYING", "RED_VERIFIED", "IMPLEMENTING", "GREEN_VERIFYING", "NEEDS_HUMAN", "NEEDS_HUMAN", "NEEDS_HUMAN", "NEEDS_HUMAN", "GREEN_VERIFYING"]
+expected_transitions: ["T001", "T010", "T014", "T020", "T030", "T032", "T036", "rejected", "rejected", "rejected", "T072"]
+expected_reasons: ["", "", "", "", "", "", "policy_violation", "GATE_NOT_SATISFIED", "GATE_NOT_SATISFIED", "GATE_NOT_SATISFIED", ""]
+expected_failed_guards:
+  - ~
+  - ~
+  - ~
+  - ~
+  - ~
+  - ~
+  - ~
+  - ["G_ACTOR_AUTHORIZED"]
+  - ["G_ACTOR_AUTHORIZED"]
+  - ["G_ACTOR_AUTHORIZED"]
+  - ~
+expected_attempts: {"by_class.policy": 1}

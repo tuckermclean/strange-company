@@ -1,0 +1,13 @@
+# An exemption class that policy does not allow refuses task creation
+trajectory: tdd-exemption-not-in-policy
+title: "An exemption class that policy does not allow refuses task creation"
+refs: ["plan 21 22.2 tdd-exemption-not-in-policy", "SPEC 106 item 9"]
+mode: verification-first
+live: {"expected_mcp_code": "EXEMPTION_NOT_ALLOWED", "fake_scenarios": ["fake-judge-docs"]}
+events:
+  - {event: "task_created", actor: "hermes", at: "2026-10-13T12:01:00Z", facts: {G_VERIFICATION_MODE_ALLOWED: false}}
+expected_states: [""]
+expected_transitions: ["rejected"]
+expected_reasons: ["GATE_NOT_SATISFIED"]
+expected_failed_guards:
+  - ["G_VERIFICATION_MODE_ALLOWED"]

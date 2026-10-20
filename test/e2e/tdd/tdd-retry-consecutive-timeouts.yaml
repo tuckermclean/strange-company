@@ -1,0 +1,16 @@
+# Two consecutive TIMED_OUT implementer executions end in NEEDS_HUMAN infrastructure_exhausted
+trajectory: tdd-retry-consecutive-timeouts
+title: "Two consecutive TIMED_OUT implementer executions end in NEEDS_HUMAN infrastructure_exhausted"
+refs: ["29-AC-7", "plan 29 16.6"]
+events:
+  - {event: "task_created", actor: "hermes", at: "2026-10-13T12:01:00Z"}
+  - {event: "dispatch_tester", actor: "hermes", role: "tester", at: "2026-10-13T12:02:00Z"}
+  - {event: "tester_result_accepted", actor: "runner", at: "2026-10-13T12:03:00Z", pipeline: 401}
+  - {event: "red_classified", actor: "ci", at: "2026-10-13T12:04:00Z", facts: {G_VERIFICATION_OUTCOME: "red_valid"}}
+  - {event: "dispatch_implementer", actor: "hermes", role: "implementer", at: "2026-10-13T12:05:00Z"}
+  - {event: "execution_failed", actor: "runner", at: "2026-10-13T12:06:00Z", failure_code: "TIMED_OUT", facts: {G_FAILURE_CLASS: "infrastructure"}}
+  - {event: "execution_failed", actor: "runner", at: "2026-10-13T12:07:00Z", failure_code: "TIMED_OUT", facts: {G_FAILURE_CLASS: "infrastructure"}}
+expected_states: ["SPECIFIED", "TEST_AUTHORING", "RED_VERIFYING", "RED_VERIFIED", "IMPLEMENTING", "IMPLEMENTING", "NEEDS_HUMAN"]
+expected_transitions: ["T001", "T010", "T014", "T020", "T030", "T100", "T101"]
+expected_reasons: ["", "", "", "", "", "", "infrastructure_exhausted"]
+expected_attempts: {"autonomous_used": 0, "by_class.infrastructure": 2, "by_class.merit": 0, "consecutive_timeouts": 2}
