@@ -216,7 +216,7 @@ func Fire(m *Machine, snap TaskSnapshot, ev Event, facts Facts) (Decision, error
 	a := &Applied{TransitionID: winner.id, From: from, To: to, Effects: append([]string(nil), winner.effects...)}
 	a.FailureClass = effectArg(winner.effects, "E_COUNT_FAILURE")
 	a.ReasonCode = effectArg(winner.effects, "E_NOTIFY_HUMAN")
-	a.Deltas = m.deltas(winner, cur, snap, ev, facts)
+	a.Deltas = m.deltas(winner, cur, snap, ev, facts, "", false)
 	return Decision{Applied: a}, nil
 }
 

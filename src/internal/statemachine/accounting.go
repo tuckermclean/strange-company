@@ -143,13 +143,16 @@ type accountingFacts struct {
 	p    RetryPolicy
 	in   StepInput
 	base Facts
+	// The base is asked each fact at most once; the first answer decides (D11 N1).
+	bools  map[string]boolAnswer
+	values map[string]valueAnswer
 }
 
 // AccountingFacts answers G_ATTEMPTS_REMAIN, G_NOT_IDENTICAL_REPLAY, G_INFRA_REQUEUE_ALLOWED, G_REVIEWS_REMAIN
 // and G_AUXILIARY_REMAIN (always known) from the task, the policy and the step input, answers G_FAILURE_CODE
 // from in.FailureCode when that is set, and delegates every other guard to base (a nil base knows nothing).
 func AccountingFacts(t Task, p RetryPolicy, in StepInput, base Facts) Facts {
-	return accountingFacts{t: t, p: p, in: in, base: base}
+	return &accountingFacts{t: t, p: p, in: in, base: base, bools: map[string]boolAnswer{}, values: map[string]valueAnswer{}}
 }
 
 // testerSide reports whether the event concerns the tester attempt counter (dispatch of a tester, a tester
@@ -164,7 +167,7 @@ func testerSide(ev Event, state string) bool {
 	return false
 }
 
-func (f accountingFacts) Bool(ev Event, guard string) (bool, bool) {
+func (f *accountingFacts) Bool(ev Event, guard string) (bool, bool) {
 	a := f.t.Snapshot.Attempts
 	switch guard {
 	case "G_ATTEMPTS_REMAIN":
@@ -190,36 +193,45 @@ func (f accountingFacts) Bool(ev Event, guard string) (bool, bool) {
 	if f.base == nil {
 		return false, false
 	}
-	return f.base.Bool(ev, guard)
+	if a, ok := f.bools[guard]; ok {
+		return a.value, a.known
+	}
+	v, k := f.base.Bool(ev, guard)
+	f.bools[guard] = boolAnswer{v, k}
+	return v, k
 }
 
-func (f accountingFacts) Value(ev Event, guard string) (string, bool) {
+func (f *accountingFacts) Value(ev Event, guard string) (string, bool) {
 	if guard == "G_FAILURE_CODE" && f.in.FailureCode != "" {
 		return f.in.FailureCode, true
 	}
+	return f.baseValue(ev, guard)
+}
+
+func (f *accountingFacts) baseValue(ev Event, guard string) (string, bool) {
 	if f.base == nil {
 		return "", false
 	}
-	return f.base.Value(ev, guard)
+	if a, ok := f.values[guard]; ok {
+		return a.value, a.known
+	}
+	v, k := f.base.Value(ev, guard)
+	f.values[guard] = valueAnswer{v, k}
+	return v, k
 }
 
-func (f accountingFacts) failureCode(ev Event) string {
-	if f.in.FailureCode != "" {
-		return f.in.FailureCode
-	}
-	if f.base != nil {
-		if v, known := f.base.Value(ev, "G_FAILURE_CODE"); known {
-			return v
-		}
-	}
-	return ""
+// failureCode is the failure code of the step: StepInput.FailureCode, else the first answer of the base. It is
+// the single source of the decision, the deltas and the recorded StepInput.
+func (f *accountingFacts) failureCode(ev Event) string {
+	v, _ := f.Value(ev, "G_FAILURE_CODE") // the value as the deltas read it, whether or not the base knows it
+	return v
 }
 
 // identicalReplay is the rule of plan 29 section 16.4. A dispatch that cannot be fingerprinted (no role, or a
-// role other than the event's) fails closed: it counts as a replay.
-func (f accountingFacts) identicalReplay(ev Event) bool {
+// role other than the event's, or an event without a role) fails closed: it counts as a replay.
+func (f *accountingFacts) identicalReplay(ev Event) bool {
 	d := f.in.Dispatch
-	if d.Role == "" || (ev.Role != "" && ev.Role != d.Role) {
+	if d.Role == "" || ev.Role == "" || ev.Role != d.Role {
 		return true
 	}
 	fp, gen := Fingerprint(d), f.t.Snapshot.Generation
@@ -331,7 +343,11 @@ func (m *Machine) subjectRole(event, from string) string {
 }
 
 // deltas derives the counter changes of the fired transition t from the snapshot, the event and the facts only.
-func (m *Machine) deltas(t *transition, cur *state, snap TaskSnapshot, ev Event, facts Facts) map[string]int {
+//
+// workerRole is the recorded role of the failed execution for an execution_failed event ("" when unknown). Only
+// reviewer, researcher and planner worker merit failures key merit_by_generation (plan 29 section 16.1, CD-09);
+// implementer and tester worker failures count in by_class.merit alone.
+func (m *Machine) deltas(t *transition, cur *state, snap TaskSnapshot, ev Event, facts Facts, workerRole string, haveRole bool) map[string]int {
 	d := map[string]int{}
 	add := func(k string, n int) {
 		if n == 0 {
@@ -375,7 +391,15 @@ func (m *Machine) deltas(t *transition, cur *state, snap TaskSnapshot, ev Event,
 	if class != "" {
 		add("by_class."+class, 1)
 		if class == "merit" {
-			if r := m.subjectRole(ev.Name, snap.State); r != "" {
+			r := workerRole
+			if ev.Name != "execution_failed" {
+				r = m.subjectRole(ev.Name, snap.State)
+			} else if !haveRole {
+				r = m.subjectRole(ev.Name, snap.State) // raw Fire knows no execution records; Apply and Advance do
+			} else if !meritRoles[r] {
+				r = ""
+			}
+			if r != "" {
 				add(fmt.Sprintf("merit_by_generation.%s:g%d", r, snap.Generation), 1)
 			}
 		}
@@ -405,12 +429,33 @@ func (m *Machine) deltas(t *transition, cur *state, snap TaskSnapshot, ev Event,
 		}
 	}
 	if hasEffect(t.effects, "E_CANCEL_ACTIVE_EXECUTION") {
+		// Also applies to T062 escalate and T052 pr_merged; bounded, because leaving a held state needs a human (D11 N5).
 		refund() // cancelling never consumes an attempt (plan 29 section 14.10)
 	}
 	if hasEffect(t.effects, "E_GRANT_ATTEMPTS") {
+		// Advance also grants policy HumanGrant attempts, and raises tester_max when the tester budget is exhausted (D11 N4).
 		resetConsecutive()
 	}
 	return d
+}
+
+// meritRoles are the roles whose worker merit failures count in merit_by_generation.
+var meritRoles = map[string]bool{"reviewer": true, "researcher": true, "planner": true}
+
+// runningRole is the recorded role of the task's active execution ("" when none).
+func runningRole(t Task) string {
+	if i := lastExecution(t.Executions, func(e Execution) bool { return e.Outcome == "" }); i >= 0 {
+		return t.Executions[i].Role
+	}
+	return ""
+}
+
+// codeFacts answers G_FAILURE_CODE alone, from the failure code a step recorded.
+type codeFacts struct{ code string }
+
+func (c codeFacts) Bool(Event, string) (bool, bool) { return false, false }
+func (c codeFacts) Value(_ Event, g string) (string, bool) {
+	return c.code, g == "G_FAILURE_CODE" && c.code != ""
 }
 
 // ---- Advance
@@ -537,6 +582,26 @@ func Advance(m *Machine, t Task, ev Event, d Decision, in StepInput, p RetryPoli
 		return adverr(AdvanceNotApplied, "the decision (%s -> %s) does not match the table and the event %s", a.TransitionID, a.To, ev.Name)
 	}
 	fromSt := m.findState(t.Snapshot.State)
+	// Re-derive the decision from the table (D11 B2): the target, effects, failure class and reason code are the
+	// transition's, and the deltas are the recomputed ones under the failure code the step carries.
+	if !has(tr.from, from) || !has(tr.modes, t.Snapshot.Mode) {
+		return adverr(AdvanceNotApplied, "%s does not leave %s in mode %s", a.TransitionID, from, t.Snapshot.Mode)
+	}
+	if to, err := m.target(tr, fromSt, t.Snapshot); err != nil || to != a.To {
+		return adverr(AdvanceNotApplied, "%s: the target of the table is not %s", a.TransitionID, a.To)
+	}
+	if !slices.Equal(a.Effects, tr.effects) || a.FailureClass != effectArg(tr.effects, "E_COUNT_FAILURE") || a.ReasonCode != effectArg(tr.effects, "E_NOTIFY_HUMAN") {
+		return adverr(AdvanceNotApplied, "%s: the effects, failure class or reason code differ from the table", a.TransitionID)
+	}
+	want := m.deltas(tr, fromSt, t.Snapshot, ev, codeFacts{in.FailureCode}, runningRole(t), true)
+	if len(want) != len(a.Deltas) {
+		return adverr(AdvanceDeltaInvalid, "%s: the deltas differ from the recomputed ones", a.TransitionID)
+	}
+	for k, v := range want {
+		if got, ok := a.Deltas[k]; !ok || got != v {
+			return adverr(AdvanceDeltaInvalid, "%s: delta %s differs from the recomputed one", a.TransitionID, k)
+		}
+	}
 	n := cloneTask(t)
 	s := &n.Snapshot
 	keys := make([]string, 0, len(a.Deltas))
@@ -657,10 +722,7 @@ func (m *Machine) recordExecutions(n *Task, tr *transition, ev Event, a *Applied
 		}
 	}
 	if arg := effectArg(tr.effects, "E_CREATE_EXECUTION"); arg != "" {
-		role := in.Dispatch.Role
-		if role == "" {
-			role = ev.Role
-		}
+		role := ev.Role // the recorded role is the Event.Role (D11 B1)
 		if role == "" {
 			role = arg
 		}
@@ -674,12 +736,25 @@ func (m *Machine) recordExecutions(n *Task, tr *transition, ev Event, a *Applied
 // Apply is AccountingFacts, Fire and Advance in one call. A Rejected decision leaves the task unchanged; a
 // malformed input is an error and the zero Decision and Task.
 func Apply(m *Machine, t Task, ev Event, in StepInput, p RetryPolicy, base Facts) (Decision, Task, error) {
-	d, err := Fire(m, t.Snapshot, ev, AccountingFacts(t, p, in, base))
+	af := AccountingFacts(t, p, in, base).(*accountingFacts)
+	d, err := Fire(m, t.Snapshot, ev, af)
 	if err != nil {
 		return Decision{}, Task{}, err
 	}
 	if d.Applied == nil {
 		return d, t, nil
+	}
+	// The step records the failure code the decision used and the role-keyed merit counter of the task.
+	if ev.Name == "execution_failed" {
+		in.FailureCode = af.failureCode(ev)
+		for k := range d.Applied.Deltas {
+			if strings.HasPrefix(k, "merit_by_generation.") {
+				delete(d.Applied.Deltas, k)
+			}
+		}
+		if r := runningRole(t); d.Applied.FailureClass == "merit" && meritRoles[r] {
+			d.Applied.Deltas[fmt.Sprintf("merit_by_generation.%s:g%d", r, t.Snapshot.Generation)]++
+		}
 	}
 	n, err := Advance(m, t, ev, d, in, p)
 	if err != nil {
