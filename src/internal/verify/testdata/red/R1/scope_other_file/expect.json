@@ -1,0 +1,8 @@
+{
+  "outcome": "red_invalid",
+  "decisive": "scope_violation",
+  "reasons": [
+    "scope_violation"
+  ],
+  "schema_valid": true
+}

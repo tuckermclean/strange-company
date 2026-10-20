@@ -1,0 +1,7 @@
+{
+  "outcome": "red_invalid",
+  "reasons": [
+    "validation_config_mismatch"
+  ],
+  "schema_valid": false
+}

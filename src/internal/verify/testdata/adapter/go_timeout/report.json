@@ -1,0 +1,7 @@
+{"Time": "2026-10-13T12:00:00Z", "Action": "run", "Package": "example.com/x/p", "Test": "TestSlow"}
+{"Time": "2026-10-13T12:00:00Z", "Action": "output", "Package": "example.com/x/p", "Output": "=== RUN   TestSlow\n", "Test": "TestSlow"}
+{"Time": "2026-10-13T12:00:00Z", "Action": "output", "Package": "example.com/x/p", "Output": "panic: test timed out after 10m0s\n"}
+{"Time": "2026-10-13T12:00:00Z", "Action": "output", "Package": "example.com/x/p", "Output": "--- FAIL: TestSlow (600.00s)\n", "Test": "TestSlow"}
+{"Time": "2026-10-13T12:00:00Z", "Action": "fail", "Package": "example.com/x/p", "Test": "TestSlow"}
+{"Time": "2026-10-13T12:00:00Z", "Action": "output", "Package": "example.com/x/p", "Output": "FAIL\texample.com/x/p\t600.010s\n"}
+{"Time": "2026-10-13T12:00:00Z", "Action": "fail", "Package": "example.com/x/p"}

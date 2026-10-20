@@ -1,0 +1,8 @@
+{
+  "outcome": "red_invalid",
+  "decisive": "preservation_ac_not_passing",
+  "reasons": [
+    "preservation_ac_not_passing"
+  ],
+  "schema_valid": true
+}

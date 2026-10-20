@@ -1,0 +1,128 @@
+{
+  "identity": {
+    "passed": true,
+    "base_validation_blob": "7d1a0c3e9b2f4a6c8e0d1f3a5b7c9e1d3f5a7b9c"
+  },
+  "suites": {
+    "unit": "go"
+  },
+  "head_scope": {},
+  "criteria": [
+    {
+      "id": "AC-1",
+      "kind": "change"
+    },
+    {
+      "id": "AC-2",
+      "kind": "change"
+    }
+  ],
+  "declared": {
+    "AC-1": [
+      "unit::example.com/x/internal/httpx.TestNew"
+    ],
+    "AC-2": [
+      "unit::example.com/x/internal/httpx.TestTwo"
+    ]
+  },
+  "id_sets": {
+    "base_passing": [
+      "unit::example.com/x/internal/httpx.TestExisting"
+    ],
+    "base_skipped": [],
+    "head_present": [
+      "unit::example.com/x/internal/httpx.TestExisting",
+      "unit::example.com/x/internal/httpx.TestNew",
+      "unit::example.com/x/internal/httpx.TestTwo"
+    ]
+  },
+  "observed": {
+    "task_id": "sc-9",
+    "repository": "projects/example",
+    "phase": "red",
+    "subject": "tests",
+    "intent_id": "vi-9",
+    "base_sha": "0123456789abcdef0123456789abcdef01234567",
+    "head_sha": "89abcdef0123456789abcdef0123456789abcdef",
+    "verifier": {
+      "version": "0.1.0",
+      "binary_sha256": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+    },
+    "validation_blob": "7d1a0c3e9b2f4a6c8e0d1f3a5b7c9e1d3f5a7b9c",
+    "toolchain_image": "git.example.org/strange-company/ci@sha256:6666666666666666666666666666666666666666666666666666666666666666",
+    "runs": [
+      {
+        "tree": "base",
+        "commit": "0123456789abcdef0123456789abcdef01234567",
+        "suite": "unit",
+        "adapter": "go-test-json",
+        "exit_code": 0,
+        "duration_ms": 1000,
+        "timed_out": false,
+        "build_failed": false,
+        "report_found": true,
+        "counts": {
+          "total": 3,
+          "passed": 1,
+          "failed_assertion": 1,
+          "failed_error": 0,
+          "stub_unimplemented": 0,
+          "skipped": 0
+        }
+      },
+      {
+        "tree": "head",
+        "commit": "89abcdef0123456789abcdef0123456789abcdef",
+        "suite": "unit",
+        "adapter": "go-test-json",
+        "exit_code": 1,
+        "duration_ms": 1000,
+        "timed_out": false,
+        "build_failed": false,
+        "report_found": true,
+        "counts": {
+          "total": 3,
+          "passed": 1,
+          "failed_assertion": 1,
+          "failed_error": 0,
+          "stub_unimplemented": 0,
+          "skipped": 0
+        }
+      }
+    ],
+    "tests": [
+      {
+        "id": "unit::example.com/x/internal/httpx.TestNew",
+        "suite": "unit",
+        "file": "internal/httpx/redirect_test.go",
+        "status_head": "failed_assertion",
+        "status_base": "absent",
+        "failure_type": "t.Errorf",
+        "message": "x"
+      },
+      {
+        "id": "unit::example.com/x/internal/httpx.TestTwo",
+        "suite": "unit",
+        "file": "internal/httpx/redirect_test.go",
+        "status_head": "passed",
+        "status_base": "absent"
+      }
+    ],
+    "tests_truncated": false,
+    "observed_at": "2026-10-13T12:19:40Z"
+  },
+  "scope": {
+    "generation": 1,
+    "generation_start_commit": "0123456789abcdef0123456789abcdef01234567",
+    "changed_files": [
+      {
+        "path": "internal/httpx/redirect_test.go",
+        "change": "added",
+        "class": "test",
+        "blob_sha": "3b18e512dba79e4c8300dd08aeb37f8e728b8dad"
+      }
+    ],
+    "stubs": [],
+    "static_findings": []
+  }
+}

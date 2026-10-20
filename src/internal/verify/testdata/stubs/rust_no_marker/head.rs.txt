@@ -1,0 +1,7 @@
+pub fn existing() -> u32 {
+    1
+}
+
+pub fn replay_body() -> Vec<u8> {
+    Default::default()
+}

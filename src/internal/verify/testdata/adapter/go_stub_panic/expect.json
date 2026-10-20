@@ -1,0 +1,10 @@
+{
+  "build_failed": false,
+  "timed_out": false,
+  "tests": [
+    {
+      "id": "unit::example.com/x/p.TestF",
+      "status": "stub_unimplemented"
+    }
+  ]
+}

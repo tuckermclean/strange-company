@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<testsuites>
+<testsuite name="s" tests="1">
+<testcase classname="my-crate" name="build" time="0.001"><error message="error[E0425]: cannot find function `compute` in this scope"></error></testcase>
+</testsuite>
+</testsuites>

@@ -1,0 +1,10 @@
+package httpx
+
+func Existing() int {
+	return 2
+}
+
+// SC-STUB(sc-9 AC-1)
+func ReplayBody(b []byte) int {
+	return 0
+}

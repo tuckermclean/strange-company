@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<testsuites>
+<testsuite name="s" tests="1">
+<testcase classname="" name="tests/test_y.py" time="0.001"><error message="collection failure">ERROR collecting tests/test_y.py
+ImportError while importing test module</error></testcase>
+</testsuite>
+</testsuites>

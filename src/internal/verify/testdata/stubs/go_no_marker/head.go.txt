@@ -1,0 +1,9 @@
+package httpx
+
+func Existing() int {
+	return 1
+}
+
+func ReplayBody(b []byte) int {
+	return 0
+}

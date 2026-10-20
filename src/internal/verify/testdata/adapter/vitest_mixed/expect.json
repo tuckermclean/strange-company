@@ -1,0 +1,18 @@
+{
+  "build_failed": false,
+  "timed_out": false,
+  "tests": [
+    {
+      "id": "unit::src/redirect.test.js::redirect keeps method",
+      "status": "failed_assertion"
+    },
+    {
+      "id": "unit::src/redirect.test.js::redirect uses helper",
+      "status": "failed_error"
+    },
+    {
+      "id": "unit::src/redirect.test.js::redirect ok",
+      "status": "passed"
+    }
+  ]
+}

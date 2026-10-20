@@ -1,0 +1,8 @@
+{
+  "outcome": "red_invalid",
+  "decisive": "preexisting_test_broken",
+  "reasons": [
+    "preexisting_test_broken"
+  ],
+  "schema_valid": true
+}

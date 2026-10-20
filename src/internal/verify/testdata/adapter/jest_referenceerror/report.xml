@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<testsuites>
+<testsuite name="s" tests="1">
+<testcase classname="redirect" name="uses helper" file="src/redirect.test.js" time="0.001"><failure message="ReferenceError: replayBody is not defined">ReferenceError: replayBody is not defined
+    at Object.<anonymous></failure></testcase>
+</testsuite>
+</testsuites>

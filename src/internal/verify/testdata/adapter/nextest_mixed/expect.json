@@ -1,0 +1,22 @@
+{
+  "build_failed": false,
+  "timed_out": false,
+  "tests": [
+    {
+      "id": "unit::my-crate::tests::test_ok",
+      "status": "passed"
+    },
+    {
+      "id": "unit::my-crate::tests::test_assert",
+      "status": "failed_assertion"
+    },
+    {
+      "id": "unit::my-crate::tests::test_unwrap",
+      "status": "failed_error"
+    },
+    {
+      "id": "unit::my-crate::tests::test_stub",
+      "status": "stub_unimplemented"
+    }
+  ]
+}

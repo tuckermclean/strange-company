@@ -1,0 +1,10 @@
+{
+  "build_failed": false,
+  "timed_out": true,
+  "tests": [
+    {
+      "id": "unit::example.com/x/p.TestSlow",
+      "status": "failed_error"
+    }
+  ]
+}

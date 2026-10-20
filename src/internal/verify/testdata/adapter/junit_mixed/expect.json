@@ -1,0 +1,22 @@
+{
+  "build_failed": false,
+  "timed_out": false,
+  "tests": [
+    {
+      "id": "unit::pkg.Suite.testOne",
+      "status": "passed"
+    },
+    {
+      "id": "unit::pkg.Suite.testTwo",
+      "status": "failed_assertion"
+    },
+    {
+      "id": "unit::pkg.Suite.testThree",
+      "status": "failed_error"
+    },
+    {
+      "id": "unit::pkg.Suite.testFour",
+      "status": "skipped"
+    }
+  ]
+}
