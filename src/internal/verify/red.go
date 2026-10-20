@@ -220,7 +220,27 @@ func protectedPaths(in RedInput) ([]string, error) {
 // rule order. R10 (already / partially satisfied) decides only when no other rule fails. R0 identity failure and any
 // unusable fact are errors carrying a *NotClassifiedError (verification_infra_failed), never a classification.
 // R1b, R11b, R12-R14 belong to the generations slice.
-func ClassifyRed(in RedInput) (RedClassification, error) {
+func ClassifyRed(in RedInput) (RedClassification, error) { return classifyRed(in, nil) }
+
+// redFacts are the derived facts of a classification that the generation rules (R11b-R14) judge.
+type redFacts struct {
+	headOK           bool
+	headPresent      map[string]bool
+	declaredResolved map[string]bool
+	newTests         []string
+	nm               map[string]bool
+	reported         map[string]TestObservation
+	headStatus       func(id string) string
+}
+
+// genRules are the generation rules injected into the rule sequence: early runs at R1b's position (after R1), late
+// after R11 (R11b, R12, R13, R14). A nil field is skipped.
+type genRules struct {
+	early func() ([]reasonGroup, error)
+	late  func(f *redFacts) ([]reasonGroup, error)
+}
+
+func classifyRed(in RedInput, ext *genRules) (RedClassification, error) {
 	if !in.Identity.Passed {
 		return RedClassification{}, &NotClassifiedError{Code: "verification_infra_failed"}
 	}
@@ -380,6 +400,17 @@ func ClassifyRed(in RedInput) (RedClassification, error) {
 		}
 	}
 	add(outcomeRedInvalid, r1...)
+
+	// R1b (generations slice).
+	if ext != nil && ext.early != nil {
+		gs, err := ext.early()
+		if err != nil {
+			return RedClassification{}, err
+		}
+		for _, g := range gs {
+			add(g.outcome, g.reasons...)
+		}
+	}
 
 	// R2: base run is clean.
 	var baseBroken bool
@@ -559,7 +590,7 @@ func ClassifyRed(in RedInput) (RedClassification, error) {
 	}
 
 	headOK := len(r3) == 0
-	r11Idx, hiddenDeclared := -1, false
+	r10Idx, hiddenDeclared := -1, false
 	if headOK {
 		// R4: new tests exist.
 		if len(nm) == 0 {
@@ -624,6 +655,7 @@ func ClassifyRed(in RedInput) (RedClassification, error) {
 				break
 			}
 		}
+		r10Idx = len(groups)
 		// R11: truncation must not hide a test the verdict depends on.
 		if obs.TestsTruncated {
 			hidden := false
@@ -637,9 +669,20 @@ func ClassifyRed(in RedInput) (RedClassification, error) {
 			}
 			hidden = hidden || hiddenDeclared
 			if hidden {
-				r11Idx = len(groups)
 				add(outcomeInconclusive, "tests_truncated")
 			}
+		}
+	}
+	if ext != nil && ext.late != nil {
+		gs, err := ext.late(&redFacts{
+			headOK: headOK, headPresent: headPresent, declaredResolved: declaredResolved, newTests: newTests, nm: nm,
+			reported: reported, headStatus: headStatus,
+		})
+		if err != nil {
+			return RedClassification{}, err
+		}
+		for _, g := range gs {
+			add(g.outcome, g.reasons...)
 		}
 	}
 
@@ -656,12 +699,12 @@ func ClassifyRed(in RedInput) (RedClassification, error) {
 		// all when truncation hides a declared test (its verdict would rest on missing data).
 		r10 := headOK && unsatisfiedChange > 0 && !hiddenDeclared
 		for i, g := range groups {
-			if r10 && i == r11Idx {
+			if r10 && i == r10Idx {
 				cl.Reasons = appendUnique(cl.Reasons, "change_ac_not_failing")
 			}
 			cl.Reasons = appendUnique(cl.Reasons, g.reasons...)
 		}
-		if r10 && r11Idx < 0 {
+		if r10 && r10Idx >= len(groups) {
 			cl.Reasons = appendUnique(cl.Reasons, "change_ac_not_failing")
 		}
 		return cl, nil

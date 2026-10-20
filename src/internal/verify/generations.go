@@ -1,15 +1,5 @@
 package verify
 
-// SC-STUB(F06 22-AC-26 22-AC-30 22-AC-24 22-AC-32)
-func ClassifyRedGen(in GenerationInput) (RedClassification, error) {
-	return RedClassification{}, nil
-}
-
-// SC-STUB(F06 22-AC-9)
-func BuildManifest(in ManifestInput) (Manifest, error) {
-	return Manifest{}, nil
-}
-
 // TestFile is one test-, fixture- or test-infra-classified file of the red range: its content at the generation
 // start (nil for a new file) and at the red commit (nil for a deleted file). Language is a policy language name.
 type TestFile struct {
