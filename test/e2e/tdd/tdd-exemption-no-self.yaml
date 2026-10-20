@@ -1,0 +1,17 @@
+# A worker result with an extra verification field is RESULT_SCHEMA_INVALID: infrastructure, requeued (T100)
+trajectory: tdd-exemption-no-self
+title: "A worker result with an extra verification field is RESULT_SCHEMA_INVALID: infrastructure, requeued (T100)"
+refs: ["plan 21 22.2 tdd-exemption-no-self", "plan 29 15.2", "plan 26 ingestion"]
+mode: verification-first
+live: {"fake_scenarios": ["fake-judge-docs", "fake-produce-docs"], "violation": "RESULT_SCHEMA_INVALID", "assert": ["the producer result carried an extra verification field", "the raw body is stored as evidence, the task did not grant itself an exemption"]}
+events:
+  - {event: "task_created", actor: "hermes", at: "2026-10-13T12:01:00Z"}
+  - {event: "dispatch_tester", actor: "hermes", role: "tester", at: "2026-10-13T12:02:00Z", facts: {G_JUDGE_SOURCE: "artifact"}}
+  - {event: "tester_result_accepted", actor: "runner", at: "2026-10-13T12:03:00Z", pipeline: 401}
+  - {event: "judge_classified", actor: "ci", at: "2026-10-13T12:04:00Z", facts: {G_VERIFICATION_OUTCOME: "judge_valid", G_APPROVAL: "auto"}}
+  - {event: "dispatch_producer", actor: "hermes", role: "implementer", at: "2026-10-13T12:05:00Z"}
+  - {event: "execution_failed", actor: "runner", at: "2026-10-13T12:06:00Z", failure_code: "RESULT_SCHEMA_INVALID", facts: {G_FAILURE_CLASS: "infrastructure"}}
+expected_states: ["SPECIFIED", "JUDGE_AUTHORING", "JUDGE_VALIDATING", "JUDGE_APPROVED", "PRODUCING", "PRODUCING"]
+expected_transitions: ["T001", "T110", "T114", "T116", "T124", "T100"]
+expected_reasons: ["", "", "", "", "", ""]
+expected_attempts: {"tester_used": 1, "autonomous_used": 1, "by_class.infrastructure": 1, "consecutive_infrastructure": 1}

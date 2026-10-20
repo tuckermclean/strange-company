@@ -113,3 +113,46 @@ func TestLoad_EmptyAndMalformedDirectories_21AC20(t *testing.T) {
 		wantCode(t, "directory with a malformed file", err, "TRAJ_LENGTH_MISMATCH")
 	}
 }
+
+// 21-AC-20 (D17 N6): Load rejects a *.yml file in the directory (it would be silently skipped, so a renamed
+// trajectory would drop out of the suite), also when valid *.yaml files are present.
+func TestLoad_RejectsYmlFiles_21AC20(t *testing.T) {
+	dir := t.TempDir()
+	good := read(t, filepath.Join("testdata", "valid", "ok-trajectory.yaml"))
+	if err := os.WriteFile(filepath.Join(dir, "ok-trajectory.yaml"), good, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "other.yml"), good, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	all, err := trajectory.Load(dir)
+	if err == nil {
+		t.Fatalf("Load of a directory with a .yml file = %d files, nil; want TRAJ_BAD_VALUE", len(all))
+	}
+	wantCode(t, "directory with a .yml file", err, "TRAJ_BAD_VALUE")
+	if !strings.Contains(err.Error(), "other.yml") {
+		t.Errorf("the error %q must name the file other.yml", err.Error())
+	}
+}
+
+// 21-AC-20 (D17 N6): the real trajectory directory holds no *.yml file.
+func TestLoad_RealDirectoryHasNoYml_21AC20(t *testing.T) {
+	files, _ := filepath.Glob(filepath.Join("..", "..", "..", "..", "test", "e2e", "tdd", "*.yml"))
+	if len(files) != 0 {
+		t.Errorf("test/e2e/tdd holds %v, rename to .yaml", files)
+	}
+}
+
+// 21-AC-20 (D17): a multi-document file is TRAJ_YAML and an unknown policy resolutionApproval is TRAJ_BAD_VALUE.
+// The fixtures live apart from testdata/malformed so the older table test is unchanged.
+func TestParse_RejectsMultiDocumentAndBadPolicy_21AC20_D17(t *testing.T) {
+	want := map[string]string{"multi-document.yaml": "TRAJ_YAML", "bad-policy-resolution.yaml": "TRAJ_BAD_VALUE"}
+	for name, code := range want {
+		p := filepath.Join("testdata", "malformed-d17", name)
+		tr, err := trajectory.Parse(p, read(t, p))
+		wantCode(t, name, err, code)
+		if err != nil && (tr.Name != "" || len(tr.Events) != 0) {
+			t.Errorf("%s: a rejected file must come with the zero Trajectory, got %+v", name, tr)
+		}
+	}
+}

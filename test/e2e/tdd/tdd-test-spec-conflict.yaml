@@ -11,7 +11,7 @@ events:
   - {event: "dispatch_implementer", actor: "hermes", role: "implementer", at: "2026-10-13T12:05:00Z"}
   - {event: "implementer_reported_conflict", actor: "runner", at: "2026-10-13T12:06:00Z"}
   - {event: "dispatch_auxiliary", actor: "hermes", role: "reviewer", at: "2026-10-13T12:07:00Z", live: {purpose: "adjudication"}}
-  - {event: "adjudication_recorded", actor: "runner", at: "2026-10-13T12:08:00Z", reason: "adjudication test_invalid", live: {verdict: "test_invalid"}}
+  - {event: "adjudication_recorded", actor: "runner", at: "2026-10-13T12:08:00Z", reason: "adjudication test_invalid", verdict: "test_invalid"}
   - {event: "dispatch_tester", actor: "hermes", role: "tester", at: "2026-10-13T12:09:00Z"}
   - {event: "dispatch_implementer", actor: "hermes", role: "implementer", at: "2026-10-13T12:10:00Z"}
   - {event: "approve_test_change", actor: "human", at: "2026-10-13T12:11:00Z"}
