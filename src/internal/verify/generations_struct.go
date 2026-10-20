@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"strconv"
 	"strings"
 )
 
@@ -22,10 +23,12 @@ type goDecl struct {
 	text string // exact source text, doc comment included
 }
 
-// goFileShape is a Go file split into header, import specs and top-level declarations.
+// goFileShape is a Go file split into header, import specs and top-level declarations. cgo holds the exact text of
+// each import declaration that imports "C", doc comment (the cgo preamble) included.
 type goFileShape struct {
 	header  string
 	imports []goImport
+	cgo     []string
 	decls   []goDecl
 }
 
@@ -42,10 +45,31 @@ func parseGoFileShape(path string, src []byte) (goFileShape, error) {
 		switch d := d.(type) {
 		case *ast.GenDecl:
 			if d.Tok == token.IMPORT {
+				// An import spec is compared with its doc comment and, when the declaration holds this one spec, with
+				// the declaration's doc comment: cgo reads the preamble of `import "C"` from there (decision D16).
+				declStart := d.Pos()
+				if d.Doc != nil {
+					declStart = d.Doc.Pos()
+				}
+				cgo := false
 				for _, sp := range d.Specs {
 					is := sp.(*ast.ImportSpec)
 					plain := is.Name == nil || (is.Name.Name != "_" && is.Name.Name != ".")
-					sh.imports = append(sh.imports, goImport{text: slice(is.Pos(), is.End()), plain: plain})
+					start := is.Pos()
+					if is.Doc != nil {
+						start = is.Doc.Pos()
+					}
+					text := slice(start, is.End())
+					if len(d.Specs) == 1 && d.Doc != nil {
+						text = slice(d.Doc.Pos(), d.Doc.End()) + "\n" + text
+					}
+					if p, err := strconv.Unquote(is.Path.Value); err != nil || p == "C" {
+						cgo = true
+					}
+					sh.imports = append(sh.imports, goImport{text: text, plain: plain})
+				}
+				if cgo {
+					sh.cgo = append(sh.cgo, slice(declStart, d.End()))
 				}
 				continue
 			}
@@ -77,6 +101,20 @@ func parseGoFileShape(path string, src []byte) (goFileShape, error) {
 func structuralOK(base, head goFileShape, allowed map[string]bool, allowRemoval bool) bool {
 	if base.header != head.header {
 		return false
+	}
+	// A cgo import declaration (preamble, specs and comments) is byte-identical, and none is added or removed.
+	if len(base.cgo) != len(head.cgo) {
+		return false
+	}
+	headCgo := map[string]int{}
+	for _, t := range head.cgo {
+		headCgo[t]++
+	}
+	for _, t := range base.cgo {
+		if headCgo[t] == 0 {
+			return false
+		}
+		headCgo[t]--
 	}
 	baseImports := map[string]bool{}
 	for _, i := range base.imports {
@@ -127,11 +165,40 @@ func structuralOK(base, head goFileShape, allowed map[string]bool, allowRemoval 
 
 func isGoFile(f TestFile) bool { return f.Language == "go" }
 
-// checkTestFiles rejects a `.go` TestFile without a language: the library cannot tell it is Go (22-R-3).
-func checkTestFiles(in GenerationInput) error {
+// checkGenerationFacts rejects Runner facts that contradict each other (decision D16 B2, 22-R-3): a previous
+// manifest without an opening, a `.go` TestFile whose language is not exactly "go", two TestFiles for one path, and
+// a ChangedFile whose change contradicts its TestFile (modified without both contents, added with a base or without
+// a head, deleted with a head or without a base).
+func checkGenerationFacts(in GenerationInput) error {
+	if in.Previous != nil && in.Opening == "" {
+		return infraErr("a previous manifest is given for a first generation (no opening)")
+	}
+	files := map[string]TestFile{}
 	for _, f := range in.TestFiles {
-		if f.Language == "" && strings.HasSuffix(strings.ToLower(f.Path), ".go") {
-			return infraErr("test file %s has no language", f.Path)
+		if strings.HasSuffix(strings.ToLower(f.Path), ".go") && f.Language != "go" {
+			return infraErr("test file %s has language %q, not \"go\"", f.Path, f.Language)
+		}
+		if _, dup := files[f.Path]; dup {
+			return infraErr("test file %s is given twice", f.Path)
+		}
+		files[f.Path] = f
+	}
+	for _, c := range in.Scope.ChangedFiles {
+		f, ok := files[c.Path]
+		if !ok {
+			continue
+		}
+		var bad bool
+		switch c.Change {
+		case "modified":
+			bad = f.Base == nil || f.Head == nil
+		case "added":
+			bad = f.Base != nil || f.Head == nil
+		case "deleted":
+			bad = f.Base == nil || f.Head != nil
+		}
+		if bad {
+			return infraErr("changed file %s (%s) contradicts its contents (base present %v, head present %v)", c.Path, c.Change, f.Base != nil, f.Head != nil)
 		}
 	}
 	return nil
@@ -154,9 +221,6 @@ func isProtectedClass(c string) bool { return c == "test" || c == "fixture" || c
 // functions that hold a test mapped to a change criterion. The identity of a test function is (file, function name),
 // the file coming from the observation. Only Go is judged in this slice.
 func ruleR1b(in GenerationInput) ([]reasonGroup, error) {
-	if err := checkTestFiles(in); err != nil {
-		return nil, err
-	}
 	files := testFileByPath(in)
 	for _, c := range in.Scope.ChangedFiles {
 		if !isProtectedClass(c.Class) || c.Change != "modified" {
@@ -299,9 +363,6 @@ func prevFileJudgment(in GenerationInput, allowedFor func(path string) map[strin
 // header, imports and declarations byte for byte (A is empty): only whole new declarations, plain imports and files
 // are added. A changed previous file that is not Go, or a deleted one, is a violation.
 func ruleR12(in GenerationInput, f *redFacts) ([]reasonGroup, error) {
-	if err := checkTestFiles(in); err != nil {
-		return nil, err
-	}
 	bad := false
 	for _, t := range in.Previous.Tests {
 		if obs, ok := f.reported[t.ID]; ok && obs.File == "" {
@@ -325,9 +386,6 @@ func ruleR12(in GenerationInput, f *redFacts) ([]reasonGroup, error) {
 // file keeps its header, imports and declarations, except the functions whose every previous test is an approved
 // one, identified by (file, function). A changed file that holds no such function stays byte-identical.
 func ruleR13(in GenerationInput, f *redFacts) ([]reasonGroup, error) {
-	if err := checkTestFiles(in); err != nil {
-		return nil, err
-	}
 	approved := map[string]bool{}
 	for _, ac := range in.ApprovedACIDs {
 		approved[ac] = true
@@ -375,79 +433,4 @@ func ruleR13(in GenerationInput, f *redFacts) ([]reasonGroup, error) {
 		return []reasonGroup{{outcome: outcomeRedInvalid, reasons: []string{"unapproved_test_change"}}}, nil
 	}
 	return nil, nil
-}
-
-// ---------------------------------------------------------------------------------------------------------------
-// Schema limits of contracts/test-manifest.schema.yaml, checked natively so the library stays pure (no file system).
-
-func utf16Len(s string) int {
-	n := 0
-	for _, r := range s {
-		if r >= 0x10000 {
-			n += 2
-		} else {
-			n++
-		}
-	}
-	return n
-}
-
-// validRepoPath is the RepoPath pattern: `^(?!/)(?!.*(^|/)\.\.(/|$))[A-Za-z0-9._@+/-]{1,400}$`.
-func validRepoPath(p string) bool {
-	if len(p) < 1 || len(p) > 400 || p[0] == '/' {
-		return false
-	}
-	for i := 0; i < len(p); i++ {
-		c := p[i]
-		ok := c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.IndexByte("._@+/-", c) >= 0
-		if !ok {
-			return false
-		}
-	}
-	for _, seg := range strings.Split(p, "/") {
-		if seg == ".." {
-			return false
-		}
-	}
-	return true
-}
-
-func isECMAWhitespace(r rune) bool {
-	switch r {
-	case '\t', '\n', '\v', '\f', '\r', ' ', 0xA0, 0x1680, 0x2028, 0x2029, 0x202F, 0x205F, 0x3000, 0xFEFF:
-		return true
-	}
-	return r >= 0x2000 && r <= 0x200A
-}
-
-// validTestID is the TestId pattern: `^[a-z][a-z0-9-]{0,40}::[^\s].{0,498}$`.
-func validTestID(id string) bool {
-	i := strings.Index(id, "::")
-	if i < 1 || i > 41 || !validSuite(id[:i]) {
-		return false
-	}
-	rest := []rune(id[i+2:])
-	if len(rest) == 0 || isECMAWhitespace(rest[0]) {
-		return false
-	}
-	for _, r := range rest[1:] {
-		if r == '\n' || r == '\r' || r == 0x2028 || r == 0x2029 {
-			return false
-		}
-	}
-	return utf16Len(string(rest)) <= 499
-}
-
-// validSuite is `^[a-z][a-z0-9-]{0,40}$`.
-func validSuite(s string) bool {
-	if len(s) < 1 || len(s) > 41 || s[0] < 'a' || s[0] > 'z' {
-		return false
-	}
-	for i := 1; i < len(s); i++ {
-		c := s[i]
-		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-') {
-			return false
-		}
-	}
-	return true
 }

@@ -13,6 +13,7 @@ const (
 	maxManifestFiles      = 500
 	maxManifestStubs      = 100
 	maxManifestACMapping  = 50
+	maxDiscoveryItems     = 200
 )
 
 // ClassifyRedGen applies rules R0-R11 (ClassifyRed) and the generation rules R1b, R11b, R12, R13 and R14 of plan 22
@@ -25,6 +26,9 @@ func ClassifyRedGen(in GenerationInput) (RedClassification, error) {
 	case "", "strengthened", "test_change_approved":
 	default:
 		return RedClassification{}, infraErr("unknown generation opening %q", in.Opening)
+	}
+	if err := checkGenerationFacts(in); err != nil {
+		return RedClassification{}, err
 	}
 	if in.Opening != "" && in.Previous == nil {
 		return RedClassification{}, infraErr("generation opened by %q has no previous manifest", in.Opening)
@@ -62,7 +66,11 @@ func ClassifyRedGen(in GenerationInput) (RedClassification, error) {
 				gs = append(gs, g...)
 			}
 			if f.headOK {
-				gs = append(gs, ruleR14(in, f)...)
+				g, err := ruleR14(in, f)
+				if err != nil {
+					return nil, err
+				}
+				gs = append(gs, g...)
 			}
 			return gs, nil
 		},
@@ -139,52 +147,73 @@ func protectedKind(reported map[string]TestObservation, id string) string {
 }
 
 // ruleR14: the serialized protected-test list (`<kind>\t<id>\n` lines, the tests of the manifest) is at most 60 KiB,
-// and the manifest stays within the schema's array bounds.
-func ruleR14(in GenerationInput, f *redFacts) []reasonGroup {
+// the manifest stays within the schema's array bounds, and every item the manifest would record satisfies the
+// schema's per-item limits (manifestLimits, decision D16 N1): the same item lists BuildManifest builds (files, tests
+// with their suites, ac_mapping, stubs, test_paths) are checked with the same function. An ill-typed test-paths
+// list is an unusable fact (error).
+func ruleR14(in GenerationInput, f *redFacts) ([]reasonGroup, error) {
 	ids := append([]string(nil), f.newTests...)
 	seen := map[string]bool{}
 	for _, id := range ids {
 		seen[id] = true
 	}
-	kinds := map[string]string{}
+	tests := make([]ManifestTest, 0, len(ids))
 	for _, id := range ids {
-		kinds[id] = protectedKind(f.reported, id)
+		obs := f.reported[id]
+		suite := obs.Suite
+		if suite == "" {
+			suite = suiteOf(id)
+		}
+		tests = append(tests, ManifestTest{ID: id, Suite: suite, Kind: protectedKind(f.reported, id), ACIDs: declaredACs(in.RedInput, id), RedStatus: obs.StatusHead})
 	}
 	if in.Previous != nil {
 		for _, t := range in.Previous.Tests {
 			if !seen[t.ID] && f.headPresent[t.ID] {
 				seen[t.ID] = true
-				ids = append(ids, t.ID)
-				kinds[t.ID] = t.Kind
+				tests = append(tests, t)
 			}
 		}
 	}
 	size := 0
-	for _, id := range ids {
-		size += len(kinds[id]) + 1 + len(id) + 1
+	for _, t := range tests {
+		size += len(t.Kind) + 1 + len(t.ID) + 1
 	}
-	files := len(manifestFiles(in.Scope.ChangedFiles, in.Previous))
+	files := manifestFiles(in.Scope.ChangedFiles, in.Previous)
 	mapped := 0
 	for _, c := range in.Criteria {
 		if len(in.Declared[c.ID]) > 0 {
 			mapped++
 		}
 	}
-	bad := false
-	for _, id := range ids {
-		bad = bad || !validTestID(id)
+	paths, err := manifestTestPaths(in.Effective.Values)
+	if err != nil {
+		return nil, infraErr("%v", err)
 	}
-	for _, p := range manifestFiles(in.Scope.ChangedFiles, in.Previous) {
-		bad = bad || !validRepoPath(p.Path)
+	items := Manifest{
+		Files: files, Tests: tests, ACMapping: manifestACMapping(in.Criteria, tests), Stubs: manifestStubs(in.Scope.Stubs),
+		TestPaths: paths,
 	}
-	for _, st := range in.Scope.Stubs {
-		bad = bad || !validRepoPath(st.Path)
-	}
-	if bad || size > maxProtectedListBytes || len(ids) > maxManifestTests || files > maxManifestFiles ||
+	bad := len(itemViolations(items, false)) > 0
+	if bad || size > maxProtectedListBytes || len(tests) > maxManifestTests || len(files) > maxManifestFiles ||
 		len(in.Scope.Stubs) > maxManifestStubs || mapped > maxManifestACMapping {
-		return []reasonGroup{{outcome: outcomeRedInvalid, reasons: []string{"manifest_too_large"}}}
+		return []reasonGroup{{outcome: outcomeRedInvalid, reasons: []string{"manifest_too_large"}}}, nil
 	}
-	return nil
+	return nil, nil
+}
+
+// declaredACs are the criteria, in criteria order, whose declared names resolve to the test id (exactly or by
+// `::`-suffix), as BuildManifest records them.
+func declaredACs(in RedInput, id string) []string {
+	out := []string{}
+	for _, c := range in.Criteria {
+		for _, name := range in.Declared[c.ID] {
+			if id == name || strings.HasSuffix(id, "::"+name) {
+				out = appendUnique(out, c.ID)
+				break
+			}
+		}
+	}
+	return out
 }
 
 // manifestFiles is the files list of a manifest: the protected files of this generation's scope (test, fixture and

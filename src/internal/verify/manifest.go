@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
-	"time"
 )
 
 var acTokenRE = regexp.MustCompile(`AC-[1-9][0-9]{0,2}`)
@@ -37,28 +36,12 @@ func BuildManifest(in ManifestInput) (Manifest, error) {
 		return Manifest{}, err
 	}
 	m.Tests = tests
-	m.ACMapping = []ManifestACMapping{}
-	for _, c := range in.Red.Criteria {
-		var ids []string
-		for _, t := range tests {
-			for _, ac := range t.ACIDs {
-				if ac == c.ID {
-					ids = append(ids, t.ID)
-					break
-				}
-			}
+	m.ACMapping = manifestACMapping(in.Red.Criteria, tests)
+	m.Stubs = manifestStubs(in.Red.Scope.Stubs)
+	for _, st := range m.Stubs {
+		if len(st.ACIDs) == 0 {
+			return Manifest{}, fmt.Errorf("stub marker %q of %s names no criterion", st.Marker, st.Path)
 		}
-		if len(ids) > 0 {
-			m.ACMapping = append(m.ACMapping, ManifestACMapping{ACID: c.ID, Kind: c.Kind, Tests: ids})
-		}
-	}
-	m.Stubs = []ManifestStub{}
-	for _, s := range in.Red.Scope.Stubs {
-		acs := acTokenRE.FindAllString(s.Marker, -1)
-		if len(acs) == 0 {
-			return Manifest{}, fmt.Errorf("stub marker %q of %s names no criterion", s.Marker, s.Path)
-		}
-		m.Stubs = append(m.Stubs, ManifestStub{Path: s.Path, Symbol: s.Symbol, Marker: s.Marker, Shape: s.Shape, Language: languageOfPath(s.Path), ACIDs: acs})
 	}
 	m.DiscoveryProtection = fa.DiscoveryProtection
 	if m.DiscoveryProtection.WholeFiles == nil {
@@ -67,19 +50,11 @@ func BuildManifest(in ManifestInput) (Manifest, error) {
 	if m.DiscoveryProtection.SemanticKeys == nil {
 		m.DiscoveryProtection.SemanticKeys = []SemanticKeyProtection{}
 	}
-	for _, p := range []struct {
-		key string
-		dst *[]string
-	}{{"/spec/testPaths", &m.TestPaths.Test}, {"/spec/fixturePaths", &m.TestPaths.Fixture}, {"/spec/testInfraPaths", &m.TestPaths.TestInfra}} {
-		list, err := stringList(in.Red.Effective.Values[p.key])
-		if err != nil {
-			return Manifest{}, fmt.Errorf("effective %s: %w", p.key, err)
-		}
-		if list == nil {
-			list = []string{}
-		}
-		*p.dst = list
+	paths, err := manifestTestPaths(in.Red.Effective.Values)
+	if err != nil {
+		return Manifest{}, err
 	}
+	m.TestPaths = paths
 	if fa.Previous != nil {
 		switch fa.SupersedesReason {
 		case "test_change_approved", "strengthened", "respec":
@@ -90,9 +65,6 @@ func BuildManifest(in ManifestInput) (Manifest, error) {
 	}
 	if len(m.Files) == 0 || len(m.Tests) == 0 || len(m.ACMapping) == 0 {
 		return Manifest{}, fmt.Errorf("a manifest needs files, tests and an ac_mapping")
-	}
-	if len(m.Files) > maxManifestFiles || len(m.Tests) > maxManifestTests || len(m.Stubs) > maxManifestStubs || len(m.ACMapping) > maxManifestACMapping {
-		return Manifest{}, fmt.Errorf("manifest exceeds the schema limits")
 	}
 	d, err := manifestDigest(m)
 	if err != nil {
@@ -105,110 +77,113 @@ func BuildManifest(in ManifestInput) (Manifest, error) {
 	return m, nil
 }
 
-var (
-	gitShaRE   = regexp.MustCompile(`^[a-f0-9]{40}$`)
-	objectIDRE = regexp.MustCompile(`^([a-f0-9]{40}|[a-f0-9]{64})$`)
-	sha256RE   = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
-	acIDRE     = regexp.MustCompile(`^AC-[1-9][0-9]{0,2}$`)
-	taskIDRE   = regexp.MustCompile(`^sc-[0-9]+$`)
-	repoNameRE = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
-	stubMarkRE = regexp.MustCompile(`^SC-STUB\(sc-[0-9]+( AC-[1-9][0-9]{0,2})+\)$`)
-)
-
 // validateManifestSchema checks a manifest against contracts/test-manifest.schema.yaml natively (the library does no
-// file access, and the schema is protected from change here): required fields, patterns, enums and bounds. The
-// BuildManifest tests also validate the output against the schema file itself.
+// file access, and the schema is protected from change here): required fields, enums and bounds here, the string
+// limits through the schema's own constraints (manifestLimits). The error lists every violation in document order,
+// so the same input always gives the same error. The BuildManifest tests also validate the output against the
+// schema file itself.
 func validateManifestSchema(m Manifest) error {
-	check := func(ok bool, what string) error {
-		if !ok {
-			return fmt.Errorf("%s is invalid", what)
-		}
-		return nil
-	}
-	var first error
+	var bad []string
 	req := func(ok bool, what string) {
-		if first == nil {
-			first = check(ok, what)
+		if !ok {
+			bad = append(bad, what)
 		}
 	}
 	req(m.SchemaVersion == "v1alpha1", "schema_version")
 	req(m.Kind == "test" || m.Kind == "judge", "kind")
-	req(taskIDRE.MatchString(m.TaskID), "task_id")
+	req(withinLimit(limTaskID, m.TaskID), "task_id")
 	req(m.Generation >= 1, "generation")
 	req(m.ACVersion >= 1, "ac_version")
-	_, terr := time.Parse(time.RFC3339, m.CreatedAt)
-	req(terr == nil, "created_at")
-	req(repoNameRE.MatchString(m.Repository), "repository")
-	req(gitShaRE.MatchString(m.BaseCommit), "base_commit")
-	req(gitShaRE.MatchString(m.GenerationStartCommit), "generation_start_commit")
-	req(gitShaRE.MatchString(m.TestCommit), "test_commit")
-	req(sha256RE.MatchString(m.RedEvidenceDigest), "red_evidence_digest")
-	req(m.PolicyRevision == "" || sha256RE.MatchString(m.PolicyRevision), "policy_revision")
-	req(len(m.Files) >= 1 && len(m.Files) <= 500, "files size")
-	for _, f := range m.Files {
-		req(validRepoPath(f.Path), "file path "+f.Path)
-		req(objectIDRE.MatchString(f.BlobSha), "blob_sha of "+f.Path)
-		req(f.Class == "test" || f.Class == "fixture" || f.Class == "test_infra" || f.Class == "judge", "class of "+f.Path)
-		req(f.Change == "added" || f.Change == "modified", "change of "+f.Path)
-	}
-	req(len(m.Tests) >= 1 && len(m.Tests) <= 1000, "tests size")
-	for _, t := range m.Tests {
-		req(validTestID(t.ID), "test id "+t.ID)
-		req(validSuite(t.Suite), "suite of "+t.ID)
-		req(t.Kind == "new" || t.Kind == "modified", "kind of "+t.ID)
-		req(t.ACIDs != nil, "ac_ids of "+t.ID)
-		for _, ac := range t.ACIDs {
-			req(acIDRE.MatchString(ac), "ac id of "+t.ID)
-		}
-		req(t.RedStatus == "failed_assertion" || t.RedStatus == "stub_unimplemented" || t.RedStatus == "passed", "red_status of "+t.ID)
-	}
-	req(len(m.ACMapping) >= 1 && len(m.ACMapping) <= 50, "ac_mapping size")
-	for _, a := range m.ACMapping {
-		req(acIDRE.MatchString(a.ACID), "ac_mapping ac_id")
-		req(a.Kind == "change" || a.Kind == "preservation", "ac_mapping kind")
-		req(len(a.Tests) >= 1, "ac_mapping tests of "+a.ACID)
-		for _, id := range a.Tests {
-			req(validTestID(id), "ac_mapping test id "+id)
-		}
-	}
-	req(len(m.Stubs) <= 100, "stubs size")
-	for _, s := range m.Stubs {
-		req(validRepoPath(s.Path), "stub path "+s.Path)
-		req(utf16Len(s.Symbol) <= 200, "stub symbol")
-		req(stubMarkRE.MatchString(s.Marker), "stub marker")
-		req(s.Shape == "zero_value" || s.Shape == "panic", "stub shape")
-		req(utf16Len(s.Language) <= 30, "stub language")
-		req(len(s.ACIDs) >= 1, "stub ac_ids")
-		for _, ac := range s.ACIDs {
-			req(acIDRE.MatchString(ac), "stub ac id")
-		}
-	}
+	req(withinLimit(limCreatedAt, m.CreatedAt), "created_at")
+	req(withinLimit(limRepository, m.Repository), "repository")
+	req(withinLimit(limGitSha, m.BaseCommit), "base_commit")
+	req(withinLimit(limGitSha, m.GenerationStartCommit), "generation_start_commit")
+	req(withinLimit(limGitSha, m.TestCommit), "test_commit")
+	req(withinLimit(limSha256, m.RedEvidenceDigest), "red_evidence_digest")
+	req(m.PolicyRevision == "" || withinLimit(limSha256, m.PolicyRevision), "policy_revision")
+	req(len(m.Files) >= 1 && len(m.Files) <= maxManifestFiles, "files (size)")
+	req(len(m.Tests) >= 1 && len(m.Tests) <= maxManifestTests, "tests (size)")
+	req(len(m.ACMapping) >= 1 && len(m.ACMapping) <= maxManifestACMapping, "ac_mapping (size)")
+	req(len(m.Stubs) <= maxManifestStubs, "stubs (size)")
+	bad = append(bad, itemViolations(m, true)...)
 	dp := m.DiscoveryProtection
-	req(dp.WholeFiles != nil && len(dp.WholeFiles) <= 200, "whole_files")
-	for _, w := range dp.WholeFiles {
-		req(validRepoPath(w.Path), "whole_files path")
-		req(w.BlobSha == nil || objectIDRE.MatchString(*w.BlobSha), "whole_files blob_sha")
+	req(dp.WholeFiles != nil && len(dp.WholeFiles) <= maxDiscoveryItems, "discovery_protection.whole_files")
+	for i, w := range dp.WholeFiles {
+		req(withinLimit(limRepoPath, w.Path), fmt.Sprintf("discovery_protection.whole_files[%d].path", i))
+		req(w.BlobSha == nil || withinLimit(limObjectID, *w.BlobSha), fmt.Sprintf("discovery_protection.whole_files[%d].blob_sha", i))
 	}
-	req(dp.SemanticKeys != nil && len(dp.SemanticKeys) <= 200, "semantic_keys")
-	for _, k := range dp.SemanticKeys {
-		req(validRepoPath(k.Path), "semantic_keys path")
-		req(utf16Len(k.Key) <= 200, "semantic_keys key")
-		req(k.ValueSha256 == nil || sha256RE.MatchString(*k.ValueSha256), "semantic_keys value_sha256")
-	}
-	for name, list := range map[string][]string{"test": m.TestPaths.Test, "fixture": m.TestPaths.Fixture, "test_infra": m.TestPaths.TestInfra} {
-		req(list != nil, "test_paths."+name)
-		for _, g := range list {
-			req(utf16Len(g) <= 200, "test_paths."+name+" item")
-		}
+	req(dp.SemanticKeys != nil && len(dp.SemanticKeys) <= maxDiscoveryItems, "discovery_protection.semantic_keys")
+	for i, k := range dp.SemanticKeys {
+		req(withinLimit(limRepoPath, k.Path), fmt.Sprintf("discovery_protection.semantic_keys[%d].path", i))
+		req(withinLimit(limSemanticKey, k.Key), fmt.Sprintf("discovery_protection.semantic_keys[%d].key", i))
+		req(k.ValueSha256 == nil || withinLimit(limSha256, *k.ValueSha256), fmt.Sprintf("discovery_protection.semantic_keys[%d].value_sha256", i))
 	}
 	if m.Supersedes != nil {
 		req(m.Supersedes.Generation >= 1, "supersedes.generation")
-		req(sha256RE.MatchString(m.Supersedes.Digest), "supersedes.digest")
+		req(withinLimit(limSha256, m.Supersedes.Digest), "supersedes.digest")
 		r := m.Supersedes.Reason
 		req(r == "test_change_approved" || r == "strengthened" || r == "respec", "supersedes.reason")
 	}
-	req(sha256RE.MatchString(m.Digest), "digest")
-	return first
+	req(withinLimit(limSha256, m.Digest), "digest")
+	if len(bad) > 0 {
+		return fmt.Errorf("invalid %s", strings.Join(bad, ", "))
+	}
+	return nil
+}
+
+// manifestACMapping maps every criterion, in criteria order, to the manifest tests that carry it; a criterion with
+// no test has no entry.
+func manifestACMapping(criteria []Criterion, tests []ManifestTest) []ManifestACMapping {
+	out := []ManifestACMapping{}
+	for _, c := range criteria {
+		var ids []string
+		for _, t := range tests {
+			for _, ac := range t.ACIDs {
+				if ac == c.ID {
+					ids = append(ids, t.ID)
+					break
+				}
+			}
+		}
+		if len(ids) > 0 {
+			out = append(out, ManifestACMapping{ACID: c.ID, Kind: c.Kind, Tests: ids})
+		}
+	}
+	return out
+}
+
+// manifestStubs is the stubs list: each declared stub with the criteria its marker names (none when the marker names
+// none, which BuildManifest refuses and the schema rejects).
+func manifestStubs(stubs []StubFact) []ManifestStub {
+	out := []ManifestStub{}
+	for _, s := range stubs {
+		acs := acTokenRE.FindAllString(s.Marker, -1)
+		if acs == nil {
+			acs = []string{}
+		}
+		out = append(out, ManifestStub{Path: s.Path, Symbol: s.Symbol, Marker: s.Marker, Shape: s.Shape, Language: languageOfPath(s.Path), ACIDs: acs})
+	}
+	return out
+}
+
+// manifestTestPaths is test_paths: the effective testPaths, fixturePaths and testInfraPaths. An ill-typed list is an
+// error.
+func manifestTestPaths(values map[string]any) (ManifestTestPaths, error) {
+	var tp ManifestTestPaths
+	for _, p := range []struct {
+		key string
+		dst *[]string
+	}{{"/spec/testPaths", &tp.Test}, {"/spec/fixturePaths", &tp.Fixture}, {"/spec/testInfraPaths", &tp.TestInfra}} {
+		list, err := stringList(values[p.key])
+		if err != nil {
+			return ManifestTestPaths{}, fmt.Errorf("effective %s: %w", p.key, err)
+		}
+		if list == nil {
+			list = []string{}
+		}
+		*p.dst = list
+	}
+	return tp, nil
 }
 
 // manifestTests lists N ∪ M in the order of the criteria that declare each test (criteria order, then declaration
