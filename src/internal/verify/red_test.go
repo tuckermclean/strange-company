@@ -37,14 +37,14 @@ type redFixture struct {
 }
 
 type redExpect struct {
-	Error       string          `json:"error"`
-	Outcome     string          `json:"outcome"`
-	Decisive    string          `json:"decisive"`
-	Reasons     *[]string       `json:"reasons"`
-	Contains    []string        `json:"contains"`
-	NewTests    *[]string       `json:"new_tests"`
-	ACResults   *[]ACResult     `json:"ac_results"`
-	SchemaValid bool            `json:"schema_valid"`
+	Error       string      `json:"error"`
+	Outcome     string      `json:"outcome"`
+	Decisive    string      `json:"decisive"`
+	Reasons     *[]string   `json:"reasons"`
+	Contains    []string    `json:"contains"`
+	NewTests    *[]string   `json:"new_tests"`
+	ACResults   *[]ACResult `json:"ac_results"`
+	SchemaValid bool        `json:"schema_valid"`
 }
 
 func loadRedFixture(t testing.TB, caseDir string) (redFixture, redExpect) {
