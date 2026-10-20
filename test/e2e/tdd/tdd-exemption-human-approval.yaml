@@ -1,21 +1,23 @@
 # A human-approved exemption class waits in JUDGE_AWAITING_APPROVAL until /sc approve-judge
 trajectory: tdd-exemption-human-approval
 title: "A human-approved exemption class waits in JUDGE_AWAITING_APPROVAL until /sc approve-judge"
-refs: ["plan 21 22.2 tdd-exemption-human-approval", "SPEC 106 item 9"]
+refs: ["plan 21 22.2 tdd-exemption-human-approval", "SPEC 106 item 9", "plan 29 14.8"]
 mode: verification-first
 live: {"fake_scenarios": ["fake-judge-docs"]}
 events:
   - {event: "task_created", actor: "hermes", at: "2026-10-13T12:01:00Z"}
   - {event: "dispatch_tester", actor: "hermes", role: "tester", at: "2026-10-13T12:02:00Z", facts: {G_JUDGE_SOURCE: "artifact"}}
-  - {event: "tester_result_accepted", actor: "runner", at: "2026-10-13T12:03:00Z", facts: {G_JUDGE_DETERMINISTIC: false}}
-  - {event: "dispatch_producer", actor: "hermes", role: "implementer", at: "2026-10-13T12:04:00Z"}
-  - {event: "approve_judge", actor: "hermes", at: "2026-10-13T12:05:00Z"}
-  - {event: "approve_judge", actor: "human", at: "2026-10-13T12:06:00Z"}
-  - {event: "dispatch_producer", actor: "hermes", role: "implementer", at: "2026-10-13T12:07:00Z"}
-expected_states: ["SPECIFIED", "JUDGE_AUTHORING", "JUDGE_AWAITING_APPROVAL", "JUDGE_AWAITING_APPROVAL", "JUDGE_AWAITING_APPROVAL", "JUDGE_APPROVED", "PRODUCING"]
-expected_transitions: ["T001", "T110", "T115", "rejected", "rejected", "T121", "T124"]
-expected_reasons: ["", "", "approval_required", "GATE_NOT_SATISFIED", "GATE_NOT_SATISFIED", "", ""]
+  - {event: "tester_result_accepted", actor: "runner", at: "2026-10-13T12:03:00Z", pipeline: 401}
+  - {event: "judge_classified", actor: "ci", at: "2026-10-13T12:04:00Z", facts: {G_VERIFICATION_OUTCOME: "judge_valid", G_APPROVAL: "human"}}
+  - {event: "dispatch_producer", actor: "hermes", role: "implementer", at: "2026-10-13T12:05:00Z"}
+  - {event: "approve_judge", actor: "hermes", at: "2026-10-13T12:06:00Z"}
+  - {event: "approve_judge", actor: "human", at: "2026-10-13T12:07:00Z"}
+  - {event: "dispatch_producer", actor: "hermes", role: "implementer", at: "2026-10-13T12:08:00Z"}
+expected_states: ["SPECIFIED", "JUDGE_AUTHORING", "JUDGE_VALIDATING", "JUDGE_AWAITING_APPROVAL", "JUDGE_AWAITING_APPROVAL", "JUDGE_AWAITING_APPROVAL", "JUDGE_APPROVED", "PRODUCING"]
+expected_transitions: ["T001", "T110", "T114", "T117", "rejected", "rejected", "T121", "T124"]
+expected_reasons: ["", "", "", "approval_required", "GATE_NOT_SATISFIED", "GATE_NOT_SATISFIED", "", ""]
 expected_failed_guards:
+  - ~
   - ~
   - ~
   - ~

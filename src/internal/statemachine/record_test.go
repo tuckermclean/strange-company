@@ -35,7 +35,7 @@ func recordHistory(t *testing.T) (*Machine, Task, RecordMeta) {
 		task = next
 		meta.Steps = append(meta.Steps, RecordStep{At: s.at, Actor: "hermes", Reason: "step " + d.Applied.TransitionID, EventKey: "internal:setup-" + string(rune('a'+i)), Pipeline: s.pipe})
 	}
-	return m, task, meta
+	return m, task, withRecordExtras(task, meta) // D17 N5: generation rows and the pending pipeline uuid come from the meta
 }
 
 // 29-AC-10: Record serializes a task with an active execution; the record validates and maps the library state.

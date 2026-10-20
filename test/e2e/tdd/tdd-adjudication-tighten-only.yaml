@@ -2,6 +2,7 @@
 trajectory: tdd-adjudication-tighten-only
 title: "A second adjudication test_invalid after a first test_valid does not set test_change_approved (TDD-20)"
 refs: ["29-AC-11", "TDD-20", "plan 29 14.6"]
+policy: {resolutionApproval: "adjudicator"}
 live: {"fake_scenarios": ["fake-adjudicate-test-valid", "fake-adjudicate-test-invalid"], "assert": ["conflict.test_change_approved stays false", "human approval is required (adjudications disagree)"]}
 events:
   - {event: "task_created", actor: "hermes", at: "2026-10-13T12:01:00Z"}
@@ -11,9 +12,9 @@ events:
   - {event: "dispatch_implementer", actor: "hermes", role: "implementer", at: "2026-10-13T12:05:00Z"}
   - {event: "implementer_reported_conflict", actor: "runner", at: "2026-10-13T12:06:00Z"}
   - {event: "dispatch_auxiliary", actor: "hermes", role: "reviewer", at: "2026-10-13T12:07:00Z", live: {purpose: "adjudication"}}
-  - {event: "adjudication_recorded", actor: "runner", at: "2026-10-13T12:08:00Z", reason: "adjudication test_valid", live: {verdict: "test_valid"}}
+  - {event: "adjudication_recorded", actor: "runner", at: "2026-10-13T12:08:00Z", reason: "adjudication test_valid", verdict: "test_valid"}
   - {event: "dispatch_auxiliary", actor: "hermes", role: "reviewer", at: "2026-10-13T12:09:00Z", live: {purpose: "adjudication"}}
-  - {event: "adjudication_recorded", actor: "runner", at: "2026-10-13T12:10:00Z", reason: "adjudication test_invalid", live: {verdict: "test_invalid"}}
+  - {event: "adjudication_recorded", actor: "runner", at: "2026-10-13T12:10:00Z", reason: "adjudication test_invalid", verdict: "test_invalid"}
   - {event: "dispatch_tester", actor: "hermes", role: "tester", at: "2026-10-13T12:11:00Z"}
 expected_states: ["SPECIFIED", "TEST_AUTHORING", "RED_VERIFYING", "RED_VERIFIED", "IMPLEMENTING", "TEST_SPEC_CONFLICT", "TEST_SPEC_CONFLICT", "TEST_SPEC_CONFLICT", "TEST_SPEC_CONFLICT", "TEST_SPEC_CONFLICT", "TEST_SPEC_CONFLICT"]
 expected_transitions: ["T001", "T010", "T014", "T020", "T030", "T080", "T090", "T082", "T090", "T082", "rejected"]

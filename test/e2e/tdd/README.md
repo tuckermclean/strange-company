@@ -13,7 +13,8 @@ the same trajectory:
   it; the library runner ignores them.
 
 `src/internal/statemachine/trajectory` parses and validates the files (strict: an unknown key, a missing field or
-unequal list lengths is an error, as is a directory without any trajectory file).
+unequal list lengths is an error, as is a directory without any trajectory file, a `*.yml` file in the directory,
+or a file with more than one YAML document).
 
 ## Format
 
@@ -22,6 +23,7 @@ trajectory: tdd-happy-path          # required; equals the file stem
 title: ...                          # optional
 refs: ["plan 21 22.2 ...", "29-AC-11"]   # plan row or acceptance criterion the file specifies
 mode: test-first                    # test-first (default) | verification-first
+policy: {resolutionApproval: human} # optional: spec.testSpecConflict.resolutionApproval, human (default) | adjudicator
 task: {...}                         # optional overrides of the record fields the library does not own
 events:                             # required, in order
   - event: dispatch_implementer     # required: an event of the table
@@ -32,9 +34,10 @@ events:                             # required, in order
     dispatch: {harness: ..., model: ..., profile: ..., start_commit: ..., ac_version: 1, notes: ...}
     failure_code: JOB_LOST          # execution_failed: the terminal failure code
     failure_signature: TestX        # merit/policy failures: the failure signature
+    verdict: test_invalid           # adjudication_recorded: the adjudicator verdict (StepInput.Verdict)
     reason: free text               # history reason of the record (default: event and transition id)
     pipeline: 412                   # events that start a verification: the pipeline number (claimed_by)
-    live: {...}                     # ignored by the library runner, except live.verdict of adjudication_recorded (StepInput.Verdict)
+    live: {...}                     # ignored by the library runner
 expected_states: [...]              # required, one per event: the task state after the event
 expected_transitions: [...]         # required, one per event: the transition id, or "rejected"
 expected_reasons: [...]             # required, one per event, "" when none
@@ -43,6 +46,11 @@ expected_attempts: {...}            # optional: final counters, dotted names
 live: {...}                         # ignored by the library runner (fake scenarios, cluster assertions, evidence reasons)
 ```
 
+* **Policy.** The library runner applies `policy` (`resolutionApproval`, default `human`) to every step.
+  `tdd-adjudication-tighten-only` runs under `adjudicator`, the policy under which a lone `test_invalid` adjudication
+  would itself approve the test change, so that TDD-20 (a later verdict never loosens an earlier one) is proved.
+* **Failure codes.** `failure_code` is a code of plan 29 section 15.2 (for example `JOB_LOST`, `TIMED_OUT`,
+  `RESULT_SCHEMA_INVALID` infrastructure; `TEST_TAMPER`, `PROTECTED_PATH_VIOLATION` policy).
 * **Facts.** For every step the fake facts answer every base boolean guard `true` and no valued guard; `facts`
   overrides. A key is a guard id of the table (`G_X: false`, or `G_VERIFICATION_OUTCOME: red_valid` for the valued
   guards) or `<role>/<guard>` for a per-role boolean. Facts are per step; they never carry over. The counter and
@@ -73,15 +81,13 @@ live: {...}                         # ignored by the library runner (fake scenar
 | `tdd-happy-path` | valid RED, implementation, GREEN path (T001 T010 T014 T020 T030 T032 T033 T040 T041 T050) |
 | `tdd-test-spec-conflict`, `tdd-conflict-rejected` | TEST_SPEC_CONFLICT is supported (and its variant) |
 | `tdd-provenance-survives-retry` | TDD provenance survives retry |
-| `tdd-exemption-not-in-policy`, `-auto-docs`, `-human-approval` | exemption requires approved policy |
+| `tdd-exemption-not-in-policy`, `-auto-docs`, `-human-approval`, `-no-self` | exemption requires approved policy (`-human-approval`: T117, `G_APPROVAL:human`; `-no-self`: `RESULT_SCHEMA_INVALID`, infrastructure, T100) |
 | `tdd-strengthen-after-blocked-refused`, `tdd-already-satisfied-needs-human`, `tdd-forged-trailer-commit`, `tdd-unapproved-test-change`, `tdd-protected-path-edit`, `tdd-pipeline-config-edit`, `tdd-merge-without-provenance`, `tdd-human-command-authz`, `tdd-exhaustion` | additional organizational tests |
 | `tdd-review-truncated-input` (TDD-13), `tdd-adjudication-tighten-only` (TDD-20), `tdd-external-commit-hermes-refused` (TDD-9) | 29-AC-11 bypass trajectories without a row of their own |
 | `tdd-retry-infra-refunds`, `tdd-retry-consecutive-timeouts`, `tdd-retry-emergency-stop` | 29-AC-7 golden retry sequences |
 
 Not expressible as a library trajectory (no state-machine event sequence; the live runner covers them):
 
-* `tdd-exemption-no-self`: a worker result with an extra `verification` field is `RESULT_SCHEMA_INVALID`, a result
-  ingestion schema check (plans 26 and 27), not a table transition.
 * `tdd-second-pr-other-branch`: the `tdd-provenance = failure` commit status of a second PR is a Forgejo status, the
   Runner emits no event.
 * `tdd-foreign-pipeline-ignored`: "no transition" for a human-created pipeline; the Runner never produces an event.

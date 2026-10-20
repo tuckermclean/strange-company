@@ -41,7 +41,7 @@ var plan21Suite = []string{
 	"tdd-tamper-delete", "tdd-tamper-weaken", "tdd-tamper-golden", "tdd-tamper-helper", "tdd-tamper-monkeypatch",
 	"tdd-tamper-nested-module", "tdd-phase-conditional", "tdd-tamper-skip", "tdd-tamper-discovery", "tdd-tamper-env-detect",
 	"tdd-happy-path", "tdd-test-spec-conflict", "tdd-conflict-rejected", "tdd-provenance-survives-retry",
-	"tdd-exemption-not-in-policy", "tdd-exemption-auto-docs", "tdd-exemption-human-approval",
+	"tdd-exemption-not-in-policy", "tdd-exemption-auto-docs", "tdd-exemption-human-approval", "tdd-exemption-no-self",
 	"tdd-strengthen-after-blocked-refused", "tdd-already-satisfied-needs-human", "tdd-forged-trailer-commit",
 	"tdd-unapproved-test-change", "tdd-protected-path-edit", "tdd-pipeline-config-edit", "tdd-merge-without-provenance",
 	"tdd-human-command-authz", "tdd-exhaustion",
@@ -347,8 +347,8 @@ func trajectoryReason(d Decision, task Task) string {
 func trajectoryInput(tr trajectory.Trajectory, i int) StepInput {
 	e := tr.Events[i]
 	in := StepInput{FailureCode: e.FailureCode, FailureSignature: e.FailureSignature}
-	if v, ok := e.Live["verdict"].(string); ok && e.Event == "adjudication_recorded" {
-		in.Verdict = v // the adjudicator verdict reaches the library as StepInput.Verdict (D14)
+	if e.Event == "adjudication_recorded" {
+		in.Verdict = e.Verdict // the adjudicator verdict reaches the library as StepInput.Verdict (D14, D17 N6: a first-class field)
 	}
 	switch d := e.Dispatch; {
 	case d != nil:
@@ -368,6 +368,8 @@ func runTrajectory(t *testing.T, m *Machine, tr trajectory.Trajectory) Task {
 	mdl := evContract(t)
 	task := Task{Snapshot: TaskSnapshot{Mode: tr.Mode, Attempts: Attempts{AutonomousMax: acPolicy.MaxAutonomousAttempts, TesterMax: acPolicy.MaxTesterAttempts,
 		MeritByGeneration: map[string]int{}, ByClass: map[string]int{}}}}
+	policy := acPolicy
+	policy.ResolutionApproval = tr.Policy.ResolutionApproval // D17 N6: the trajectory's policy field
 	fields := defaultRecordFields(tr.Mode)
 	for k, v := range tr.Task {
 		fields[k] = v
@@ -384,7 +386,7 @@ func runTrajectory(t *testing.T, m *Machine, tr trajectory.Trajectory) Task {
 		lastAt = at
 		in := trajectoryInput(tr, i)
 		before := task
-		d, next, err := Apply(m, task, Event{Name: e.Event, Actor: e.Actor, Role: e.Role}, in, acPolicy, trajectoryFacts(t, mdl, e.Facts))
+		d, next, err := Apply(m, task, Event{Name: e.Event, Actor: e.Actor, Role: e.Role}, in, policy, trajectoryFacts(t, mdl, e.Facts))
 		if err != nil {
 			t.Fatalf("%s: Apply: %v", where, err)
 		}
@@ -428,7 +430,7 @@ func runTrajectory(t *testing.T, m *Machine, tr trajectory.Trajectory) Task {
 		if d.Applied == nil {
 			continue
 		}
-		rec, err := Record(m, task, RecordMeta{Fields: fields, Steps: steps, ModelTiers: tiers})
+		rec, err := Record(m, task, withRecordExtras(task, RecordMeta{Fields: fields, Steps: steps, ModelTiers: tiers}))
 		if err != nil || rec == nil {
 			t.Fatalf("%s: Record: %v", where, err)
 		}
@@ -525,7 +527,7 @@ func TestTrajectories_HappyPathRecords_29AC10(t *testing.T) {
 				EventKey: fmt.Sprintf("internal:golden-%d", i+1), Pipeline: tr.Events[i].Pipeline})
 			tiers[s.Input.Dispatch.Model] = "standard"
 		}
-		rec, err := Record(m, task, RecordMeta{Fields: defaultRecordFields(tr.Mode), Steps: steps, ModelTiers: tiers})
+		rec, err := Record(m, task, withRecordExtras(task, RecordMeta{Fields: defaultRecordFields(tr.Mode), Steps: steps, ModelTiers: tiers}))
 		if err != nil {
 			t.Fatalf("Record: %v", err)
 		}
@@ -723,4 +725,85 @@ func TestMakeTarget_TestTddLibrary_21AC20(t *testing.T) {
 	if !regexp.MustCompile(`(?m)^\.PHONY:[^\n]*\btest-tdd-library\b`).MatchString(all.String()) {
 		t.Error("test-tdd-library is not declared .PHONY")
 	}
+}
+
+// 29-AC-11, 21-AC-20 (D17 N6): the trajectories model what plan 21 section 22.2 and plan 29 sections 14 and 15.2
+// say, so editing a file cannot silently drop it; the replay checks that the library produces it.
+func TestTrajectories_D17_29AC11(t *testing.T) {
+	trs := byName(t)
+	step := func(t *testing.T, tr trajectory.Trajectory, i int, id, state string) {
+		t.Helper()
+		if i < 0 || i >= len(tr.Events) || tr.ExpectedTransitions[i] != id || tr.ExpectedStates[i] != state {
+			t.Fatalf("%s: event %d must fire %s into %s", tr.Name, i+1, id, state)
+		}
+	}
+	t.Run("exemption-no-self", func(t *testing.T) { // RESULT_SCHEMA_INVALID is infrastructure (plan 29 section 15.2): T100
+		tr, ok := trs["tdd-exemption-no-self"]
+		if !ok {
+			t.Fatal("test/e2e/tdd/tdd-exemption-no-self.yaml is missing")
+		}
+		i := trNext(tr, -1, "execution_failed", "runner")
+		step(t, tr, i, "T100", "PRODUCING")
+		if tr.Events[i].FailureCode != "RESULT_SCHEMA_INVALID" || tr.Events[i].Facts["G_FAILURE_CLASS"] != "infrastructure" || tr.Mode != "verification-first" {
+			t.Errorf("%s: event %d must be execution_failed RESULT_SCHEMA_INVALID, class infrastructure, in verification-first", tr.Name, i+1)
+		}
+	})
+	t.Run("forged-trailer-commit", func(t *testing.T) { // TDD-9: external push from GREEN_VERIFIED, then reverify green is tamper_detected
+		tr := trs["tdd-forged-trailer-commit"]
+		push := trNext(tr, -1, "head_changed_externally", "runner")
+		if push < 1 || tr.ExpectedStates[push-1] != "GREEN_VERIFIED" {
+			t.Fatalf("%s: head_changed_externally must follow GREEN_VERIFIED", tr.Name)
+		}
+		step(t, tr, push, "T055", "NEEDS_HUMAN")
+		re := trNext(tr, push, "reverify_green", "human")
+		step(t, tr, re, "T068", "GREEN_VERIFYING")
+		tamper := trNext(tr, re, "green_classified", "ci")
+		step(t, tr, tamper, "T036", "NEEDS_HUMAN")
+		if tr.Events[tamper].Facts["G_VERIFICATION_OUTCOME"] != "tamper_detected" {
+			t.Errorf("%s: the reverification must classify tamper_detected", tr.Name)
+		}
+		step(t, tr, trNext(tr, tamper, "accept_external_commit", "human"), "T072", "GREEN_VERIFYING")
+	})
+	t.Run("exemption-human-approval", func(t *testing.T) { // the human class goes through T117 (G_APPROVAL:human)
+		tr := trs["tdd-exemption-human-approval"]
+		i := trNext(tr, -1, "judge_classified", "ci")
+		step(t, tr, i, "T117", "JUDGE_AWAITING_APPROVAL")
+		if tr.Events[i].Facts["G_APPROVAL"] != "human" || tr.ExpectedReasons[i] != "approval_required" {
+			t.Errorf("%s: judge_classified must carry G_APPROVAL human and end with approval_required", tr.Name)
+		}
+	})
+	t.Run("failure-codes", func(t *testing.T) { // plan 29 section 15.2: ingestion violation codes, never POLICY_VIOLATION
+		for name, code := range map[string]string{"tdd-tamper-delete": "TEST_TAMPER", "tdd-protected-path-edit": "PROTECTED_PATH_VIOLATION", "tdd-pipeline-config-edit": "PROTECTED_PATH_VIOLATION"} {
+			tr := trs[name]
+			i := trNext(tr, -1, "execution_failed", "runner")
+			if i < 0 || tr.Events[i].FailureCode != code || tr.Events[i].Facts["G_FAILURE_CLASS"] != "policy" {
+				t.Errorf("%s: execution_failed must carry failure_code %s with class policy", name, code)
+			}
+		}
+		for _, tr := range trs {
+			for i, e := range tr.Events {
+				if e.FailureCode == "POLICY_VIOLATION" {
+					t.Errorf("%s event %d: POLICY_VIOLATION is not a failure code of plan 29 section 15.2", tr.Name, i+1)
+				}
+			}
+		}
+	})
+	t.Run("adjudication-policy-and-verdict", func(t *testing.T) { // TDD-20 under the adjudicator policy; verdict is a first-class field
+		if got := trs["tdd-adjudication-tighten-only"].Policy.ResolutionApproval; got != "adjudicator" {
+			t.Errorf("tdd-adjudication-tighten-only: policy.resolutionApproval = %q, want adjudicator (under human approval TDD-20 proves nothing)", got)
+		}
+		for _, tr := range trs {
+			for i, e := range tr.Events {
+				if _, ok := e.Live["verdict"]; ok {
+					t.Errorf("%s event %d: live.verdict is migrated to the verdict field", tr.Name, i+1)
+				}
+				if e.Event == "adjudication_recorded" && e.Verdict == "" {
+					t.Errorf("%s event %d: adjudication_recorded needs a verdict", tr.Name, i+1)
+				}
+				if e.Event != "adjudication_recorded" && e.Verdict != "" {
+					t.Errorf("%s event %d: only adjudication_recorded has a verdict", tr.Name, i+1)
+				}
+			}
+		}
+	})
 }

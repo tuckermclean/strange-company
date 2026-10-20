@@ -19,6 +19,14 @@ type RecordMeta struct {
 	Fields     map[string]any
 	Steps      []RecordStep
 	ModelTiers map[string]string
+	// Generations is one row per generation 1..Snapshot.Generation of the task (tdd.generations); the library
+	// does not know the commits, so Record fails closed when a row is missing.
+	// SC-STUB(F05 29-AC-10)
+	Generations []RecordGeneration
+	// PendingPipeline is the uuid of the pending verification pipeline (claimed_by ci:pending/<uuid>), required
+	// in a verification state whose last step has no pipeline number.
+	// SC-STUB(F05 29-AC-10)
+	PendingPipeline string
 }
 
 // RecordInvalid is the code of a *FireError that Record returns for input that cannot be serialized.
@@ -218,4 +226,16 @@ func executionState(outcome string) string {
 		return "CANCELLED"
 	}
 	return "FAILED"
+}
+
+// RecordGeneration is the provenance row of one generation as the Runner knows it (task.schema.yaml Generation).
+// SC-STUB(F05 29-AC-10)
+type RecordGeneration struct {
+	Generation       int
+	Kind             string // test or judge
+	Status           string // active, superseded or completed
+	StartCommit      string // 40 hex characters
+	ACVersion        int
+	StartedAt        string // RFC 3339
+	SupersededReason string // test_change_approved, strengthened, respec or exemption_denied; "" unless superseded
 }

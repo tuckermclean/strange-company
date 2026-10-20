@@ -58,6 +58,10 @@ type Event struct {
 	Reason           string         `yaml:"reason"`
 	Pipeline         int            `yaml:"pipeline"`
 	Live             map[string]any `yaml:"live"`
+	// Verdict is the adjudicator verdict of an adjudication_recorded event (StepInput.Verdict): test_valid,
+	// test_invalid or spec_ambiguous.
+	// SC-STUB(F05 21-AC-20 29-AC-11)
+	Verdict string `yaml:"verdict"`
 }
 
 // Trajectory is one test/e2e/tdd file.
@@ -75,6 +79,9 @@ type Trajectory struct {
 	ExpectedAttempts     map[string]int `yaml:"expected_attempts"`
 	Live                 map[string]any `yaml:"live"`
 	File                 string         `yaml:"-"`
+	// Policy is the policy the library runner applies (resolutionApproval); the zero value is the default policy.
+	// SC-STUB(F05 21-AC-20 29-AC-11)
+	Policy Policy `yaml:"policy"`
 }
 
 // Parse parses and validates one trajectory file; name is the file name (its stem must equal the trajectory field).
@@ -195,4 +202,11 @@ func Load(dir string) ([]Trajectory, error) {
 		return nil, &Error{Code: CodeEmpty, File: dir, Message: "no trajectory files (*.yaml)"}
 	}
 	return out, nil
+}
+
+// Policy is the policy of a trajectory: the subset of policy/verification.yaml the library runner needs.
+// SC-STUB(F05 21-AC-20 29-AC-11)
+type Policy struct {
+	// ResolutionApproval is spec.testSpecConflict.resolutionApproval: "human" (the default) or "adjudicator".
+	ResolutionApproval string `yaml:"resolutionApproval"`
 }
