@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 )
 
 var acTokenRE = regexp.MustCompile(`AC-[1-9][0-9]{0,2}`)
@@ -98,7 +99,116 @@ func BuildManifest(in ManifestInput) (Manifest, error) {
 		return Manifest{}, err
 	}
 	m.Digest = d
+	if err := validateManifestSchema(m); err != nil {
+		return Manifest{}, fmt.Errorf("manifest does not satisfy test-manifest.schema.yaml: %w", err)
+	}
 	return m, nil
+}
+
+var (
+	gitShaRE   = regexp.MustCompile(`^[a-f0-9]{40}$`)
+	objectIDRE = regexp.MustCompile(`^([a-f0-9]{40}|[a-f0-9]{64})$`)
+	sha256RE   = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
+	acIDRE     = regexp.MustCompile(`^AC-[1-9][0-9]{0,2}$`)
+	taskIDRE   = regexp.MustCompile(`^sc-[0-9]+$`)
+	repoNameRE = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
+	stubMarkRE = regexp.MustCompile(`^SC-STUB\(sc-[0-9]+( AC-[1-9][0-9]{0,2})+\)$`)
+)
+
+// validateManifestSchema checks a manifest against contracts/test-manifest.schema.yaml natively (the library does no
+// file access, and the schema is protected from change here): required fields, patterns, enums and bounds. The
+// BuildManifest tests also validate the output against the schema file itself.
+func validateManifestSchema(m Manifest) error {
+	check := func(ok bool, what string) error {
+		if !ok {
+			return fmt.Errorf("%s is invalid", what)
+		}
+		return nil
+	}
+	var first error
+	req := func(ok bool, what string) {
+		if first == nil {
+			first = check(ok, what)
+		}
+	}
+	req(m.SchemaVersion == "v1alpha1", "schema_version")
+	req(m.Kind == "test" || m.Kind == "judge", "kind")
+	req(taskIDRE.MatchString(m.TaskID), "task_id")
+	req(m.Generation >= 1, "generation")
+	req(m.ACVersion >= 1, "ac_version")
+	_, terr := time.Parse(time.RFC3339, m.CreatedAt)
+	req(terr == nil, "created_at")
+	req(repoNameRE.MatchString(m.Repository), "repository")
+	req(gitShaRE.MatchString(m.BaseCommit), "base_commit")
+	req(gitShaRE.MatchString(m.GenerationStartCommit), "generation_start_commit")
+	req(gitShaRE.MatchString(m.TestCommit), "test_commit")
+	req(sha256RE.MatchString(m.RedEvidenceDigest), "red_evidence_digest")
+	req(m.PolicyRevision == "" || sha256RE.MatchString(m.PolicyRevision), "policy_revision")
+	req(len(m.Files) >= 1 && len(m.Files) <= 500, "files size")
+	for _, f := range m.Files {
+		req(validRepoPath(f.Path), "file path "+f.Path)
+		req(objectIDRE.MatchString(f.BlobSha), "blob_sha of "+f.Path)
+		req(f.Class == "test" || f.Class == "fixture" || f.Class == "test_infra" || f.Class == "judge", "class of "+f.Path)
+		req(f.Change == "added" || f.Change == "modified", "change of "+f.Path)
+	}
+	req(len(m.Tests) >= 1 && len(m.Tests) <= 1000, "tests size")
+	for _, t := range m.Tests {
+		req(validTestID(t.ID), "test id "+t.ID)
+		req(validSuite(t.Suite), "suite of "+t.ID)
+		req(t.Kind == "new" || t.Kind == "modified", "kind of "+t.ID)
+		req(t.ACIDs != nil, "ac_ids of "+t.ID)
+		for _, ac := range t.ACIDs {
+			req(acIDRE.MatchString(ac), "ac id of "+t.ID)
+		}
+		req(t.RedStatus == "failed_assertion" || t.RedStatus == "stub_unimplemented" || t.RedStatus == "passed", "red_status of "+t.ID)
+	}
+	req(len(m.ACMapping) >= 1 && len(m.ACMapping) <= 50, "ac_mapping size")
+	for _, a := range m.ACMapping {
+		req(acIDRE.MatchString(a.ACID), "ac_mapping ac_id")
+		req(a.Kind == "change" || a.Kind == "preservation", "ac_mapping kind")
+		req(len(a.Tests) >= 1, "ac_mapping tests of "+a.ACID)
+		for _, id := range a.Tests {
+			req(validTestID(id), "ac_mapping test id "+id)
+		}
+	}
+	req(len(m.Stubs) <= 100, "stubs size")
+	for _, s := range m.Stubs {
+		req(validRepoPath(s.Path), "stub path "+s.Path)
+		req(utf16Len(s.Symbol) <= 200, "stub symbol")
+		req(stubMarkRE.MatchString(s.Marker), "stub marker")
+		req(s.Shape == "zero_value" || s.Shape == "panic", "stub shape")
+		req(utf16Len(s.Language) <= 30, "stub language")
+		req(len(s.ACIDs) >= 1, "stub ac_ids")
+		for _, ac := range s.ACIDs {
+			req(acIDRE.MatchString(ac), "stub ac id")
+		}
+	}
+	dp := m.DiscoveryProtection
+	req(dp.WholeFiles != nil && len(dp.WholeFiles) <= 200, "whole_files")
+	for _, w := range dp.WholeFiles {
+		req(validRepoPath(w.Path), "whole_files path")
+		req(w.BlobSha == nil || objectIDRE.MatchString(*w.BlobSha), "whole_files blob_sha")
+	}
+	req(dp.SemanticKeys != nil && len(dp.SemanticKeys) <= 200, "semantic_keys")
+	for _, k := range dp.SemanticKeys {
+		req(validRepoPath(k.Path), "semantic_keys path")
+		req(utf16Len(k.Key) <= 200, "semantic_keys key")
+		req(k.ValueSha256 == nil || sha256RE.MatchString(*k.ValueSha256), "semantic_keys value_sha256")
+	}
+	for name, list := range map[string][]string{"test": m.TestPaths.Test, "fixture": m.TestPaths.Fixture, "test_infra": m.TestPaths.TestInfra} {
+		req(list != nil, "test_paths."+name)
+		for _, g := range list {
+			req(utf16Len(g) <= 200, "test_paths."+name+" item")
+		}
+	}
+	if m.Supersedes != nil {
+		req(m.Supersedes.Generation >= 1, "supersedes.generation")
+		req(sha256RE.MatchString(m.Supersedes.Digest), "supersedes.digest")
+		r := m.Supersedes.Reason
+		req(r == "test_change_approved" || r == "strengthened" || r == "respec", "supersedes.reason")
+	}
+	req(sha256RE.MatchString(m.Digest), "digest")
+	return first
 }
 
 // manifestTests lists N ∪ M in the order of the criteria that declare each test (criteria order, then declaration
@@ -207,10 +317,13 @@ func manifestDigest(m Manifest) (string, error) {
 		return "", err
 	}
 	delete(generic, "digest")
-	canon, err := json.Marshal(generic) // map keys are sorted
-	if err != nil {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false) // map keys are sorted; no HTML escaping (as the F05 Fingerprint)
+	if err := enc.Encode(generic); err != nil {
 		return "", err
 	}
+	canon := bytes.TrimSuffix(buf.Bytes(), []byte("\n"))
 	sum := sha256.Sum256(canon)
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }

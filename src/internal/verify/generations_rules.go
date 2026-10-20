@@ -1,11 +1,6 @@
 package verify
 
 import (
-	"bytes"
-	"fmt"
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"regexp"
 	"strings"
 )
@@ -75,14 +70,9 @@ func ClassifyRedGen(in GenerationInput) (RedClassification, error) {
 	return classifyRed(in.RedInput, rules)
 }
 
-// repeatNewTests is red.repeatNewTests: the effective value when the repository set one, else the platform's.
+// repeatNewTests is red.repeatNewTests of the platform verification policy. The repository policy has no spec.red
+// (D15), so the effective values never lower it.
 func repeatNewTests(in RedInput) (int, error) {
-	if v, ok := in.Effective.Values["/spec/red/repeatNewTests"]; ok {
-		if n, ok := intValue(v); ok && n >= 1 {
-			return n, nil
-		}
-		return 0, infraErr("effective /spec/red/repeatNewTests is not a positive integer")
-	}
 	red, ok := pathMap(in.Platform.Verification, "spec", "red")
 	if !ok {
 		return 0, infraErr("verification policy has no spec.red")
@@ -92,65 +82,6 @@ func repeatNewTests(in RedInput) (int, error) {
 		return 0, infraErr("spec.red.repeatNewTests is not a positive integer")
 	}
 	return n, nil
-}
-
-// ---------------------------------------------------------------------------------------------------------------
-// Go function extraction.
-
-// goFuncs maps a function key (name, or `(Recv).Name` for methods; repeated keys such as init get a `#n` suffix) to
-// the exact source text of the declaration, from the `func` keyword to the closing brace.
-type goFuncs struct {
-	text  map[string]string
-	order []string
-	plain map[string]bool // key is a plain function (no receiver)
-}
-
-func parseGoFuncs(path string, src []byte) (goFuncs, error) {
-	out := goFuncs{text: map[string]string{}, plain: map[string]bool{}}
-	if src == nil {
-		return out, nil
-	}
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, path, src, parser.SkipObjectResolution)
-	if err != nil {
-		return out, infraErr("%s does not parse: %v", path, err)
-	}
-	slice := func(a, b token.Pos) string {
-		return string(src[fset.Position(a).Offset:fset.Position(b).Offset])
-	}
-	for _, d := range file.Decls {
-		fd, ok := d.(*ast.FuncDecl)
-		if !ok {
-			continue
-		}
-		key := fd.Name.Name
-		if fd.Recv != nil && len(fd.Recv.List) > 0 {
-			key = "(" + slice(fd.Recv.List[0].Type.Pos(), fd.Recv.List[0].Type.End()) + ")." + key
-		}
-		base, n := key, 1
-		for {
-			if _, dup := out.text[key]; !dup {
-				break
-			}
-			n++
-			key = fmt.Sprintf("%s#%d", base, n)
-		}
-		out.text[key] = slice(fd.Pos(), fd.End())
-		out.order = append(out.order, key)
-		out.plain[key] = fd.Recv == nil
-	}
-	return out, nil
-}
-
-func isGoFile(f TestFile) bool { return f.Language == "go" }
-
-func isTestFuncName(name string) bool {
-	for _, p := range []string{"Test", "Example", "Fuzz", "Benchmark"} {
-		if strings.HasPrefix(name, p) {
-			return true
-		}
-	}
-	return false
 }
 
 var funcNameRE = regexp.MustCompile(`\.((?:Test|Example|Fuzz|Benchmark)[^/.]*)`)
@@ -171,54 +102,6 @@ func funcNameOfTest(name string) string {
 		name = name[i+1:]
 	}
 	return name
-}
-
-// ---------------------------------------------------------------------------------------------------------------
-// R1b
-
-// ruleR1b: in an existing Go test file, every test function that exists at the generation start and is not mapped
-// to a change criterion keeps its declaration and body byte for byte. Only Go is judged in this slice; helper
-// functions are not judged.
-func ruleR1b(in GenerationInput) ([]reasonGroup, error) {
-	mapped := map[string]bool{}
-	kinds := map[string]string{}
-	for _, c := range in.Criteria {
-		kinds[c.ID] = c.Kind
-	}
-	for ac, names := range in.Declared {
-		if kinds[ac] != "change" {
-			continue
-		}
-		for _, n := range names {
-			mapped[funcNameOfTest(n)] = true
-		}
-	}
-	weakened := false
-	for _, f := range in.TestFiles {
-		if !isGoFile(f) || f.Base == nil || f.Head == nil {
-			continue
-		}
-		base, err := parseGoFuncs(f.Path, f.Base)
-		if err != nil {
-			return nil, err
-		}
-		head, err := parseGoFuncs(f.Path, f.Head)
-		if err != nil {
-			return nil, err
-		}
-		for _, k := range base.order {
-			if !base.plain[k] || !isTestFuncName(k) || mapped[k] {
-				continue
-			}
-			if t, ok := head.text[k]; !ok || t != base.text[k] {
-				weakened = true
-			}
-		}
-	}
-	if weakened {
-		return []reasonGroup{{outcome: outcomeRedInvalid, reasons: []string{"existing_test_weakened"}}}, nil
-	}
-	return nil, nil
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -243,120 +126,6 @@ func ruleR11b(in GenerationInput, required int) ([]reasonGroup, error) {
 
 // ---------------------------------------------------------------------------------------------------------------
 // R12 and R13
-
-func prevFilePaths(m *Manifest) map[string]bool {
-	out := map[string]bool{}
-	for _, f := range m.Files {
-		out[f.Path] = true
-	}
-	return out
-}
-
-// unchangedFunctions reports whether every function of base that is not exempt exists in head with identical text.
-func unchangedFunctions(f TestFile, exempt func(key string) bool) (bool, error) {
-	base, err := parseGoFuncs(f.Path, f.Base)
-	if err != nil {
-		return false, err
-	}
-	head, err := parseGoFuncs(f.Path, f.Head)
-	if err != nil {
-		return false, err
-	}
-	for _, k := range base.order {
-		if exempt != nil && exempt(k) {
-			continue
-		}
-		if t, ok := head.text[k]; !ok || t != base.text[k] {
-			return false, nil
-		}
-	}
-	return true, nil
-}
-
-// ruleR12: every previous manifest test is still declared and present, and every previous manifest file keeps all
-// its functions byte for byte (only whole new functions or files are added). A changed previous file that is not Go
-// cannot gain functions: any change to it is a violation.
-func ruleR12(in GenerationInput, f *redFacts) ([]reasonGroup, error) {
-	bad := false
-	for _, t := range in.Previous.Tests {
-		if !f.headPresent[t.ID] || !f.declaredResolved[t.ID] {
-			bad = true
-		}
-	}
-	prev := prevFilePaths(in.Previous)
-	for _, tf := range in.TestFiles {
-		if !prev[tf.Path] || tf.Base == nil || bytes.Equal(tf.Base, tf.Head) {
-			continue
-		}
-		if tf.Head == nil || !isGoFile(tf) {
-			bad = true
-			continue
-		}
-		ok, err := unchangedFunctions(tf, nil)
-		if err != nil {
-			return nil, err
-		}
-		bad = bad || !ok
-	}
-	if bad {
-		return []reasonGroup{{outcome: outcomeRedInvalid, reasons: []string{"manifest_not_superset"}}}, nil
-	}
-	return nil, nil
-}
-
-// ruleR13: every previous manifest test not mapped to an approved criterion is present, and every previous
-// manifest file is byte-identical, except that a Go file holding an approved test may change its approved test
-// functions and gain new functions.
-func ruleR13(in GenerationInput, f *redFacts) ([]reasonGroup, error) {
-	approved := map[string]bool{}
-	for _, ac := range in.ApprovedACIDs {
-		approved[ac] = true
-	}
-	approvedFuncs := map[string]bool{}
-	bad := false
-	for _, t := range in.Previous.Tests {
-		isApproved := false
-		for _, ac := range t.ACIDs {
-			isApproved = isApproved || approved[ac]
-		}
-		if isApproved {
-			approvedFuncs[funcNameOfTest(t.ID)] = true
-		} else if !f.headPresent[t.ID] {
-			bad = true
-		}
-	}
-	prev := prevFilePaths(in.Previous)
-	for _, tf := range in.TestFiles {
-		if !prev[tf.Path] || tf.Base == nil || bytes.Equal(tf.Base, tf.Head) {
-			continue
-		}
-		if tf.Head == nil || !isGoFile(tf) {
-			bad = true
-			continue
-		}
-		base, err := parseGoFuncs(tf.Path, tf.Base)
-		if err != nil {
-			return nil, err
-		}
-		holdsApproved := false
-		for _, k := range base.order {
-			holdsApproved = holdsApproved || (base.plain[k] && approvedFuncs[k])
-		}
-		if !holdsApproved {
-			bad = true
-			continue
-		}
-		ok, err := unchangedFunctions(tf, func(k string) bool { return base.plain[k] && approvedFuncs[k] })
-		if err != nil {
-			return nil, err
-		}
-		bad = bad || !ok
-	}
-	if bad {
-		return []reasonGroup{{outcome: outcomeRedInvalid, reasons: []string{"unapproved_test_change"}}}, nil
-	}
-	return nil, nil
-}
 
 // ---------------------------------------------------------------------------------------------------------------
 // R14
@@ -401,7 +170,17 @@ func ruleR14(in GenerationInput, f *redFacts) []reasonGroup {
 			mapped++
 		}
 	}
-	if size > maxProtectedListBytes || len(ids) > maxManifestTests || files > maxManifestFiles ||
+	bad := false
+	for _, id := range ids {
+		bad = bad || !validTestID(id)
+	}
+	for _, p := range manifestFiles(in.Scope.ChangedFiles, in.Previous) {
+		bad = bad || !validRepoPath(p.Path)
+	}
+	for _, st := range in.Scope.Stubs {
+		bad = bad || !validRepoPath(st.Path)
+	}
+	if bad || size > maxProtectedListBytes || len(ids) > maxManifestTests || files > maxManifestFiles ||
 		len(in.Scope.Stubs) > maxManifestStubs || mapped > maxManifestACMapping {
 		return []reasonGroup{{outcome: outcomeRedInvalid, reasons: []string{"manifest_too_large"}}}
 	}
