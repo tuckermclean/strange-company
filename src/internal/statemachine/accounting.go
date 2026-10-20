@@ -202,8 +202,15 @@ func (f *accountingFacts) Bool(ev Event, guard string) (bool, bool) {
 }
 
 func (f *accountingFacts) Value(ev Event, guard string) (string, bool) {
-	if guard == "G_FAILURE_CODE" && f.in.FailureCode != "" {
-		return f.in.FailureCode, true
+	if guard == "G_FAILURE_CODE" {
+		if f.in.FailureCode != "" {
+			return f.in.FailureCode, true
+		}
+		// A code the base does not know is "" everywhere (D12 B3): no refund, no timeout, nothing recorded.
+		if v, k := f.baseValue(ev, guard); k {
+			return v, true
+		}
+		return "", false
 	}
 	return f.baseValue(ev, guard)
 }
@@ -223,7 +230,7 @@ func (f *accountingFacts) baseValue(ev Event, guard string) (string, bool) {
 // failureCode is the failure code of the step: StepInput.FailureCode, else the first answer of the base. It is
 // the single source of the decision, the deltas and the recorded StepInput.
 func (f *accountingFacts) failureCode(ev Event) string {
-	v, _ := f.Value(ev, "G_FAILURE_CODE") // the value as the deltas read it, whether or not the base knows it
+	v, _ := f.Value(ev, "G_FAILURE_CODE") // "" when the code is not known (D12 B3)
 	return v
 }
 
@@ -395,7 +402,11 @@ func (m *Machine) deltas(t *transition, cur *state, snap TaskSnapshot, ev Event,
 			if ev.Name != "execution_failed" {
 				r = m.subjectRole(ev.Name, snap.State)
 			} else if !haveRole {
-				r = m.subjectRole(ev.Name, snap.State) // raw Fire knows no execution records; Apply and Advance do
+				// raw Fire knows no execution records: the role the state dispatches, kept only when it is a
+				// merit role (plan 29 section 16.1, CD-09); Apply and Advance use the recorded role
+				if r = m.subjectRole(ev.Name, snap.State); !meritRoles[r] {
+					r = ""
+				}
 			} else if !meritRoles[r] {
 				r = ""
 			}
@@ -408,7 +419,9 @@ func (m *Machine) deltas(t *transition, cur *state, snap TaskSnapshot, ev Event,
 		failed := ev.Name == "execution_failed"
 		code := ""
 		if failed && (class == "infrastructure" || class == "budget") {
-			code, _ = facts.Value(ev, "G_FAILURE_CODE")
+			if v, k := facts.Value(ev, "G_FAILURE_CODE"); k {
+				code = v // a code that is not known counts as "" (D12 B3)
+			}
 		}
 		if failed && class == "infrastructure" {
 			add("consecutive_infrastructure", 1)
@@ -561,6 +574,15 @@ func (m *Machine) transitionByID(id string) *transition {
 // It fails closed with a *FireError and the zero Task when the decision is not an Applied one (AdvanceNotApplied),
 // does not leave the task's state (AdvanceStateMismatch), names a transition, event or state the table does not
 // have (AdvanceNotApplied) or carries a delta that cannot be applied (AdvanceDeltaInvalid).
+//
+// Advance does not trust the decision (D11, D12). The event's actor must be a declared actor class and one of the
+// transition's actors. Every guard of the transition that AccountingFacts answers from the task, the policy and
+// the step input (attempts, reviews, auxiliary, identical replay, infrastructure requeue, G_FAILURE_CODE) must
+// hold. No lower-id candidate for the same state, event, mode and actor may pass under those facts. Fail-closed
+// rule of that shadowing check: a guard those facts cannot answer counts as passing only when the transition
+// being advanced lists the same guard reference (the decision then vouches for it), else the candidate does not
+// pass. A caller that fires with Fire and then calls Advance must set StepInput.FailureCode to the code the
+// decision used, for an execution_failed event; Apply does so.
 func Advance(m *Machine, t Task, ev Event, d Decision, in StepInput, p RetryPolicy) (Task, error) {
 	if m == nil {
 		return adverr(FireMachineNil, "the machine is nil")
@@ -582,6 +604,9 @@ func Advance(m *Machine, t Task, ev Event, d Decision, in StepInput, p RetryPoli
 		return adverr(AdvanceNotApplied, "the decision (%s -> %s) does not match the table and the event %s", a.TransitionID, a.To, ev.Name)
 	}
 	fromSt := m.findState(t.Snapshot.State)
+	if !has(m.actors, ev.Actor) || !has(tr.actors, ev.Actor) {
+		return adverr(AdvanceNotApplied, "actor %q may not fire %s", ev.Actor, a.TransitionID)
+	}
 	// Re-derive the decision from the table (D11 B2): the target, effects, failure class and reason code are the
 	// transition's, and the deltas are the recomputed ones under the failure code the step carries.
 	if !has(tr.from, from) || !has(tr.modes, t.Snapshot.Mode) {
@@ -592,6 +617,9 @@ func Advance(m *Machine, t Task, ev Event, d Decision, in StepInput, p RetryPoli
 	}
 	if !slices.Equal(a.Effects, tr.effects) || a.FailureClass != effectArg(tr.effects, "E_COUNT_FAILURE") || a.ReasonCode != effectArg(tr.effects, "E_NOTIFY_HUMAN") {
 		return adverr(AdvanceNotApplied, "%s: the effects, failure class or reason code differ from the table", a.TransitionID)
+	}
+	if err := m.recheckGuards(tr, t, ev, in, p, from); err != nil {
+		return Task{}, err
 	}
 	want := m.deltas(tr, fromSt, t.Snapshot, ev, codeFacts{in.FailureCode}, runningRole(t), true)
 	if len(want) != len(a.Deltas) {
@@ -675,6 +703,57 @@ func Advance(m *Machine, t Task, ev Event, d Decision, in StepInput, p RetryPoli
 	m.recordExecutions(&n, tr, ev, a, in)
 	n.History = append(n.History, Step{Event: ev, Input: cloneInput(in), Applied: cloneApplied(*a)})
 	return n, nil
+}
+
+// guardAnswer evaluates one guard reference like guardHolds and also says whether the facts knew it.
+func guardAnswer(ref string, ev Event, facts Facts) (holds, known bool) {
+	id, args := idOf(ref), argsOf(ref)
+	switch base, derived := derivedGuards[id]; {
+	case valuedGuards[id]:
+		v, k := facts.Value(ev, id)
+		return k && v != "" && has(args, v), k
+	case derived:
+		v, k := facts.Bool(ev, base)
+		return len(args) == 0 && k && !v, k
+	case guardSet[id]:
+		v, k := facts.Bool(ev, id)
+		return len(args) == 0 && k && v, k
+	}
+	return false, true // an unknown identifier fails
+}
+
+// recheckGuards is the guard part of Advance (D12 B2): see the Advance comment.
+func (m *Machine) recheckGuards(tr *transition, t Task, ev Event, in StepInput, p RetryPolicy, from string) error {
+	facts := AccountingFacts(t, p, in, codeFacts{in.FailureCode})
+	for _, ref := range tr.guards {
+		if idOf(ref) == "G_ACTOR_AUTHORIZED" {
+			continue
+		}
+		if holds, known := guardAnswer(ref, ev, facts); known && !holds {
+			return ferr(AdvanceNotApplied, "%s: guard %s does not hold", tr.id, idOf(ref))
+		}
+	}
+	for i := range m.transitions {
+		c := &m.transitions[i]
+		if c.id >= tr.id || c.event != ev.Name || !has(c.modes, t.Snapshot.Mode) || !has(c.from, from) || !has(c.actors, ev.Actor) {
+			continue
+		}
+		passes := true
+		for _, ref := range c.guards {
+			if idOf(ref) == "G_ACTOR_AUTHORIZED" {
+				continue
+			}
+			holds, known := guardAnswer(ref, ev, facts)
+			if known && !holds || !known && !has(tr.guards, ref) {
+				passes = false
+				break
+			}
+		}
+		if passes {
+			return ferr(AdvanceNotApplied, "%s: the candidate %s would pass under the same facts", tr.id, c.id)
+		}
+	}
+	return nil
 }
 
 // recordExecutions keeps the execution records of the task in step with the applied transition.
