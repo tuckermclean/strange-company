@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -60,7 +61,6 @@ type Event struct {
 	Live             map[string]any `yaml:"live"`
 	// Verdict is the adjudicator verdict of an adjudication_recorded event (StepInput.Verdict): test_valid,
 	// test_invalid or spec_ambiguous.
-	// SC-STUB(F05 21-AC-20 29-AC-11)
 	Verdict string `yaml:"verdict"`
 }
 
@@ -80,7 +80,6 @@ type Trajectory struct {
 	Live                 map[string]any `yaml:"live"`
 	File                 string         `yaml:"-"`
 	// Policy is the policy the library runner applies (resolutionApproval); the zero value is the default policy.
-	// SC-STUB(F05 21-AC-20 29-AC-11)
 	Policy Policy `yaml:"policy"`
 }
 
@@ -98,8 +97,13 @@ func Parse(name string, b []byte) (Trajectory, error) {
 	}
 	// Pass 1: plain YAML. Syntax errors and duplicate keys are rejected here.
 	var generic any
-	if err := yaml.NewDecoder(bytes.NewReader(b)).Decode(&generic); err != nil {
+	gdec := yaml.NewDecoder(bytes.NewReader(b))
+	if err := gdec.Decode(&generic); err != nil {
 		return fail(CodeYAML, "%v", err)
+	}
+	var extra any
+	if err := gdec.Decode(&extra); !errors.Is(err, io.EOF) {
+		return fail(CodeYAML, "the file must hold exactly one YAML document")
 	}
 	if _, ok := generic.(map[string]any); !ok {
 		return fail(CodeYAML, "the document must be a mapping")
@@ -141,6 +145,11 @@ func Parse(name string, b []byte) (Trajectory, error) {
 	}
 	if stem := strings.TrimSuffix(filepath.Base(name), filepath.Ext(name)); stem != tr.Name {
 		return fail(CodeNameMismatch, "trajectory %q is not the file stem %q", tr.Name, stem)
+	}
+	switch tr.Policy.ResolutionApproval {
+	case "", "human", "adjudicator":
+	default:
+		return fail(CodeBadValue, "policy.resolutionApproval %q is neither human nor adjudicator", tr.Policy.ResolutionApproval)
 	}
 	switch tr.Mode {
 	case "":
@@ -184,7 +193,13 @@ func Load(dir string) ([]Trajectory, error) {
 	}
 	var out []Trajectory
 	for _, e := range entries { // ReadDir sorts by file name
-		if e.IsDir() || filepath.Ext(e.Name()) != ".yaml" {
+		if e.IsDir() {
+			continue
+		}
+		if filepath.Ext(e.Name()) == ".yml" {
+			return nil, &Error{Code: CodeBadValue, File: filepath.Join(dir, e.Name()), Message: "trajectory files end in .yaml, a .yml file would be skipped"}
+		}
+		if filepath.Ext(e.Name()) != ".yaml" {
 			continue
 		}
 		p := filepath.Join(dir, e.Name())
@@ -205,7 +220,6 @@ func Load(dir string) ([]Trajectory, error) {
 }
 
 // Policy is the policy of a trajectory: the subset of policy/verification.yaml the library runner needs.
-// SC-STUB(F05 21-AC-20 29-AC-11)
 type Policy struct {
 	// ResolutionApproval is spec.testSpecConflict.resolutionApproval: "human" (the default) or "adjudicator".
 	ResolutionApproval string `yaml:"resolutionApproval"`

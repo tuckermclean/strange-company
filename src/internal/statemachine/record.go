@@ -21,11 +21,9 @@ type RecordMeta struct {
 	ModelTiers map[string]string
 	// Generations is one row per generation 1..Snapshot.Generation of the task (tdd.generations); the library
 	// does not know the commits, so Record fails closed when a row is missing.
-	// SC-STUB(F05 29-AC-10)
 	Generations []RecordGeneration
 	// PendingPipeline is the uuid of the pending verification pipeline (claimed_by ci:pending/<uuid>), required
 	// in a verification state whose last step has no pipeline number.
-	// SC-STUB(F05 29-AC-10)
 	PendingPipeline string
 }
 
@@ -152,9 +150,33 @@ func Record(m *Machine, t Task, meta RecordMeta) (map[string]any, error) {
 		"autonomous_used": at.AutonomousUsed, "autonomous_max": at.AutonomousMax, "tester_used": at.TesterUsed, "tester_max": at.TesterMax,
 		"by_class":            map[string]any{"merit": at.ByClass["merit"], "infrastructure": at.ByClass["infrastructure"], "policy": at.ByClass["policy"], "budget": at.ByClass["budget"]},
 		"merit_by_generation": merit, "consecutive_infrastructure": at.ConsecutiveInfrastructure, "consecutive_timeouts": at.ConsecutiveTimeouts,
-		"reviews_used": at.ReviewsUsed, "auxiliary_used": at.AuxiliaryUsed, "blocked_results": 0, "conflicts_raised": 0,
+		"reviews_used": at.ReviewsUsed, "auxiliary_used": at.AuxiliaryUsed, "blocked_results": at.BlockedResults, "conflicts_raised": at.ConflictsRaised,
 	}
-	rec["tdd"] = map[string]any{"required": snap.Mode == "test-first", "current_generation": snap.Generation, "generations": []any{}}
+	if len(meta.Generations) != snap.Generation {
+		return bad("%d generation rows in RecordMeta.Generations for generation %d", len(meta.Generations), snap.Generation)
+	}
+	gens := make([]any, 0, len(meta.Generations))
+	for i, g := range meta.Generations {
+		switch {
+		case g.Generation != i+1:
+			return bad("RecordMeta.Generations[%d] is generation %d, want %d", i, g.Generation, i+1)
+		case g.Kind != "test" && g.Kind != "judge":
+			return bad("generation %d: kind %q is neither test nor judge", g.Generation, g.Kind)
+		case g.Status != "active" && g.Status != "superseded" && g.Status != "completed":
+			return bad("generation %d: status %q is not active, superseded or completed", g.Generation, g.Status)
+		case !gitSHAPattern.MatchString(g.StartCommit):
+			return bad("generation %d: start_commit %q is not a 40-hex commit", g.Generation, g.StartCommit)
+		case g.ACVersion < 1 || g.StartedAt == "":
+			return bad("generation %d: ac_version and started_at are required", g.Generation)
+		}
+		row := map[string]any{"generation": g.Generation, "kind": g.Kind, "status": g.Status, "start_commit": g.StartCommit,
+			"ac_version": g.ACVersion, "started_at": g.StartedAt, "verifications": []any{}}
+		if g.SupersededReason != "" {
+			row["superseded_reason"] = g.SupersededReason
+		}
+		gens = append(gens, row)
+	}
+	rec["tdd"] = map[string]any{"required": snap.Mode == "test-first", "current_generation": snap.Generation, "generations": gens}
 	// executions
 	delete(rec, "current_execution")
 	var claim any
@@ -177,7 +199,7 @@ func Record(m *Machine, t Task, meta RecordMeta) (map[string]any, error) {
 			}
 		}
 		ref := map[string]any{
-			"execution_id": fmt.Sprintf("%s-x%d", taskID, k), "role": e.Role, "kind": executionKind(e.Role), "harness": e.Harness, "model": e.Model,
+			"execution_id": fmt.Sprintf("%s-x%d", taskID, k), "role": e.Role, "kind": executionKind(e), "harness": e.Harness, "model": e.Model,
 			"model_tier": tier, "profile": e.Profile, "attempt": attempt, "state": executionState(e.Outcome),
 		}
 		if e.Fingerprint != "" {
@@ -195,9 +217,11 @@ func Record(m *Machine, t Task, meta RecordMeta) (map[string]any, error) {
 		if p := last.Pipeline; p > 0 {
 			claim = fmt.Sprintf("ci:woodpecker/%d", p)
 		} else {
-			// the pipeline is not known yet: a deterministic pending claim derived from the task and the step count
-			h := hexSHA256(fmt.Sprintf("%s/%d", taskID, n))
-			claim = fmt.Sprintf("ci:pending/%s-%s-%s-%s-%s", h[0:8], h[8:12], h[12:16], h[16:20], h[20:32])
+			// the pipeline is not known yet: the Runner's pending pipeline uuid, never a derived one
+			if !uuidPattern.MatchString(meta.PendingPipeline) {
+				return bad("verification state %s without a pipeline number needs RecordMeta.PendingPipeline (a uuid), got %q", snap.State, meta.PendingPipeline)
+			}
+			claim = "ci:pending/" + meta.PendingPipeline
 		}
 	}
 	rec["claimed_by"] = claim
@@ -206,11 +230,18 @@ func Record(m *Machine, t Task, meta RecordMeta) (map[string]any, error) {
 
 var taskIDPattern = regexp.MustCompile(`^sc-[0-9]+$`)
 
-func executionKind(role string) string {
-	switch role {
-	case "reviewer":
+var (
+	gitSHAPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
+	uuidPattern   = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+)
+
+// executionKind is the ExecutionRef.kind of an execution: a reviewer reviews, any other execution dispatched by
+// dispatch_auxiliary (a researcher, a planner) is auxiliary, the rest produces.
+func executionKind(e Execution) string {
+	switch {
+	case e.Role == "reviewer":
 		return "reviewing"
-	case "auxiliary":
+	case e.Role == "auxiliary" || e.Dispatch == "dispatch_auxiliary":
 		return "auxiliary"
 	}
 	return "producing"
@@ -229,7 +260,6 @@ func executionState(outcome string) string {
 }
 
 // RecordGeneration is the provenance row of one generation as the Runner knows it (task.schema.yaml Generation).
-// SC-STUB(F05 29-AC-10)
 type RecordGeneration struct {
 	Generation       int
 	Kind             string // test or judge
