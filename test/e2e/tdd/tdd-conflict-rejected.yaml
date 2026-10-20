@@ -12,7 +12,7 @@ events:
   - {event: "implementer_reported_conflict", actor: "runner", at: "2026-10-13T12:06:00Z"}
   - {event: "dispatch_auxiliary", actor: "hermes", role: "reviewer", at: "2026-10-13T12:07:00Z", live: {purpose: "adjudication"}}
   - {event: "adjudication_recorded", actor: "runner", at: "2026-10-13T12:08:00Z", reason: "adjudication test_valid", live: {verdict: "test_valid"}}
-  - {event: "dispatch_tester", actor: "hermes", role: "tester", at: "2026-10-13T12:09:00Z", facts: {G_TEST_CHANGE_APPROVED: false}}
+  - {event: "dispatch_tester", actor: "hermes", role: "tester", at: "2026-10-13T12:09:00Z"}
   - {event: "dispatch_implementer", actor: "hermes", role: "implementer", at: "2026-10-13T12:10:00Z"}
   - {event: "implementer_result_accepted", actor: "runner", at: "2026-10-13T12:11:00Z", pipeline: 402}
   - {event: "green_classified", actor: "ci", at: "2026-10-13T12:12:00Z", facts: {G_VERIFICATION_OUTCOME: "green_pass"}}

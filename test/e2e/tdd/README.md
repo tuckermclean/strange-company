@@ -34,7 +34,7 @@ events:                             # required, in order
     failure_signature: TestX        # merit/policy failures: the failure signature
     reason: free text               # history reason of the record (default: event and transition id)
     pipeline: 412                   # events that start a verification: the pipeline number (claimed_by)
-    live: {...}                     # ignored by the library runner
+    live: {...}                     # ignored by the library runner, except live.verdict of adjudication_recorded (StepInput.Verdict)
 expected_states: [...]              # required, one per event: the task state after the event
 expected_transitions: [...]         # required, one per event: the transition id, or "rejected"
 expected_reasons: [...]             # required, one per event, "" when none
@@ -47,7 +47,8 @@ live: {...}                         # ignored by the library runner (fake scenar
   overrides. A key is a guard id of the table (`G_X: false`, or `G_VERIFICATION_OUTCOME: red_valid` for the valued
   guards) or `<role>/<guard>` for a per-role boolean. Facts are per step; they never carry over. The counter and
   replay guards (attempts, reviews, auxiliary, identical replay, infrastructure requeue, failure code) are answered
-  by the library from the task, not by `facts`. Unknown guards fail the file.
+  by the library from the task, not by `facts`. So are the task-state guards (D14): `G_NO_IMPLEMENTER_DISPATCHED_IN_GENERATION`,
+  `G_STRENGTHEN_AUTHORIZED`, `G_TEST_CHANGE_APPROVED`, `G_CONFLICT_REJECTED`; a file must not supply them. Unknown guards fail the file.
 * **Dispatch.** A dispatch event without `dispatch` gets a spec that differs from every earlier one (a new model
   and start commit), so none is an identical replay; give `dispatch` to test replay.
 * **Rejected events.** `expected_transitions` is `rejected`, `expected_states` is the unchanged state (`""` when the
