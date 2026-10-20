@@ -653,3 +653,100 @@ Follow-ups (not blocking GATE-F04):
 - **Later gates:**
   - the per-kind invariants of plans 25/28/31/33 (ladder anchoring, image-digest uniqueness, budget invariants, profile quota against the chart);
   - `make policy-check` validating this repository's `.strange-company/` through `sc-verify lint-policy` (F06/C04).
+
+### F05 — state-machine-lib
+
+Branch `node/F05-state-machine-lib`, built with `/sc-node F05` from `main` b69e280. Library `src/internal/statemachine` (`Load` with the plan 29 §8.2 invariants and per-mode reachability report, `Fire`, `Project`, `NextAllowedRoles`, guard and effect registries, the retry-accounting layer `AccountingFacts`/`Advance`/`Apply`/`Replay`, `Fingerprint`, the task-record serializer `Record`), the trajectory loader `src/internal/statemachine/trajectory`, CLI `src/cmd/sc-statemachine check`, `mk/statemachine.mk` (`state-machine-check` in `VERIFY_TARGETS`, `state-machine-coverage`, `test-tdd-library`) and the trajectory files `test/e2e/tdd/*.yaml` with their format in `test/e2e/tdd/README.md`. Four slices:
+- S1: loader (29-AC-1, 29-AC-2).
+- S2: evaluation (29-AC-3, 29-AC-5, 29-AC-6, 29-AC-9).
+- S3: retries and properties (29-AC-7, 29-AC-8, 29-AC-4).
+- S4: trajectories (21-AC-20, 29-AC-11, 29-AC-10).
+
+**Status: all four slices approved; a final whole-node review approved 79df7c2 (= ccf86e6 after the rewrite); every GATE-F05 criterion has passing evidence below.**
+
+SHAs are those after one history rewrite (D19). Four RED commits had added `const` declarations (error codes) to five new declared-stub files, which plan 52 §8.3a does not allow (`TDD_STUB_INVALID`; the orchestrator's brief had wrongly said consts were fine). The rewrite moved those const blocks into companion `*_codes_test.go` files in the RED commits up to the next GREEN, which restores its original tree. Messages, authors and dates are unchanged, and the head tree is byte-identical to the reviewed head 79df7c2 (tag `f05-pre-rewrite`). CI runs and reviews ran on the pre-rewrite SHAs.
+
+Pre-rewrite → rewritten: 7bcbaad→8ab80f5, d9e2a3a→cac67cd, 01fbb50→b43c7db, a602ffc→7b2cd56, 16a51e8→00e5dc7, 8330afb→ed4b289, 6218437→7648025, 4fbc01b→8b0939d, 1127ff5→f68a820, ebe821d→3a93c60, ea47ed9→02c292d, 70ab6e3→08ceda1, ea073c0→f6d30e4, 1de2b0a→0cb9d5c, 899b4b5→274b7b5, b178d68→3ddaba6, d915d5a→26cfc9a, 580dd35→46e7c3c, ac0866a→f849aa2, 9892daf→347335a, 9cfc621→ef11fa7, 79df7c2→ccf86e6.
+
+Decisions (orchestrator, under the operator's standing delegation unless marked operator):
+- **D1:** the package is `src/internal/statemachine` (plan 01 §6.1 layout and every elevated-path list), not plan 29's `src/runner/statemachine`. 29-AC-3's command reads `go test ./src/internal/statemachine/... -run TestTransitionTable`; the invalid fixtures are in `src/internal/statemachine/testdata/invalid/`.
+- **D2:** every RED uses the red target `test GO_TEST_PKGS=./src/internal/statemachine/... ./src/cmd/sc-statemachine/...`. The new Make targets are not in `policy/ci.yaml` `redTargets`.
+- **D3:** `TestRandomWalks_29AC4` takes `-seed N` or `-seed A..B`; the default is `1..10000` per mode, so plain `make test` runs the full 29-AC-4 range. Use the bare package path: `go test ./src/internal/statemachine -run TestRandomWalks -seed 1..10000` (the `/...` form also builds the trajectory package, which has no `-seed` flag).
+- **D4:** the trajectory files (plan 21 §22.3) are written in F05; cluster-only assertions are optional `live:` fields ignored by the library runner. Excluded from the library set, with reasons in the README: `tdd-second-pr-other-branch` (a Forgejo status, no Runner event) and `tdd-foreign-pipeline-ignored` (no event).
+- **D5:** plan 29 §8.2's "events listed in the state's mapping table (§7.2)" is enforced as membership of the table's `spec.events` catalogue (`SM_EVENT_UNDECLARED`); §7.2 maps input sources, not states, to events.
+- **D6–D8 (loader, reviews):** verification states need candidates for their phase event in every mode, completeness per actor class, exactly one outcome or failure-class guard per phase or `execution_failed` transition and none elsewhere, valid guard arguments, stall transitions per mode with actor `runner`, `$none` only to `initialState` in every mode, `$resume` only from held states, no mode leaks, phase events only from their phase state, `execution_failed` only from `activeExecution: required` states. All hold on `contracts/state-machine.yaml`.
+- **D9–D13 (evaluation and accounting, reviews):** actor-class filtering before guards; `ATTEMPTS_EXHAUSTED` with `details.allowed=[identical_replay]`; each fact asked once per `Fire`; dispatch roles checked; identical replay fails closed on an empty or mismatched role; `Advance` re-derives target, effects, deltas, actor, the guards it can answer and lower-id shadowing, so `Replay` rejects forged histories; an unknown failure code is `""`.
+- **D12 (operator):** one row of `TestFire_AppliedDeltas_29AC7` was corrected to plan 29 §16.1 / CD-09: a T102 worker merit failure in IMPLEMENTING counts `by_class.merit` only.
+- **D14, D17 (task-state guards):** the library derives `G_NO_ACTIVE_EXECUTION`, `G_NO_IMPLEMENTER_DISPATCHED_IN_GENERATION`, `G_NO_PRODUCER_DISPATCHED_IN_GENERATION`, `G_NO_PRODUCTION_IN_GENERATION`, `G_TEST_CHANGE_APPROVED`, `G_CONFLICT_REJECTED` and `G_STRENGTHEN_AUTHORIZED` from the task. It keeps a conflict record with TDD-20 semantics (first adjudication decisive, later ones only tighten, disagreement needs a human, a human approval is authoritative). An adjudication needs a running reviewer auxiliary execution, an open conflict and a known verdict. `adjudication_recorded` ends the adjudicator's execution.
+- **D15 (operator):** RED 1560057 was amended to d915d5a (now 26cfc9a) before it was pushed (a blank line before each field stub made `TDD_STUB_INVALID`).
+- **D16:** `TestRandomWalks_29AC4` requires attempt refusals in test-first only. D14 makes verification-first refusals unreachable in unsteered walks; `TestRandomWalksSteered_29AC4` asserts them in both modes. The final review confirmed the change hides no defect.
+- **D18:** `d17Forged` passes the valued fact `G_JUDGE_SOURCE:artifact` its T112 setup needs (setup-only). `Apply` returns `Rejected{GATE_NOT_SATISFIED}` on failed adjudication preconditions; `Advance` returns `SM_ADVANCE_NOT_APPLIED` for a forged step.
+- **D19:** the history rewrite above.
+
+#### S1 — loader (29-AC-1, 29-AC-2)
+
+| Commit | Role |
+|---|---|
+| 8ab80f5, cac67cd → b43c7db | RED (55 fail) + RED fixup (three fixtures were schema-invalid: implementer TEST_SPEC_CONFLICT) → GREEN attempt 1. CI [39272795981](https://github.com/tuckermclean/strange-company/actions/runs/39272795981) success |
+| 7b2cd56 → 00e5dc7 | review 1 request_changes. Blockers: a verification state with no classification transitions, the stall check ignoring modes, `$none` skipping every rule. RED (D6, 28 fail) → attempt 2. CI [39282317395](https://github.com/tuckermclean/strange-company/actions/runs/39282317395) success |
+| ed4b289 → 7648025 | review 2 request_changes. Blocker: an unguarded classification transition fired first for every outcome. RED (D7, 7 fail) → attempt 3. CI [39290652066](https://github.com/tuckermclean/strange-company/actions/runs/39290652066) success |
+| — | review 3 **approve** at 6218437 (= 7648025) |
+
+#### S2 — evaluation (29-AC-3, 29-AC-5, 29-AC-6, 29-AC-9)
+
+| Commit | Role |
+|---|---|
+| 8b0939d → f68a820 | RED (22 top-level, 642 leaf failures; D8 loader fixtures) → GREEN attempt 1. CI [39302020569](https://github.com/tuckermclean/strange-company/actions/runs/39302020569) success |
+| — | review **approve** at 1127ff5 (= f68a820): random-oracle sweep of 175,500 `Fire` calls, 0 mismatches |
+
+#### S3 — retries and properties (29-AC-7, 29-AC-8, 29-AC-4)
+
+| Commit | Role |
+|---|---|
+| 3a93c60 → 02c292d | RED (21 fail; D9) → attempt 1. CI [39314839403](https://github.com/tuckermclean/strange-company/actions/runs/39314839403) success |
+| 08ceda1 → f6d30e4 | review 1 request_changes. Blockers: identical replay bypassed with an empty role; `Advance` trusted forged decisions; random-walk property 4 vacuous. RED (D11, 7 fail) → attempt 2. CI [39346235947](https://github.com/tuckermclean/strange-company/actions/runs/39346235947) success |
+| 0cb9d5c → 274b7b5 | review 2 request_changes. Blockers: `Advance` actor check, guard re-evaluation and shadowing, unknown-code refund; test-spec conflict on one row (D12, operator). RED (7 fail) → attempt 3. CI [39353780966](https://github.com/tuckermclean/strange-company/actions/runs/39353780966) success |
+| — | review 3 **approve** at 899b4b5 (= 274b7b5): 16 of 16 mutations caught |
+
+#### S4 — trajectories (21-AC-20, 29-AC-11, 29-AC-10)
+
+| Commit | Role |
+|---|---|
+| 3ddaba6, 26cfc9a, 46e7c3c → f849aa2 | RED (36 trajectory files, runner, `Record`, D13) + RED (D14: library-derived task-state guards, fake facts removed) + RED (D16) → attempt 1 (stopped once on the D16 test-spec conflict). CI [39366505939](https://github.com/tuckermclean/strange-company/actions/runs/39366505939) success |
+| — | review 1 **approve** at ac0866a (= f849aa2) with non-blockers N1–N6 (fail-open library gaps, fabricated record values, trajectory fidelity) → D17 |
+| 347335a, ef11fa7 → ccf86e6 | RED (D17, 16 fail) + RED (D18 setup fix) → attempt 2 (stopped once on the D18 setup bug). CI [39377342840](https://github.com/tuckermclean/strange-company/actions/runs/39377342840) success |
+| — | final review **approve** at 79df7c2 (= ccf86e6), including a whole-node pass: `make test` 1,894 results, 0 failures |
+
+#### F05 — gate evidence
+
+| Criterion | Test(s) / evidence | Status |
+|---|---|---|
+| 21-AC-20 | `TestTrajectories_Suite_21AC20`, `TestTrajectories_Replay_21AC20` (37 files through `Apply`, records validated after every step), `trajectory` `TestParse_*`/`TestLoad_*_21AC20`, `TestMakeTarget_TestTddLibrary_21AC20`; `make test-tdd-library` exit 0 (37 trajectories), exit 2 on an empty or malformed directory | pass |
+| 29-AC-1 | `TestLoad_AcceptsContract_29AC1`, `TestReport_NoUnreachableNoNonTerminating_29AC1`, `TestRevision_29AC1`, `TestCheck_*_29AC1`, `sc-statemachine` `main_test.go`; `make state-machine-check`: "revision 4: schema valid, invariants hold", test-first 18/18 reachable, verification-first 19/19, 0 unreachable, 0 non-terminating | pass |
+| 29-AC-2 | `TestInvalidFixtures_29AC2` (88 fixtures, one or more per invariant incl. the four named), `TestInvalidFixtures_D6/D7/D8Coverage_29AC2`, `TestLoad_FailsClosed*_29AC2` | pass |
+| 29-AC-3 | `TestTransitionTable` (a fixture per transition id and per guard id), `TestTransitionCoverage_29AC3`; `make state-machine-coverage`: "transitions 94/94 guards 66/66"; path per D1 | pass |
+| 29-AC-4 | `TestRandomWalks_29AC4` (seeds 1..10000 per mode, the five §22 properties), `TestRandomWalksSteered_29AC4`, `TestSeedFlag_29AC4`; command per D3 | pass |
+| 29-AC-5 | `TestFire_DispatchImplementerGate_29AC5` (every state × mode × actor class), `TestFire_DispatchImplementerPositiveAndGates_29AC5`, `TestFire_DispatchRejectionCodes_29AC5` | pass |
+| 29-AC-6 | `TestFire_HeldStatesRefuseNonHuman_29AC6`, `TestFire_NonHumanNeverLeavesHeld_29AC6` | pass |
+| 29-AC-7 | `TestRetryAccounting_GreenFailTimesFive_29AC7`, `_InfrastructureRefunds_29AC7`, `_ConsecutiveTimeouts_29AC7`, `_EmergencyStop_29AC7` (plus `_ConsecutiveInfrastructureCap`, `_TesterAttempts`), `TestFire_AppliedDeltas_29AC7` | pass |
+| 29-AC-8 | `TestIdenticalReplay_SameFingerprintRejected_29AC8` (and a different tier accepted), `_EqualSignaturesSameSettings_29AC8`, `_OnlyMeritOrPolicyFailuresCount`, `_InfrastructureFailureIsNoReplay`, `TestFingerprint_CanonicalJSON_29AC8` | pass |
+| 29-AC-9 | `TestProject_AllStates_29AC9` (24 states, every mode and variant, never `Backlog`), `TestProject_FollowsTableAndFailsClosed_29AC9` | pass |
+| 29-AC-10 | `TestTrajectories_HappyPathRecords_29AC10`, `TestRecord_*_29AC10`, the record validation after every replayed step, `TestTaskSchema_InvalidExamplesFail_29AC10` (every `x-invalid-examples` entry fails) | pass |
+| 29-AC-11 | `TestTrajectories_BypassAssertions_29AC11` (the five cases), `TestTrajectories_NoTaskStateFacts_29AC11_D14`, `TestTrajectories_D17_29AC11`, the D14/D17 accounting and conflict-record tests | pass |
+| TDD discipline | local `make tdd-discipline-check` on ccf86e6 (checker from base `origin/main` b69e280): `pass`, 13 RED commits, 839 RED failures, `build_ok`, 30 warnings (`TDD_RED_TEST_MODIFIED`, the post-RED changes listed below), 0 superseded | pass; PR run pending |
+
+Deviations and disclosures:
+- Earlier-slice tests changed after their RED (the checker warns `TDD_RED_TEST_MODIFIED`): the D12 row (operator), the D16 condition, the D18 helper, cac67cd (three fixtures schema-valid), the D14/D17 edits to this PR's own trajectory files and runner, and D19's companion `*_codes_test.go` files, which the following GREEN deletes. Test names are unchanged and no assertion is loosened except D16.
+- `mk/statemachine.mk` and the `VERIFY_TARGETS` line in `mk/verify.mk` are protected paths and need human review.
+- `test/e2e/tdd/**` is an elevated path of this repository.
+
+Follow-ups (not blocking GATE-F05):
+- **Record replay of external facts:** a history records neither the failure class nor the external counters (verification outcome, approvals, review completeness, retrigger/conflict/blocked-result budgets), so `Replay` cannot verify them; recording them in the step would close this (S3 review 3).
+- **Library hardening (final review):**
+  - an execution built without `Dispatch` counts as a non-producer (no library path creates one);
+  - `G_NO_ACTIVE_EXECUTION` ignores the "no verification pipeline pending" part of its contract text, which the Runner must check;
+  - a rejected adjudication carries no reason;
+  - `Record` does not check generation rows for mutual consistency;
+  - the trajectory loader silently skips `*.YML`, `*.Yaml` and `*~` files.
+- **Plan 29 / contract:** an auxiliary execution can outlive T003 or T067 into states where T091 is not accepted. This fails closed, but a lost `auxiliary_result_recorded` then blocks dispatch until a human cancels. The 20 fallback-covered guards have no sibling-fails fixture. Reject an empty `Event.Role` on dispatch events once the Runner always sets it. Not specified in F05: `blocked_results` and `conflicts_raised` increments, the plan 31 escalation ladder, §16.4 failure-signature normalisation, and `returnTargets` per mode.
+- **Plans:** plan 29 §22 and 29-AC-3 should name `src/internal/statemachine`; 29-AC-4 should name the bare-package command (D3).
