@@ -22,13 +22,12 @@ func fxCheckChildEnv(t *testing.T, r *fxRepo, blocks []fxEnvBlock, suiteEnv map[
 	for _, k := range sc {
 		allowed[k] = true
 	}
-	bin, _ := filepath.EvalSymlinks(fxBinary(t))
 	homes, tmps := map[string]int{}, map[string]int{}
 	for i, b := range blocks {
 		// A run is identified by the process sc-verify started: several blocks of one run share HOME and TMPDIR.
 		run := -i - 1
 		for j, p := range b.Procs {
-			if p.Exe == bin && j > 0 {
+			if fxIsRun(p) && j > 0 {
 				run = b.Procs[j-1].Pid
 				break
 			}
@@ -97,11 +96,10 @@ func fxCheckChildEnv(t *testing.T, r *fxRepo, blocks []fxEnvBlock, suiteEnv map[
 // shell, directly by sc-verify, as the leader of its own process group.
 func fxCheckOwnProcessGroup(t *testing.T, blocks []fxEnvBlock) {
 	t.Helper()
-	bin, _ := filepath.EvalSymlinks(fxBinary(t))
 	for i, b := range blocks {
 		idx := -1
 		for j, p := range b.Procs {
-			if p.Exe == bin {
+			if fxIsRun(p) {
 				idx = j
 				break
 			}

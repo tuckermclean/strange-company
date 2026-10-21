@@ -304,16 +304,23 @@ func fxSpyRepo(t *testing.T) *fxRepo {
 	return fxNewRepo(t, fxConfig{Fixture: "spy", Suites: []fxSuite{fxGoSuite(nil)}})
 }
 
-// fxSpyLines returns the ANCESTOR lines of spy.txt whose process is the sc-verify binary.
+// fxSpyIsRun reports whether an ANCESTOR line of spy.txt is the sc-verify run process: told by its cmdline field
+// (unlike exe, readable when the process is not dumpable; unlike comm, not "exe" after a re-execution).
+func fxSpyIsRun(l string) bool {
+	return strings.Contains(l, `\x00run\x00`) && strings.Contains(l, `\x00--validation\x00`) && strings.Contains(l, `\x00--record\x00`)
+}
+
+// fxSpyLines returns the ANCESTOR lines of spy.txt whose process is the sc-verify run process.
 func fxSpyLines(t *testing.T, r *fxRepo) (all string, svLines []string) {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join(r.out, "spy.txt"))
 	if err != nil {
 		t.Fatalf("the spy test recorded nothing: %v", err)
 	}
-	bin, _ := filepath.EvalSymlinks(fxBinary(t))
+	// An unreadable environ of the run process is as good as an empty one (D28 B2), and its exe link may be
+	// unreadable too: the run process is told by its command line.
 	for _, l := range strings.Split(string(b), "\n") {
-		if strings.HasPrefix(l, "ANCESTOR ") && strings.Contains(l, " exe="+bin+" ") {
+		if strings.HasPrefix(l, "ANCESTOR ") && fxSpyIsRun(l) {
 			svLines = append(svLines, l)
 		}
 	}

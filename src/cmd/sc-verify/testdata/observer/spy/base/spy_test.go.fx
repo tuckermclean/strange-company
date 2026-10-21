@@ -15,7 +15,7 @@ func TestSpy(t *testing.T) {
 	for _, p := range ancestors() {
 		env, eerr := os.ReadFile(fmt.Sprintf("/proc/%d/environ", p.pid))
 		cmd, _ := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", p.pid))
-		fmt.Fprintf(&b, "ANCESTOR pid=%d ppid=%d exe=%s cmdline=%q environ_err=%v environ=%q\n", p.pid, p.ppid, p.exe, cmd, eerr != nil, env)
+		fmt.Fprintf(&b, "ANCESTOR pid=%d ppid=%d comm=%s exe=%s cmdline=%q environ_err=%v environ=%q\n", p.pid, p.ppid, p.comm, p.exe, cmd, eerr != nil, env)
 	}
 	ents, _ := os.ReadDir("/proc")
 	for _, e := range ents {

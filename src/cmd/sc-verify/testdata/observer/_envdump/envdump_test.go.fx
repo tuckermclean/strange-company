@@ -53,7 +53,7 @@ func dumpEnv(t testing.TB) {
 	fmt.Fprintf(&b, "TMPSTAT dir=%v\n", terr == nil && ts.IsDir())
 	fmt.Fprintf(&b, "GITABOVE %v\n", gitAbove())
 	for _, p := range ancestors() {
-		fmt.Fprintf(&b, "PROC pid=%d ppid=%d pgrp=%d sid=%d exe=%s\n", p.pid, p.ppid, p.pgrp, p.sid, p.exe)
+		fmt.Fprintf(&b, "PROC pid=%d ppid=%d pgrp=%d sid=%d comm=%s exe=%s cmd=%s\n", p.pid, p.ppid, p.pgrp, p.sid, p.comm, p.exe, p.cmd)
 	}
 	b.WriteString("END\n")
 	appendOut(t, "env.txt", b.String())

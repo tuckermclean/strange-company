@@ -12,7 +12,42 @@ import (
 // procEntry is one process of the ancestor chain of the test binary.
 type procEntry struct {
 	pid, ppid, pgrp, sid int
-	exe                  string
+	exe, comm, cmd       string
+}
+
+// commOf returns the command name from /proc/<pid>/stat (world readable even when /proc/<pid>/exe is not), with
+// spaces replaced so that it is one field.
+func commOf(pid int) string {
+	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return "-"
+	}
+	s := string(b)
+	i, j := strings.Index(s, "("), strings.LastIndex(s, ")")
+	if i < 0 || j < i {
+		return "-"
+	}
+	return strings.ReplaceAll(s[i+1:j], " ", "_")
+}
+
+// cmdOf returns the command line from /proc/<pid>/cmdline (readable whether or not the process is dumpable) as one
+// field: arguments joined by commas, spaces replaced.
+func cmdOf(pid int) string {
+	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+	if err != nil || len(b) == 0 {
+		return "-"
+	}
+	s := strings.TrimSuffix(string(b), "\x00")
+	return strings.ReplaceAll(strings.ReplaceAll(s, "\x00", ","), " ", "_")
+}
+
+// exeOf returns the target of /proc/<pid>/exe, or "-" when it cannot be read.
+func exeOf(pid int) string {
+	exe, err := os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
+	if err != nil || exe == "" {
+		return "-"
+	}
+	return exe
 }
 
 // statFields parses /proc/<pid>/stat: pid (comm) state ppid pgrp session ...
@@ -44,8 +79,7 @@ func ancestors() []procEntry {
 		if !ok {
 			break
 		}
-		exe, _ := os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
-		out = append(out, procEntry{pid: pid, ppid: ppid, pgrp: pgrp, sid: sid, exe: exe})
+		out = append(out, procEntry{pid: pid, ppid: ppid, pgrp: pgrp, sid: sid, exe: exeOf(pid), comm: commOf(pid), cmd: cmdOf(pid)})
 		pid = ppid
 	}
 	return out

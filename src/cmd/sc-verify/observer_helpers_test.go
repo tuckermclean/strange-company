@@ -705,7 +705,7 @@ func (d fxDoc) run(tree, suite string) (fxRun, bool) {
 
 type fxProc struct {
 	Pid, PPid, Pgrp, Sid int
-	Exe                  string
+	Exe, Comm, Cmd       string
 }
 
 type fxEnvBlock struct {
@@ -748,7 +748,7 @@ func fxReadEnvBlocks(t testing.TB, path string) []fxEnvBlock {
 			cur.GitAbove = strings.HasSuffix(l, "true")
 		case strings.HasPrefix(l, "PROC "):
 			var p fxProc
-			if _, err := fmt.Sscanf(strings.TrimPrefix(l, "PROC "), "pid=%d ppid=%d pgrp=%d sid=%d exe=%s", &p.Pid, &p.PPid, &p.Pgrp, &p.Sid, &p.Exe); err == nil {
+			if _, err := fmt.Sscanf(strings.TrimPrefix(l, "PROC "), "pid=%d ppid=%d pgrp=%d sid=%d comm=%s exe=%s cmd=%s", &p.Pid, &p.PPid, &p.Pgrp, &p.Sid, &p.Comm, &p.Exe, &p.Cmd); err == nil {
 				cur.Procs = append(cur.Procs, p)
 			}
 		}
@@ -816,6 +816,18 @@ func fxSHA256(b []byte) string {
 	s := sha256.Sum256(b)
 	return hex.EncodeToString(s[:])
 }
+
+// fxIsCmdline reports whether a command line (arguments joined by commas) is `sc-verify run --validation ...
+// --record ...`.
+func fxIsCmdline(cmd string) bool {
+	c := "," + cmd + ","
+	return strings.Contains(c, ",run,") && strings.Contains(c, ",--validation,") && strings.Contains(c, ",--record,")
+}
+
+// fxIsRun reports whether a recorded process is the sc-verify `run` process. It is identified by its command line
+// (/proc/<pid>/cmdline), not by /proc/<pid>/exe, which cannot be read once the process is not dumpable (D28 B2),
+// and not by its command name, which is "exe" when run re-executes itself.
+func fxIsRun(p fxProc) bool { return fxIsCmdline(p.Cmd) }
 
 func fxSleep(d time.Duration) { time.Sleep(d) }
 
