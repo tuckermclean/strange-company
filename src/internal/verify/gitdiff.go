@@ -54,7 +54,7 @@ func checkRevision(rev string) error {
 // hardenedConfig is passed to every git invocation as `-c key=value` pairs.
 var hardenedConfig = []string{
 	"core.quotePath=false", "core.fsmonitor=false", "core.hooksPath=/dev/null", "core.attributesFile=/dev/null",
-	"core.excludesFile=/dev/null", "core.autocrlf=false", "core.pager=cat", "diff.renames=false", "diff.ignoreSubmodules=none",
+	"core.excludesFile=/dev/null", "protocol.allow=never", "core.autocrlf=false", "core.pager=cat", "diff.renames=false", "diff.ignoreSubmodules=none",
 	"diff.noprefix=false", "diff.mnemonicPrefix=false", "diff.relative=false", "diff.suppressBlankEmpty=false",
 	"color.ui=never", "color.diff=never", "status.submoduleSummary=false", "submodule.recurse=false",
 }
@@ -65,7 +65,7 @@ func gitEnv(gitDir string) []string {
 		"PATH=" + gitDir + ":/usr/bin:/bin",
 		"HOME=/nonexistent", "XDG_CONFIG_HOME=/nonexistent",
 		"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_ATTR_NOSYSTEM=1",
-		"GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0", "GIT_PAGER=cat", "GIT_ASKPASS=/bin/false",
+		"GIT_TERMINAL_PROMPT=0", "GIT_GRAFT_FILE=/dev/null", "GIT_NO_LAZY_FETCH=1", "GIT_OPTIONAL_LOCKS=0", "GIT_PAGER=cat", "GIT_ASKPASS=/bin/false",
 		"LC_ALL=C", "LANG=C", "LANGUAGE=C",
 	}
 }

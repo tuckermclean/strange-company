@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -115,19 +116,40 @@ func hasGlobMeta(s string) bool { return strings.ContainsAny(s, "*?[") }
 // DeriveDiscoveryProtection snapshots the discovery-protected files and semantic keys at a revision
 // (plan 22 section 14.5). WholeFiles and SemanticKeys are sorted and never nil.
 func DeriveDiscoveryProtection(in DiscoveryInput) (DiscoveryProtection, error) {
+	dp, bad, err := deriveDiscovery(in)
+	if err == nil && len(bad) > 0 {
+		return DiscoveryProtection{}, bad[0]
+	}
+	return dp, err
+}
+
+// discoveryFileError is a derivation failure that belongs to one file (unparsable, or an include that cannot be
+// resolved). The derivation goes on with the other files, so that CheckIngestion can name every broken file.
+type discoveryFileError struct {
+	Path string
+	Err  error
+}
+
+func (e *discoveryFileError) Error() string { return e.Path + ": " + e.Err.Error() }
+func (e *discoveryFileError) Unwrap() error { return e.Err }
+
+// deriveDiscovery is DeriveDiscoveryProtection that reports the per-file failures separately from the errors that
+// stop the derivation altogether.
+func deriveDiscovery(in DiscoveryInput) (DiscoveryProtection, []*discoveryFileError, error) {
+	var bad []*discoveryFileError
 	if err := checkRevision(in.Rev); err != nil {
-		return DiscoveryProtection{}, err
+		return DiscoveryProtection{}, nil, err
 	}
 	if in.Validation == nil {
-		return DiscoveryProtection{}, errors.New("no validation.yaml: the files a check reads cannot be derived")
+		return DiscoveryProtection{}, nil, errors.New("no validation.yaml: the files a check reads cannot be derived")
 	}
 	dpol, err := loadDiscoveryPolicy(in.Platform, in.Effective)
 	if err != nil {
-		return DiscoveryProtection{}, err
+		return DiscoveryProtection{}, nil, err
 	}
 	tree, err := LsTree(in.Git, in.Rev)
 	if err != nil {
-		return DiscoveryProtection{}, err
+		return DiscoveryProtection{}, nil, err
 	}
 	d := &discovery{g: in.Git, tree: map[string]TreeEntry{}, whole: map[string]*string{}, paths: make([]string, 0, len(tree))}
 	for _, e := range tree {
@@ -135,8 +157,9 @@ func DeriveDiscoveryProtection(in DiscoveryInput) (DiscoveryProtection, error) {
 		d.paths = append(d.paths, e.Path)
 	}
 	if err := d.fromValidation(in.Validation); err != nil {
-		return DiscoveryProtection{}, err
+		return DiscoveryProtection{}, nil, err
 	}
+	bad = append(bad, d.bad...)
 	for _, g := range dpol.wholeGlobs {
 		if !hasGlobMeta(g) {
 			d.protect(g)
@@ -164,12 +187,13 @@ func DeriveDiscoveryProtection(in DiscoveryInput) (DiscoveryProtection, error) {
 			}
 			content, err := catBlob(in.Git, d.tree[p].Blob)
 			if err != nil {
-				return DiscoveryProtection{}, err
+				return DiscoveryProtection{}, nil, err
 			}
 			for _, key := range ent.Keys {
 				h, err := semanticValueHash(ent.Format, p, content, key)
 				if err != nil {
-					return DiscoveryProtection{}, fmt.Errorf("%s: %w", p, err)
+					bad = append(bad, &discoveryFileError{Path: p, Err: err})
+					break
 				}
 				out.SemanticKeys = append(out.SemanticKeys, SemanticKeyProtection{Path: p, Key: key, ValueSha256: h})
 			}
@@ -183,7 +207,7 @@ func DeriveDiscoveryProtection(in DiscoveryInput) (DiscoveryProtection, error) {
 		return a.Key < b.Key
 	})
 	out.SemanticKeys = dedupeSemantic(out.SemanticKeys)
-	return out, nil
+	return out, bad, nil
 }
 
 func dedupeSemantic(in []SemanticKeyProtection) []SemanticKeyProtection {
@@ -202,6 +226,7 @@ type discovery struct {
 	tree  map[string]TreeEntry
 	paths []string
 	whole map[string]*string
+	bad   []*discoveryFileError
 }
 
 // protect records a repository path with its blob at the revision (nil when absent or not a regular file).
@@ -246,6 +271,13 @@ func (d *discovery) fromValidation(v map[string]any) error {
 			return fmt.Errorf("%s has no usable argv", where)
 		}
 		argvs = append(argvs, argv)
+		if env, ok := m["env"].(map[string]any); ok {
+			for name := range env {
+				if name == "MAKEFILES" {
+					return fmt.Errorf("%s sets MAKEFILES: the files make reads cannot be derived", where)
+				}
+			}
+		}
 		if withConfig {
 			cp, err := stringList(m["configPaths"])
 			if err != nil {
@@ -283,7 +315,28 @@ func (d *discovery) fromValidation(v map[string]any) error {
 	return d.walkMakefiles(roots)
 }
 
+// makeLongOptions are the long options that change which makefiles make reads; getopt accepts any unambiguous
+// prefix of a long option, so a prefix of one of these is treated as that option (fail closed).
+var (
+	makeFileOptions = []string{"file", "makefile"}
+	makeDenyOptions = []string{"directory", "include-dir", "eval"}
+)
+
+func isOptionPrefix(name string, full []string) bool {
+	if name == "" {
+		return false
+	}
+	for _, f := range full {
+		if strings.HasPrefix(f, name) {
+			return true
+		}
+	}
+	return false
+}
+
 // makeFiles reports whether argv runs make and which makefiles it reads: its -f files, else the three default names.
+// An option that changes the directory, adds an include directory or evaluates a statement, and a MAKEFILES
+// variable, cannot be resolved statically and is an error.
 func makeFiles(argv []string) ([]string, bool, error) {
 	switch path.Base(argv[0]) {
 	case "make", "gmake":
@@ -291,52 +344,80 @@ func makeFiles(argv []string) ([]string, bool, error) {
 		return nil, false, nil
 	}
 	var files []string
+	addFile := func(f string) error {
+		p, ok := repoPath(f)
+		if !ok {
+			return fmt.Errorf("make file %q is not a repository path", f)
+		}
+		files = append(files, p)
+		return nil
+	}
+	unresolvable := func(a string) error {
+		return fmt.Errorf("make argv %q: option %q changes which makefiles are read and cannot be resolved statically", argv, a)
+	}
 	for i := 1; i < len(argv); i++ {
 		a := argv[i]
-		var f string
 		switch {
 		case a == "--":
 			i = len(argv)
-			continue
-		case a == "-f" || a == "--file" || a == "--makefile":
-			if i+1 >= len(argv) {
-				return nil, true, fmt.Errorf("%s needs a file", a)
+		case strings.HasPrefix(a, "--"):
+			name, val, hasVal := strings.Cut(a[2:], "=")
+			switch {
+			case isOptionPrefix(name, makeDenyOptions):
+				return nil, true, unresolvable(a)
+			case isOptionPrefix(name, makeFileOptions):
+				if name != "file" && name != "makefile" {
+					return nil, true, fmt.Errorf("make argv %q: the abbreviated option %q cannot be resolved; spell --file out", argv, a)
+				}
+				if !hasVal {
+					if i+1 >= len(argv) {
+						return nil, true, fmt.Errorf("%s needs a file", a)
+					}
+					i++
+					val = argv[i]
+				}
+				if err := addFile(val); err != nil {
+					return nil, true, err
+				}
 			}
-			i++
-			f = argv[i]
-		case strings.HasPrefix(a, "--file="):
-			f = strings.TrimPrefix(a, "--file=")
-		case strings.HasPrefix(a, "--makefile="):
-			f = strings.TrimPrefix(a, "--makefile=")
-		case a == "-C" || strings.HasPrefix(a, "-C") && !strings.HasPrefix(a, "--") || a == "--directory" || strings.HasPrefix(a, "--directory="):
-			return nil, true, fmt.Errorf("make argv %q changes directory: the files it reads cannot be derived", argv)
-		case strings.HasPrefix(a, "-f") && len(a) > 2 && !strings.HasPrefix(a, "--"):
-			f = a[2:]
-		case strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") && len(a) > 2 && strings.ContainsRune(letters(a[1:]), 'f'):
-			return nil, true, fmt.Errorf("make flag cluster %q cannot be resolved", a)
-		default:
-			continue
+		case strings.HasPrefix(a, "-") && len(a) > 1:
+			// A cluster of short flags: the first flag that takes an argument ends it (the argument is the rest of
+			// the cluster, or the next word).
+			for j := 1; j < len(a); j++ {
+				c := a[j]
+				switch c {
+				case 'C', 'I', 'E':
+					return nil, true, unresolvable(a)
+				case 'f':
+					f := a[j+1:]
+					if f == "" {
+						if i+1 >= len(argv) {
+							return nil, true, fmt.Errorf("%s needs a file", a)
+						}
+						i++
+						f = argv[i]
+					}
+					if err := addFile(f); err != nil {
+						return nil, true, err
+					}
+					j = len(a)
+				case 'o', 'W', 'l', 'j', 'O':
+					if c == 'o' || c == 'W' {
+						if a[j+1:] == "" {
+							i++
+						}
+					}
+					j = len(a)
+				}
+			}
+		case strings.HasPrefix(a, "MAKEFILES="):
+			return nil, true, unresolvable(a)
 		}
-		p, ok := repoPath(f)
-		if !ok {
-			return nil, true, fmt.Errorf("make file %q is not a repository path", f)
-		}
-		files = append(files, p)
 	}
 	if len(files) == 0 {
 		files = []string{"GNUmakefile", "makefile", "Makefile"}
 	}
 	return files, true, nil
-}
-
-// letters returns the leading run of letters of a short-flag cluster.
-func letters(s string) string {
-	for i := 0; i < len(s); i++ {
-		if c := s[i]; !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z') {
-			return s[:i]
-		}
-	}
-	return s
 }
 
 var scriptExts = map[string]bool{".sh": true, ".bash": true, ".py": true, ".js": true, ".mjs": true, ".ts": true, ".rb": true, ".pl": true, ".mk": true}
@@ -394,7 +475,8 @@ func (d *discovery) walkMakefiles(roots []string) error {
 		}
 		incs, recipes, err := parseMakefile(string(content), d.paths)
 		if err != nil {
-			return fmt.Errorf("%s: %w", p, err)
+			d.bad = append(d.bad, &discoveryFileError{Path: p, Err: err})
+			continue
 		}
 		queue = append(queue, incs...)
 		for _, r := range recipes {
@@ -436,12 +518,15 @@ func parseMakefile(text string, tree []string) (includes, recipes []string, err 
 			i++
 			line = strings.TrimSuffix(line, "\\") + " " + strings.TrimLeft(lines[i], " \t")
 		}
-		if strings.HasPrefix(line, "\t") {
-			recipes = append(recipes, line[1:])
-			continue
+		if err := checkMakeLine(line); err != nil {
+			return nil, nil, err
 		}
-		line = stripMakeComment(line)
-		trim := strings.TrimSpace(line)
+		trim := strings.TrimSpace(stripMakeComment(line))
+		if strings.HasPrefix(line, "\t") {
+			// A recipe line, but make reads a tab-led line outside a rule (for example inside a conditional) as a
+			// directive, so an include-like line is also resolved as an include (a safe over-approximation).
+			recipes = append(recipes, line[1:])
+		}
 		var rest string
 		switch {
 		case hasDirective(trim, "include"):
@@ -487,6 +572,24 @@ func parseMakefile(text string, tree []string) (includes, recipes []string, err 
 		}
 	}
 	return includes, recipes, nil
+}
+
+var (
+	makeEvalRE = regexp.MustCompile(`\$[({]\s*eval\b`)
+	makeWordRE = regexp.MustCompile(`\b(include|sinclude|load)\b`)
+)
+
+// checkMakeLine rejects what the derivation cannot follow: a `load` directive (a loadable object runs code and can
+// define new directives) and a `$(eval ...)` that mentions include or load.
+func checkMakeLine(line string) error {
+	trim := strings.TrimSpace(stripMakeComment(line))
+	if hasDirective(trim, "load") || hasDirective(trim, "-load") {
+		return fmt.Errorf("a load directive cannot be resolved statically: %q", trim)
+	}
+	if makeEvalRE.MatchString(line) && makeWordRE.MatchString(line) {
+		return fmt.Errorf("$(eval) with include or load cannot be resolved statically: %q", trim)
+	}
+	return nil
 }
 
 // hasDirective reports whether the line is the directive followed by a space (and not an assignment to a

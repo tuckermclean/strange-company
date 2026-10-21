@@ -52,7 +52,7 @@ func CheckIngestion(in IngestionInput) ([]Violation, error) {
 	if err != nil {
 		return nil, err
 	}
-	c := &ingestCheck{in: in, pol: pol, seen: map[string]bool{}, manifest: map[string]bool{}, manifestWhole: map[string]bool{}, headWhole: map[string]bool{}}
+	c := &ingestCheck{in: in, pol: pol, seen: map[string]bool{}, manifest: map[string]bool{}, manifestWhole: map[string]bool{}, headWhole: map[string]bool{}, headBroken: map[string]string{}}
 	for _, f := range in.Manifest.Files {
 		c.manifest[f.Path] = true
 	}
@@ -60,18 +60,25 @@ func CheckIngestion(in IngestionInput) ([]Violation, error) {
 		c.manifestWhole[w.Path] = true
 	}
 	if in.Validation != nil && len(entries) > 0 {
-		dp, err := DeriveDiscoveryProtection(DiscoveryInput{Git: in.Git, Rev: in.Head, Validation: in.Validation, Platform: in.Platform, Effective: in.Effective})
+		dp, bad, err := deriveDiscovery(DiscoveryInput{Git: in.Git, Rev: in.Head, Validation: in.Validation, Platform: in.Platform, Effective: in.Effective})
 		if err != nil {
 			return nil, fmt.Errorf("discovery protection at the head: %w", err)
 		}
 		for _, w := range dp.WholeFiles {
 			c.headWhole[w.Path] = true
 		}
+		// A file the head derivation could not read is reported as a discovery change (D18 e), not as an error.
+		for _, b := range bad {
+			c.headBroken[b.Path] = b.Err.Error()
+		}
 	}
 	for _, e := range entries {
 		if err := c.entry(e); err != nil {
 			return nil, err
 		}
+	}
+	for p, why := range c.headBroken {
+		c.tamper(subDiscoveryChanged, p, "the discovery protection of the head cannot be derived: "+why)
 	}
 	sort.SliceStable(c.out, func(i, j int) bool {
 		a, b := c.out[i], c.out[j]
@@ -164,6 +171,7 @@ type ingestCheck struct {
 	manifest      map[string]bool
 	manifestWhole map[string]bool
 	headWhole     map[string]bool
+	headBroken    map[string]string
 	redTree       map[string]TreeEntry
 	out           []Violation
 	seen          map[string]bool
