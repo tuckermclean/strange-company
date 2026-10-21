@@ -28,8 +28,9 @@ func d24Bomb(levels int) string {
 }
 
 // d24Classify runs ClassifyJudge in a goroutine and fails (an assertion, not a panic) when it has not returned in
-// 5 seconds. A timed-out goroutine leaks until the test binary exits; the levels used are low enough (6 to 10 levels
-// is 10^6 to 10^10 expanded items, only expanded by an unbounded parser) for the leak to be harmless here.
+// 2 seconds. A timed-out goroutine leaks until it finishes; the levels used are low enough (5 and 6 levels are 10^5
+// and 10^6 expanded items, only expanded by an unbounded parser) for it to finish soon and free its memory, so the
+// test binary is never killed by memory pressure at RED.
 func d24Classify(t *testing.T, in JudgeInput) (RedClassification, bool, error) {
 	t.Helper()
 	type res struct {
@@ -41,7 +42,7 @@ func d24Classify(t *testing.T, in JudgeInput) (RedClassification, bool, error) {
 		g, e := ClassifyJudge(in)
 		ch <- res{g, e}
 	}()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	select {
 	case r := <-ch:
@@ -56,9 +57,8 @@ func d24Classify(t *testing.T, in JudgeInput) (RedClassification, bool, error) {
 func TestClassifyJudge_AliasBombAndAnchors_D24_22AC3(t *testing.T) {
 	rep := strings.Replace
 	bad := map[string]string{
+		"bomb_5_levels":   d24Bomb(5),
 		"bomb_6_levels":   d24Bomb(6),
-		"bomb_8_levels":   d24Bomb(8),
-		"bomb_10_levels":  d24Bomb(10),
 		"single_anchor":   rep(s6DocJudgeYAML, "acIds: [AC-1]", "acIds: &a [AC-1]", 1),
 		"single_alias":    rep(rep(s6DocJudgeYAML, "acIds: [AC-1]", "acIds: &a [AC-1]", 1), "acIds: [AC-2]", "acIds: *a", 1),
 		"alias_no_anchor": rep(s6DocJudgeYAML, "acIds: [AC-2]", "acIds: *a", 1),
