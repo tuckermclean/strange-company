@@ -163,8 +163,9 @@ func TestCheckIngestion_TOML_D18_22AC8(t *testing.T) {
 			head: cargo(d18CargoBase + "\n[\"dev-dependencies\"]\n" + d18DevDepsEvl), want: []string{cargoDep}, allow: []string{cargoDisc}},
 		{name: "twin_cargo_dependencies_added", base: cargo(d18CargoBase),
 			head: cargo(d18CargoBase + "\n[dependencies]\nserde = \"1\"\n")},
-		{name: "multiline_value_in_protected_table", base: py("[tool.pytest.ini_options]\naddopts = \"-q\\n\"\n"),
-			head: py("[tool.pytest.ini_options]\naddopts = \"\"\"\n-q\n\"\"\"\n"), want: []string{disc}},
+		// tomllib: both decode to "-q\n"
+		{name: "twin_multiline_equals_escaped_value", base: py("[tool.pytest.ini_options]\naddopts = \"-q\\n\"\n"),
+			head: py("[tool.pytest.ini_options]\naddopts = \"\"\"\n-q\n\"\"\"\n")},
 		{name: "twin_unrelated_table_added", base: py(d18PyPytest),
 			head: py(d18PyPytest + "\n[project]\nname = \"x\"\n")},
 
