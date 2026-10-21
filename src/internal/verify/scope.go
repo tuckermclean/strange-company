@@ -25,12 +25,14 @@ func e2eProtected(eff policy.Effective, p string) bool {
 }
 
 type exemptionClass struct {
-	name     string
-	allowed  []string
-	denied   []string
-	human    bool
-	repos    []string
-	hasRepos bool
+	name             string
+	allowed          []string
+	denied           []string
+	human            bool
+	platformHuman    bool
+	characterization bool
+	repos            []string
+	hasRepos         bool
 }
 
 // loadClasses reads the platform exemption classes, applying the repository's requireHumanApproval.
@@ -71,10 +73,14 @@ func loadClasses(plat policy.Platform, eff policy.Effective) ([]exemptionClass, 
 		}
 		switch a, _ := m["approval"].(string); a {
 		case "human":
-			c.human = true
+			c.human, c.platformHuman = true, true
 		case "auto":
 		default:
 			return nil, fmt.Errorf("class %s has approval %q", c.name, a)
+		}
+		if j, ok := m["judge"].(map[string]any); ok {
+			k, _ := j["kind"].(string)
+			c.characterization = k == "characterization"
 		}
 		for _, h := range requireHuman {
 			if h == c.name {
@@ -164,9 +170,10 @@ func CheckScope(in ScopeInput) ([]Violation, error) {
 		return nil, err
 	}
 	var (
-		classes []exemptionClass
-		own     exemptionClass
-		auto    bool
+		classes   []exemptionClass
+		own       exemptionClass
+		auto      bool
+		testClass []string
 	)
 	if in.Role == "producer" {
 		if in.Exemption == nil {
@@ -179,24 +186,39 @@ func CheckScope(in ScopeInput) ([]Violation, error) {
 		if own, ok = findClass(classes, in.Exemption.Class); !ok {
 			return nil, fmt.Errorf("exemption class %q is not defined by the platform policy", in.Exemption.Class)
 		}
-		switch in.Exemption.Approval {
-		case "auto":
+		switch {
+		case in.Exemption.Status == "granted" && in.Exemption.Approval == "auto":
+			if own.platformHuman {
+				return nil, fmt.Errorf("exemption class %q needs human approval, but the decision is auto", own.name)
+			}
 			auto = true
-		case "human":
+		case in.Exemption.Status == "pending_approval" && in.Exemption.Approval == "human":
 		default:
-			return nil, fmt.Errorf("exemption approval %q is neither auto nor human", in.Exemption.Approval)
+			return nil, fmt.Errorf("exemption decision %q/%q is neither granted/auto nor pending_approval/human", in.Exemption.Status, in.Exemption.Approval)
+		}
+		if own.characterization {
+			for _, k := range []string{"/spec/testPaths", "/spec/fixturePaths", "/spec/testInfraPaths"} {
+				l, err := stringList(in.Effective.Values[k])
+				if err != nil {
+					return nil, fmt.Errorf("effective %s: %w", k, err)
+				}
+				testClass = append(testClass, l...)
+			}
 		}
 	}
 	var out []Violation
 	for _, e := range in.Entries {
 		p := e.Path
+		if e.OldMode == modeGitlink || e.NewMode == modeGitlink {
+			out = append(out, Violation{Code: codeGitlinkDenied, Path: p, Detail: "a gitlink (mode 160000) is denied in an autonomous diff"})
+		}
 		if matchAny(protected, p) {
 			out = append(out, Violation{Code: codeProtectedPath, SubCode: subProtectedPath, Path: p, Detail: "protected path " + e.Status})
 		}
 		if in.Role != "producer" {
 			continue
 		}
-		if !own.matches(p) {
+		if !own.matches(p) || matchAny(testClass, p) {
 			out = append(out, Violation{Code: codeRoleDiff, Path: p, Detail: fmt.Sprintf("path is outside the paths of exemption class %s", own.name)})
 		}
 		if auto {
