@@ -119,6 +119,8 @@ func (sc *g5Scenario) classify(t *testing.T, head string, integ Integrity, mutat
 	}
 	fx := g5BaseFixture(t)
 	fx.Manifest = sc.man
+	// D22 N2: the baseline and the observation are bound to this scenario's manifest.
+	fx.Observed.BaseSha = sc.man.BaseCommit
 	fx.Observed.HeadSha = head
 	fx.Observed.Runs[0].Commit = head
 	fx.Observed.RedReplay.RedCommit = sc.red
@@ -129,6 +131,9 @@ func (sc *g5Scenario) classify(t *testing.T, head string, integ Integrity, mutat
 		mutate(&fx)
 	}
 	in := g5InputOf(t, fx)
+	in.Baseline.HeadSha = sc.man.TestCommit
+	in.Baseline.BaseSha = sc.man.BaseCommit
+	in.Baseline.Repository = sc.man.Repository
 	got, err := ClassifyGreen(in)
 	return in, got, err
 }
