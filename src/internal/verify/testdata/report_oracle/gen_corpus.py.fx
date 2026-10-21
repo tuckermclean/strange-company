@@ -1,8 +1,9 @@
-"""Generates corpus.json for the F06 report-recogniser oracle test (decision D26).
+"""Generates corpus.json for the F06 report-recogniser oracle test (decisions D26 and D27).
 
 Usage:  python3 -I gen_corpus.py.fx <markdown-it-py-3.0.0-lib-dir> <seed> <n-random> <out.json>
-Recorded with seed 26, 2900 random entries (plus the fixed cases below), markdown-it-py 3.0.0 in
-"commonmark" mode, on 2026-10-21.
+Recorded with seed 27, 3000 random entries (plus the fixed cases below, wrapped three ways each, then
+de-duplicated), markdown-it-py 3.0.0 in "commonmark" mode, on 2026-10-21 (D27 re-record; the D26 recording used
+seed 26).
 
 The oracle verdict for an AC id is: the id appears (matching the same word-boundary regex the recogniser uses)
 in the visible text of at least one rendered heading (ATX or setext, any level, at any nesting depth). Visible
@@ -115,6 +116,27 @@ FIXED = [
     "---\n## AC-1\n---\n",
     "## &lt;x AC-1\n",
     "## AC-1 ##\n",
+    # D27 (a) repros: indented HTML opener on a list-item continuation line
+    "- x\n\n\t<div>\n  ## AC-1\n",
+    "- x\n\n    <div>\n  ## AC-1\n",
+    "- x\n    <div>\n  ## AC-1\n",
+    "* x\n\n\t<!--\n   ## AC-1\n",
+    "- x\n\t <!--\n  ## AC-1\n-->\n",
+    # D27 (a) variants
+    "- x\n\n <div>\n  ## AC-1\n",
+    "- x\n\n  <div>\n  ## AC-1\n",
+    "1. x\n\n   <pre>\n   ## AC-1\n   </pre>\n",
+    "1. x\n\n     <div>\n   ## AC-1\n",
+    "> - x\n>\n>     <div>\n>   ## AC-1\n",
+    "> - x\n>\n>\t<!--\n>   ## AC-1\n",
+    "- > x\n  >\n  >     <div>\n  >   ## AC-1\n",
+    "- x\n\n      <script>\n  ## AC-1\n",
+    # D27 (b) twins: `<` lines inside a top-level fence
+    "```xml\n<settings>\n  <cache/>\n```\n## AC-1\n",
+    "```go\n  <-done\n```\n## AC-1\n",
+    "```\n<!--\n```\n## AC-1\n",
+    "~~~html\n<div>\n<pre>\n~~~\n## AC-1\n",
+    "## AC-1\n```xml\n<settings>\n</settings>\n```\n",
 ]
 
 # Fragment pools. Each generator returns one line.
@@ -184,7 +206,57 @@ def item_fence_body(rng):
     return "\n".join(lines) + "\n"
 
 
+HTML_OPEN = ["<div>", "<!--", "<pre>", "<script>", "<b>x</b>", "<span>", "</div>", "<style>", "<p>", "<?x", "<![CDATA[",
+             "<a href=\"u\">", "<br/>", "< x", "<-", "<settings>"]
+HIND = ["\t", " ", "  ", "   ", "    ", "     ", "      ", "\t ", " \t", "  \t"]
+
+
+def item_html_body(rng):
+    """D27(c): a list item or blockquote whose continuation line carries an indented HTML opener (tab, 1-6 spaces)
+    that CommonMark renders as an HTML block, hiding the headings after it."""
+    lines = []
+    quote = rng.random() < 0.35
+    q = "> " if quote else ""
+    marker = rng.choice(["- ", "* ", "+ ", "1. ", "2) ", "10. ", "-\t", "- - "])
+    cont = " " * rng.choice([2, 2, 3, 3, 4, 0, 1])
+    if rng.random() < 0.3:
+        lines.append(q + marker.rstrip())
+    else:
+        lines.append(q + marker + rng.choice(PLAIN[:4] + ["see <b>this</b>", "3 < 5"]))
+    if rng.random() < 0.5:
+        lines.append(q.rstrip())
+    for _ in range(rng.randint(1, 2)):
+        lines.append(q + rng.choice(HIND + [cont]) + rng.choice(HTML_OPEN))
+    for _ in range(rng.randint(1, 3)):
+        lines.append(q + rng.choice([cont, "  ", "", " ", "    "]) + rng.choice(
+            ["## AC-1", "## AC-2", "y", "", "## AC-1", "-->", "</div>", "</pre>", "    ## AC-1"]))
+    if rng.random() < 0.3:
+        lines.append(rng.choice(["", " ", "  "]) + rng.choice(["## AC-1", "-->", "</pre>"]))
+    return "\n".join(lines) + "\n"
+
+
+def fenced_lt_body(rng):
+    """D27(c): a top-level fence at column 0 holding XML/HTML or `<-` lines (and sometimes an indented opener
+    or heading text), then headings. Fenced `<` lines hide nothing."""
+    f = rng.choice(FENCE[:5])
+    info = rng.choice(["", "xml", "go", "html", " x"])
+    inner = [rng.choice(["", "  ", "   ", "    ", "\t"]) + rng.choice(HTML_OPEN + ["<cache/>", "## AC-1", "x"])
+             for _ in range(rng.randint(1, 4))]
+    lines = [f + info] + inner
+    if rng.random() < 0.85:
+        lines.append(rng.choice(["", "", " ", "  "]) + f[0] * rng.choice([len(f), len(f), len(f) + 1]))
+    for _ in range(rng.randint(0, 2)):
+        lines.append(rng.choice(["## AC-1", "## AC-2", "x", "", "<div>", "## x"]))
+    body = "\n".join(lines) + "\n"
+    return rng.choice(["# R\n\n## AC-2\n\n", "## AC-2\n", "# R\n\n"]) + body
+
+
 def random_report(rng):
+    r0 = rng.random()
+    if r0 < 0.22:
+        return rng.choice(["# R\n\n## AC-2\n\n", "# R\n\n## AC-2\n\n", "## AC-2\n"]) + item_html_body(rng)
+    if r0 < 0.34:
+        return fenced_lt_body(rng)
     if rng.random() < 0.45:
         return rng.choice(["# R\n\n## AC-2\n\n", "# R\n\n## AC-2\n\n", "## AC-2\n"]) + item_fence_body(rng)
     mode = rng.choice(["list_fence", "list_fence", "list_fence", "html", "mixed", "mixed"])
