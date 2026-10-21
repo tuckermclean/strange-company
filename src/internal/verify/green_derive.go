@@ -71,13 +71,28 @@ func DeriveIntegrity(in IntegrityInput) (Integrity, error) {
 	for _, e := range tree {
 		at[e.Path] = e
 	}
+	redTree, err := LsTree(in.Git, red)
+	if err != nil {
+		return Integrity{}, err
+	}
+	redAt := make(map[string]TreeEntry, len(redTree))
+	for _, e := range redTree {
+		redAt[e.Path] = e
+	}
+	flagged := map[string]bool{}
+	for _, v := range in.Violations {
+		if v.Code == codeTestTamper && v.SubCode == subManifestChanged {
+			flagged[v.Path] = true
+		}
+	}
 	for _, f := range in.Manifest.Files {
 		file := IntegrityFile{Path: f.Path, ExpectedBlob: f.BlobSha, Status: "deleted"}
 		if e, ok := at[f.Path]; ok {
 			b := e.Blob
 			file.ActualBlob = &b
 			file.Status = "modified"
-			if e.Blob == f.BlobSha {
+			// A changed mode or type (symlink over an identical blob) is a modification, as is any flagged file.
+			if r, inRed := redAt[f.Path]; e.Blob == f.BlobSha && (!inRed || r.Mode == e.Mode) && !flagged[f.Path] {
 				file.Status = "intact"
 			}
 		}

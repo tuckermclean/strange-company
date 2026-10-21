@@ -65,8 +65,9 @@ type greenFacts struct {
 	manifestList []string
 	protected    []string
 	headRuns     []RunSummary
-	truncatedGap bool // a protected test is in the id set but not in the (truncated) tests list
 	warnings     []string
+	// droppedFailure: a head run counts more failing tests than the truncated report lists (G5).
+	droppedFailure bool
 }
 
 var integrityStatuses = map[string]bool{"intact": true, "modified": true, "deleted": true, "renamed": true}
@@ -108,6 +109,37 @@ func newGreenFacts(in GreenInput) (*greenFacts, error) {
 	}
 	if in.Baseline.Phase != "red" || in.Baseline.TaskID != man.TaskID {
 		return nil, infraErr("baseline is not the red observation of task %s", man.TaskID)
+	}
+	if b := in.Baseline; b.HeadSha != man.TestCommit || b.BaseSha != man.BaseCommit || b.Repository != man.Repository {
+		return nil, infraErr("baseline is for %s base %q head %q, the manifest for %s base %q red %q", b.Repository, b.BaseSha, b.HeadSha, man.Repository, man.BaseCommit, man.TestCommit)
+	}
+	if obs.BaseSha != man.BaseCommit {
+		return nil, infraErr("observed base_sha %q is not the manifest's base commit %q", obs.BaseSha, man.BaseCommit)
+	}
+
+	// Counts against the report and the exit code (D22 B2, N1).
+	reportedFail := map[string]int{}
+	for _, t := range obs.Tests {
+		switch t.StatusHead {
+		case statusFailedAssertion, statusFailedError, statusStub:
+			reportedFail[t.Suite]++
+		}
+	}
+	for _, r := range f.headRuns {
+		c := r.Counts
+		failing := c.FailedAssertion + c.FailedError + c.StubUnimplemented
+		if failing > reportedFail[r.Suite] {
+			if !obs.TestsTruncated {
+				return nil, infraErr("suite %q counts %d failing tests, the report lists %d", r.Suite, failing, reportedFail[r.Suite])
+			}
+			f.droppedFailure = true
+		}
+		if failing > 0 && r.ExitCode == 0 {
+			return nil, infraErr("suite %q exited 0 with %d failing tests counted", r.Suite, failing)
+		}
+		if failing == 0 && r.ExitCode != 0 && r.ReportFound && !r.BuildFailed && !r.TimedOut {
+			return nil, infraErr("suite %q exited %d with every count passing", r.Suite, r.ExitCode)
+		}
 	}
 
 	// Tests.
@@ -244,6 +276,11 @@ func ruleG2(f *greenFacts, add greenAdd) error {
 	for _, s := range integ.StaticFindings {
 		switch s.Severity {
 		case "warning":
+			for _, c := range g2Order {
+				if s.Code == c {
+					return infraErr("static finding %q at %q is a section 14.6 code and cannot be a warning", s.Code, s.Path)
+				}
+			}
 			f.warnings = append(f.warnings, truncRunes(fmt.Sprintf("%s: %s", s.Code, s.Path), 300))
 		case "violation":
 			r, ok := staticFindingReason[s.Code]
@@ -419,7 +456,7 @@ func ruleG4c(f *greenFacts, add greenAdd) error {
 // ruleG5: every other test passes or is skipped, nothing that passed at base is skipped now, every protectedTestIds
 // entry passes.
 func ruleG5(f *greenFacts, add greenAdd) error {
-	var failing, newSkip bool
+	failing, newSkip := f.droppedFailure, false
 	for _, t := range f.in.Observed.Tests {
 		if f.manifestIDs[t.ID] {
 			continue
