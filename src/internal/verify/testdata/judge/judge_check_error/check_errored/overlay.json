@@ -1,0 +1,14 @@
+{
+ "observed": {
+  "judge_checks": [
+   {
+    "id": "J-1",
+    "status": "error"
+   },
+   {
+    "id": "J-2",
+    "status": "fail"
+   }
+  ]
+ }
+}

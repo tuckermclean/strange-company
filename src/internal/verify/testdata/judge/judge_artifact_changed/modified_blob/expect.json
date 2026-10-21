@@ -1,0 +1,7 @@
+{
+ "contains": [
+  "judge_artifact_changed"
+ ],
+ "function": "judging",
+ "outcome": "tamper_detected"
+}

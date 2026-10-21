@@ -1,0 +1,13 @@
+{
+ "approval": "auto",
+ "green": {
+  "checks": [],
+  "judge_checks": []
+ },
+ "integrity": null,
+ "manifest": null,
+ "producer_paths": [],
+ "report": "## AC-1\nx\n\n## AC-2\nx\n\n## AC-3\nx\n",
+ "required_checks": [],
+ "task_class": "research"
+}

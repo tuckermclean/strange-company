@@ -170,6 +170,9 @@ type Observation struct {
 	TestsTruncated bool              `json:"tests_truncated"`
 	TestIDSets     *TestIDSets       `json:"test_id_sets,omitempty"`
 	ObservedAt     string            `json:"observed_at"`
+	// JudgeChecks is the outcome of each judge check (subject judge only).
+	// SC-STUB(F06 22-AC-3)
+	JudgeChecks []JudgeCheck `json:"judge_checks,omitempty"`
 }
 
 // ChangedFile mirrors Scope.changed_files items.

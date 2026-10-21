@@ -1,0 +1,16 @@
+{
+ "criteria": [
+  {
+   "id": "AC-1",
+   "kind": "change"
+  },
+  {
+   "id": "AC-2",
+   "kind": "change"
+  },
+  {
+   "id": "AC-3",
+   "kind": "change"
+  }
+ ]
+}

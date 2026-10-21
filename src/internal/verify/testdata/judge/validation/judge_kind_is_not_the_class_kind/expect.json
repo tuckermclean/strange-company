@@ -1,0 +1,5 @@
+{
+ "function": "validate",
+ "non_empty": true,
+ "outcome": "judge_invalid"
+}

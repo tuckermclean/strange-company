@@ -1,0 +1,27 @@
+{
+ "approval": "human",
+ "base_checks": [
+  {
+   "id": "J-1",
+   "status": "pass"
+  },
+  {
+   "id": "J-2",
+   "status": "pass"
+  }
+ ],
+ "base_commit": "fedcba9876543210fedcba9876543210fedcba98",
+ "observed": {
+  "judge_checks": [
+   {
+    "id": "J-1",
+    "status": "pass"
+   },
+   {
+    "id": "J-2",
+    "status": "pass"
+   }
+  ]
+ },
+ "task_class": "refactor"
+}

@@ -1,0 +1,8 @@
+{
+ "contains": [
+  "judge_check_error"
+ ],
+ "function": "validate",
+ "non_empty": true,
+ "outcome": "judge_invalid"
+}

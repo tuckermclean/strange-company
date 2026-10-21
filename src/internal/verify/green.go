@@ -87,6 +87,9 @@ type GreenObservation struct {
 	RedReplay      *RedReplay        `json:"red_replay,omitempty"`
 	Repeats        *GreenRepeats     `json:"repeats,omitempty"`
 	ObservedAt     string            `json:"observed_at"`
+	// JudgeChecks is the outcome of each judge check (subject judge only).
+	// SC-STUB(F06 22-AC-3)
+	JudgeChecks []JudgeCheck `json:"judge_checks,omitempty"`
 }
 
 // IntegrityFile mirrors Integrity.manifest_files items; a nil ActualBlob means the file is absent at the head.
