@@ -322,11 +322,14 @@ var (
 
 // reportAddresses reports whether a markdown report is non-empty and carries every criterion id in an ATX heading
 // outside code fences. An id matches as a whole token (AC-10 is not AC-1). The recogniser is a fail-closed canonical
-// subset (decision D23 B2): a report with a NUL, invalid UTF-8, a line terminator other than LF or CRLF, or a line
-// that begins with up to three spaces and then `<` (HTML, which can hide headings) addresses nothing. A fence closes
-// only on the same character, with a run at least as long as the opener's and only whitespace after it. Setext
-// headings and indented code are not AC headings. Within a heading only the text before the first markup opener
-// counts (decision D25, judgeVisiblePrefix).
+// subset (decisions D23 B2, D24, D26, D27): a report with a NUL, invalid UTF-8 or a line terminator other than LF or
+// CRLF addresses nothing. Outside a top-level fence, a line that opens a fence (``` or ~~~) or starts with `<` (HTML,
+// which can hide headings) after any indentation (spaces or a tab), or after container markers (block quote, list
+// item), addresses nothing: an indented fence or `<` opener fails closed. Only a column-0 opener starts a top-level
+// fence; it closes only on the same character, with a run at least as long as the opener's and only whitespace after
+// it (up to three leading spaces), and the `<` rules are not applied to the lines inside it (fenced XML, HTML or Go
+// `<-` is legitimate content). Setext headings and indented code are not AC headings. Within a heading only the text
+// before the first markup opener counts (decision D25, judgeVisiblePrefix).
 func reportAddresses(report []byte, criteria []Criterion) bool {
 	if len(bytes.TrimSpace(report)) == 0 || !utf8.Valid(report) {
 		return false

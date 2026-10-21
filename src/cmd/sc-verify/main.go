@@ -2,5 +2,26 @@
 // next to the code under test, `emit` frames the sealed observation, `classify` classifies offline.
 package main
 
-// SC-STUB(F06 22-AC-29 22-AC-24 22-AC-32)
-func main() {}
+import (
+	"context"
+	"os"
+	"time"
+
+	"strange.company/sc/internal/verify"
+)
+
+// sysClock is the one place sc-verify reads the clock (plan 52 D8); the library only ever sees this interface.
+type sysClock struct{ start time.Time }
+
+func (c sysClock) Now() string   { return time.Now().UTC().Format(time.RFC3339) }
+func (c sysClock) Millis() int64 { return time.Since(c.start).Milliseconds() }
+func (sysClock) Sleep(ms int)    { time.Sleep(time.Duration(ms) * time.Millisecond) }
+func (sysClock) WithTimeout(ctx context.Context, seconds int) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, time.Duration(seconds)*time.Second)
+}
+
+func main() {
+	os.Exit(verify.Main(verify.Deps{
+		Clock: sysClock{start: time.Now()}, Args: os.Args[1:], Environ: os.Environ(), Stdout: os.Stdout, Stderr: os.Stderr,
+	}))
+}
