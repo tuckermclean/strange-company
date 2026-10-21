@@ -7,3 +7,28 @@ spec:
   testInfraPaths: ["src/internal/testutil/**"]
   stubPaths: ["src/**/*.go", "contracts/**/*.go"]
   protectedPaths: ["Makefile", "mk/**"]
+  merge:
+    elevatedPaths:
+      - "src/internal/verify/**"
+      - "src/internal/statemachine/**"
+      - "src/internal/policy/**"
+      - "src/cmd/sc-verify/**"
+      - "src/cmd/sc-ci-config/**"
+      - "src/internal/runner/**"
+      - "src/cmd/agent-runner/**"
+      - "src/internal/forge/**"
+      - "src/cmd/sc-worker/**"
+      - "src/internal/worker/**"
+      - "src/internal/gateway/**"
+      - "src/cmd/model-gateway/**"
+      - "src/internal/ledger/**"
+      - "src/internal/lint/**"
+      - "src/cmd/sc-lint/**"
+      - "src/internal/scrub/**"
+      - "src/internal/gitops/**"
+      - "src/cmd/sc-gitops/**"
+      - "src/internal/jobs/**"
+      - "src/cmd/egress-proxy/**"
+      - "src/cmd/sc-release/**"
+      - "src/cmd/sc-e2e/**"
+      - "test/e2e/**"
