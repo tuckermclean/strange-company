@@ -1,0 +1,12 @@
+{
+  "manifest": [
+    "testdata/data.json"
+  ],
+  "violations": [
+    {
+      "code": "TEST_TAMPER",
+      "sub_code": "manifest_file_changed",
+      "path": "testdata/data.json"
+    }
+  ]
+}

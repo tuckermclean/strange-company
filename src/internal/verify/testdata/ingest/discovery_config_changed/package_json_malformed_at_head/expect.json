@@ -1,0 +1,13 @@
+{
+  "manifest": [],
+  "violations": [
+    {
+      "code": "TEST_TAMPER",
+      "sub_code": "discovery_config_changed",
+      "path": "package.json"
+    }
+  ],
+  "allow_extra": [
+    "TEST_TAMPER/test_dependency_changed package.json"
+  ]
+}

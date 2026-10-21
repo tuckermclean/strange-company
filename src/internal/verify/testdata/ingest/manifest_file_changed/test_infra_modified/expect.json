@@ -1,0 +1,12 @@
+{
+  "manifest": [
+    "internal/testutil/eq.go"
+  ],
+  "violations": [
+    {
+      "code": "TEST_TAMPER",
+      "sub_code": "manifest_file_changed",
+      "path": "internal/testutil/eq.go"
+    }
+  ]
+}

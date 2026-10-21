@@ -1,0 +1,16 @@
+{
+  "manifest": [],
+  "violations": [
+    {
+      "code": "TEST_TAMPER",
+      "sub_code": "existing_test_modified",
+      "path": "pkg/old_test.go"
+    },
+    {
+      "code": "TEST_TAMPER",
+      "sub_code": "skip_marker_added",
+      "path": "pkg/old_test.go",
+      "line": 6
+    }
+  ]
+}

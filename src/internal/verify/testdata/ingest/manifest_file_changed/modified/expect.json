@@ -1,0 +1,10 @@
+{
+  "manifest": [],
+  "violations": [
+    {
+      "code": "TEST_TAMPER",
+      "sub_code": "manifest_file_changed",
+      "path": "pkg/core_test.go"
+    }
+  ]
+}

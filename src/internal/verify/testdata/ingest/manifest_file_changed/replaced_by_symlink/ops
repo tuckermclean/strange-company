@@ -1,0 +1,1 @@
+symlink pkg/core_test.go other_test.go

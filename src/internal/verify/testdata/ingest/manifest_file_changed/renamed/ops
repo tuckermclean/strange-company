@@ -1,0 +1,1 @@
+rename pkg/core_test.go pkg/core_renamed_test.go
