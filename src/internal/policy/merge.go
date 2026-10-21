@@ -282,24 +282,36 @@ var enforcementPlaneGlobs = []string{
 // enforcementPlane requires, for the repository strange-company, every glob of the enforcement plane to lie inside
 // the union of its elevatedPaths and its protected paths (exact glob inclusion; plan 22 section 9.3, TDD-B4).
 func (m *merger) enforcementPlane() {
-	if name, _ := valAt(m.repo, "metadata", "name").(string); name != "strange-company" {
-		return
-	}
-	const ptr = "/spec/merge/elevatedPaths"
 	var cover []string
 	cover = append(cover, strList(m.platform.Verification, "spec", "protectedPaths")...)
 	cover = append(cover, strList(m.platform.Verification, "spec", "merge", "elevatedPaths")...)
-	cover = append(cover, strList(m.repo, "spec", "protectedPaths")...)
-	cover = append(cover, strList(m.repo, "spec", "merge", "elevatedPaths")...)
+	for _, is := range planeIssues(cover, m.repo) {
+		m.add(is.Code, is.Pointer, "%s", is.Message)
+	}
+}
+
+// planeIssues reports one issue per enforcement plane glob not covered by the union of platformCover (the platform
+// protected and elevated paths) and the protectedPaths and merge.elevatedPaths of repo. It applies to the repository
+// strange-company only. Shared by MergePolicy and Check (D20, 22-AC-33).
+func planeIssues(platformCover []string, repo map[string]any) []Issue {
+	if name, _ := valAt(repo, "metadata", "name").(string); name != "strange-company" {
+		return nil
+	}
+	const ptr = "/spec/merge/elevatedPaths"
+	cover := append([]string{}, platformCover...)
+	cover = append(cover, strList(repo, "spec", "protectedPaths")...)
+	cover = append(cover, strList(repo, "spec", "merge", "elevatedPaths")...)
+	var out []Issue
 	for _, g := range enforcementPlaneGlobs {
 		inside, ok := globInsideUnion(g, cover)
 		switch {
 		case !ok:
-			m.add(CodeGlobTooComplex, ptr, "cannot decide whether the enforcement plane glob %q is covered (too many states)", g)
+			out = append(out, Issue{Code: CodeGlobTooComplex, Pointer: ptr, File: repoPolicyFile, Message: fmt.Sprintf("cannot decide whether the enforcement plane glob %q is covered (too many states)", g)})
 		case !inside:
-			m.add("ENFORCEMENT_PLANE_NOT_ELEVATED", ptr, "the enforcement plane glob %q is not covered by merge.elevatedPaths or the protected paths", g)
+			out = append(out, Issue{Code: "ENFORCEMENT_PLANE_NOT_ELEVATED", Pointer: ptr, File: repoPolicyFile, Message: fmt.Sprintf("the enforcement plane glob %q is not covered by merge.elevatedPaths or the protected paths", g)})
 		}
 	}
+	return out
 }
 
 func has(v any, keys ...string) bool { return valAt(v, keys...) != nil }
