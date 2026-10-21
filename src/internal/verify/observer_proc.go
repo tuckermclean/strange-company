@@ -17,16 +17,6 @@ import (
 	"syscall"
 )
 
-// Clock is the time the observer needs. The library never reads the clock itself (plan 52 D8): the main package
-// supplies one. Now is an RFC 3339 UTC timestamp, Millis a monotonic millisecond counter, Sleep waits, WithTimeout
-// derives a context that ends after the given seconds.
-type Clock interface {
-	Now() string
-	Millis() int64
-	Sleep(ms int)
-	WithTimeout(ctx context.Context, seconds int) (context.Context, context.CancelFunc)
-}
-
 const prSetChildSubreaper = 36 // PR_SET_CHILD_SUBREAPER
 
 // setSubreaper makes this process the adopter of every orphaned descendant, so that a process that detaches itself
@@ -34,6 +24,17 @@ const prSetChildSubreaper = 36 // PR_SET_CHILD_SUBREAPER
 func setSubreaper() error {
 	if _, _, e := syscall.Syscall(syscall.SYS_PRCTL, prSetChildSubreaper, 1, 0); e != 0 {
 		return fmt.Errorf("prctl(PR_SET_CHILD_SUBREAPER): %v", e)
+	}
+	return nil
+}
+
+const prSetDumpable = 4 // PR_SET_DUMPABLE
+
+// setNotDumpable makes /proc/<pid>/mem and /proc/<pid>/environ of this process unreadable for the suites, which
+// run as the same user (blind TDD-B1). It is called after the re-exec, which would reset the flag.
+func setNotDumpable() error {
+	if _, _, e := syscall.Syscall(syscall.SYS_PRCTL, prSetDumpable, 0, 0); e != 0 {
+		return fmt.Errorf("prctl(PR_SET_DUMPABLE): %v", e)
 	}
 	return nil
 }

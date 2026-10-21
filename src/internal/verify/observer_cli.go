@@ -11,22 +11,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 
 	"strange.company/sc/internal/contracts"
 	"strange.company/sc/internal/policy"
 )
-
-// Deps is what the sc-verify main package hands to the library: the clock (plan 52 D8), the process arguments and
-// environment, and the output streams.
-type Deps struct {
-	Clock   Clock
-	Args    []string // os.Args without the program name
-	Environ []string
-	Stdout  io.Writer
-	Stderr  io.Writer
-}
 
 // defaultChildPath is the fixed toolchain PATH of the child environment when --child-path is not given.
 const defaultChildPath = "/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -156,8 +147,42 @@ func (o *observer) gitOut(args ...string) (string, error) {
 	return strings.TrimSpace(string(r.out)), err
 }
 
+// captureSnapshots reads the trees that later steps need (the base tree for the baseline run and for base-tooling
+// checks, the red tree for the replay) from Git's object store, before any workspace code runs.
+func (o *observer) captureSnapshots() error {
+	needBase := o.id.Phase == "red" && o.id.Baseline == "run"
+	if o.id.Phase == "green" {
+		for _, c := range o.cfg.Checks {
+			if c.ToolingFrom == "base" {
+				needBase = true
+			}
+		}
+		for _, p := range o.id.Protected {
+			if p.Kind == "change" {
+				snap, err := snapshotCommit(o.git, o.id.Red)
+				if err != nil {
+					return fmt.Errorf("cannot read the red commit: %w", err)
+				}
+				o.redSnap = snap
+				break
+			}
+		}
+	}
+	if needBase {
+		snap, err := snapshotCommit(o.git, o.id.Base)
+		if err != nil {
+			return fmt.Errorf("cannot read the base commit: %w", err)
+		}
+		o.baseSnap = snap
+	}
+	return nil
+}
+
 func (o *observer) run(validation, record, policyPath string, env map[string]string) error {
 	if err := setSubreaper(); err != nil {
+		return err
+	}
+	if err := setNotDumpable(); err != nil {
 		return err
 	}
 	head, err := o.gitOut("rev-parse", "HEAD")
@@ -210,6 +235,9 @@ func (o *observer) run(validation, record, policyPath string, env map[string]str
 	if real, err := filepath.EvalSymlinks(recAbs); err != nil || within(o.cwd, real) {
 		return fmt.Errorf("--record must be a directory outside the workspace")
 	}
+	if err := o.captureSnapshots(); err != nil {
+		return err
+	}
 	ver, err := o.verifier()
 	if err != nil {
 		return err
@@ -223,7 +251,7 @@ func (o *observer) run(validation, record, policyPath string, env map[string]str
 	if o.id.Phase == "red" {
 		var base *treeRun
 		if o.id.Baseline == "run" {
-			tree, cleanup, err := o.addBase()
+			tree, cleanup, err := o.extractTree(o.baseSnap, "sc-verify-base-")
 			if err != nil {
 				return err
 			}
@@ -295,8 +323,59 @@ func cmdEmit(d Deps, args []string) error {
 	if err != nil {
 		return err
 	}
-	_, err = io.WriteString(d.Stdout, block)
+	tail, err := logTail(*record, meta, nonce)
+	if err != nil {
+		return err
+	}
+	// Plan 20 section 8.4: one header line, a scrubbed tail of the log, then the framed block, last.
+	header := fmt.Sprintf("sc-verify emit: phase=%s sha=%s intent=%s", meta.Phase, meta.HeadSha, intent)
+	_, err = io.WriteString(d.Stdout, header+"\n"+tail+block)
 	return err
+}
+
+const emitTailBytes = 64 * 1024
+
+// logTail returns the last bytes of the recorded suite and check logs (already verified against record.json),
+// scrubbed: the nonce is blanked, anything that could pass for a frame marker is broken, and control characters and
+// invalid UTF-8 are replaced. The result ends with a newline and is at most emitTailBytes long.
+func logTail(record string, meta recordMeta, nonce string) (string, error) {
+	var names []string
+	for n := range meta.Files {
+		if strings.HasPrefix(n, "out/") && strings.HasSuffix(n, ".log") {
+			names = append(names, n)
+		}
+	}
+	sort.Strings(names)
+	var all []byte
+	for _, n := range names {
+		b, err := readRecordFile(record, n, obsMaxReportSize+maxCapture)
+		if err != nil {
+			return "", err
+		}
+		all = append(all, b...)
+		if len(all) > 4*emitTailBytes {
+			all = all[len(all)-4*emitTailBytes:]
+		}
+	}
+	if len(all) > emitTailBytes-1 {
+		all = all[len(all)-(emitTailBytes-1):]
+	}
+	t := strings.ToValidUTF8(string(all), "?")
+	t = strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\t' || (r >= 0x20 && r != 0x7f) {
+			return r
+		}
+		return '?'
+	}, t)
+	t = strings.ReplaceAll(t, "::sc-evidence-", "..sc-evidence-")
+	t = strings.ReplaceAll(t, nonce, strings.Repeat("*", len(nonce)))
+	if len(t) > emitTailBytes-1 {
+		t = strings.ToValidUTF8(t[len(t)-(emitTailBytes-1):], "?")
+	}
+	if t != "" && !strings.HasSuffix(t, "\n") {
+		t += "\n"
+	}
+	return t, nil
 }
 
 // classifyFacts is the --facts document of `classify`: the inputs of ClassifyRed or ClassifyGreen that are not in

@@ -1,3 +1,5 @@
+//go:build linux
+
 package verify
 
 import (
@@ -43,11 +45,12 @@ type obsConfig struct {
 }
 
 var (
-	obsNameRE   = regexp.MustCompile(`^[a-z][a-z0-9-]{0,40}$`)
-	obsImageRE  = regexp.MustCompile(`^[a-z0-9.-]+(:[0-9]+)?/[a-z0-9._/-]+@sha256:[a-f0-9]{64}$`)
-	obsEnvKeyRE = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,63}$`)
-	obsRepoRE   = regexp.MustCompile(`^[A-Za-z0-9._@+/{}-]{1,400}$`)
-	obsLangs    = map[string]bool{"go": true, "python": true, "javascript": true, "typescript": true, "rust": true, "java": true, "kotlin": true, "csharp": true, "shell": true}
+	obsNameRE     = regexp.MustCompile(`^[a-z][a-z0-9-]{0,40}$`)
+	obsMetaNameRE = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,100}$`)
+	obsImageRE    = regexp.MustCompile(`^[a-z0-9.-]+(:[0-9]+)?/[a-z0-9._/-]+@sha256:[a-f0-9]{64}$`)
+	obsEnvKeyRE   = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,63}$`)
+	obsRepoRE     = regexp.MustCompile(`^[A-Za-z0-9._@+/{}-]{1,400}$`)
+	obsLangs      = map[string]bool{"go": true, "python": true, "javascript": true, "typescript": true, "rust": true, "java": true, "kotlin": true, "csharp": true, "shell": true}
 )
 
 // obsFixedEnv are the child environment variables the observer owns; a suite's env cannot replace them.
@@ -157,9 +160,21 @@ func parseValidation(doc []byte, adapters map[string]Adapter) (obsConfig, error)
 	if top["apiVersion"] != "strange.company/v1alpha1" || top["kind"] != "RepositoryValidation" {
 		return cfg, fmt.Errorf("validation.yaml: apiVersion or kind is wrong")
 	}
+	meta, err := obsMap(top["metadata"], "metadata", "name")
+	if err != nil {
+		return cfg, err
+	}
+	if name, ok := meta["name"].(string); !ok || !obsMetaNameRE.MatchString(name) {
+		return cfg, fmt.Errorf("metadata.name is missing or invalid")
+	}
 	spec, err := obsMap(top["spec"], "spec", "verification", "local")
 	if err != nil {
 		return cfg, err
+	}
+	if raw, ok := spec["local"]; ok {
+		if err := checkLocal(raw); err != nil {
+			return cfg, err
+		}
 	}
 	ver, err := obsMap(spec["verification"], "spec.verification", "image", "suites", "checks", "protectedTestIds")
 	if err != nil {
@@ -170,6 +185,17 @@ func parseValidation(doc []byte, adapters map[string]Adapter) (obsConfig, error)
 	}
 	if !obsImageRE.MatchString(cfg.Image) {
 		return cfg, fmt.Errorf("spec.verification.image %q is not digest pinned", cfg.Image)
+	}
+	if raw, ok := ver["protectedTestIds"]; ok {
+		ids, isList := raw.([]any)
+		if !isList || len(ids) > 200 {
+			return cfg, fmt.Errorf("spec.verification.protectedTestIds must list at most 200 test ids")
+		}
+		for _, x := range ids {
+			if id, ok := x.(string); !ok || !obsTestIDRE.MatchString(id) {
+				return cfg, fmt.Errorf("spec.verification.protectedTestIds has an invalid test id")
+			}
+		}
 	}
 	suites, ok := ver["suites"].([]any)
 	if !ok || len(suites) < 1 || len(suites) > 10 {
@@ -255,7 +281,7 @@ func parseValidation(doc []byte, adapters map[string]Adapter) (obsConfig, error)
 		}
 		cfg.Suites = append(cfg.Suites, s)
 	}
-	if raw, ok := ver["checks"]; ok && raw != nil {
+	if raw, ok := ver["checks"]; ok {
 		checks, ok := raw.([]any)
 		if !ok || len(checks) > 10 {
 			return cfg, fmt.Errorf("spec.verification.checks must list at most 10 checks")
@@ -284,6 +310,17 @@ func parseValidation(doc []byte, adapters map[string]Adapter) (obsConfig, error)
 					return cfg, fmt.Errorf("%s: toolingFrom %q is neither base nor head", what, c.ToolingFrom)
 				}
 			}
+			if raw, ok := m["configPaths"]; ok {
+				paths, isList := raw.([]any)
+				if !isList || len(paths) > 50 {
+					return cfg, fmt.Errorf("%s: configPaths must list at most 50 repository paths", what)
+				}
+				for _, x := range paths {
+					if p, ok := x.(string); !ok || !obsRepoPath(p) {
+						return cfg, fmt.Errorf("%s: configPaths has an invalid repository path", what)
+					}
+				}
+			}
 			if c.Argv, err = obsArgv(m["argv"], what+".argv", 1, 40); err != nil {
 				return cfg, err
 			}
@@ -299,6 +336,32 @@ func parseValidation(doc []byte, adapters map[string]Adapter) (obsConfig, error)
 		}
 	}
 	return cfg, nil
+}
+
+// checkLocal checks spec.local (advisory commands for workers, never executed here) against the schema.
+func checkLocal(raw any) error {
+	l, ok := raw.([]any)
+	if !ok || len(l) > 10 {
+		return fmt.Errorf("spec.local must list at most 10 commands")
+	}
+	for i, x := range l {
+		what := fmt.Sprintf("spec.local[%d]", i)
+		m, err := obsMap(x, what, "name", "argv", "timeoutSeconds")
+		if err != nil {
+			return err
+		}
+		name, err := obsStr(m, "name", what)
+		if err != nil || !obsNameRE.MatchString(name) {
+			return fmt.Errorf("%s: name is missing or invalid", what)
+		}
+		if _, err := obsArgv(m["argv"], what+".argv", 1, 40); err != nil {
+			return err
+		}
+		if n, ok := intValue(m["timeoutSeconds"]); !ok || n < 1 || n > 1800 {
+			return fmt.Errorf("%s: timeoutSeconds must be an integer from 1 to 1800", what)
+		}
+	}
+	return nil
 }
 
 func (s obsSuite) inPhase(phase string) bool {

@@ -70,6 +70,9 @@ type observer struct {
 	sealed    []recFile
 	logs      []recFile
 	seq       int
+	baseSnap  *snapshot // the base and red trees, read before any code under test ran (D28 B1)
+	redSnap   *snapshot
+	treeDirs  []string
 }
 
 type suiteOutcome struct {
@@ -187,6 +190,17 @@ func within(root, p string) bool {
 // makeWorkRoot creates the private directory of the run (homes, temp dirs, base tree, replay export). It lies
 // outside the workspace and has no .git above it.
 func (o *observer) makeWorkRoot(clean []string) error {
+	dir, err := o.privateDir(clean, "sc-verify-")
+	if err != nil {
+		return err
+	}
+	o.work = dir
+	return nil
+}
+
+// privateDir creates a fresh directory in the first of the candidate parents that lies outside the workspace and
+// outside every Git repository.
+func (o *observer) privateDir(clean []string, prefix string) (string, error) {
 	for _, base := range clean {
 		if base == "" || hasGitAbove(base) {
 			continue
@@ -194,14 +208,29 @@ func (o *observer) makeWorkRoot(clean []string) error {
 		if real, err := filepath.EvalSymlinks(base); err == nil && within(o.cwd, real) {
 			continue
 		}
-		dir, err := os.MkdirTemp(base, "sc-verify-")
+		dir, err := os.MkdirTemp(base, prefix)
 		if err != nil {
 			continue
 		}
-		o.work = dir
-		return nil
+		return dir, nil
 	}
-	return fmt.Errorf("no private directory outside the workspace and outside every Git repository")
+	return "", fmt.Errorf("no private directory outside the workspace and outside every Git repository")
+}
+
+// extractTree writes a snapshot into a fresh private directory that is not below the run's work directory (whose
+// subdirectories hold the HOME and TMPDIR the suites can write), and returns the tree and its cleanup.
+func (o *observer) extractTree(snap *snapshot, prefix string) (string, func(), error) {
+	parent, err := o.privateDir([]string{os.TempDir(), "/tmp", "/var/tmp"}, prefix)
+	if err != nil {
+		return "", nil, err
+	}
+	cleanup := func() { _ = forceRemove(parent) }
+	tree := filepath.Join(parent, "tree")
+	if err := snap.extract(tree); err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	return tree, cleanup, nil
 }
 
 func (o *observer) childEnv(home, tmp string, suiteEnv map[string]string, extra ...string) []string {
@@ -337,27 +366,6 @@ func (o *observer) runSuite(ctx context.Context, root, treeName, commit string, 
 		BuildFailed: rep.BuildFailed, ReportFound: found, Counts: countsOf(rep.Tests), OutputTail: tailOf(res.Stdout, res.Stderr),
 	}
 	return out, nil
-}
-
-// addBase checks out the base commit into a private directory (a Git worktree outside the workspace).
-func (o *observer) addBase() (string, func(), error) {
-	parent, err := os.MkdirTemp(o.work, "base-")
-	if err != nil {
-		return "", nil, err
-	}
-	tree := filepath.Join(parent, "tree")
-	if _, err := runGit(o.git, false, "worktree", "add", "--detach", tree, o.id.Base); err != nil {
-		_ = forceRemove(parent)
-		return "", nil, fmt.Errorf("cannot check out the base commit: %w", err)
-	}
-	cleanup := func() {
-		if _, err := runGit(o.git, false, "worktree", "remove", "--force", tree); err != nil {
-			_ = forceRemove(tree)
-		}
-		_ = forceRemove(parent)
-		_, _ = runGit(o.git, false, "worktree", "prune")
-	}
-	return tree, cleanup, nil
 }
 
 func (o *observer) suitesFor(phase string) []obsSuite {
@@ -595,15 +603,14 @@ func (o *observer) redReplay(ctx context.Context) (*RedReplay, error) {
 	if len(change) == 0 {
 		return rp, nil
 	}
-	parent, err := os.MkdirTemp(o.work, "replay-")
+	if o.redSnap == nil {
+		return nil, fmt.Errorf("internal error: the red tree was not read before the run")
+	}
+	root, cleanup, err := o.extractTree(o.redSnap, "sc-verify-replay-")
 	if err != nil {
 		return nil, err
 	}
-	defer forceRemove(parent)
-	root := filepath.Join(parent, "tree")
-	if err := exportCommit(o.git, o.id.Red, root); err != nil {
-		return nil, err
-	}
+	defer cleanup()
 	if hasGitAbove(root) {
 		return nil, fmt.Errorf("the replay export has a .git entry above it")
 	}
@@ -659,7 +666,10 @@ func (o *observer) runChecks(ctx context.Context) ([]CheckRun, error) {
 	for _, c := range o.cfg.Checks {
 		root := o.cwd
 		if c.ToolingFrom == "base" {
-			tree, cleanup, err := o.addBase()
+			if o.baseSnap == nil {
+				return nil, fmt.Errorf("internal error: the base tree was not read before the run")
+			}
+			tree, cleanup, err := o.extractTree(o.baseSnap, "sc-verify-base-")
 			if err != nil {
 				return nil, err
 			}
