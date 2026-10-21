@@ -136,6 +136,9 @@ func ClassifyJudge(in JudgeInput) (RedClassification, error) {
 		if b.Phase != "red" || b.Subject != "judge" || b.TaskID != obs.TaskID || b.Repository != obs.Repository {
 			return RedClassification{}, infraErr("base observation is %s/%s phase %q subject %q", b.Repository, b.TaskID, b.Phase, b.Subject)
 		}
+		if b.ValidationBlob == "" || b.ValidationBlob != obs.ValidationBlob || b.IntentID == "" || b.IntentID != obs.IntentID {
+			return RedClassification{}, infraErr("base observation is not bound to the judge observation (validation blob or intent id differs)")
+		}
 		if b.HeadSha != obs.BaseSha {
 			return RedClassification{}, infraErr("base observation is for commit %q, not the base %q", b.HeadSha, obs.BaseSha)
 		}
@@ -266,6 +269,15 @@ func orderReasons(got, order []string) []string {
 	return out
 }
 
+func sortedBoolKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
 func sortedStatusKeys(m map[string]string) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
@@ -334,6 +346,16 @@ func ClassifyJudging(in JudgingInput) (GreenClassification, error) {
 	var judgeFail bool
 	if cls.source == "acceptance-criteria" {
 		// The research class: no artifact, no manifest; the report is the evidence.
+		if len(in.Criteria) == 0 {
+			return GreenClassification{}, infraErr("class %s has no frozen acceptance criteria to judge the report on", cls.name)
+		}
+		seenAC := map[string]bool{}
+		for _, c := range in.Criteria {
+			if c.ID == "" || seenAC[c.ID] || (c.Kind != "change" && c.Kind != "preservation") {
+				return GreenClassification{}, infraErr("criterion %q is empty, duplicated or has kind %q", c.ID, c.Kind)
+			}
+			seenAC[c.ID] = true
+		}
 		if in.Report == nil {
 			return GreenClassification{}, infraErr("class %s is judged on a report and none was given", cls.name)
 		}
@@ -354,6 +376,9 @@ func ClassifyJudging(in JudgingInput) (GreenClassification, error) {
 		}
 		if in.Integrity.RedCommit != m.TestCommit || in.Integrity.ManifestDigest != m.Digest || in.Integrity.Generation != m.Generation {
 			return GreenClassification{}, infraErr("integrity facts are for another manifest (generation %d, judge commit %q, digest %q)", in.Integrity.Generation, in.Integrity.RedCommit, in.Integrity.ManifestDigest)
+		}
+		if len(m.Tests) == 0 || len(m.Files) == 0 {
+			return GreenClassification{}, infraErr("the judge manifest lists %d tests and %d files, it is unusable", len(m.Tests), len(m.Files))
 		}
 		want := map[string]bool{}
 		var ids []string
@@ -392,6 +417,14 @@ func ClassifyJudging(in JudgingInput) (GreenClassification, error) {
 			}
 		}
 	}
+	// The integrity facts of G2 that do not depend on the manifest: foreign commits, violation-severity static findings,
+	// discovery changes (reasons as ClassifyGreen gives them); warning-only findings are recorded as warnings.
+	var warnings []string
+	got := map[string]bool{}
+	if err := g2Facts(in.Integrity, got, &warnings); err != nil {
+		return GreenClassification{}, err
+	}
+	add(outcomeTamper, orderReasons(sortedBoolKeys(got), g2Order)...)
 	if len(violations) > 0 {
 		// The producer diff leaves the class paths: the plan names no green reason, the nearest is a changed pipeline input.
 		add(outcomeJudgingFail, "required_check_failed")
@@ -423,6 +456,7 @@ func ClassifyJudging(in JudgingInput) (GreenClassification, error) {
 	cl := GreenClassification{
 		Outcome: outcomeJudgingPass, Reasons: []string{},
 		ComputedBy: "runner", ComputedAt: in.ComputedAt, PolicyRevision: in.PolicyRevision, VerifierLibVersion: verifierLibVersion,
+		Warnings: warnings,
 	}
 	if len(groups) > 0 {
 		cl.Outcome = groups[0].outcome

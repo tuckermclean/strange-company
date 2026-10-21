@@ -235,6 +235,44 @@ var staticFindingReason = map[string]string{
 var g2Order = []string{"manifest_file_changed", "discovery_config_changed", "skip_marker_added", "test_env_detection",
 	"test_file_deleted", "existing_test_modified", "test_dependency_changed", "foreign_commit"}
 
+// g2Facts folds the integrity facts that do not depend on the manifest (discovery changes, static findings, foreign
+// commits) into got, the set of tamper reasons, and appends the warnings of warning-only findings. It is shared by
+// ruleG2 and ClassifyJudging.
+func g2Facts(integ Integrity, got map[string]bool, warnings *[]string) error {
+	for _, d := range integ.DiscoveryChanges {
+		if d.Kind != "whole_file_changed" && d.Kind != "semantic_key_changed" {
+			return infraErr("discovery change at %q has unknown kind %q", d.Path, d.Kind)
+		}
+		got["discovery_config_changed"] = true
+	}
+	for _, s := range integ.StaticFindings {
+		switch s.Severity {
+		case "warning":
+			for _, c := range g2Order {
+				if s.Code == c {
+					return infraErr("static finding %q at %q is a section 14.6 code and cannot be a warning", s.Code, s.Path)
+				}
+			}
+			*warnings = append(*warnings, truncRunes(fmt.Sprintf("%s: %s", s.Code, s.Path), 300))
+		case "violation":
+			r, ok := staticFindingReason[s.Code]
+			if !ok {
+				return infraErr("static finding %q at %q has no tamper reason", s.Code, s.Path)
+			}
+			got[r] = true
+		default:
+			return infraErr("static finding at %q has unknown severity %q", s.Path, s.Severity)
+		}
+	}
+	for _, c := range integ.ForeignCommits {
+		if !objectIDRE.MatchString(c) {
+			return infraErr("foreign commit %q is not a commit id", c)
+		}
+		got["foreign_commit"] = true
+	}
+	return nil
+}
+
 // ruleG2: integrity (manifest files, discovery, static findings, protected paths, foreign commits).
 func ruleG2(f *greenFacts, add greenAdd) error {
 	integ := f.in.Integrity
@@ -267,36 +305,8 @@ func ruleG2(f *greenFacts, add greenAdd) error {
 			return infraErr("integrity does not list manifest file %q", p)
 		}
 	}
-	for _, d := range integ.DiscoveryChanges {
-		if d.Kind != "whole_file_changed" && d.Kind != "semantic_key_changed" {
-			return infraErr("discovery change at %q has unknown kind %q", d.Path, d.Kind)
-		}
-		got["discovery_config_changed"] = true
-	}
-	for _, s := range integ.StaticFindings {
-		switch s.Severity {
-		case "warning":
-			for _, c := range g2Order {
-				if s.Code == c {
-					return infraErr("static finding %q at %q is a section 14.6 code and cannot be a warning", s.Code, s.Path)
-				}
-			}
-			f.warnings = append(f.warnings, truncRunes(fmt.Sprintf("%s: %s", s.Code, s.Path), 300))
-		case "violation":
-			r, ok := staticFindingReason[s.Code]
-			if !ok {
-				return infraErr("static finding %q at %q has no tamper reason", s.Code, s.Path)
-			}
-			got[r] = true
-		default:
-			return infraErr("static finding at %q has unknown severity %q", s.Path, s.Severity)
-		}
-	}
-	for _, c := range integ.ForeignCommits {
-		if !objectIDRE.MatchString(c) {
-			return infraErr("foreign commit %q is not a commit id", c)
-		}
-		got["foreign_commit"] = true
+	if err := g2Facts(integ, got, &f.warnings); err != nil {
+		return err
 	}
 	var reasons []string
 	for _, r := range g2Order {

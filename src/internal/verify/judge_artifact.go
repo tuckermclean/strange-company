@@ -4,11 +4,16 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"io"
+	"math"
 	"regexp"
 	"strings"
+	"sync"
+	"unicode/utf8"
 
-	"go.yaml.in/yaml/v3"
+	"github.com/dlclark/regexp2"
+	"github.com/santhosh-tekuri/jsonschema/v6"
+
+	"strange.company/sc/internal/contracts"
 )
 
 // judgeCheckDef is one check of a judge artifact.
@@ -25,26 +30,82 @@ type judgeDoc struct {
 	Checks []judgeCheckDef
 }
 
-var (
-	judgeTaskRE   = regexp.MustCompile(`^sc-[0-9]+$`)
-	judgeClassRE  = regexp.MustCompile(`^[a-z][a-z0-9-]{1,40}$`)
-	judgeCheckRE  = regexp.MustCompile(`^J-[1-9][0-9]{0,2}$`)
-	judgeACRE     = regexp.MustCompile(`^AC-[1-9][0-9]{0,2}$`)
-	judgeKindEnum = map[string]bool{"required-facts": true, "validation-scenario": true, "invariants": true, "benchmark": true,
-		"schema-check": true, "rubric": true, "characterization": true}
-)
+var judgeKindEnum = map[string]bool{"required-facts": true, "validation-scenario": true, "invariants": true, "benchmark": true,
+	"schema-check": true, "rubric": true, "characterization": true}
+
+// judgeLimits are the string constraints of $defs/JudgeArtifact (and of the $defs/Glob it references) in
+// contracts/verification.schema.yaml, at their schema locations. They are evaluated by the validator and settings the
+// platform uses for contracts (draft 2020-12, the ECMA-262 regexp2 engine; lengths count code points), compiled from
+// this table in memory: the library reads no file (decision D23 B1, the S2 approach of manifest_limits.go).
+var judgeLimits = map[string]schemaString{
+	"Task":      {loc: "/properties/metadata/properties/task", pattern: `^sc-[0-9]+$`},
+	"Class":     {loc: "/properties/metadata/properties/exemptionClass", pattern: `^[a-z][a-z0-9-]{1,40}$`},
+	"CheckID":   {loc: "/properties/spec/properties/checks/items/properties/id", pattern: `^J-[1-9][0-9]{0,2}$`},
+	"ACID":      {loc: "/properties/spec/properties/checks/items/properties/acIds/items", pattern: `^AC-[1-9][0-9]{0,2}$`},
+	"Glob":      {loc: "/$defs/Glob", pattern: `^(?!/)[A-Za-z0-9._@+*?{},/\[\]-]{1,200}$`},
+	"MustMatch": {loc: ".../requiredFacts/properties/mustMatch/items", maxLength: 300},
+	"Argv":      {loc: ".../command/properties/argv/items", maxLength: 500},
+	"Metric":    {loc: ".../threshold/properties/metric", maxLength: 100},
+	"Rubric":    {loc: ".../rubric", maxLength: 2000},
+}
+
+const judgeLimitsURL = "https://strange.company/internal/verify/judge-limits.json"
+
+var compiledJudgeLimits = sync.OnceValues(func() (map[string]*jsonschema.Schema, error) {
+	defs := map[string]any{}
+	for name, l := range judgeLimits {
+		d := map[string]any{"type": "string"}
+		if l.pattern != "" {
+			d["pattern"] = l.pattern
+		}
+		if l.maxLength > 0 {
+			d["maxLength"] = l.maxLength
+		}
+		defs[name] = d
+	}
+	c := jsonschema.NewCompiler()
+	c.DefaultDraft(jsonschema.Draft2020)
+	c.AssertFormat()
+	c.UseRegexpEngine(func(s string) (jsonschema.Regexp, error) {
+		re, err := regexp2.Compile(s, regexp2.ECMAScript)
+		if err != nil {
+			return nil, err
+		}
+		return limitRegexp{re}, nil
+	})
+	if err := c.AddResource(judgeLimitsURL, map[string]any{"$defs": defs}); err != nil {
+		return nil, err
+	}
+	out := map[string]*jsonschema.Schema{}
+	for name := range judgeLimits {
+		s, err := c.Compile(judgeLimitsURL + "#/$defs/" + name)
+		if err != nil {
+			return nil, fmt.Errorf("judge limit %s: %w", name, err)
+		}
+		out[name] = s
+	}
+	return out, nil
+})
+
+// judgeString checks a string against the named limit. A table that does not compile fails every check (22-R-3).
+func judgeString(v any, where, limit string) (string, error) {
+	s, ok := v.(string)
+	if ok && utf8.ValidString(s) {
+		if ls, err := compiledJudgeLimits(); err == nil && ls[limit] != nil && ls[limit].Validate(s) == nil {
+			return s, nil
+		}
+	}
+	return "", fmt.Errorf("%s %v is not valid", where, v)
+}
 
 // parseJudgeArtifact decodes and validates the artifact natively against $defs/JudgeArtifact (the library does no
-// file access). Duplicate keys, several documents, unknown keys and wrong types are errors.
+// file access). The document is read the way the platform reads contracts (contracts.ParseYAML: duplicate keys,
+// merge keys as keys, several documents are errors), so it is judged on the same values as the schema. Unknown keys
+// and wrong types are errors.
 func parseJudgeArtifact(b []byte) (judgeDoc, error) {
-	var raw any
-	dec := yaml.NewDecoder(bytes.NewReader(b))
-	if err := dec.Decode(&raw); err != nil {
+	raw, err := contracts.ParseYAML(b)
+	if err != nil {
 		return judgeDoc{}, fmt.Errorf("not a YAML document: %w", err)
-	}
-	var extra any
-	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
-		return judgeDoc{}, errors.New("exactly one YAML document is allowed")
 	}
 	root, err := judgeObject(raw, "document", []string{"apiVersion", "kind", "metadata", "spec"}, []string{"apiVersion", "kind", "metadata", "spec"})
 	if err != nil {
@@ -61,10 +122,10 @@ func parseJudgeArtifact(b []byte) (judgeDoc, error) {
 		return judgeDoc{}, err
 	}
 	var d judgeDoc
-	if d.Task, err = judgeString(meta["task"], "metadata.task", judgeTaskRE); err != nil {
+	if d.Task, err = judgeString(meta["task"], "metadata.task", "Task"); err != nil {
 		return judgeDoc{}, err
 	}
-	if d.Class, err = judgeString(meta["exemptionClass"], "metadata.exemptionClass", judgeClassRE); err != nil {
+	if d.Class, err = judgeString(meta["exemptionClass"], "metadata.exemptionClass", "Class"); err != nil {
 		return judgeDoc{}, err
 	}
 	spec, err := judgeObject(root["spec"], "spec", []string{"kind", "checks"}, []string{"kind", "checks"})
@@ -88,7 +149,7 @@ func parseJudgeArtifact(b []byte) (judgeDoc, error) {
 			return judgeDoc{}, err
 		}
 		def := judgeCheckDef{}
-		if def.ID, err = judgeString(m["id"], where+".id", judgeCheckRE); err != nil {
+		if def.ID, err = judgeString(m["id"], where+".id", "CheckID"); err != nil {
 			return judgeDoc{}, err
 		}
 		if seen[def.ID] {
@@ -100,7 +161,7 @@ func parseJudgeArtifact(b []byte) (judgeDoc, error) {
 			return judgeDoc{}, fmt.Errorf("%s.acIds must be a non-empty list", where)
 		}
 		for _, a := range acs {
-			s, err := judgeString(a, where+".acIds", judgeACRE)
+			s, err := judgeString(a, where+".acIds", "ACID")
 			if err != nil {
 				return judgeDoc{}, err
 			}
@@ -120,10 +181,10 @@ func judgeCheckBody(m map[string]any, where string) error {
 		if err != nil {
 			return err
 		}
-		if err := judgeStrings(rf["paths"], where+".requiredFacts.paths", 0, 0); err != nil {
+		if err := judgeStrings(rf["paths"], where+".requiredFacts.paths", 0, 200, "Glob"); err != nil {
 			return err
 		}
-		if err := judgeStrings(rf["mustMatch"], where+".requiredFacts.mustMatch", 1, 300); err != nil {
+		if err := judgeStrings(rf["mustMatch"], where+".requiredFacts.mustMatch", 1, 0, "MustMatch"); err != nil {
 			return err
 		}
 	}
@@ -132,13 +193,10 @@ func judgeCheckBody(m map[string]any, where string) error {
 		if err != nil {
 			return err
 		}
-		if err := judgeStrings(c["argv"], where+".command.argv", 1, 500); err != nil {
+		if err := judgeStrings(c["argv"], where+".command.argv", 1, 40, "Argv"); err != nil {
 			return err
 		}
-		if l, _ := c["argv"].([]any); len(l) > 40 {
-			return fmt.Errorf("%s.command.argv has more than 40 entries", where)
-		}
-		if n, ok := c["timeoutSeconds"].(int); !ok || n < 1 || n > 3600 {
+		if !judgeWholeInRange(c["timeoutSeconds"], 1, 3600) {
 			return fmt.Errorf("%s.command.timeoutSeconds must be an integer from 1 to 3600", where)
 		}
 	}
@@ -147,26 +205,45 @@ func judgeCheckBody(m map[string]any, where string) error {
 		if err != nil {
 			return err
 		}
-		if s, ok := t["metric"].(string); !ok || len(s) > 100 {
-			return fmt.Errorf("%s.threshold.metric must be a string of at most 100 characters", where)
+		if _, err := judgeString(t["metric"], where+".threshold.metric", "Metric"); err != nil {
+			return err
 		}
 		switch t["op"] {
 		case "<", "<=", ">", ">=":
 		default:
 			return fmt.Errorf("%s.threshold.op is not a comparison operator", where)
 		}
-		switch t["value"].(type) {
-		case int, int64, uint64, float64:
+		switch n := t["value"].(type) {
+		case int, int64, uint64:
+		case float64:
+			if math.IsNaN(n) || math.IsInf(n, 0) {
+				return fmt.Errorf("%s.threshold.value is not a finite number", where)
+			}
 		default:
 			return fmt.Errorf("%s.threshold.value is not a number", where)
 		}
 	}
 	if v, ok := m["rubric"]; ok {
-		if s, ok := v.(string); !ok || len(s) > 2000 {
-			return fmt.Errorf("%s.rubric must be a string of at most 2000 characters", where)
+		if _, err := judgeString(v, where+".rubric", "Rubric"); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// judgeWholeInRange reports whether v is a whole number from lo to hi.
+func judgeWholeInRange(v any, lo, hi int) bool {
+	switch n := v.(type) {
+	case int:
+		return n >= lo && n <= hi
+	case int64:
+		return n >= int64(lo) && n <= int64(hi)
+	case uint64:
+		return n >= uint64(lo) && n <= uint64(hi)
+	case float64:
+		return n == math.Trunc(n) && n >= float64(lo) && n <= float64(hi)
+	}
+	return false
 }
 
 // judgeObject checks that v is an object whose keys are allowed and include every required key.
@@ -188,25 +265,15 @@ func judgeObject(v any, where string, allowed, required []string) (map[string]an
 	return m, nil
 }
 
-func judgeString(v any, where string, re *regexp.Regexp) (string, error) {
-	s, ok := v.(string)
-	if !ok || !re.MatchString(s) {
-		return "", fmt.Errorf("%s %v is not valid", where, v)
-	}
-	return s, nil
-}
-
-// judgeStrings checks a list of strings: at least min entries (min 0 allows an empty list), each at most max long
-// when max is positive.
-func judgeStrings(v any, where string, min, max int) error {
+// judgeStrings checks a list of strings: from min to max entries (max 0: no bound), each within the named limit.
+func judgeStrings(v any, where string, min, max int, limit string) error {
 	l, ok := v.([]any)
-	if !ok || len(l) < min {
-		return fmt.Errorf("%s must be a list of at least %d strings", where, min)
+	if !ok || len(l) < min || (max > 0 && len(l) > max) {
+		return fmt.Errorf("%s must be a list of %d to %d strings", where, min, max)
 	}
 	for _, e := range l {
-		s, ok := e.(string)
-		if !ok || (max > 0 && len(s) > max) {
-			return fmt.Errorf("%s holds an invalid string", where)
+		if _, err := judgeString(e, where, limit); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -221,29 +288,49 @@ func containsString(l []string, s string) bool {
 	return false
 }
 
-var judgeFenceRE = regexp.MustCompile("^ {0,3}(```|~~~)")
-var judgeHeadingRE = regexp.MustCompile(`^ {0,3}#{1,6}([ \t]+(.*))?$`)
+var (
+	judgeFenceOpenRE  = regexp.MustCompile("^ {0,3}(`{3,}|~{3,})(.*)$")
+	judgeHeadingRE    = regexp.MustCompile(`^ {0,3}#{1,6}([ \t]+(.*))?$`)
+	judgeHTMLStartRE  = regexp.MustCompile(`^ {0,3}<`)
+	judgeFenceCloseRE = regexp.MustCompile("^ {0,3}(`{3,}|~{3,})[ \t]*$")
+)
 
-// reportAddresses reports whether a markdown report is non-empty and carries every criterion id in a heading outside
-// code fences. An id matches as a whole token (AC-10 is not AC-1).
+// reportAddresses reports whether a markdown report is non-empty and carries every criterion id in an ATX heading
+// outside code fences. An id matches as a whole token (AC-10 is not AC-1). The recogniser is a fail-closed canonical
+// subset (decision D23 B2): a report with a NUL, invalid UTF-8, a line terminator other than LF or CRLF, or a line
+// that begins with up to three spaces and then `<` (HTML, which can hide headings) addresses nothing. A fence closes
+// only on the same character, with a run at least as long as the opener's and only whitespace after it. Setext
+// headings and indented code are not AC headings.
 func reportAddresses(report []byte, criteria []Criterion) bool {
-	if len(bytes.TrimSpace(report)) == 0 {
+	if len(bytes.TrimSpace(report)) == 0 || !utf8.Valid(report) {
 		return false
 	}
+	text := string(report)
+	for i, r := range text {
+		switch r {
+		case 0, '\f', '\v', '\u0085', '\u2028', '\u2029':
+			return false
+		case '\r':
+			if i+1 >= len(text) || text[i+1] != '\n' {
+				return false
+			}
+		}
+	}
 	var headings []string
-	fence := ""
-	for _, line := range strings.Split(string(report), "\n") {
-		line = strings.TrimRight(line, "\r")
-		if m := judgeFenceRE.FindStringSubmatch(line); m != nil {
-			switch fence {
-			case "":
-				fence = m[1]
-			case m[1]:
+	fence := "" // the opener's run, empty outside a fence
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSuffix(line, "\r")
+		if judgeHTMLStartRE.MatchString(line) {
+			return false
+		}
+		if fence != "" {
+			if m := judgeFenceCloseRE.FindStringSubmatch(line); m != nil && m[1][0] == fence[0] && len(m[1]) >= len(fence) {
 				fence = ""
 			}
 			continue
 		}
-		if fence != "" {
+		if m := judgeFenceOpenRE.FindStringSubmatch(line); m != nil && !(m[1][0] == '`' && strings.Contains(m[2], "`")) {
+			fence = m[1]
 			continue
 		}
 		if m := judgeHeadingRE.FindStringSubmatch(line); m != nil {
