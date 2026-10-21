@@ -25,6 +25,7 @@ func (r tomlRaw) MarshalJSON() ([]byte, error) {
 type tomlParser struct {
 	src string
 	pos int
+	bad error // the first comment with a control character (TOML allows only a tab), reported when the parse ends
 }
 
 func (p *tomlParser) errf(format string, args ...any) error {
@@ -51,6 +52,11 @@ func (p *tomlParser) skipBlank() {
 func (p *tomlParser) skipComment() {
 	if p.peek() == '#' {
 		for !p.eof() && p.src[p.pos] != '\n' {
+			c := p.src[p.pos]
+			crlf := c == '\r' && p.pos+1 < len(p.src) && p.src[p.pos+1] == '\n'
+			if (c < 0x20 && c != '\t' && !crlf || c == 0x7f) && p.bad == nil {
+				p.bad = p.errf("a comment contains a control character")
+			}
 			p.pos++
 		}
 	}
@@ -396,8 +402,20 @@ func tomlDescend(m map[string]any, keys []string) (map[string]any, error) {
 
 func tomlParse(content []byte) (map[string]any, error) {
 	p := &tomlParser{src: string(content)}
+	root, err := p.document()
+	if err == nil {
+		err = p.bad
+	}
+	if err != nil {
+		return nil, err
+	}
+	return root, nil
+}
+
+func (p *tomlParser) document() (map[string]any, error) {
 	root := map[string]any{}
 	cur := root
+	seen := map[string]bool{} // table headers defined so far, "[" or "[[" plus the decoded key path
 	for {
 		p.skipSpace()
 		if p.eof() {
@@ -421,6 +439,15 @@ func tomlParse(content []byte) (map[string]any, error) {
 				return nil, p.errf("expected %s", closer)
 			}
 			p.pos += len(closer)
+			id := strings.Join(keys, "\x00")
+			if seen["["+id] || !array && seen["[["+id] {
+				return nil, p.errf("table %q is defined twice", strings.Join(keys, "."))
+			}
+			if array {
+				seen["[["+id] = true
+			} else {
+				seen["["+id] = true
+			}
 			parent, err := tomlDescend(root, keys[:len(keys)-1])
 			if err != nil {
 				return nil, p.errf("%v", err)

@@ -182,7 +182,7 @@ func deriveDiscovery(in DiscoveryInput) (DiscoveryProtection, []*discoveryFileEr
 	}
 	for _, p := range d.paths {
 		for _, ent := range dpol.semantic {
-			if !policy.MatchGlob(ent.Path, p) {
+			if d.tree[p].Mode == "160000" || !policy.MatchGlob(ent.Path, p) {
 				continue
 			}
 			content, err := catBlob(in.Git, d.tree[p].Blob)
@@ -510,6 +510,9 @@ func (d *discovery) protectRecipe(line string) {
 // parseMakefile returns the included files (literal paths and expanded literal wildcards) and the recipe lines of a
 // makefile. An include it cannot resolve statically is an error.
 func parseMakefile(text string, tree []string) (includes, recipes []string, err error) {
+	if err := checkLineTerminators([]byte(text)); err != nil {
+		return nil, nil, err
+	}
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	lines := strings.Split(text, "\n")
 	for i := 0; i < len(lines); i++ {

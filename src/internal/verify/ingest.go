@@ -237,7 +237,7 @@ func (c *ingestCheck) entry(e DiffEntry) error {
 	if matchAny(c.pol.disc.wholeGlobs, p) || c.manifestWhole[p] || c.headWhole[p] {
 		c.tamper(subDiscoveryChanged, p, "discovery-protected file "+e.Status)
 	}
-	if e.Status == "A" && matchAny(c.pol.disc.forbidNew, p) {
+	if e.Status == "A" && e.NewMode != modeGitlink && matchAny(c.pol.disc.forbidNew, p) { // a gitlink is GITLINK_DENIED alone
 		c.tamper(subDiscoveryChanged, p, "a file that changes test discovery was added")
 	}
 	if err := c.semantic(e); err != nil {
@@ -249,6 +249,9 @@ func (c *ingestCheck) entry(e DiffEntry) error {
 // semantic compares the protected keys of a changed file at the red commit (or as the manifest recorded them)
 // with their value at the head.
 func (c *ingestCheck) semantic(e DiffEntry) error {
+	if e.NewMode == modeGitlink {
+		return nil // a gitlink has no blob to parse; GITLINK_DENIED already covers it
+	}
 	type key struct{ format, name string }
 	keys := map[string]key{}
 	for _, ent := range c.pol.disc.semantic {

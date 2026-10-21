@@ -48,12 +48,7 @@ func goModTokens(line string) ([]string, error) {
 			toks = append(toks, u)
 			i = j + 1
 		case c == '`':
-			j := strings.IndexByte(line[i+1:], '`')
-			if j < 0 {
-				return nil, fmt.Errorf("unterminated raw string in %q", line)
-			}
-			toks = append(toks, line[i+1:i+1+j])
-			i += j + 2
+			return nil, fmt.Errorf("a backquoted string is outside the canonical go.mod subset in %q", line)
 		default:
 			j := i
 			for j < len(line) && !strings.ContainsRune(" \t\r()", rune(line[j])) && !strings.HasPrefix(line[j:], "//") {

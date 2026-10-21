@@ -22,6 +22,9 @@ func semanticValueHash(format, file string, content []byte, key string) (*string
 	if content == nil {
 		return nil, nil
 	}
+	if err := checkLineTerminators(content); err != nil {
+		return nil, err
+	}
 	var v any
 	var found bool
 	var err error
@@ -98,4 +101,26 @@ func jsonValue(content []byte, key string) (any, bool, error) {
 	}
 	v, ok := walkKey(root, key)
 	return v, ok, nil
+}
+
+// checkLineTerminators rejects a file with a line terminator other than "\n" or "\r\n" (a lone CR, VT, FF,
+// U+001C to U+001E, U+0085, U+2028, U+2029) or a NUL (decision D19 a): readers disagree on where such a file breaks
+// into lines, so no recogniser trusts one. A U+2028 inside a JSON string is rejected too (fails closed).
+func checkLineTerminators(content []byte) error {
+	for i := 0; i < len(content); i++ {
+		switch c := content[i]; {
+		case c == 0:
+			return fmt.Errorf("a NUL byte at offset %d", i)
+		case c == '\r':
+			if i+1 >= len(content) || content[i+1] != '\n' {
+				return fmt.Errorf("a lone CR at offset %d", i)
+			}
+		case c == '\v' || c == '\f' || c >= 0x1c && c <= 0x1e:
+			return fmt.Errorf("a line terminator (0x%02x) at offset %d", c, i)
+		}
+	}
+	if bytes.Contains(content, []byte("\u0085")) || bytes.Contains(content, []byte("\u2028")) || bytes.Contains(content, []byte("\u2029")) {
+		return fmt.Errorf("a Unicode line terminator (U+0085, U+2028 or U+2029)")
+	}
+	return nil
 }
