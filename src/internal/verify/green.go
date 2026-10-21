@@ -2,30 +2,6 @@ package verify
 
 import "strange.company/sc/internal/policy"
 
-// ClassifyGreen applies rules G0-G9 of plan 22 section 14.7 to an observed GREEN. It is pure and deterministic. The
-// first failing rule in table order decides the outcome; every failing rule contributes its reasons, in rule order.
-// G0 identity failure and any unusable or inconsistent fact are errors carrying a *NotClassifiedError
-// (verification_infra_failed), never a classification.
-//
-// SC-STUB(F06 22-AC-23 22-AC-24 22-AC-25 22-AC-27)
-func ClassifyGreen(in GreenInput) (GreenClassification, error) { return GreenClassification{}, nil }
-
-// DeriveIntegrity derives the Integrity facts of red_commit..head from Git (section 14.7 G1, G2, G7; TDD-9): head
-// descent from the red commit, the blob of every manifest file at the head, the foreign commits (every commit of
-// red..head that is neither an accepted result commit nor a human commit, by SHA), the stubs whose marker remains and
-// the ingestion violations mapped to static findings and discovery changes.
-//
-// SC-STUB(F06 22-AC-27)
-func DeriveIntegrity(in IntegrityInput) (Integrity, error) { return Integrity{}, nil }
-
-// DeriveIsolationFiles derives the files the G4b isolation run removes: every test-, fixture- or test-infra-classified
-// file added in red..head (section 14.1 step 4, TDD-2).
-//
-// SC-STUB(F06 22-AC-23)
-func DeriveIsolationFiles(in IsolationFilesInput) (IsolationFacts, error) {
-	return IsolationFacts{}, nil
-}
-
 // GreenInput is everything ClassifyGreen needs. Observed is the CI-written observation of the head, Integrity the
 // facts the Runner derived from Git, Manifest the manifest of the generation under judgement, Baseline the RED
 // observation whose test_id_sets hold the full-suite base_passing and base_skipped sets (G5, G5b). Isolation is the
