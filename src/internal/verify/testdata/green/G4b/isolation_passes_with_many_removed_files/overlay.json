@@ -1,0 +1,13 @@
+{
+ "isolation_files": [
+  "pkg/zz_test.go",
+  "tests/test_zz.py",
+  "__mocks__/http.js"
+ ],
+ "observed": {
+  "isolation": {
+   "removed_files": 3,
+   "removed_files_sha256": "004207533358ab44b2fbc14345fe8dd494a642fb2a407ba53921252c99e2f012"
+  }
+ }
+}

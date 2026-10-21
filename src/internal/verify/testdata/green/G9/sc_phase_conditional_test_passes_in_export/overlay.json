@@ -1,0 +1,16 @@
+{
+ "observed": {
+  "red_replay": {
+   "tests": [
+    {
+     "id": "unit::example.com/x/pkg.TestNewBehavior",
+     "status": "passed"
+    },
+    {
+     "id": "unit::example.com/x/pkg.TestStubbed",
+     "status": "stub_unimplemented"
+    }
+   ]
+  }
+ }
+}

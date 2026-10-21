@@ -1,0 +1,6 @@
+{
+ "outcome": "green_fail",
+ "reasons": [
+  "validation_config_mismatch"
+ ]
+}

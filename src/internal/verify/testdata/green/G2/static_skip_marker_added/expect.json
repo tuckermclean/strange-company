@@ -1,0 +1,6 @@
+{
+ "outcome": "tamper_detected",
+ "reasons": [
+  "skip_marker_added"
+ ]
+}

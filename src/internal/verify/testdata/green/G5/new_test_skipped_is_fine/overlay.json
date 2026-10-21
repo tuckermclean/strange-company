@@ -1,0 +1,42 @@
+{
+ "id_sets": {
+  "head_skipped": [
+   "unit::example.com/x/pkg.TestSkippedAtBase",
+   "unit::example.com/x/pkg.TestMine"
+  ]
+ },
+ "observed": {
+  "tests": [
+   {
+    "id": "unit::example.com/x/pkg.TestNewBehavior",
+    "status_head": "passed",
+    "suite": "unit"
+   },
+   {
+    "id": "unit::example.com/x/pkg.TestStubbed",
+    "status_head": "passed",
+    "suite": "unit"
+   },
+   {
+    "id": "unit::example.com/x/pkg.TestKeepsWorking",
+    "status_head": "passed",
+    "suite": "unit"
+   },
+   {
+    "id": "unit::example.com/x/pkg.TestOld1",
+    "status_head": "passed",
+    "suite": "unit"
+   },
+   {
+    "id": "unit::example.com/x/pkg.TestSkippedAtBase",
+    "status_head": "skipped",
+    "suite": "unit"
+   },
+   {
+    "id": "unit::example.com/x/pkg.TestMine",
+    "status_head": "skipped",
+    "suite": "unit"
+   }
+  ]
+ }
+}

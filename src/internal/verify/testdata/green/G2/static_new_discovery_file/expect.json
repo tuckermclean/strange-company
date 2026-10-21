@@ -1,0 +1,6 @@
+{
+ "outcome": "tamper_detected",
+ "reasons": [
+  "discovery_config_changed"
+ ]
+}

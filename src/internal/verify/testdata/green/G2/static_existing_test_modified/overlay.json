@@ -1,0 +1,12 @@
+{
+ "integrity": {
+  "static_findings": [
+   {
+    "code": "existing_test_modified",
+    "line": 3,
+    "path": "pkg/old_test.go",
+    "severity": "violation"
+   }
+  ]
+ }
+}

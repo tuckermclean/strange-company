@@ -1,0 +1,6 @@
+{
+ "outcome": "tamper_detected",
+ "reasons": [
+  "protected_pass_depends_on_new_test_files"
+ ]
+}

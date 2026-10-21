@@ -1,0 +1,15 @@
+{
+ "id_sets": {
+  "head_present": [
+   "unit::example.com/x/pkg.TestOld1",
+   "unit::example.com/x/pkg.TestOld2",
+   "unit::example.com/x/pkg.TestOld3",
+   "unit::example.com/x/pkg.TestSkippedAtBase",
+   "unit::example.com/x/pkg.TestNewBehavior",
+   "unit::example.com/x/pkg.TestStubbed",
+   "unit::example.com/x/pkg.TestKeepsWorking",
+   "unit::example.com/x/pkg.TestMine",
+   "unit::example.com/x/pkg.TestMineToo"
+  ]
+ }
+}

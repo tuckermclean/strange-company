@@ -1,0 +1,6 @@
+{
+ "outcome": "green_fail",
+ "reasons": [
+  "existing_test_failing"
+ ]
+}
