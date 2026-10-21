@@ -2,22 +2,6 @@ package verify
 
 import "strange.company/sc/internal/policy"
 
-// ClassifyJudge classifies the judge validation of a verification-first task (plan 22 section 14.8, "Judge
-// validation"): the RED of a judge. See JudgeInput.
-//
-// SC-STUB(F06 22-AC-3)
-func ClassifyJudge(in JudgeInput) (RedClassification, error) {
-	return RedClassification{}, nil
-}
-
-// ClassifyJudging classifies the judging of a produced head (plan 22 section 14.8, "Judging"): the GREEN of a
-// judge. See JudgingInput.
-//
-// SC-STUB(F06 22-AC-3)
-func ClassifyJudging(in JudgingInput) (GreenClassification, error) {
-	return GreenClassification{}, nil
-}
-
 // JudgeCheck mirrors the judge_checks items of the red-result and green-result observations.
 type JudgeCheck struct {
 	ID     string `json:"id"`

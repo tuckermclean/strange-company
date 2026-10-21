@@ -66,7 +66,7 @@ type GreenRepeats struct {
 	Inconsistent []string `json:"inconsistent"`
 }
 
-// GreenObservation mirrors green-result $defs/GreenObservation (judge fields belong to the judge slice).
+// GreenObservation mirrors green-result $defs/GreenObservation.
 type GreenObservation struct {
 	TaskID         string            `json:"task_id"`
 	Repository     string            `json:"repository"`
@@ -88,7 +88,6 @@ type GreenObservation struct {
 	Repeats        *GreenRepeats     `json:"repeats,omitempty"`
 	ObservedAt     string            `json:"observed_at"`
 	// JudgeChecks is the outcome of each judge check (subject judge only).
-	// SC-STUB(F06 22-AC-3)
 	JudgeChecks []JudgeCheck `json:"judge_checks,omitempty"`
 }
 
