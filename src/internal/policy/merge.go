@@ -31,9 +31,7 @@ type Platform struct {
 // merged value. It is nil when the repository policy is rejected (no partial result).
 type Effective struct {
 	Values map[string]any
-	// Name is metadata.name of the merged repository policy.
-	//
-	// SC-STUB(F06 22-AC-33)
+	// Name is metadata.name of the merged repository policy; empty when the policy is rejected.
 	Name string
 }
 
@@ -53,7 +51,8 @@ func MergePolicy(opts Options, platform Platform, repo map[string]any) (Effectiv
 		m.run()
 	}
 	if len(m.issues) == 0 {
-		return Effective{Values: m.values}, nil
+		name, _ := valAt(m.repo, "metadata", "name").(string)
+		return Effective{Values: m.values, Name: name}, nil
 	}
 	return Effective{}, normalizeIssues(m.issues)
 }
@@ -266,6 +265,41 @@ func (m *merger) run() {
 	}
 
 	m.definitions()
+	m.enforcementPlane()
+}
+
+// enforcementPlaneGlobs is the enforcement plane of plan 22 section 9.3 (jobbuilder is read as jobs, the directory
+// of the Job builder, brief D3).
+var enforcementPlaneGlobs = []string{
+	"src/internal/verify/**", "src/internal/statemachine/**", "src/internal/policy/**", "src/internal/runner/**",
+	"src/internal/forge/**", "src/internal/gateway/**", "src/internal/ledger/**", "src/internal/jobs/**",
+	"src/internal/scrub/**", "src/internal/lint/**",
+	"src/cmd/sc-verify/**", "src/cmd/sc-ci-config/**", "src/cmd/agent-runner/**", "src/cmd/sc-worker/**",
+	"src/cmd/model-gateway/**", "src/cmd/sc-gitops/**", "src/cmd/egress-proxy/**", "src/cmd/sc-release/**",
+	"src/cmd/sc-e2e/**",
+}
+
+// enforcementPlane requires, for the repository strange-company, every glob of the enforcement plane to lie inside
+// the union of its elevatedPaths and its protected paths (exact glob inclusion; plan 22 section 9.3, TDD-B4).
+func (m *merger) enforcementPlane() {
+	if name, _ := valAt(m.repo, "metadata", "name").(string); name != "strange-company" {
+		return
+	}
+	const ptr = "/spec/merge/elevatedPaths"
+	var cover []string
+	cover = append(cover, strList(m.platform.Verification, "spec", "protectedPaths")...)
+	cover = append(cover, strList(m.platform.Verification, "spec", "merge", "elevatedPaths")...)
+	cover = append(cover, strList(m.repo, "spec", "protectedPaths")...)
+	cover = append(cover, strList(m.repo, "spec", "merge", "elevatedPaths")...)
+	for _, g := range enforcementPlaneGlobs {
+		inside, ok := globInsideUnion(g, cover)
+		switch {
+		case !ok:
+			m.add(CodeGlobTooComplex, ptr, "cannot decide whether the enforcement plane glob %q is covered (too many states)", g)
+		case !inside:
+			m.add("ENFORCEMENT_PLANE_NOT_ELEVATED", ptr, "the enforcement plane glob %q is not covered by merge.elevatedPaths or the protected paths", g)
+		}
+	}
 }
 
 func has(v any, keys ...string) bool { return valAt(v, keys...) != nil }

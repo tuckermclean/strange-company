@@ -1,24 +1,226 @@
 package verify
 
-import "strange.company/sc/internal/policy"
+import (
+	"errors"
+	"fmt"
+	"sort"
+
+	"strange.company/sc/internal/policy"
+)
+
+// strangeCompany is the repository whose enforcement plane the platform protects (plan 22 section 9.3).
+const (
+	strangeCompany = "strange-company"
+	e2eGlob        = "test/e2e/**"
+	codeEscalation = "exemption_escalation_required"
+	codeRoleDiff   = "ROLE_DIFF_VIOLATION"
+	codeNotAllowed = "EXEMPTION_NOT_ALLOWED"
+	minJustify     = 20
+)
+
+// e2eProtected reports whether the path is a test/e2e/** path of the repository strange-company (D4): the library
+// adds the glob to the protected set and removes it from the test-classified paths, whatever the repository file says.
+func e2eProtected(eff policy.Effective, p string) bool {
+	return eff.Name == strangeCompany && policy.MatchGlob(e2eGlob, p)
+}
+
+type exemptionClass struct {
+	name     string
+	allowed  []string
+	denied   []string
+	human    bool
+	repos    []string
+	hasRepos bool
+}
+
+// loadClasses reads the platform exemption classes, applying the repository's requireHumanApproval.
+func loadClasses(plat policy.Platform, eff policy.Effective) ([]exemptionClass, error) {
+	spec, err := specMap(plat)
+	if err != nil {
+		return nil, err
+	}
+	raw, ok := spec["exemptionClasses"].([]any)
+	if !ok {
+		return nil, errors.New("the platform policy has no spec.exemptionClasses")
+	}
+	requireHuman, err := stringList(eff.Values["/spec/verification/requireHumanApproval"])
+	if err != nil {
+		return nil, fmt.Errorf("effective /spec/verification/requireHumanApproval: %w", err)
+	}
+	var out []exemptionClass
+	for _, r := range raw {
+		m, ok := r.(map[string]any)
+		if !ok {
+			return nil, errors.New("an exemption class is not an object")
+		}
+		c := exemptionClass{}
+		c.name, _ = m["name"].(string)
+		if c.name == "" {
+			return nil, errors.New("an exemption class has no name")
+		}
+		if c.allowed, err = stringList(m["allowedPaths"]); err != nil {
+			return nil, fmt.Errorf("class %s allowedPaths: %w", c.name, err)
+		}
+		if c.denied, err = stringList(m["deniedPaths"]); err != nil {
+			return nil, fmt.Errorf("class %s deniedPaths: %w", c.name, err)
+		}
+		if _, c.hasRepos = m["repositories"]; c.hasRepos {
+			if c.repos, err = stringList(m["repositories"]); err != nil {
+				return nil, fmt.Errorf("class %s repositories: %w", c.name, err)
+			}
+		}
+		switch a, _ := m["approval"].(string); a {
+		case "human":
+			c.human = true
+		case "auto":
+		default:
+			return nil, fmt.Errorf("class %s has approval %q", c.name, a)
+		}
+		for _, h := range requireHuman {
+			if h == c.name {
+				c.human = true
+			}
+		}
+		out = append(out, c)
+	}
+	return out, nil
+}
+
+func (c exemptionClass) catchAll() bool {
+	for _, g := range c.allowed {
+		if g == "**" {
+			return true
+		}
+	}
+	return false
+}
+
+func (c exemptionClass) matches(p string) bool {
+	return matchAny(c.allowed, p) && !matchAny(c.denied, p)
+}
+
+func findClass(cs []exemptionClass, name string) (exemptionClass, bool) {
+	for _, c := range cs {
+		if c.name == name {
+			return c, true
+		}
+	}
+	return exemptionClass{}, false
+}
 
 // ValidateExemption validates an exemption request at task creation (plan 22 section 9.2, steps 1 to 4).
-//
-// SC-STUB(F06 22-AC-10 22-AC-11)
 func ValidateExemption(in ExemptionInput) (ExemptionDecision, error) {
-	return ExemptionDecision{}, nil
+	if in.Request.Mode != "verification-first" {
+		return ExemptionDecision{}, fmt.Errorf("mode %q takes no exemption (only verification-first does)", in.Request.Mode)
+	}
+	if len([]rune(in.Request.Justification)) < minJustify {
+		return ExemptionDecision{}, fmt.Errorf("the justification has fewer than %d characters", minJustify)
+	}
+	classes, err := loadClasses(in.Platform, in.Effective)
+	if err != nil {
+		return ExemptionDecision{}, err
+	}
+	refuse := func(format string, args ...any) (ExemptionDecision, error) {
+		return ExemptionDecision{}, &ExemptionError{Code: codeNotAllowed, Detail: fmt.Sprintf(format, args...)}
+	}
+	c, ok := findClass(classes, in.Request.Class)
+	if !ok {
+		return refuse("class %q is not defined by the platform policy", in.Request.Class)
+	}
+	allowed, err := stringList(in.Effective.Values["/spec/verification/allowedExemptionClasses"])
+	if err != nil {
+		return ExemptionDecision{}, fmt.Errorf("effective /spec/verification/allowedExemptionClasses: %w", err)
+	}
+	listed := false
+	for _, a := range allowed {
+		listed = listed || a == c.name
+	}
+	if !listed {
+		return refuse("class %q is not in the repository's allowedExemptionClasses", c.name)
+	}
+	if c.hasRepos && !matchAny(c.repos, in.Repository) {
+		return refuse("repository %q does not match the repositories of class %q", in.Repository, c.name)
+	}
+	d := ExemptionDecision{Class: c.name, Status: "granted", Approval: "auto", PolicyRevision: in.PolicyRevision}
+	if c.human {
+		d.Status, d.Approval = "pending_approval", "human"
+	}
+	return d, nil
 }
 
 // Error implements error.
-//
-// SC-STUB(F06 22-AC-10)
-func (e *ExemptionError) Error() string { return "" }
+func (e *ExemptionError) Error() string { return e.Code + ": " + e.Detail }
 
 // CheckScope judges the changed paths of an agent diff against the protected set and, for a producer, against its
 // exemption class (plan 22 section 9.2 steps 3 and 5, section 9.3).
-//
-// SC-STUB(F06 22-AC-11 22-AC-33)
-func CheckScope(in ScopeInput) ([]Violation, error) { return nil, nil }
+func CheckScope(in ScopeInput) ([]Violation, error) {
+	switch in.Role {
+	case "tester", "implementer", "producer":
+	default:
+		return nil, fmt.Errorf("scope judges tester, implementer and producer diffs, not role %q", in.Role)
+	}
+	protected, err := protectedPaths(RedInput{Platform: in.Platform, Effective: in.Effective})
+	if err != nil {
+		return nil, err
+	}
+	var (
+		classes []exemptionClass
+		own     exemptionClass
+		auto    bool
+	)
+	if in.Role == "producer" {
+		if in.Exemption == nil {
+			return nil, errors.New("a producer diff needs the task's recorded exemption")
+		}
+		if classes, err = loadClasses(in.Platform, in.Effective); err != nil {
+			return nil, err
+		}
+		var ok bool
+		if own, ok = findClass(classes, in.Exemption.Class); !ok {
+			return nil, fmt.Errorf("exemption class %q is not defined by the platform policy", in.Exemption.Class)
+		}
+		switch in.Exemption.Approval {
+		case "auto":
+			auto = true
+		case "human":
+		default:
+			return nil, fmt.Errorf("exemption approval %q is neither auto nor human", in.Exemption.Approval)
+		}
+	}
+	var out []Violation
+	for _, e := range in.Entries {
+		p := e.Path
+		if matchAny(protected, p) {
+			out = append(out, Violation{Code: codeProtectedPath, SubCode: subProtectedPath, Path: p, Detail: "protected path " + e.Status})
+		}
+		if in.Role != "producer" {
+			continue
+		}
+		if !own.matches(p) {
+			out = append(out, Violation{Code: codeRoleDiff, Path: p, Detail: fmt.Sprintf("path is outside the paths of exemption class %s", own.name)})
+		}
+		if auto {
+			for _, c := range classes {
+				if c.human && !c.catchAll() && c.matches(p) {
+					out = append(out, Violation{Code: codeRoleDiff, SubCode: codeEscalation, Path: p,
+						Detail: fmt.Sprintf("path belongs to class %s, which needs human approval, but the task is auto", c.name)})
+					break
+				}
+			}
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if a.Path != b.Path {
+			return a.Path < b.Path
+		}
+		if a.Code != b.Code {
+			return a.Code < b.Code
+		}
+		return a.SubCode < b.SubCode
+	})
+	return out, nil
+}
 
 // ExemptionRequest is the exemption_request of a verification-first task (plan 22 section 9.2 step 1). Mode is
 // test-first or verification-first.

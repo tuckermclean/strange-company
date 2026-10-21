@@ -212,6 +212,9 @@ func protectedPaths(in RedInput) ([]string, error) {
 		}
 		list = append(list, extra...)
 	}
+	if in.Effective.Name == strangeCompany {
+		list = append(list, e2eGlob) // D4: the C10 trajectories are humans only
+	}
 	return list, nil
 }
 

@@ -218,7 +218,7 @@ func (c *ingestCheck) entry(e DiffEntry) error {
 	if inManifest {
 		c.tamper(subManifestChanged, p, "manifest file "+e.Status)
 	}
-	testClass := matchAny(c.pol.testClass, p)
+	testClass := matchAny(c.pol.testClass, p) && !e2eProtected(c.in.Effective, p)
 	if testClass && e.Status == "D" {
 		c.tamper(subTestDeleted, p, "test, fixture or test infrastructure file deleted")
 	}
