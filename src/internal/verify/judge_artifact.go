@@ -346,7 +346,7 @@ func reportAddresses(report []byte, criteria []Criterion) bool {
 	fence := "" // the opener's run, empty outside a fence
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSuffix(line, "\r")
-		if judgeOpensBlock(line) {
+		if fence == "" && judgeOpensBlock(line) {
 			return false
 		}
 		if fence != "" {
@@ -355,8 +355,8 @@ func reportAddresses(report []byte, criteria []Criterion) bool {
 			}
 			continue
 		}
-		// D26(a): an indented fence opener is ambiguous to this recogniser, so the report fails closed.
-		if t := strings.TrimLeft(line, " \t"); t != line && (strings.HasPrefix(t, "```") || strings.HasPrefix(t, "~~~")) {
+		// D26(a), D27: an indented fence or HTML opener is ambiguous to this recogniser, so the report fails closed.
+		if t := strings.TrimLeft(line, " \t"); t != line && (strings.HasPrefix(t, "```") || strings.HasPrefix(t, "~~~") || strings.HasPrefix(t, "<")) {
 			return false
 		}
 		if m := judgeFenceOpenRE.FindStringSubmatch(line); m != nil && !(m[1][0] == '`' && strings.Contains(m[2], "`")) {
