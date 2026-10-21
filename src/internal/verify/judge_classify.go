@@ -139,6 +139,9 @@ func ClassifyJudge(in JudgeInput) (RedClassification, error) {
 		if b.ValidationBlob == "" || b.ValidationBlob != obs.ValidationBlob || b.IntentID == "" || b.IntentID != obs.IntentID {
 			return RedClassification{}, infraErr("base observation is not bound to the judge observation (validation blob or intent id differs)")
 		}
+		if b.BaseSha == "" || b.BaseSha != obs.BaseSha {
+			return RedClassification{}, infraErr("base observation has base_sha %q, the judge observation %q", b.BaseSha, obs.BaseSha)
+		}
 		if b.HeadSha != obs.BaseSha {
 			return RedClassification{}, infraErr("base observation is for commit %q, not the base %q", b.HeadSha, obs.BaseSha)
 		}

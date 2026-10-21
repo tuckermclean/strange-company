@@ -12,6 +12,7 @@ import (
 
 	"github.com/dlclark/regexp2"
 	"github.com/santhosh-tekuri/jsonschema/v6"
+	yaml "go.yaml.in/yaml/v3"
 
 	"strange.company/sc/internal/contracts"
 )
@@ -103,6 +104,9 @@ func judgeString(v any, where, limit string) (string, error) {
 // merge keys as keys, several documents are errors), so it is judged on the same values as the schema. Unknown keys
 // and wrong types are errors.
 func parseJudgeArtifact(b []byte) (judgeDoc, error) {
+	if err := judgeRefuseAnchors(b); err != nil {
+		return judgeDoc{}, err
+	}
 	raw, err := contracts.ParseYAML(b)
 	if err != nil {
 		return judgeDoc{}, fmt.Errorf("not a YAML document: %w", err)
@@ -173,6 +177,26 @@ func parseJudgeArtifact(b []byte) (judgeDoc, error) {
 		d.Checks = append(d.Checks, def)
 	}
 	return d, nil
+}
+
+// judgeRefuseAnchors refuses a YAML anchor or alias anywhere in the artifact (decision D24 X1). It reads the node
+// tree, which does not expand aliases, so the walk is bounded by the size of the input; contracts.ParseYAML, whose
+// alias expansion is not bounded, only sees documents without aliases.
+func judgeRefuseAnchors(b []byte) error {
+	var n yaml.Node
+	if err := yaml.Unmarshal(b, &n); err != nil {
+		return nil // not readable: contracts.ParseYAML reports it
+	}
+	stack := []*yaml.Node{&n}
+	for len(stack) > 0 {
+		x := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if x.Kind == yaml.AliasNode || x.Anchor != "" {
+			return errors.New("the artifact uses a YAML anchor or alias")
+		}
+		stack = append(stack, x.Content...)
+	}
+	return nil
 }
 
 func judgeCheckBody(m map[string]any, where string) error {
@@ -291,7 +315,9 @@ func containsString(l []string, s string) bool {
 var (
 	judgeFenceOpenRE  = regexp.MustCompile("^ {0,3}(`{3,}|~{3,})(.*)$")
 	judgeHeadingRE    = regexp.MustCompile(`^ {0,3}#{1,6}([ \t]+(.*))?$`)
-	judgeHTMLStartRE  = regexp.MustCompile(`^ {0,3}<`)
+	judgeMarkerRE     = regexp.MustCompile(`^ {0,3}(?:>|[-+*]|[0-9]{1,9}[.)])[ \t]`)
+	judgeIndentRE     = regexp.MustCompile(`^ {0,3}`)
+	judgeHiddenRE     = regexp.MustCompile(`(?s)<!--.*?(?:-->|$)|<[^>]*>|\]\([^)]*\)`)
 	judgeFenceCloseRE = regexp.MustCompile("^ {0,3}(`{3,}|~{3,})[ \t]*$")
 )
 
@@ -320,7 +346,7 @@ func reportAddresses(report []byte, criteria []Criterion) bool {
 	fence := "" // the opener's run, empty outside a fence
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSuffix(line, "\r")
-		if judgeHTMLStartRE.MatchString(line) {
+		if judgeOpensBlock(line) {
 			return false
 		}
 		if fence != "" {
@@ -334,7 +360,7 @@ func reportAddresses(report []byte, criteria []Criterion) bool {
 			continue
 		}
 		if m := judgeHeadingRE.FindStringSubmatch(line); m != nil {
-			headings = append(headings, m[2])
+			headings = append(headings, judgeHiddenRE.ReplaceAllString(m[2], " "))
 		}
 	}
 	for _, c := range criteria {
@@ -351,4 +377,21 @@ func reportAddresses(report []byte, criteria []Criterion) bool {
 		}
 	}
 	return true
+}
+
+// judgeOpensBlock reports whether a line, after up to three spaces and any run of container markers (block quote,
+// bullet, ordered item, each followed by a space or tab), starts a code fence or HTML (decision D24 X2).
+func judgeOpensBlock(line string) bool {
+	nested := false
+	for {
+		line = line[len(judgeIndentRE.FindString(line)):]
+		m := judgeMarkerRE.FindString(line)
+		if m == "" {
+			break
+		}
+		line = line[len(m):]
+		nested = true
+	}
+	// A fence at the top level is tracked by the recogniser; one inside a container is not.
+	return strings.HasPrefix(line, "<") || (nested && (strings.HasPrefix(line, "```") || strings.HasPrefix(line, "~~~")))
 }
