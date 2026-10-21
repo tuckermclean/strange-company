@@ -317,7 +317,6 @@ var (
 	judgeHeadingRE    = regexp.MustCompile(`^ {0,3}#{1,6}([ \t]+(.*))?$`)
 	judgeMarkerRE     = regexp.MustCompile(`^ {0,3}(?:>|[-+*]|[0-9]{1,9}[.)])[ \t]`)
 	judgeIndentRE     = regexp.MustCompile(`^ {0,3}`)
-	judgeHiddenRE     = regexp.MustCompile(`(?s)<!--.*?(?:-->|$)|<[^>]*>|\]\([^)]*\)`)
 	judgeFenceCloseRE = regexp.MustCompile("^ {0,3}(`{3,}|~{3,})[ \t]*$")
 )
 
@@ -326,7 +325,8 @@ var (
 // subset (decision D23 B2): a report with a NUL, invalid UTF-8, a line terminator other than LF or CRLF, or a line
 // that begins with up to three spaces and then `<` (HTML, which can hide headings) addresses nothing. A fence closes
 // only on the same character, with a run at least as long as the opener's and only whitespace after it. Setext
-// headings and indented code are not AC headings.
+// headings and indented code are not AC headings. Within a heading only the text before the first markup opener
+// counts (decision D25, judgeVisiblePrefix).
 func reportAddresses(report []byte, criteria []Criterion) bool {
 	if len(bytes.TrimSpace(report)) == 0 || !utf8.Valid(report) {
 		return false
@@ -360,7 +360,7 @@ func reportAddresses(report []byte, criteria []Criterion) bool {
 			continue
 		}
 		if m := judgeHeadingRE.FindStringSubmatch(line); m != nil {
-			headings = append(headings, judgeHiddenRE.ReplaceAllString(m[2], " "))
+			headings = append(headings, judgeVisiblePrefix(m[2]))
 		}
 	}
 	for _, c := range criteria {
@@ -377,6 +377,18 @@ func reportAddresses(report []byte, criteria []Criterion) bool {
 		}
 	}
 	return true
+}
+
+// judgeVisiblePrefix returns the heading text before the first `<`, `![`, `](` or `][` (decision D25). Markup from
+// there on can hide an id in a tag attribute, a link destination or title, a reference label or image alt text, so
+// only the plain text ahead of it can address a criterion.
+func judgeVisiblePrefix(h string) string {
+	for _, opener := range []string{"<", "![", "](", "]["} {
+		if i := strings.Index(h, opener); i >= 0 {
+			h = h[:i]
+		}
+	}
+	return h
 }
 
 // judgeOpensBlock reports whether a line, after up to three spaces and any run of container markers (block quote,
