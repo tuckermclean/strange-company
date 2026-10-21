@@ -355,6 +355,10 @@ func reportAddresses(report []byte, criteria []Criterion) bool {
 			}
 			continue
 		}
+		// D26(a): an indented fence opener is ambiguous to this recogniser, so the report fails closed.
+		if t := strings.TrimLeft(line, " \t"); t != line && (strings.HasPrefix(t, "```") || strings.HasPrefix(t, "~~~")) {
+			return false
+		}
 		if m := judgeFenceOpenRE.FindStringSubmatch(line); m != nil && !(m[1][0] == '`' && strings.Contains(m[2], "`")) {
 			fence = m[1]
 			continue
