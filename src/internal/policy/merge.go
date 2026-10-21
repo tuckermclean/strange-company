@@ -31,6 +31,10 @@ type Platform struct {
 // merged value. It is nil when the repository policy is rejected (no partial result).
 type Effective struct {
 	Values map[string]any
+	// Name is metadata.name of the merged repository policy.
+	//
+	// SC-STUB(F06 22-AC-33)
+	Name string
 }
 
 // MergePolicy applies the tighten-only merge of plan 22 section 9.4 to a repository policy document.
