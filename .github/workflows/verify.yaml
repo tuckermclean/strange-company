@@ -172,7 +172,8 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
-    timeout-minutes: 40
+    # The check replays every RED commit of the PR; a node with ~30 REDs needs well over an hour.
+    timeout-minutes: 180
     steps:
       # Check out the PR head itself: the default pull_request ref is a synthetic merge commit, which T3
       # would report as TDD_MERGE_COMMIT (plan 52 section 8.3).
