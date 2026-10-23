@@ -500,12 +500,19 @@ func TestWorkerRun_Exit143_OnSIGTERM_27AC2(t *testing.T) {
 	}
 }
 
+// safetyCtx bounds a test wait at 30 s without a wall-clock timer channel (D8).
+func safetyCtx() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), 30*time.Second)
+}
+
 func waitDone(t *testing.T, p *process, what string) int {
 	t.Helper()
+	ctx, cancel := safetyCtx()
+	defer cancel()
 	select {
 	case <-p.done:
 		return p.code
-	case <-time.After(30 * time.Second):
+	case <-ctx.Done():
 		t.Fatalf("sc-worker did not exit within 30 s of %s; stderr:\n%s", what, p.stderr.String())
 		return -1
 	}
@@ -526,11 +533,13 @@ func TestWorkerRun_SIGTERMInResultRetryWindowPostsOnce_27AC2_N5(t *testing.T) {
 		return 202, false
 	}
 	out := start(t, rs)
+	ctx, cancel := safetyCtx()
+	defer cancel()
 	select {
 	case <-rs.stub.resultHeld:
 	case <-out.done:
 		t.Fatalf("sc-worker exited with %d before the second result POST; stderr:\n%s", out.code, out.stderr.String())
-	case <-time.After(30 * time.Second):
+	case <-ctx.Done():
 		t.Fatal("the second result POST never arrived")
 	}
 	if err := out.cmd.Process.Signal(syscall.SIGTERM); err != nil {
