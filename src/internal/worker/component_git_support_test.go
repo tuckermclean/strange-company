@@ -744,6 +744,30 @@ func harnessDouble(args []string) int {
 				}
 			}
 			_ = f.Close()
+		case "print-hex":
+			// S5b review: one stdout line of the raw bytes in hex Content (invalid UTF-8, lone C1 bytes).
+			raw, err := hex.DecodeString(op.Content)
+			if err != nil {
+				return 2
+			}
+			os.Stdout.Write(append(raw, '\n'))
+		case "stream-sparse":
+			// S5b review B1: the harness sparsely extends the shim stream file to 1 TiB.
+			if err := os.Truncate(filepath.Join(filepath.Dir(out), ".sc-shim", "stream-1.log"), 1<<40); err != nil {
+				fmt.Fprintln(os.Stderr, "double: stream-sparse:", err)
+				return 2
+			}
+		case "bg-writer":
+			// S5b review B1: a setsid'd background process appends 256 MiB of empty lines to the stream file as fast as it
+			// can; out/bg.txt carries its pid (= its process group) so that the test can stop it.
+			c := exec.Command("/bin/sh", "-c", `head -c 268435456 /dev/zero | tr '\0' '\n' >> "$1"`, "sh",
+				filepath.Join(filepath.Dir(out), ".sc-shim", "stream-1.log"))
+			c.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+			if err := c.Start(); err != nil {
+				fmt.Fprintln(os.Stderr, "double: bg-writer:", err)
+				return 2
+			}
+			_ = os.WriteFile(filepath.Join(out, "bg.txt"), []byte(fmt.Sprintf("%d\n", c.Process.Pid)), 0o644)
 		case "write-gen":
 			// S5b: file op.Path = op.N 'a' bytes, op.Content, then Args[1] repeated Args[0] times, then a newline.
 			var k int
