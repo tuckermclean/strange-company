@@ -519,7 +519,7 @@ func fakeSSHMain(args []string) int {
 
 // harnessOp is one step of the data-driven harness double.
 type harnessOp struct {
-	Op      string `json:"op"` // write, delete, commit, hostile, record-head
+	Op      string `json:"op"` // write, delete, commit, hostile, record-head, commondir, parent-repo, replace-head
 	Path    string `json:"path,omitempty"`
 	Content string `json:"content,omitempty"`
 	Msg     string `json:"msg,omitempty"`
@@ -587,6 +587,73 @@ func harnessDouble(args []string) int {
 				branch = "DETACHED"
 			}
 			_ = os.WriteFile(filepath.Join(out, "head.txt"), []byte(sha+"\n"+branch+"\n"), 0o644)
+		case "commondir":
+			// F1: .git/commondir names a directory the harness controls; its config carries the hostile code.
+			canary := os.Getenv("SC_TEST_CANARY")
+			evil := filepath.Join(filepath.Dir(filepath.Dir(repo)), "common-evil")
+			if o, err := exec.Command("cp", "-a", filepath.Join(repo, ".git"), evil).CombinedOutput(); err != nil {
+				fmt.Fprintln(os.Stderr, "double: cp:", string(o))
+				return 2
+			}
+			script := "#!/bin/sh\n: > '" + canary + "'\n"
+			_ = os.WriteFile(filepath.Join(evil, "fsmon.sh"), []byte(script), 0o755)
+			_ = os.MkdirAll(filepath.Join(evil, "hooks"), 0o755)
+			for _, h := range []string{"pre-commit", "post-commit"} {
+				_ = os.WriteFile(filepath.Join(evil, "hooks", h), []byte(script), 0o755)
+			}
+			f, err := os.OpenFile(filepath.Join(evil, "config"), os.O_APPEND|os.O_WRONLY, 0o644)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "double: config:", err)
+				return 2
+			}
+			fmt.Fprintf(f, "[core]\n\tfsmonitor = %s\n\thooksPath = %s\n[filter \"pwn\"]\n\tclean = \"sh -c ': > %s; cat'\"\n\tsmudge = cat\n\trequired = true\n",
+				filepath.Join(evil, "fsmon.sh"), filepath.Join(evil, "hooks"), canary)
+			_ = f.Close()
+			if err := os.WriteFile(filepath.Join(repo, ".git", "commondir"), []byte(evil+"\n"), 0o644); err != nil {
+				fmt.Fprintln(os.Stderr, "double: commondir:", err)
+				return 2
+			}
+		case "parent-repo":
+			// F2: the workspace's parent directory is a repository whose config and attributes are hostile.
+			canary := os.Getenv("SC_TEST_CANARY")
+			parent := filepath.Dir(filepath.Dir(repo))
+			if o, err := exec.Command("/usr/bin/git", "init", "-q", parent).CombinedOutput(); err != nil {
+				fmt.Fprintln(os.Stderr, "double: init:", string(o))
+				return 2
+			}
+			script := "#!/bin/sh\n: > '" + canary + "'\n"
+			_ = os.WriteFile(filepath.Join(parent, "fsmon.sh"), []byte(script), 0o755)
+			_ = os.WriteFile(filepath.Join(parent, ".gitattributes"), []byte("* filter=pwn\n"), 0o644)
+			f, err := os.OpenFile(filepath.Join(parent, ".git", "config"), os.O_APPEND|os.O_WRONLY, 0o644)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "double: config:", err)
+				return 2
+			}
+			fmt.Fprintf(f, "[core]\n\tfsmonitor = %s\n[filter \"pwn\"]\n\tclean = \"sh -c ': > %s; cat'\"\n\tsmudge = cat\n\trequired = true\n",
+				filepath.Join(parent, "fsmon.sh"), canary)
+			_ = f.Close()
+		case "replace-head":
+			// F6: stage the working tree, then replace HEAD (start_commit) by a commit whose tree already contains the
+			// staged change, so that a diff against start_commit that honours refs/replace/* shows nothing.
+			if o, err := gitH("add", "-A"); err != nil {
+				fmt.Fprintln(os.Stderr, "double: add:", o)
+				return 2
+			}
+			tree, err := gitH("write-tree")
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "double: write-tree:", tree)
+				return 2
+			}
+			head, _ := gitH("rev-parse", "HEAD")
+			fake, err := gitH("commit-tree", tree, "-m", "fake")
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "double: commit-tree:", fake)
+				return 2
+			}
+			if o, err := gitH("replace", "-f", head, fake); err != nil {
+				fmt.Fprintln(os.Stderr, "double: replace:", o)
+				return 2
+			}
 		case "hostile":
 			canary := os.Getenv("SC_TEST_CANARY")
 			script := "#!/bin/sh\n: > '" + canary + "'\n"
@@ -604,7 +671,7 @@ func harnessDouble(args []string) int {
 				fmt.Fprintln(os.Stderr, "double: config:", err)
 				return 2
 			}
-			fmt.Fprintf(f, "[core]\n\tfsmonitor = %s\n[filter \"pwn\"]\n\tclean = sh -c ': > %s; cat'\n\tsmudge = cat\n\trequired = true\n", fsmon, canary)
+			fmt.Fprintf(f, "[core]\n\tfsmonitor = %s\n[filter \"pwn\"]\n\tclean = \"sh -c ': > %s; cat'\"\n\tsmudge = cat\n\trequired = true\n", fsmon, canary)
 			_ = f.Close()
 		}
 	}
