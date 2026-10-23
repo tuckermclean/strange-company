@@ -3,6 +3,7 @@
 package scrub
 
 import (
+	"bytes"
 	"encoding/json"
 	"regexp"
 	"sort"
@@ -19,8 +20,8 @@ type pattern struct {
 var patterns = []pattern{
 	{"pem-private-key", regexp.MustCompile(`-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----`)},
 	{"pem-private-key", regexp.MustCompile(`-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:[^"]|\\n)*?-----END [A-Z0-9 ]*PRIVATE KEY-----`)},
-	{"anthropic-key", regexp.MustCompile(`(^|[^A-Za-z0-9])(sk-ant-[A-Za-z0-9_-]{20,})`)},
-	{"openai-key", regexp.MustCompile(`(^|[^A-Za-z0-9])(sk-(?:proj-)?[A-Za-z0-9_-]{20,})`)},
+	{"anthropic-key", regexp.MustCompile(`(^|[^A-Za-z0-9]|\\[A-Za-z]|\\u[0-9A-Fa-f]{4})(sk-ant-[A-Za-z0-9_-]{20,})`)},
+	{"openai-key", regexp.MustCompile(`(^|[^A-Za-z0-9]|\\[A-Za-z]|\\u[0-9A-Fa-f]{4})(sk-(?:proj-)?[A-Za-z0-9_-]{20,})`)},
 	{"jwt", regexp.MustCompile(`eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}`)},
 	{"github-token", regexp.MustCompile(`gh[pousr]_[A-Za-z0-9]{36,}`)},
 	{"github-pat", regexp.MustCompile(`github_pat_[A-Za-z0-9_]{40,}`)},
@@ -139,7 +140,9 @@ func (s *Scrubber) Value(v any) any {
 		return "[REDACTED:unserializable]"
 	}
 	var g any
-	if err := json.Unmarshal(b, &g); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.UseNumber()
+	if err := dec.Decode(&g); err != nil {
 		return "[REDACTED:unserializable]"
 	}
 	return s.Value(g)
