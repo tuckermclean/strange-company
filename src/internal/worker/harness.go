@@ -104,9 +104,15 @@ func (t *streamTail) takeDropped() int {
 
 // read returns the complete lines appended to path since the last call; buf carries an unterminated tail. It reads at
 // most one 8 MiB chunk.
-func (t *streamTail) read(path string) []string {
+func (t *streamTail) read(path string) []string { return t.readTo(path, -1) }
+
+// readTo is read limited to the offsets below end (end < 0: no limit).
+func (t *streamTail) readTo(path string, end int64) []string {
 	st, err := os.Lstat(path)
 	if err != nil || !st.Mode().IsRegular() || st.Size() <= t.off {
+		return nil
+	}
+	if end >= 0 && end <= t.off {
 		return nil
 	}
 	f, err := os.Open(path)
@@ -117,7 +123,11 @@ func (t *streamTail) read(path string) []string {
 	if _, err := f.Seek(t.off, io.SeekStart); err != nil {
 		return nil
 	}
-	b, _ := io.ReadAll(io.LimitReader(f, 8<<20))
+	n := int64(8 << 20)
+	if end >= 0 && end-t.off < n {
+		n = end - t.off
+	}
+	b, _ := io.ReadAll(io.LimitReader(f, n))
 	t.off += int64(len(b))
 	var lines []string
 	for len(b) > 0 {
@@ -152,11 +162,18 @@ func (t *streamTail) read(path string) []string {
 	return lines
 }
 
-// drain reads the stream file to its end.
-func (t *streamTail) drain(path string, onLine func(string)) {
-	for {
+// drainBudget is the most that is read from a stream file once the shim's result file exists.
+const drainBudget = 8 << 20
+
+// drain reads the stream file up to end (its size when the result file appeared; the shim flushes the stream before
+// it writes the result) and at most drainBudget more bytes, and stops at once when stop reports true.
+func (t *streamTail) drain(path string, end int64, stop func() bool, onLine func(string)) {
+	if limit := t.off + drainBudget; end < 0 || end > limit {
+		end = limit
+	}
+	for !stop() {
 		before := t.off
-		for _, l := range t.read(path) {
+		for _, l := range t.readTo(path, end) {
 			onLine(l)
 		}
 		if t.off == before {
@@ -197,14 +214,22 @@ func (pl *pipeline) runShim(kind string, argv []string, env map[string]string, c
 		for _, l := range tail.read(stream) {
 			onLine(l)
 		}
+		pl.flushOut()
 		account()
 		if b, err := os.ReadFile(resPath); err == nil {
 			if st, lerr := os.Lstat(resPath); lerr == nil && st.Mode().IsRegular() && json.Unmarshal(b, &out.res) == nil {
 				out.haveRes = true
-				tail.drain(stream, onLine)
+				end := int64(-1)
+				if sst, serr := os.Lstat(stream); serr == nil && sst.Mode().IsRegular() {
+					end = sst.Size()
+				} else {
+					end = 0
+				}
+				tail.drain(stream, end, func() bool { return w.sig.Err() != nil }, onLine)
 				if len(tail.buf) > 0 {
 					onLine(string(tail.buf))
 				}
+				pl.flushOut()
 				account()
 				return out
 			}
@@ -282,6 +307,9 @@ func (hs *harnessState) parse(line string) {
 			hs.terminal, hs.isError, hs.numTurns = true, ev.IsError, ev.Turns
 		}
 	}
+	if !strings.Contains(line, "SC_") {
+		return
+	}
 	if m := gwCodeRe.FindString(line); m != "" {
 		if _, ok := gwVerdict[m]; ok && hs.gwCode == "" {
 			hs.gwCode = m
@@ -295,31 +323,47 @@ func (pl *pipeline) emit(line string) {
 	hs := &pl.hs
 	hs.parse(line)
 	hs.lines++
-	hs.bytes += len(line) + 1
 	if hs.cap {
-		return
-	}
-	if limit := pl.p.Limits.MaxLogBytes; limit > 0 && hs.bytes > limit {
-		hs.cap, hs.logCut = true, true
-		w.logMu.Lock()
-		fmt.Fprintf(w.out, "{\"src\":\"sc-worker\",\"event\":\"log_budget_exhausted\"}\n")
-		w.logMu.Unlock()
 		return
 	}
 	// The whole (bounded) line is scrubbed before it is truncated, so a secret across the cut is still caught.
 	line = escapeControls(w.scrub.String(line))
+	cut := 0
 	if len(line) > maxStreamLine {
-		hs.truncated++
-		cut := len(line) - maxStreamLine
+		cut = len(line) - maxStreamLine
 		line = line[:utf8Boundary(line, maxStreamLine)] + fmt.Sprintf(" …[truncated %d bytes]", cut)
 	}
 	// A harness line must never pass for sc-worker framing.
 	if strings.HasPrefix(line, "::SC-") || strings.HasPrefix(line, "::STRANGE-COMPANY-") {
 		line = "| " + line
 	}
-	w.logMu.Lock()
-	fmt.Fprintln(w.out, line)
-	w.logMu.Unlock()
+	// max_log_bytes limits what is written, so the escaped bytes are charged.
+	hs.bytes += len(line) + 1
+	if limit := pl.p.Limits.MaxLogBytes; limit > 0 && hs.bytes > limit {
+		hs.cap, hs.logCut = true, true
+		pl.obuf = append(pl.obuf, "{\"src\":\"sc-worker\",\"event\":\"log_budget_exhausted\"}\n"...)
+		pl.flushOut()
+		return
+	}
+	if cut > 0 {
+		hs.truncated++
+	}
+	pl.obuf = append(append(pl.obuf, line...), '\n')
+	if len(pl.obuf) >= 64<<10 {
+		pl.flushOut()
+	}
+}
+
+// flushOut writes the buffered harness lines to stdout in one write (a harness that prints millions of tiny lines
+// must not cost a system call each).
+func (pl *pipeline) flushOut() {
+	if len(pl.obuf) == 0 {
+		return
+	}
+	pl.w.logMu.Lock()
+	_, _ = pl.w.out.Write(pl.obuf)
+	pl.w.logMu.Unlock()
+	pl.obuf = pl.obuf[:0]
 }
 
 // harnessVerdict is adapter.Classify (plan 27 section 14.7 step 6).
@@ -483,8 +527,8 @@ func utf8Boundary(s string, n int) int {
 // escapeControls makes C0 and C1 control characters (and DEL) visible as \u00XX; tab and newline stay. Terminal
 // escape sequences in harness output or in a diff therefore never reach the operator's terminal raw.
 func escapeControls(s string) string {
-	clean := true
-	for i := 0; i < len(s); i++ {
+	clean := utf8.ValidString(s)
+	for i := 0; clean && i < len(s); i++ {
 		if c := s[i]; (c < 0x20 && c != '\t' && c != '\n') || c == 0x7f || c == 0xc2 {
 			clean = false
 			break
@@ -494,7 +538,14 @@ func escapeControls(s string) string {
 		return s
 	}
 	var b strings.Builder
-	for _, r := range s {
+	for i := 0; i < len(s); {
+		r, n := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && n == 1 {
+			fmt.Fprintf(&b, "\\x%02x", s[i]) // an invalid byte (possibly a C1 control to a terminal)
+			i++
+			continue
+		}
+		i += n
 		if (r < 0x20 && r != '\t' && r != '\n') || (r >= 0x7f && r <= 0x9f) {
 			fmt.Fprintf(&b, "\\u%04x", r)
 			continue
