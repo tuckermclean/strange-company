@@ -125,12 +125,7 @@ func (pl *pipeline) privGit() string { return pl.w.privPath("git") }
 
 // gitPost runs a git command against the private GIT_DIR, never trusting the commit-graph.
 func (pl *pipeline) gitPost(timeout time.Duration, extraEnv []string, args ...string) gitOut {
-	return pl.w.git(timeout, pl.repo, append(pl.pinPrivateEnv(), extraEnv...), append([]string{"-c", "core.commitGraph=false"}, args...)...)
-}
-
-func (w *worker) gitRepo(timeout time.Duration, extraEnv []string, args ...string) gitOut {
-	repo := filepath.Join(w.cfg.WorkspaceDir, "repo")
-	return w.git(timeout, repo, append(pinRepoEnv(repo), extraEnv...), args...)
+	return pl.w.git(timeout, pl.repo, append(pl.pinPrivateEnv(), extraEnv...), append([]string{"-c", "core.commitGraph=false", "-c", "gc.auto=0", "-c", "maintenance.auto=false"}, args...)...)
 }
 
 // tail returns the last n bytes of s on a rune boundary.
@@ -366,6 +361,23 @@ func readRegular(base, rel string, limit int64) ([]byte, bool) {
 	return b[:n], true
 }
 
+// packedRef looks ref up in the workspace packed-refs file; "" when absent or corrupt.
+func packedRef(gd, ref string) string {
+	b, ok := readRegular(gd, "packed-refs", 1<<20)
+	if !ok {
+		return ""
+	}
+	for _, l := range strings.Split(string(b), "\n") {
+		if l == "" || l[0] == '#' || l[0] == '^' {
+			continue
+		}
+		if f := strings.Fields(l); len(f) == 2 && f[1] == ref {
+			return f[0]
+		}
+	}
+	return ""
+}
+
 // harnessHead returns the commit the harness left on the workspace branch, read as a plain file (the workspace
 // refs are not trusted beyond that); "" when it is missing or corrupt.
 func (pl *pipeline) harnessHead() string {
@@ -380,10 +392,11 @@ func (pl *pipeline) harnessHead() string {
 		if !strings.HasPrefix(ref, "refs/") {
 			return ""
 		}
-		if b, ok = readRegular(gd, ref, 256); !ok {
-			return ""
+		if b, ok = readRegular(gd, ref, 256); ok {
+			h = strings.TrimSpace(string(b))
+		} else {
+			h = packedRef(gd, ref)
 		}
-		h = strings.TrimSpace(string(b))
 	}
 	if !shaRe.MatchString(h) {
 		return ""

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"strange.company/sc/internal/worker/adapters"
 )
@@ -382,11 +383,11 @@ func (pl *pipeline) partialDiff() string {
 	if r := pl.gitPost(60*time.Second, nil, "diff", "--cached", "--quiet", g.StartCommit); r.err == nil || r.code != 1 {
 		return ""
 	}
-	d := pl.gitPost(120*time.Second, nil, "diff", "--cached", "--no-ext-diff", "--no-textconv", "--text", g.StartCommit)
+	d := pl.gitPost(120*time.Second, nil, "diff", "--cached", "--no-ext-diff", "--no-textconv", g.StartCommit)
 	if d.err != nil {
 		return ""
 	}
-	text := string(d.stdout)
+	text := textLinesOnly(string(d.stdout))
 	const limit = 1 << 20
 	truncated := len(text) > limit || d.total > len(d.stdout)
 	if len(text) > limit {
@@ -505,4 +506,17 @@ func (pl *pipeline) finishClaim(commit string, pushed bool) int {
 	}
 	pl.decorate(doc)
 	return w.report(doc, modeNormal)
+}
+
+// textLinesOnly drops every line holding a NUL byte or invalid UTF-8, so the logged partial diff stays binary-free.
+func textLinesOnly(s string) string {
+	lines := strings.SplitAfter(s, "\n")
+	out := lines[:0]
+	for _, l := range lines {
+		if strings.IndexByte(l, 0) >= 0 || !utf8.ValidString(l) {
+			continue
+		}
+		out = append(out, l)
+	}
+	return strings.Join(out, "")
 }
