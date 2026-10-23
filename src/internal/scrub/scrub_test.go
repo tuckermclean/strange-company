@@ -288,8 +288,8 @@ func TestScrub_ValuePreservesIntegers_NB3(t *testing.T) {
 		in   any
 		want string
 	}{
-		"struct":     {typed{A: 1 << 60, B: 1 << 63}, `{"a":1152921504606846976,"b":9223372036854775808}`},
-		"typed-map":  {map[string]int64{"a": 1 << 60}, `{"a":1152921504606846976}`},
+		"struct":      {typed{A: 1 << 60, B: 1 << 63}, `{"a":1152921504606846976,"b":9223372036854775808}`},
+		"typed-map":   {map[string]int64{"a": 1 << 60}, `{"a":1152921504606846976}`},
 		"typed-slice": {[]uint64{1 << 63}, `[9223372036854775808]`},
 	} {
 		t.Run(name, func(t *testing.T) {
