@@ -1,0 +1,200 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://strange.company/contracts/handoff/v1alpha1
+title: Handoff
+description: |
+  The structured handoff every worker result carries (SPEC §68–§70; owning plan 30). It is
+  embedded by `worker-result.schema.yaml` (`handoff`, `$defs/HarnessClaim.handoff`) and
+  returned by MCP `agent_result`.
+
+  A handoff is **model-authored, non-authoritative text** plus a few structured claims. It
+  never drives a state transition: `recommended_next_role` is advice to Hermes, and any
+  Git or verification fact in it is a claim that the Runner re-derives (SPEC §4.3).
+
+  Required fields are exactly the SPEC §69 minimum, so `sc-worker` can always synthesize a
+  valid handoff (plan 27 §14.9). `questions` and `known_risks` accept a plain string
+  (shorthand) or a structured object; the Runner normalizes strings to objects when it
+  stores the handoff (plan 30 §14.2).
+
+  Limits beyond this schema (enforced by `sc-worker` and again by the Runner, plan 30 §9):
+  the canonical JSON is ≤ `limits.max_handoff_bytes` (default 32768, maximum 65536);
+  after sanitization (control characters, ANSI escapes, bidirectional overrides removed,
+  NFC) and secret scrubbing. A handoff with redactions is stored with `redacted: true`
+  by the Runner (MCP `handoff_redacted`).
+type: object
+additionalProperties: false
+required: [what_i_did, what_remains, recommended_next_role, questions, known_risks]
+properties:
+  what_i_did:
+    type: string
+    minLength: 1
+    maxLength: 4000
+  what_remains:
+    type: string
+    minLength: 1
+    maxLength: 4000
+  recommended_next_role:
+    description: Advice only. The state machine and Hermes decide.
+    oneOf:
+      - type: string
+        enum: [researcher, planner, tester, implementer, reviewer]
+      - type: "null"
+  questions:
+    type: array
+    maxItems: 20
+    items:
+      oneOf:
+        - type: string
+          minLength: 1
+          maxLength: 1000
+        - $ref: "#/$defs/Question"
+  known_risks:
+    type: array
+    maxItems: 20
+    items:
+      oneOf:
+        - type: string
+          minLength: 1
+          maxLength: 1000
+        - $ref: "#/$defs/Risk"
+  claims:
+    $ref: "#/$defs/Claims"
+$defs:
+  AcId: {type: string, pattern: "^AC-[1-9][0-9]{0,2}$"}
+  GitSha: {type: string, pattern: "^[a-f0-9]{40}$"}
+  RepoPath:
+    type: string
+    pattern: "^(?!/)(?!.*(^|/)\\.\\.(/|$))[A-Za-z0-9._@+/-]{1,400}$"
+  Question:
+    type: object
+    additionalProperties: false
+    required: [text, blocking]
+    properties:
+      id:
+        type: string
+        pattern: "^Q-[1-9][0-9]?$"
+      text: {type: string, minLength: 1, maxLength: 1000}
+      blocking:
+        description: True when the worker could not proceed without an answer (worker state blocked).
+        type: boolean
+      addressed_to:
+        type: string
+        enum: [hermes, human, tester, implementer, reviewer]
+      ac_ids:
+        type: array
+        maxItems: 50
+        items: {$ref: "#/$defs/AcId"}
+  Risk:
+    type: object
+    additionalProperties: false
+    required: [text, severity]
+    properties:
+      text: {type: string, minLength: 1, maxLength: 1000}
+      severity: {type: string, enum: [low, medium, high]}
+      paths:
+        type: array
+        maxItems: 20
+        items: {$ref: "#/$defs/RepoPath"}
+      ac_ids:
+        type: array
+        maxItems: 50
+        items: {$ref: "#/$defs/AcId"}
+  Claims:
+    description: Optional structured claims. All are re-checked or ignored by the Runner; none is evidence.
+    type: object
+    additionalProperties: false
+    properties:
+      blocked:
+        description: Required by plan 30 when the worker result state is `blocked` (Runner check, not schema).
+        type: object
+        additionalProperties: false
+        required: [reason, detail]
+        properties:
+          reason:
+            type: string
+            enum: [missing_information, ambiguous_requirement, missing_permission, missing_dependency, environment_problem, out_of_scope]
+          detail: {type: string, minLength: 1, maxLength: 2000}
+      test_spec_conflict:
+        description: Narrative complement to worker-result `conflict` (which is authoritative for AC ids and tests).
+        type: object
+        additionalProperties: false
+        required: [proposed_change]
+        properties:
+          proposed_change:
+            description: How the implementer believes the test or criterion should change.
+            type: string
+            minLength: 1
+            maxLength: 4000
+          evidence:
+            type: string
+            maxLength: 4000
+      ac_status:
+        type: array
+        maxItems: 50
+        items:
+          type: object
+          additionalProperties: false
+          required: [ac_id, status]
+          properties:
+            ac_id: {$ref: "#/$defs/AcId"}
+            status: {type: string, enum: [addressed, partially_addressed, not_addressed, not_applicable]}
+            note: {type: string, maxLength: 500}
+      references:
+        type: object
+        additionalProperties: false
+        properties:
+          files:
+            type: array
+            maxItems: 200
+            items: {$ref: "#/$defs/RepoPath"}
+          commits:
+            type: array
+            maxItems: 20
+            items: {$ref: "#/$defs/GitSha"}
+          tests:
+            type: array
+            maxItems: 200
+            items: {type: string, maxLength: 500}
+          urls:
+            description: Rendered as inline code, never as links (plan 30 §13).
+            type: array
+            maxItems: 20
+            items: {type: string, maxLength: 500}
+examples:
+  - what_i_did: Wrote two failing tests for 307 handling.
+    what_remains: Implement method and body preservation in httpx.Client.
+    recommended_next_role: implementer
+    questions: []
+    known_risks: [The body test depends on GetBody being set by the caller.]
+  - what_i_did: Implemented 307 method preservation; body replay needs a decision.
+    what_remains: AC-2 cannot be satisfied for streaming bodies as the test requires.
+    recommended_next_role: reviewer
+    questions:
+      - {id: Q-1, text: "Should non-replayable bodies fail the redirect or drop the body?", blocking: true, addressed_to: human, ac_ids: [AC-2]}
+    known_risks:
+      - {text: Changing redirect semantics may affect callers relying on 302 behavior., severity: medium, paths: [internal/httpx/client.go], ac_ids: [AC-3]}
+    claims:
+      test_spec_conflict:
+        proposed_change: Restrict TestRedirect307PreservesBody to requests with GetBody set.
+      ac_status:
+        - {ac_id: AC-1, status: addressed}
+        - {ac_id: AC-2, status: not_addressed, note: blocked by the conflict}
+      references:
+        files: [internal/httpx/client.go, internal/httpx/redirect_test.go]
+        commits: [89abcdef0123456789abcdef0123456789abcdef]
+        tests: ["unit::example.com/x/internal/httpx.TestRedirect307PreservesBody"]
+  - what_i_did: "sc-worker: harness ended with stream_incomplete; no valid claim"
+    what_remains: tester work for sc-184 is incomplete
+    recommended_next_role: null
+    questions: []
+    known_risks: [stream_incomplete]
+x-invalid-examples:
+  - reason: Missing SPEC §69 field known_risks.
+    value: {what_i_did: x, what_remains: y, recommended_next_role: null, questions: []}
+  - reason: Recommended next role that is not a worker role (handoffs cannot ask for a deployer or for Hermes).
+    value: {what_i_did: x, what_remains: y, recommended_next_role: deployer, questions: [], known_risks: []}
+  - reason: Extra top-level field (a handoff cannot carry a state or a verdict).
+    value: {what_i_did: x, what_remains: y, recommended_next_role: null, questions: [], known_risks: [], task_state: DONE}
+  - reason: Unknown blocked reason.
+    value: {what_i_did: x, what_remains: y, recommended_next_role: null, questions: [], known_risks: [], claims: {blocked: {reason: tired, detail: z}}}
+  - reason: Empty what_i_did.
+    value: {what_i_did: "", what_remains: y, recommended_next_role: null, questions: [], known_risks: []}
