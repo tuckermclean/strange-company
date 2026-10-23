@@ -30,7 +30,6 @@ import (
 const (
 	helperEnv   = "SC_TEST_WORKER_HELPER_CONFIG" // test-only; never read by production code
 	taskToken   = "tt-CANARY-0001-task-token-value"
-	clockScale  = 1000 // one real millisecond is one virtual second
 	clockOrigin = "2026-10-13T12:00:10Z"
 )
 
@@ -40,19 +39,18 @@ type helperConfig struct {
 	PanicAt                                        string
 }
 
-// scaledClock is a real clock that runs clockScale times faster, so retry windows of minutes take milliseconds.
-type scaledClock struct {
-	real   clock.Real
-	origin time.Time
-	start  time.Time
+// fakeClock is a deterministic clock: Now is the injected start plus the virtual time slept so far, so no
+// outcome depends on wall time. Sleep advances the virtual time at once; it only yields 1 ms of real time so a
+// hot retry or heartbeat loop cannot starve the process.
+type fakeClock struct {
+	*clock.Fake
 }
 
-func (c *scaledClock) Now() time.Time {
-	return c.start.Add(clockScale * c.real.Now().Sub(c.origin))
-}
-
-func (c *scaledClock) Sleep(ctx context.Context, d time.Duration) error {
-	return c.real.Sleep(ctx, d/clockScale)
+func (c fakeClock) Sleep(ctx context.Context, d time.Duration) error {
+	if err := c.Fake.Sleep(ctx, d); err != nil {
+		return err
+	}
+	return clock.Real{}.Sleep(ctx, time.Millisecond)
 }
 
 // TestHelperProcess_ScWorkerRun is the child side of the component harness; it does nothing in a normal run.
@@ -71,7 +69,7 @@ func TestHelperProcess_ScWorkerRun(t *testing.T) {
 	}
 	cfg := worker.DefaultConfig()
 	cfg.PrivateDir, cfg.HarnessSecretsDir, cfg.HomeDir, cfg.TmpDir = hc.PrivateDir, hc.HarnessSecretsDir, hc.HomeDir, hc.TmpDir
-	cfg.Clock = &scaledClock{origin: clock.Real{}.Now(), start: start}
+	cfg.Clock = fakeClock{clock.NewFake(start)}
 	cfg.Stdout, cfg.Stderr = os.Stdout, os.Stderr
 	cfg.PanicAt = hc.PanicAt
 	os.Exit(worker.Run(cfg))
@@ -91,11 +89,16 @@ type stubRunner struct {
 	packetHold   chan struct{} // when non-nil, GET /v1/worker/packet blocks until it is closed or the client leaves
 	packetSeen   chan struct{}
 	resultStatus int
+	// resultScript, when non-nil, decides the answer to the nth (1-based) result POST: a status, or hold to block
+	// until the client leaves (the request is recorded before it blocks and resultHeld is signalled).
+	resultScript func(n int) (status int, hold bool)
+	resultHeld   chan struct{}
+	nResult      int
 }
 
 func newStubRunner(t *testing.T, packet map[string]any) *stubRunner {
 	t.Helper()
-	s := &stubRunner{packetStatus: 200, resultStatus: 202, packetSeen: make(chan struct{}, 1)}
+	s := &stubRunner{packetStatus: 200, resultStatus: 202, packetSeen: make(chan struct{}, 1), resultHeld: make(chan struct{}, 1)}
 	if packet != nil {
 		b, err := json.Marshal(packet)
 		if err != nil {
@@ -108,6 +111,13 @@ func newStubRunner(t *testing.T, packet map[string]any) *stubRunner {
 		s.mu.Lock()
 		s.reqs = append(s.reqs, recorded{r.Method, r.URL.Path, r.Header.Get("Authorization"), r.Header.Get("User-Agent"), body})
 		hold, pstatus, pbody, rstatus := s.packetHold, s.packetStatus, s.packetBody, s.resultStatus
+		rhold := false
+		if r.Method == http.MethodPost && r.URL.Path == "/v1/worker/result" {
+			s.nResult++
+			if s.resultScript != nil {
+				rstatus, rhold = s.resultScript(s.nResult)
+			}
+		}
 		s.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		switch {
@@ -128,6 +138,14 @@ func newStubRunner(t *testing.T, packet map[string]any) *stubRunner {
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/worker/heartbeat":
 			_, _ = io.WriteString(w, `{"cancel_requested":false,"deadline_at":"2026-10-13T12:20:00Z"}`)
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/worker/result":
+			if rhold {
+				select {
+				case s.resultHeld <- struct{}{}:
+				default:
+				}
+				<-r.Context().Done()
+				return
+			}
 			w.WriteHeader(rstatus)
 			_, _ = io.WriteString(w, `{}`)
 		default:
@@ -479,5 +497,87 @@ func TestWorkerRun_Exit143_OnSIGTERM_27AC2(t *testing.T) {
 			t.Errorf("best-effort result state = %v, want failed", res["state"])
 		}
 		checkFramedResult(t, out.stdout.String(), p.Body)
+	}
+}
+
+func waitDone(t *testing.T, p *process, what string) int {
+	t.Helper()
+	select {
+	case <-p.done:
+		return p.code
+	case <-time.After(30 * time.Second):
+		t.Fatalf("sc-worker did not exit within 30 s of %s; stderr:\n%s", what, p.stderr.String())
+		return -1
+	}
+}
+
+// 27-AC-2, N5 (plan 27 section 14.14): a SIGTERM during the normal result-post retry window ends the retries,
+// but sc-worker still makes one more attempt with the identical body (single 5 s attempt) before exit 143.
+func TestWorkerRun_SIGTERMInResultRetryWindowPostsOnce_27AC2_N5(t *testing.T) {
+	rs := &runSpec{stub: newStubRunner(t, examplePacket(t))}
+	rs.defaults(t)
+	rs.stub.resultScript = func(n int) (int, bool) {
+		switch n {
+		case 1:
+			return 503, false
+		case 2:
+			return 0, true // in flight when the signal arrives
+		}
+		return 202, false
+	}
+	out := start(t, rs)
+	select {
+	case <-rs.stub.resultHeld:
+	case <-out.done:
+		t.Fatalf("sc-worker exited with %d before the second result POST; stderr:\n%s", out.code, out.stderr.String())
+	case <-time.After(30 * time.Second):
+		t.Fatal("the second result POST never arrived")
+	}
+	if err := out.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	if got := waitDone(t, out, "SIGTERM"); got != 143 {
+		t.Errorf("exit code = %d, want 143; stderr:\n%s", got, out.stderr.String())
+	}
+	posts := rs.stub.calls("POST", "/v1/worker/result")
+	if len(posts) != 3 {
+		t.Fatalf("%d result POSTs, want 3 (503, the one in flight at SIGTERM, one more after it)", len(posts))
+	}
+	for i, p := range posts[1:] {
+		if !bytes.Equal(p.Body, posts[0].Body) {
+			t.Errorf("result POST %d body differs from the first attempt", i+2)
+		}
+	}
+	checkFramedResult(t, out.stdout.String(), posts[len(posts)-1].Body)
+}
+
+// 27-R-3, N3: nothing sc-worker writes to stdout or stderr contains a credential value, including the
+// "packet unusable" line that echoes a schema error and may carry packet values.
+func TestWorkerRun_StderrIsScrubbed_N3(t *testing.T) {
+	const gwToken = "gw-CANARY-0002-gateway-token-value"
+	sk := "sk-" + "ant-" + strings.Repeat("Ab1_-", 6)
+	for name, canary := range map[string]string{"gateway-token": gwToken, "sk-ant": sk, "task-token": taskToken} {
+		t.Run(name, func(t *testing.T) {
+			pkt := examplePacket(t)
+			// An unusable packet with no identity: the schema error is what reaches stderr.
+			delete(pkt["task"].(map[string]any), "task_id")
+			// The validator names unknown properties in its error, so a property named like a credential reaches it.
+			pkt[canary] = "x"
+			pkt["harness"].(map[string]any)[canary] = "x"
+			rs := &runSpec{stub: newStubRunner(t, pkt)}
+			rs.defaults(t)
+			out := start(t, rs)
+			if got := waitDone(t, out, "start"); got != 2 {
+				t.Errorf("exit code = %d, want 2 (packet unusable); stderr:\n%s", got, out.stderr.String())
+			}
+			if !strings.Contains(out.stderr.String(), "packet unusable") {
+				t.Fatalf("stderr has no packet-unusable line (the canary may not reach it): %q", out.stderr.String())
+			}
+			for stream, text := range map[string]string{"stdout": out.stdout.String(), "stderr": out.stderr.String()} {
+				if strings.Contains(text, canary) {
+					t.Errorf("%s contains the canary %q:\n%s", stream, canary, text)
+				}
+			}
+		})
 	}
 }
