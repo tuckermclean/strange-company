@@ -14,7 +14,10 @@ func run(args []string) int {
 	if len(args) == 1 && args[0] == "run" {
 		return worker.Run(worker.DefaultConfig())
 	}
-	if len(args) == 1 && (args[0] == "shim" || args[0] == "selftest") {
+	if len(args) == 1 && args[0] == "shim" {
+		return worker.Shim(worker.DefaultShimConfig())
+	}
+	if len(args) == 1 && args[0] == "selftest" {
 		fmt.Fprintf(os.Stderr, "sc-worker %s: not implemented\n", args[0])
 		return 2
 	}

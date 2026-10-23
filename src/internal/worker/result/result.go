@@ -158,8 +158,11 @@ func deepCopy(m map[string]any) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	// UseNumber keeps integers beyond 2^53 exact (S2-FU1).
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.UseNumber()
 	var out map[string]any
-	if err := json.Unmarshal(b, &out); err != nil {
+	if err := dec.Decode(&out); err != nil {
 		return nil, err
 	}
 	return out, nil

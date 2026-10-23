@@ -4,22 +4,28 @@ package fakeharness
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
+
+	"strange.company/sc/internal/clock"
 )
 
 // Run executes the fake harness for the given sc-fake-harness argv (without the program name) and environment
 // and returns the process exit code. args carry --scenario, --role, --attempt, --task, --execution, --repo,
 // --context and --out; getenv answers SC_FAKE_GATEWAY_URL and SC_FAKE_GATEWAY_TOKEN.
 //
-// This slice implements the cooperative tester and implementer behaviours of the scenarios success, red-valid
-// and push (plan 28 section 14.4); the other scenarios belong to later slices of F07.
+// This build implements the cooperative tester and implementer behaviours of the scenarios success, red-valid
+// and push, and the scenarios failure, timeout and ignore-cancel for every role (plan 28 section 14.4); the
+// other scenarios belong to later slices of F07.
 func Run(args []string, getenv func(string) string, stdout, stderr io.Writer) int {
 	f := map[string]string{}
 	for i := 0; i < len(args); i++ {
@@ -50,15 +56,48 @@ func Run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		fmt.Fprintln(stdout, string(b))
 	}
 
-	switch f["scenario"] {
+	scenario := f["scenario"]
+	switch scenario {
 	case "success", "red-valid", "push":
+		if f["role"] != "tester" && f["role"] != "implementer" {
+			fmt.Fprintf(stderr, "sc-fake-harness: role %q is not implemented for scenario %s in this build\n", f["role"], scenario)
+			return 2
+		}
+	case "failure", "timeout", "ignore-cancel":
 	default:
-		fmt.Fprintf(stderr, "sc-fake-harness: scenario %q is not implemented in this build\n", f["scenario"])
+		fmt.Fprintf(stderr, "sc-fake-harness: scenario %q is not implemented in this build\n", scenario)
 		return 2
 	}
-	if f["role"] != "tester" && f["role"] != "implementer" {
-		fmt.Fprintf(stderr, "sc-fake-harness: role %q is not implemented for scenario %s in this build\n", f["role"], f["scenario"])
-		return 2
+
+	// The signal handling of timeout (exit on SIGTERM) and ignore-cancel (swallow it) is armed before the model call.
+	sigCtx, stopSig := context.WithCancel(context.Background())
+	defer stopSig()
+	if scenario == "timeout" || scenario == "ignore-cancel" {
+		sigc := make(chan os.Signal, 8)
+		signal.Notify(sigc, syscall.SIGTERM)
+		defer signal.Stop(sigc)
+		if scenario == "timeout" {
+			var cancel context.CancelFunc
+			sigCtx, cancel = context.WithCancel(sigCtx)
+			defer cancel()
+			go func() {
+				select {
+				case <-sigc:
+					cancel()
+				case <-sigCtx.Done():
+				}
+			}()
+		} else {
+			go func() {
+				for {
+					select {
+					case <-sigc: // ignored on purpose (a wedged harness)
+					case <-sigCtx.Done():
+						return
+					}
+				}
+			}()
+		}
 	}
 
 	// Every scenario first calls the Gateway (plan 28 section 9.2, Fake).
@@ -69,6 +108,21 @@ func Run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		}
 		result(true)
 		return 1
+	}
+
+	switch scenario {
+	case "failure":
+		step("plan")
+		step("work")
+		result(true)
+		return 1
+	case "timeout", "ignore-cancel":
+		// After the model call the fake sleeps for 24 h; timeout honors SIGTERM, ignore-cancel does not.
+		if err := (clock.Real{}).Sleep(sigCtx, 24*time.Hour); err != nil {
+			return 143
+		}
+		result(false)
+		return 0
 	}
 
 	push := f["scenario"] == "push"
