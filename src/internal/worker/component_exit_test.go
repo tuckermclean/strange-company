@@ -94,6 +94,10 @@ type stubRunner struct {
 	resultScript func(n int) (status int, hold bool)
 	resultHeld   chan struct{}
 	nResult      int
+	// cancelAfterHB, when positive, makes every heartbeat from the nth on answer cancel_requested: true (plan 27
+	// section 14.7 step 4). Set it before the worker starts.
+	cancelAfterHB int
+	nHB           int
 }
 
 func newStubRunner(t *testing.T, packet map[string]any) *stubRunner {
@@ -136,7 +140,15 @@ func newStubRunner(t *testing.T, packet map[string]any) *stubRunner {
 			w.WriteHeader(pstatus)
 			_, _ = w.Write(pbody)
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/worker/heartbeat":
-			_, _ = io.WriteString(w, `{"cancel_requested":false,"deadline_at":"2026-10-13T12:20:00Z"}`)
+			s.mu.Lock()
+			s.nHB++
+			cancel := s.cancelAfterHB > 0 && s.nHB >= s.cancelAfterHB
+			s.mu.Unlock()
+			answer := `{"cancel_requested":false,"deadline_at":"2026-10-13T12:20:00Z"}`
+			if cancel {
+				answer = `{"cancel_requested":true,"deadline_at":"2026-10-13T12:20:00Z"}`
+			}
+			_, _ = io.WriteString(w, answer)
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/worker/result":
 			if rhold {
 				select {

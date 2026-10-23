@@ -15,11 +15,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -354,6 +356,7 @@ func (c stillClock) Sleep(ctx context.Context, d time.Duration) error {
 
 type gitHelperConfig struct {
 	PrivateDir, HarnessSecretsDir, HomeDir, TmpDir, SSHProgram, ClockStart string
+	RealClock                                                              bool // S4: real elapsed time is the subject
 }
 
 // TestHelperProcess_ScWorkerGit is the child side of the Git component harness; it does nothing in a normal run.
@@ -373,7 +376,9 @@ func TestHelperProcess_ScWorkerGit(t *testing.T) {
 	cfg := worker.DefaultConfig()
 	cfg.PrivateDir, cfg.HarnessSecretsDir, cfg.HomeDir, cfg.TmpDir = hc.PrivateDir, hc.HarnessSecretsDir, hc.HomeDir, hc.TmpDir
 	cfg.SSHProgram = hc.SSHProgram
-	cfg.Clock = stillClock{clock.NewFake(start)}
+	if !hc.RealClock {
+		cfg.Clock = stillClock{clock.NewFake(start)}
+	}
 	cfg.Stdout, cfg.Stderr = os.Stdout, os.Stderr
 	os.Exit(worker.Run(cfg))
 }
@@ -523,6 +528,7 @@ type harnessOp struct {
 	Path    string `json:"path,omitempty"`
 	Content string `json:"content,omitempty"`
 	Msg     string `json:"msg,omitempty"`
+	N       int    `json:"n,omitempty"`
 }
 
 // TestHelperProcess_FakeHarness is the harness child started by the test shim: the cooperative fake harness
@@ -654,6 +660,52 @@ func harnessDouble(args []string) int {
 				fmt.Fprintln(os.Stderr, "double: replace:", o)
 				return 2
 			}
+		case "record-proc":
+			// S4: out/proc.txt carries "<pid> <pgid> <ppid>" of the harness process.
+			line := fmt.Sprintf("%d %d %d\n", os.Getpid(), syscall.Getpgrp(), os.Getppid())
+			_ = os.WriteFile(filepath.Join(out, "proc.txt"), []byte(line), 0o644)
+		case "spawn-child":
+			// S4: a child in the harness's process group that ignores SIGTERM; out/child.txt carries its pid.
+			c := exec.Command("/bin/sh", "-c", "trap '' TERM; exec sleep 1000")
+			if err := c.Start(); err != nil {
+				fmt.Fprintln(os.Stderr, "double: spawn:", err)
+				return 2
+			}
+			_ = os.WriteFile(filepath.Join(out, "child.txt"), []byte(fmt.Sprintf("%d\n", c.Process.Pid)), 0o644)
+		case "ignore-sigterm":
+			// S4: out/term.txt carries the clock.Real unix nanoseconds at which SIGTERM arrived; the process lives on.
+			ch := make(chan os.Signal, 8)
+			signal.Notify(ch, syscall.SIGTERM)
+			go func() {
+				first := true
+				for range ch {
+					if first {
+						first = false
+						_ = os.WriteFile(filepath.Join(out, "term.txt"), []byte(fmt.Sprintf("%d\n", clock.Real{}.Now().UnixNano())), 0o644)
+					}
+				}
+			}()
+		case "hang":
+			// S4: never returns on its own.
+			_ = os.WriteFile(filepath.Join(out, "ready.txt"), []byte("ready\n"), 0o644)
+			_ = clock.Real{}.Sleep(context.Background(), 24*time.Hour)
+		case "read-stdin":
+			// S4 (27-AC-15): block on stdin; out/stdin.txt carries "<elapsed ms> <what fd 0 points to>".
+			t0 := clock.Real{}.Now()
+			_, _ = io.Copy(io.Discard, os.Stdin)
+			link, _ := os.Readlink("/proc/self/fd/0")
+			_ = os.WriteFile(filepath.Join(out, "stdin.txt"), []byte(fmt.Sprintf("%d %s\n", clock.Real{}.Now().Sub(t0).Milliseconds(), link)), 0o644)
+		case "print":
+			// S4: op.N copies (default 1) of op.Content on stdout and, when op.Msg is set, of op.Msg on stderr.
+			for i := 0; i < max(op.N, 1); i++ {
+				fmt.Println(op.Content)
+				if op.Msg != "" {
+					fmt.Fprintln(os.Stderr, op.Msg)
+				}
+			}
+		case "bigline":
+			// S4: one stdout line of op.N bytes.
+			fmt.Println(strings.Repeat("A", op.N))
 		case "hostile":
 			canary := os.Getenv("SC_TEST_CANARY")
 			script := "#!/bin/sh\n: > '" + canary + "'\n"
@@ -896,6 +948,9 @@ type gitSpec struct {
 	mode    string // harness mode: real (default) or ops
 	ops     []harnessOp
 	shimEnv map[string]string
+	// S4: run the production shim (worker.Shim) as a separate process instead of the test-owned goroutine, and/or
+	// give sc-worker the real clock (the packet deadline must then be in the real future).
+	realShim, realClock bool
 }
 
 type gitRun struct {
@@ -909,6 +964,8 @@ type gitRun struct {
 	gwHits     atomic.Int64
 	cancelShim context.CancelFunc
 	shimDone   chan struct{}
+	shimProc   *process // set when the production shim runs as a process
+	dirs       map[string]string
 }
 
 // runGit starts the shim and sc-worker for the packet and returns at once; call finish to wait for the result.
@@ -970,21 +1027,26 @@ func runGit(t *testing.T, sp gitSpec) *gitRun {
 	for k, v := range sp.shimEnv {
 		extra[k] = v
 	}
-	gr.shim = &testShim{ws: dirs["workspace"], hsecrets: dirs["harness-secrets"], home: dirs["home"], tmp: dirs["tmp"],
-		gatewayURL: gw.URL, mode: mode, ops: sp.ops, extraEnv: extra}
-	shimCtx, cancel := context.WithCancel(context.Background())
-	gr.cancelShim = cancel
-	gr.shimDone = make(chan struct{})
-	go func() {
-		defer close(gr.shimDone)
-		gr.shim.run(shimCtx)
-	}()
-	t.Cleanup(func() { cancel(); <-gr.shimDone })
+	gr.dirs = dirs
+	if sp.realShim {
+		gr.startRealShim(t, exe, dirs, gw.URL, mode, sp.ops, extra)
+	} else {
+		gr.shim = &testShim{ws: dirs["workspace"], hsecrets: dirs["harness-secrets"], home: dirs["home"], tmp: dirs["tmp"],
+			gatewayURL: gw.URL, mode: mode, ops: sp.ops, extraEnv: extra}
+		shimCtx, cancel := context.WithCancel(context.Background())
+		gr.cancelShim = cancel
+		gr.shimDone = make(chan struct{})
+		go func() {
+			defer close(gr.shimDone)
+			gr.shim.run(shimCtx)
+		}()
+		t.Cleanup(func() { cancel(); <-gr.shimDone })
+	}
 
 	gr.stub = newStubRunner(t, sp.pkt)
 	hc, _ := json.Marshal(gitHelperConfig{
 		PrivateDir: dirs["private"], HarnessSecretsDir: dirs["harness-secrets"], HomeDir: dirs["home"], TmpDir: dirs["tmp"],
-		SSHProgram: sshProg, ClockStart: clockOrigin,
+		SSHProgram: sshProg, ClockStart: clockOrigin, RealClock: sp.realClock,
 	})
 	p := &process{done: make(chan struct{})}
 	p.cmd = exec.Command(exe, "-test.run=^TestHelperProcess_ScWorkerGit$")
