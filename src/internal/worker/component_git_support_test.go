@@ -566,316 +566,435 @@ func harnessDouble(args []string) int {
 	}
 	fmt.Println(`{"type":"sc_fake_step","step":"double_start"}`)
 	lingerStop := ""
-	for _, op := range ops {
-		switch op.Op {
-		case "write":
-			p := filepath.Join(repo, op.Path)
-			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil || os.WriteFile(p, []byte(op.Content), 0o644) != nil {
-				fmt.Fprintln(os.Stderr, "double: write", op.Path)
-				return 2
-			}
-		case "write-hex":
-			// S5a review: write raw bytes (hex in Content), for binary and non-UTF-8 files.
-			raw, err := hex.DecodeString(op.Content)
-			p := filepath.Join(repo, op.Path)
-			if err != nil || os.MkdirAll(filepath.Dir(p), 0o755) != nil || os.WriteFile(p, raw, 0o644) != nil {
-				fmt.Fprintln(os.Stderr, "double: write-hex", op.Path)
-				return 2
-			}
-		case "git":
-			// S5a review: run git with op.Args in the workspace as the harness (pack-refs, checkout --orphan, ...).
-			if o, err := gitH(op.Args...); err != nil {
-				fmt.Fprintln(os.Stderr, "double: git:", o)
-				return 2
-			}
-		case "delete":
-			if err := os.Remove(filepath.Join(repo, op.Path)); err != nil {
-				fmt.Fprintln(os.Stderr, "double: delete:", err)
-				return 2
-			}
-		case "commit":
-			if o, err := gitH("add", "-A"); err != nil {
-				fmt.Fprintln(os.Stderr, "double: add:", o)
-				return 2
-			}
-			if o, err := gitH("commit", "-q", "--no-verify", "-m", op.Msg); err != nil {
-				fmt.Fprintln(os.Stderr, "double: commit:", o)
-				return 2
-			}
-		case "record-head":
-			sha, _ := gitH("rev-parse", "HEAD")
-			branch, err := gitH("symbolic-ref", "-q", "--short", "HEAD")
-			if err != nil {
-				branch = "DETACHED"
-			}
-			_ = os.WriteFile(filepath.Join(out, "head.txt"), []byte(sha+"\n"+branch+"\n"), 0o644)
-		case "commondir":
-			// F1: .git/commondir names a directory the harness controls; its config carries the hostile code.
-			canary := os.Getenv("SC_TEST_CANARY")
-			evil := filepath.Join(filepath.Dir(filepath.Dir(repo)), "common-evil")
-			if o, err := exec.Command("cp", "-a", filepath.Join(repo, ".git"), evil).CombinedOutput(); err != nil {
-				fmt.Fprintln(os.Stderr, "double: cp:", string(o))
-				return 2
-			}
-			script := "#!/bin/sh\n: > '" + canary + "'\n"
-			_ = os.WriteFile(filepath.Join(evil, "fsmon.sh"), []byte(script), 0o755)
-			_ = os.MkdirAll(filepath.Join(evil, "hooks"), 0o755)
-			for _, h := range []string{"pre-commit", "post-commit"} {
-				_ = os.WriteFile(filepath.Join(evil, "hooks", h), []byte(script), 0o755)
-			}
-			f, err := os.OpenFile(filepath.Join(evil, "config"), os.O_APPEND|os.O_WRONLY, 0o644)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, "double: config:", err)
-				return 2
-			}
-			fmt.Fprintf(f, "[core]\n\tfsmonitor = %s\n\thooksPath = %s\n[filter \"pwn\"]\n\tclean = \"sh -c ': > %s; cat'\"\n\tsmudge = cat\n\trequired = true\n",
-				filepath.Join(evil, "fsmon.sh"), filepath.Join(evil, "hooks"), canary)
-			_ = f.Close()
-			if err := os.WriteFile(filepath.Join(repo, ".git", "commondir"), []byte(evil+"\n"), 0o644); err != nil {
-				fmt.Fprintln(os.Stderr, "double: commondir:", err)
-				return 2
-			}
-		case "parent-repo":
-			// F2: the workspace's parent directory is a repository whose config and attributes are hostile.
-			canary := os.Getenv("SC_TEST_CANARY")
-			parent := filepath.Dir(filepath.Dir(repo))
-			if o, err := exec.Command("/usr/bin/git", "init", "-q", parent).CombinedOutput(); err != nil {
-				fmt.Fprintln(os.Stderr, "double: init:", string(o))
-				return 2
-			}
-			script := "#!/bin/sh\n: > '" + canary + "'\n"
-			_ = os.WriteFile(filepath.Join(parent, "fsmon.sh"), []byte(script), 0o755)
-			_ = os.WriteFile(filepath.Join(parent, ".gitattributes"), []byte("* filter=pwn\n"), 0o644)
-			f, err := os.OpenFile(filepath.Join(parent, ".git", "config"), os.O_APPEND|os.O_WRONLY, 0o644)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, "double: config:", err)
-				return 2
-			}
-			fmt.Fprintf(f, "[core]\n\tfsmonitor = %s\n[filter \"pwn\"]\n\tclean = \"sh -c ': > %s; cat'\"\n\tsmudge = cat\n\trequired = true\n",
-				filepath.Join(parent, "fsmon.sh"), canary)
-			_ = f.Close()
-		case "replace-head":
-			// F6: stage the working tree, then replace HEAD (start_commit) by a commit whose tree already contains the
-			// staged change, so that a diff against start_commit that honours refs/replace/* shows nothing.
-			if o, err := gitH("add", "-A"); err != nil {
-				fmt.Fprintln(os.Stderr, "double: add:", o)
-				return 2
-			}
-			tree, err := gitH("write-tree")
-			if err != nil {
-				fmt.Fprintln(os.Stderr, "double: write-tree:", tree)
-				return 2
-			}
-			head, _ := gitH("rev-parse", "HEAD")
-			fake, err := gitH("commit-tree", tree, "-m", "fake")
-			if err != nil {
-				fmt.Fprintln(os.Stderr, "double: commit-tree:", fake)
-				return 2
-			}
-			if o, err := gitH("replace", "-f", head, fake); err != nil {
-				fmt.Fprintln(os.Stderr, "double: replace:", o)
-				return 2
-			}
-		case "record-proc":
-			// S4: out/proc.txt carries "<pid> <pgid> <ppid>" of the harness process.
-			line := fmt.Sprintf("%d %d %d\n", os.Getpid(), syscall.Getpgrp(), os.Getppid())
-			_ = os.WriteFile(filepath.Join(out, "proc.txt"), []byte(line), 0o644)
-		case "spawn-child":
-			// S4: a child in the harness's process group that ignores SIGTERM; out/child.txt carries its pid.
-			c := exec.Command("/bin/sh", "-c", "trap '' TERM; exec sleep 1000")
-			if err := c.Start(); err != nil {
-				fmt.Fprintln(os.Stderr, "double: spawn:", err)
-				return 2
-			}
-			_ = os.WriteFile(filepath.Join(out, "child.txt"), []byte(fmt.Sprintf("%d\n", c.Process.Pid)), 0o644)
-		case "ignore-sigterm":
-			// S4: out/term.txt carries the clock.Real unix nanoseconds at which SIGTERM arrived; the process lives on.
-			ch := make(chan os.Signal, 8)
-			signal.Notify(ch, syscall.SIGTERM)
-			go func() {
-				first := true
-				for range ch {
-					if first {
-						first = false
-						_ = os.WriteFile(filepath.Join(out, "term.txt"), []byte(fmt.Sprintf("%d\n", clock.Real{}.Now().UnixNano())), 0o644)
+	// S5c: @repo@, @out@, @ws@, @shim@, @private@ and @secrets@ stand for the directories of the run; a relative path
+	// is relative to the repository.
+	ws := filepath.Dir(out)
+	expand := func(s string) string {
+		s = strings.NewReplacer("@repo@", repo, "@out@", out, "@ws@", ws, "@shim@", filepath.Join(ws, ".sc-shim"),
+			"@private@", os.Getenv("SC_TEST_PRIVATE_DIR"), "@secrets@", os.Getenv("SC_TEST_SECRETS_DIR")).Replace(s)
+		if !filepath.IsAbs(s) {
+			s = filepath.Join(repo, s)
+		}
+		return s
+	}
+	claimDone := false
+	var finishClaim func() int
+	pre, post := ops, []harnessOp(nil)
+	for i, op := range ops {
+		if op.Op == "write-claim" {
+			pre, post = ops[:i], ops[i+1:]
+			break
+		}
+	}
+	runOps := func(list []harnessOp) int {
+		for _, op := range list {
+			switch op.Op {
+			case "write-claim":
+				if c := finishClaim(); c != 0 {
+					return c
+				}
+				claimDone = true
+			case "symlink":
+				// S5c: replace op.Path by a symbolic link to op.Content.
+				p := expand(op.Path)
+				_ = os.RemoveAll(p)
+				if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil || os.Symlink(expand(op.Content), p) != nil {
+					fmt.Fprintln(os.Stderr, "double: symlink", op.Path)
+					return 2
+				}
+			case "mkfifo":
+				p := expand(op.Path)
+				_ = os.RemoveAll(p)
+				if err := syscall.Mkfifo(p, 0o644); err != nil {
+					fmt.Fprintln(os.Stderr, "double: mkfifo:", err)
+					return 2
+				}
+			case "pause":
+				_ = clock.Real{}.Sleep(context.Background(), time.Duration(op.N)*time.Millisecond)
+			case "snapshot-private":
+				b, _ := json.Marshal(hashPrivate(os.Getenv("SC_TEST_PRIVATE_DIR")))
+				if err := os.WriteFile(filepath.Join(out, "priv-before.json"), b, 0o644); err != nil {
+					fmt.Fprintln(os.Stderr, "double: snapshot:", err)
+					return 2
+				}
+			case "stream-raw", "stream-fill":
+				// S5c: append op.Content (stream-fill: op.N copies of it, in one write) to the shim stream file itself.
+				f, err := os.OpenFile(filepath.Join(ws, ".sc-shim", "stream-1.log"), os.O_WRONLY|os.O_APPEND, 0)
+				if err != nil {
+					fmt.Fprintln(os.Stderr, "double: stream:", err)
+					return 2
+				}
+				data := op.Content
+				if op.Op == "stream-fill" {
+					data = strings.Repeat(op.Content, op.N)
+				}
+				_, err = f.WriteString(data)
+				_ = f.Close()
+				if err != nil {
+					fmt.Fprintln(os.Stderr, "double: stream:", err)
+					return 2
+				}
+			case "forge-start-tree", "forge-start-commit":
+				// S5a-N1: overwrite the loose object of start_commit's root tree (or of start_commit) in the shared object
+				// store with the object of the harness's staged work, so that a diff against start_commit that reads the
+				// shared store sees the staged state (or fails on the hash mismatch).
+				if o, err := gitH("add", "-A"); err != nil {
+					fmt.Fprintln(os.Stderr, "double: add:", o)
+					return 2
+				}
+				newTree, err := gitH("write-tree")
+				if err != nil {
+					fmt.Fprintln(os.Stderr, "double: write-tree:", newTree)
+					return 2
+				}
+				victim, _ := gitH("rev-parse", "HEAD^{tree}")
+				forged := newTree
+				if op.Op == "forge-start-commit" {
+					victim, _ = gitH("rev-parse", "HEAD")
+					if forged, err = gitH("commit-tree", newTree, "-m", "forged start"); err != nil {
+						fmt.Fprintln(os.Stderr, "double: commit-tree:", forged)
+						return 2
 					}
 				}
-			}()
-		case "hang":
-			// S4: never returns on its own.
-			_ = os.WriteFile(filepath.Join(out, "ready.txt"), []byte("ready\n"), 0o644)
-			_ = clock.Real{}.Sleep(context.Background(), 24*time.Hour)
-		case "read-stdin":
-			// S4 (27-AC-15): block on stdin; out/stdin.txt carries "<elapsed ms> <what fd 0 points to>".
-			t0 := clock.Real{}.Now()
-			_, _ = io.Copy(io.Discard, os.Stdin)
-			link, _ := os.Readlink("/proc/self/fd/0")
-			_ = os.WriteFile(filepath.Join(out, "stdin.txt"), []byte(fmt.Sprintf("%d %s\n", clock.Real{}.Now().Sub(t0).Milliseconds(), link)), 0o644)
-		case "print":
-			// S4: op.N copies (default 1) of op.Content on stdout and, when op.Msg is set, of op.Msg on stderr.
-			for i := 0; i < max(op.N, 1); i++ {
-				fmt.Println(op.Content)
-				if op.Msg != "" {
-					fmt.Fprintln(os.Stderr, op.Msg)
+				loose := func(sha string) string { return filepath.Join(repo, ".git", "objects", sha[:2], sha[2:]) }
+				raw, err := os.ReadFile(loose(forged))
+				if err != nil {
+					fmt.Fprintln(os.Stderr, "double: forged object is not loose:", err)
+					return 2
 				}
-			}
-		case "bigline":
-			// S4: one stdout line of op.N bytes.
-			fmt.Println(strings.Repeat("A", op.N))
-		case "straddle":
-			// S5b (S4-N5a): one stdout line of op.N 'A' bytes, op.Content, and Args[0] (default 100) 'B' bytes.
-			trail := 100
-			if len(op.Args) > 0 {
-				fmt.Sscanf(op.Args[0], "%d", &trail)
-			}
-			fmt.Println(strings.Repeat("A", op.N) + op.Content + strings.Repeat("B", trail))
-		case "stream-direct":
-			// S5b (S4-N5b): the harness appends op.N MiB of 'x' without a newline to the shim stream file itself.
-			f, err := os.OpenFile(filepath.Join(filepath.Dir(out), ".sc-shim", "stream-1.log"), os.O_WRONLY|os.O_APPEND, 0)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, "double: stream-direct:", err)
-				return 2
-			}
-			chunk := bytes.Repeat([]byte("x"), 1<<20)
-			for i := 0; i < op.N; i++ {
-				if _, err := f.Write(chunk); err != nil {
+				if _, err := os.Lstat(loose(victim)); err != nil {
+					fmt.Fprintln(os.Stderr, "double: the start object is not loose:", err)
+					return 2
+				}
+				_ = os.Remove(loose(victim))
+				if err := os.WriteFile(loose(victim), raw, 0o444); err != nil {
+					fmt.Fprintln(os.Stderr, "double: forge:", err)
+					return 2
+				}
+			case "write":
+				p := expand(op.Path)
+				if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil || os.WriteFile(p, []byte(op.Content), 0o644) != nil {
+					fmt.Fprintln(os.Stderr, "double: write", op.Path)
+					return 2
+				}
+			case "write-hex":
+				// S5a review: write raw bytes (hex in Content), for binary and non-UTF-8 files.
+				raw, err := hex.DecodeString(op.Content)
+				p := filepath.Join(repo, op.Path)
+				if err != nil || os.MkdirAll(filepath.Dir(p), 0o755) != nil || os.WriteFile(p, raw, 0o644) != nil {
+					fmt.Fprintln(os.Stderr, "double: write-hex", op.Path)
+					return 2
+				}
+			case "git":
+				// S5a review: run git with op.Args in the workspace as the harness (pack-refs, checkout --orphan, ...).
+				if o, err := gitH(op.Args...); err != nil {
+					fmt.Fprintln(os.Stderr, "double: git:", o)
+					return 2
+				}
+			case "delete":
+				if err := os.Remove(filepath.Join(repo, op.Path)); err != nil {
+					fmt.Fprintln(os.Stderr, "double: delete:", err)
+					return 2
+				}
+			case "commit":
+				if o, err := gitH("add", "-A"); err != nil {
+					fmt.Fprintln(os.Stderr, "double: add:", o)
+					return 2
+				}
+				if o, err := gitH("commit", "-q", "--no-verify", "-m", op.Msg); err != nil {
+					fmt.Fprintln(os.Stderr, "double: commit:", o)
+					return 2
+				}
+			case "record-head":
+				sha, _ := gitH("rev-parse", "HEAD")
+				branch, err := gitH("symbolic-ref", "-q", "--short", "HEAD")
+				if err != nil {
+					branch = "DETACHED"
+				}
+				_ = os.WriteFile(filepath.Join(out, "head.txt"), []byte(sha+"\n"+branch+"\n"), 0o644)
+			case "commondir":
+				// F1: .git/commondir names a directory the harness controls; its config carries the hostile code.
+				canary := os.Getenv("SC_TEST_CANARY")
+				evil := filepath.Join(filepath.Dir(filepath.Dir(repo)), "common-evil")
+				if o, err := exec.Command("cp", "-a", filepath.Join(repo, ".git"), evil).CombinedOutput(); err != nil {
+					fmt.Fprintln(os.Stderr, "double: cp:", string(o))
+					return 2
+				}
+				script := "#!/bin/sh\n: > '" + canary + "'\n"
+				_ = os.WriteFile(filepath.Join(evil, "fsmon.sh"), []byte(script), 0o755)
+				_ = os.MkdirAll(filepath.Join(evil, "hooks"), 0o755)
+				for _, h := range []string{"pre-commit", "post-commit"} {
+					_ = os.WriteFile(filepath.Join(evil, "hooks", h), []byte(script), 0o755)
+				}
+				f, err := os.OpenFile(filepath.Join(evil, "config"), os.O_APPEND|os.O_WRONLY, 0o644)
+				if err != nil {
+					fmt.Fprintln(os.Stderr, "double: config:", err)
+					return 2
+				}
+				fmt.Fprintf(f, "[core]\n\tfsmonitor = %s\n\thooksPath = %s\n[filter \"pwn\"]\n\tclean = \"sh -c ': > %s; cat'\"\n\tsmudge = cat\n\trequired = true\n",
+					filepath.Join(evil, "fsmon.sh"), filepath.Join(evil, "hooks"), canary)
+				_ = f.Close()
+				if err := os.WriteFile(filepath.Join(repo, ".git", "commondir"), []byte(evil+"\n"), 0o644); err != nil {
+					fmt.Fprintln(os.Stderr, "double: commondir:", err)
+					return 2
+				}
+			case "parent-repo":
+				// F2: the workspace's parent directory is a repository whose config and attributes are hostile.
+				canary := os.Getenv("SC_TEST_CANARY")
+				parent := filepath.Dir(filepath.Dir(repo))
+				if o, err := exec.Command("/usr/bin/git", "init", "-q", parent).CombinedOutput(); err != nil {
+					fmt.Fprintln(os.Stderr, "double: init:", string(o))
+					return 2
+				}
+				script := "#!/bin/sh\n: > '" + canary + "'\n"
+				_ = os.WriteFile(filepath.Join(parent, "fsmon.sh"), []byte(script), 0o755)
+				_ = os.WriteFile(filepath.Join(parent, ".gitattributes"), []byte("* filter=pwn\n"), 0o644)
+				f, err := os.OpenFile(filepath.Join(parent, ".git", "config"), os.O_APPEND|os.O_WRONLY, 0o644)
+				if err != nil {
+					fmt.Fprintln(os.Stderr, "double: config:", err)
+					return 2
+				}
+				fmt.Fprintf(f, "[core]\n\tfsmonitor = %s\n[filter \"pwn\"]\n\tclean = \"sh -c ': > %s; cat'\"\n\tsmudge = cat\n\trequired = true\n",
+					filepath.Join(parent, "fsmon.sh"), canary)
+				_ = f.Close()
+			case "replace-head":
+				// F6: stage the working tree, then replace HEAD (start_commit) by a commit whose tree already contains the
+				// staged change, so that a diff against start_commit that honours refs/replace/* shows nothing.
+				if o, err := gitH("add", "-A"); err != nil {
+					fmt.Fprintln(os.Stderr, "double: add:", o)
+					return 2
+				}
+				tree, err := gitH("write-tree")
+				if err != nil {
+					fmt.Fprintln(os.Stderr, "double: write-tree:", tree)
+					return 2
+				}
+				head, _ := gitH("rev-parse", "HEAD")
+				fake, err := gitH("commit-tree", tree, "-m", "fake")
+				if err != nil {
+					fmt.Fprintln(os.Stderr, "double: commit-tree:", fake)
+					return 2
+				}
+				if o, err := gitH("replace", "-f", head, fake); err != nil {
+					fmt.Fprintln(os.Stderr, "double: replace:", o)
+					return 2
+				}
+			case "record-proc":
+				// S4: out/proc.txt carries "<pid> <pgid> <ppid>" of the harness process.
+				line := fmt.Sprintf("%d %d %d\n", os.Getpid(), syscall.Getpgrp(), os.Getppid())
+				_ = os.WriteFile(filepath.Join(out, "proc.txt"), []byte(line), 0o644)
+			case "spawn-child":
+				// S4: a child in the harness's process group that ignores SIGTERM; out/child.txt carries its pid.
+				c := exec.Command("/bin/sh", "-c", "trap '' TERM; exec sleep 1000")
+				if err := c.Start(); err != nil {
+					fmt.Fprintln(os.Stderr, "double: spawn:", err)
+					return 2
+				}
+				_ = os.WriteFile(filepath.Join(out, "child.txt"), []byte(fmt.Sprintf("%d\n", c.Process.Pid)), 0o644)
+			case "ignore-sigterm":
+				// S4: out/term.txt carries the clock.Real unix nanoseconds at which SIGTERM arrived; the process lives on.
+				ch := make(chan os.Signal, 8)
+				signal.Notify(ch, syscall.SIGTERM)
+				go func() {
+					first := true
+					for range ch {
+						if first {
+							first = false
+							_ = os.WriteFile(filepath.Join(out, "term.txt"), []byte(fmt.Sprintf("%d\n", clock.Real{}.Now().UnixNano())), 0o644)
+						}
+					}
+				}()
+			case "hang":
+				// S4: never returns on its own.
+				_ = os.WriteFile(filepath.Join(out, "ready.txt"), []byte("ready\n"), 0o644)
+				_ = clock.Real{}.Sleep(context.Background(), 24*time.Hour)
+			case "read-stdin":
+				// S4 (27-AC-15): block on stdin; out/stdin.txt carries "<elapsed ms> <what fd 0 points to>".
+				t0 := clock.Real{}.Now()
+				_, _ = io.Copy(io.Discard, os.Stdin)
+				link, _ := os.Readlink("/proc/self/fd/0")
+				_ = os.WriteFile(filepath.Join(out, "stdin.txt"), []byte(fmt.Sprintf("%d %s\n", clock.Real{}.Now().Sub(t0).Milliseconds(), link)), 0o644)
+			case "print":
+				// S4: op.N copies (default 1) of op.Content on stdout and, when op.Msg is set, of op.Msg on stderr.
+				for i := 0; i < max(op.N, 1); i++ {
+					fmt.Println(op.Content)
+					if op.Msg != "" {
+						fmt.Fprintln(os.Stderr, op.Msg)
+					}
+				}
+			case "bigline":
+				// S4: one stdout line of op.N bytes.
+				fmt.Println(strings.Repeat("A", op.N))
+			case "straddle":
+				// S5b (S4-N5a): one stdout line of op.N 'A' bytes, op.Content, and Args[0] (default 100) 'B' bytes.
+				trail := 100
+				if len(op.Args) > 0 {
+					fmt.Sscanf(op.Args[0], "%d", &trail)
+				}
+				fmt.Println(strings.Repeat("A", op.N) + op.Content + strings.Repeat("B", trail))
+			case "stream-direct":
+				// S5b (S4-N5b): the harness appends op.N MiB of 'x' without a newline to the shim stream file itself.
+				f, err := os.OpenFile(filepath.Join(filepath.Dir(out), ".sc-shim", "stream-1.log"), os.O_WRONLY|os.O_APPEND, 0)
+				if err != nil {
 					fmt.Fprintln(os.Stderr, "double: stream-direct:", err)
 					return 2
 				}
-			}
-			_ = f.Close()
-		case "print-hex":
-			// S5b review: one stdout line of the raw bytes in hex Content (invalid UTF-8, lone C1 bytes).
-			raw, err := hex.DecodeString(op.Content)
-			if err != nil {
-				return 2
-			}
-			os.Stdout.Write(append(raw, '\n'))
-		case "stream-sparse":
-			// S5b review B1: the harness sparsely extends the shim stream file to 1 TiB.
-			if err := os.Truncate(filepath.Join(filepath.Dir(out), ".sc-shim", "stream-1.log"), 1<<40); err != nil {
-				fmt.Fprintln(os.Stderr, "double: stream-sparse:", err)
-				return 2
-			}
-		case "bg-writer":
-			// S5b review B1: a setsid'd background process appends 256 MiB of empty lines to the stream file as fast as it
-			// can; out/bg.txt carries its pid (= its process group) so that the test can stop it.
-			c := exec.Command("/bin/sh", "-c", `head -c 268435456 /dev/zero | tr '\0' '\n' >> "$1"`, "sh",
-				filepath.Join(filepath.Dir(out), ".sc-shim", "stream-1.log"))
-			c.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-			if err := c.Start(); err != nil {
-				fmt.Fprintln(os.Stderr, "double: bg-writer:", err)
-				return 2
-			}
-			_ = os.WriteFile(filepath.Join(out, "bg.txt"), []byte(fmt.Sprintf("%d\n", c.Process.Pid)), 0o644)
-		case "write-gen":
-			// S5b: file op.Path = op.N 'a' bytes, op.Content, then Args[1] repeated Args[0] times, then a newline.
-			var k int
-			fmt.Sscanf(op.Args[0], "%d", &k)
-			body := strings.Repeat("a", op.N) + op.Content + strings.Repeat(op.Args[1], k) + "\n"
-			p := filepath.Join(repo, op.Path)
-			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil || os.WriteFile(p, []byte(body), 0o644) != nil {
-				fmt.Fprintln(os.Stderr, "double: write-gen", op.Path)
-				return 2
-			}
-		case "lie-commit-graph":
-			// S5a (S3-NB3): write a commit-graph in which start_commit's tree is the tree of the staged working tree,
-			// so that a diff against start_commit that trusts the graph shows nothing.
-			if o, err := gitH("commit-graph", "write", "--reachable"); err != nil {
-				fmt.Fprintln(os.Stderr, "double: commit-graph:", o)
-				return 2
-			}
-			if o, err := gitH("add", "-A"); err != nil {
-				fmt.Fprintln(os.Stderr, "double: add:", o)
-				return 2
-			}
-			oldTree, _ := gitH("rev-parse", "HEAD^{tree}")
-			newTree, err := gitH("write-tree")
-			if err != nil {
-				fmt.Fprintln(os.Stderr, "double: write-tree:", newTree)
-				return 2
-			}
-			ob, _ := hex.DecodeString(oldTree)
-			nb, _ := hex.DecodeString(newTree)
-			graph := filepath.Join(repo, ".git", "objects", "info", "commit-graph")
-			raw, err := os.ReadFile(graph)
-			if err != nil || len(ob) == 0 || !bytes.Contains(raw, ob) {
-				fmt.Fprintln(os.Stderr, "double: commit-graph does not hold the start tree:", err)
-				return 2
-			}
-			_ = os.Remove(graph)
-			if err := os.WriteFile(graph, bytes.ReplaceAll(raw, ob, nb), 0o644); err != nil {
-				fmt.Fprintln(os.Stderr, "double: commit-graph write:", err)
-				return 2
-			}
-		case "linger":
-			// S5a: after the claim, forge the shim result and keep rewriting the workspace .git until op.Path exists.
-			lingerStop = op.Path
-		case "hostile":
-			canary := os.Getenv("SC_TEST_CANARY")
-			script := "#!/bin/sh\n: > '" + canary + "'\n"
-			for _, h := range []string{"pre-commit", "post-commit"} {
-				p := filepath.Join(repo, ".git", "hooks", h)
-				if err := os.WriteFile(p, []byte(script), 0o755); err != nil {
-					fmt.Fprintln(os.Stderr, "double: hook:", err)
+				chunk := bytes.Repeat([]byte("x"), 1<<20)
+				for i := 0; i < op.N; i++ {
+					if _, err := f.Write(chunk); err != nil {
+						fmt.Fprintln(os.Stderr, "double: stream-direct:", err)
+						return 2
+					}
+				}
+				_ = f.Close()
+			case "print-hex":
+				// S5b review: one stdout line of the raw bytes in hex Content (invalid UTF-8, lone C1 bytes).
+				raw, err := hex.DecodeString(op.Content)
+				if err != nil {
 					return 2
 				}
+				os.Stdout.Write(append(raw, '\n'))
+			case "stream-sparse":
+				// S5b review B1: the harness sparsely extends the shim stream file to 1 TiB.
+				if err := os.Truncate(filepath.Join(filepath.Dir(out), ".sc-shim", "stream-1.log"), 1<<40); err != nil {
+					fmt.Fprintln(os.Stderr, "double: stream-sparse:", err)
+					return 2
+				}
+			case "bg-writer":
+				// S5b review B1: a setsid'd background process appends 256 MiB of empty lines to the stream file as fast as it
+				// can; out/bg.txt carries its pid (= its process group) so that the test can stop it.
+				c := exec.Command("/bin/sh", "-c", `head -c 268435456 /dev/zero | tr '\0' '\n' >> "$1"`, "sh",
+					filepath.Join(filepath.Dir(out), ".sc-shim", "stream-1.log"))
+				c.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+				if err := c.Start(); err != nil {
+					fmt.Fprintln(os.Stderr, "double: bg-writer:", err)
+					return 2
+				}
+				_ = os.WriteFile(filepath.Join(out, "bg.txt"), []byte(fmt.Sprintf("%d\n", c.Process.Pid)), 0o644)
+			case "write-gen":
+				// S5b: file op.Path = op.N 'a' bytes, op.Content, then Args[1] repeated Args[0] times, then a newline.
+				var k int
+				fmt.Sscanf(op.Args[0], "%d", &k)
+				body := strings.Repeat("a", op.N) + op.Content + strings.Repeat(op.Args[1], k) + "\n"
+				p := filepath.Join(repo, op.Path)
+				if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil || os.WriteFile(p, []byte(body), 0o644) != nil {
+					fmt.Fprintln(os.Stderr, "double: write-gen", op.Path)
+					return 2
+				}
+			case "lie-commit-graph":
+				// S5a (S3-NB3): write a commit-graph in which start_commit's tree is the tree of the staged working tree,
+				// so that a diff against start_commit that trusts the graph shows nothing.
+				if o, err := gitH("commit-graph", "write", "--reachable"); err != nil {
+					fmt.Fprintln(os.Stderr, "double: commit-graph:", o)
+					return 2
+				}
+				if o, err := gitH("add", "-A"); err != nil {
+					fmt.Fprintln(os.Stderr, "double: add:", o)
+					return 2
+				}
+				oldTree, _ := gitH("rev-parse", "HEAD^{tree}")
+				newTree, err := gitH("write-tree")
+				if err != nil {
+					fmt.Fprintln(os.Stderr, "double: write-tree:", newTree)
+					return 2
+				}
+				ob, _ := hex.DecodeString(oldTree)
+				nb, _ := hex.DecodeString(newTree)
+				graph := filepath.Join(repo, ".git", "objects", "info", "commit-graph")
+				raw, err := os.ReadFile(graph)
+				if err != nil || len(ob) == 0 || !bytes.Contains(raw, ob) {
+					fmt.Fprintln(os.Stderr, "double: commit-graph does not hold the start tree:", err)
+					return 2
+				}
+				_ = os.Remove(graph)
+				if err := os.WriteFile(graph, bytes.ReplaceAll(raw, ob, nb), 0o644); err != nil {
+					fmt.Fprintln(os.Stderr, "double: commit-graph write:", err)
+					return 2
+				}
+			case "linger":
+				// S5a: after the claim, forge the shim result and keep rewriting the workspace .git until op.Path exists.
+				lingerStop = op.Path
+			case "hostile":
+				canary := os.Getenv("SC_TEST_CANARY")
+				script := "#!/bin/sh\n: > '" + canary + "'\n"
+				for _, h := range []string{"pre-commit", "post-commit"} {
+					p := filepath.Join(repo, ".git", "hooks", h)
+					if err := os.WriteFile(p, []byte(script), 0o755); err != nil {
+						fmt.Fprintln(os.Stderr, "double: hook:", err)
+						return 2
+					}
+				}
+				fsmon := filepath.Join(repo, ".git", "fsmon.sh")
+				_ = os.WriteFile(fsmon, []byte(script), 0o755)
+				f, err := os.OpenFile(filepath.Join(repo, ".git", "config"), os.O_APPEND|os.O_WRONLY, 0o644)
+				if err != nil {
+					fmt.Fprintln(os.Stderr, "double: config:", err)
+					return 2
+				}
+				fmt.Fprintf(f, "[core]\n\tfsmonitor = %s\n[filter \"pwn\"]\n\tclean = \"sh -c ': > %s; cat'\"\n\tsmudge = cat\n\trequired = true\n", fsmon, canary)
+				_ = f.Close()
 			}
-			fsmon := filepath.Join(repo, ".git", "fsmon.sh")
-			_ = os.WriteFile(fsmon, []byte(script), 0o755)
-			f, err := os.OpenFile(filepath.Join(repo, ".git", "config"), os.O_APPEND|os.O_WRONLY, 0o644)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, "double: config:", err)
+		}
+		return 0
+	}
+	finishClaim = func() int {
+		summary := os.Getenv("SC_TEST_HARNESS_SUMMARY")
+		if summary == "" {
+			summary = "Add tests for Add covering AC-1 and AC-2"
+		}
+		handoff := map[string]any{
+			"what_i_did": "Test double wrote the claim.", "what_remains": "Nothing.",
+			"recommended_next_role": nil, "questions": []any{}, "known_risks": []any{},
+		}
+		if raw := os.Getenv("SC_TEST_HARNESS_HANDOFF"); raw != "" { // S5b: JSON object merged over the default handoff
+			var over map[string]any
+			if err := json.Unmarshal([]byte(raw), &over); err != nil {
+				fmt.Fprintln(os.Stderr, "double: handoff:", err)
 				return 2
 			}
-			fmt.Fprintf(f, "[core]\n\tfsmonitor = %s\n[filter \"pwn\"]\n\tclean = \"sh -c ': > %s; cat'\"\n\tsmudge = cat\n\trequired = true\n", fsmon, canary)
-			_ = f.Close()
+			for k, v := range over {
+				handoff[k] = v
+			}
 		}
-	}
-	summary := os.Getenv("SC_TEST_HARNESS_SUMMARY")
-	if summary == "" {
-		summary = "Add tests for Add covering AC-1 and AC-2"
-	}
-	handoff := map[string]any{
-		"what_i_did": "Test double wrote the claim.", "what_remains": "Nothing.",
-		"recommended_next_role": nil, "questions": []any{}, "known_risks": []any{},
-	}
-	if raw := os.Getenv("SC_TEST_HARNESS_HANDOFF"); raw != "" { // S5b: JSON object merged over the default handoff
-		var over map[string]any
-		if err := json.Unmarshal([]byte(raw), &over); err != nil {
-			fmt.Fprintln(os.Stderr, "double: handoff:", err)
+		state := os.Getenv("SC_TEST_HARNESS_STATE")
+		if state == "" {
+			state = "completed"
+		}
+		claim := map[string]any{
+			"state": state, "summary": summary,
+			"handoff": handoff,
+		}
+		switch role {
+		case "tester":
+			claim["role_output"] = map[string]any{"kind": "tester", "test_files": []any{"calc/add_ac_test.go"},
+				"ac_mapping": []any{map[string]any{"ac_id": "AC-1", "tests": []any{"TestAddAC1"}}}}
+		case "implementer":
+			claim["role_output"] = map[string]any{"kind": "implementer", "changed_files": []any{"calc/calc.go"}, "ac_addressed": []any{"AC-1"}}
+		case "researcher":
+			n := 200
+			fmt.Sscanf(os.Getenv("SC_TEST_HARNESS_REPORT_BYTES"), "%d", &n)
+			line := "Finding: the redirect handler copies the request but drops GetBody on 307 (see client.go).\n"
+			claim["role_output"] = map[string]any{"kind": "research_report", "report_markdown": strings.Repeat(line, n/len(line)+1)[:n]}
+		}
+		b, _ := json.Marshal(claim)
+		if err := os.WriteFile(filepath.Join(out, "claim.json"), b, 0o644); err != nil {
+			fmt.Fprintln(os.Stderr, "double: claim:", err)
 			return 2
 		}
-		for k, v := range over {
-			handoff[k] = v
+		fmt.Println(`{"type":"sc_fake_result","is_error":false,"num_turns":1}`)
+		return 0
+	}
+	if c := runOps(pre); c != 0 {
+		return c
+	}
+	if !claimDone {
+		if c := finishClaim(); c != 0 {
+			return c
 		}
 	}
-	state := os.Getenv("SC_TEST_HARNESS_STATE")
-	if state == "" {
-		state = "completed"
+	if c := runOps(post); c != 0 {
+		return c
 	}
-	claim := map[string]any{
-		"state": state, "summary": summary,
-		"handoff": handoff,
-	}
-	switch role {
-	case "tester":
-		claim["role_output"] = map[string]any{"kind": "tester", "test_files": []any{"calc/add_ac_test.go"},
-			"ac_mapping": []any{map[string]any{"ac_id": "AC-1", "tests": []any{"TestAddAC1"}}}}
-	case "implementer":
-		claim["role_output"] = map[string]any{"kind": "implementer", "changed_files": []any{"calc/calc.go"}, "ac_addressed": []any{"AC-1"}}
-	case "researcher":
-		n := 200
-		fmt.Sscanf(os.Getenv("SC_TEST_HARNESS_REPORT_BYTES"), "%d", &n)
-		line := "Finding: the redirect handler copies the request but drops GetBody on 307 (see client.go).\n"
-		claim["role_output"] = map[string]any{"kind": "research_report", "report_markdown": strings.Repeat(line, n/len(line)+1)[:n]}
-	}
-	b, _ := json.Marshal(claim)
-	if err := os.WriteFile(filepath.Join(out, "claim.json"), b, 0o644); err != nil {
-		fmt.Fprintln(os.Stderr, "double: claim:", err)
-		return 2
-	}
-	fmt.Println(`{"type":"sc_fake_result","is_error":false,"num_turns":1}`)
 	if lingerStop != "" {
 		return lingerForged(repo, out, lingerStop)
 	}
@@ -1202,7 +1321,7 @@ func runGit(t *testing.T, sp gitSpec) *gitRun {
 	if mode == "" {
 		mode = "real"
 	}
-	extra := map[string]string{"SC_TEST_CANARY": gr.canary}
+	extra := map[string]string{"SC_TEST_CANARY": gr.canary, "SC_TEST_PRIVATE_DIR": dirs["private"], "SC_TEST_SECRETS_DIR": dirs["secrets"]}
 	for k, v := range sp.shimEnv {
 		extra[k] = v
 	}
