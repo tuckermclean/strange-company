@@ -589,6 +589,25 @@ func harnessDouble(args []string) int {
 	runOps := func(list []harnessOp) int {
 		for _, op := range list {
 			switch op.Op {
+			case "wait-stream":
+				// S5c review 2 (B1): wait (bounded) until the shim's stream file holds op.Content.
+				sp := filepath.Join(ws, ".sc-shim", "stream-1.log")
+				wctx, wcancel := context.WithTimeout(context.Background(), 20*time.Second)
+				found := false
+				for !found {
+					b, _ := os.ReadFile(sp)
+					if found = strings.Contains(string(b), op.Content); found {
+						break
+					}
+					if (clock.Real{}).Sleep(wctx, 5*time.Millisecond) != nil {
+						break
+					}
+				}
+				wcancel()
+				if !found {
+					fmt.Fprintln(os.Stderr, "double: wait-stream timed out:", op.Content)
+					return 2
+				}
 			case "write-claim":
 				if c := finishClaim(); c != 0 {
 					return c
@@ -914,6 +933,9 @@ func harnessDouble(args []string) int {
 			case "linger":
 				// S5a: after the claim, forge the shim result and keep rewriting the workspace .git until op.Path exists.
 				lingerStop, lingerSwap = op.Path, op.Content
+			default:
+				fmt.Fprintln(os.Stderr, "double: unknown op:", op.Op)
+				return 2
 			case "hostile":
 				canary := os.Getenv("SC_TEST_CANARY")
 				script := "#!/bin/sh\n: > '" + canary + "'\n"
@@ -1048,6 +1070,36 @@ func lingerForged(repo, out, stop, swap string) int {
 	}
 	// S5c review 1 (N1): swap=private or decoy: right after the forged result, replace the repository directory by a symlink to
 	// the private directory, or to a copy of the repository holding a distinctive extra file, and keep it that way.
+	// S5c review 2: "-late" waits until sc-worker has written its commit message (COMMIT_MSG in the private directory,
+	// after every pre-commit check) and then marks out/swapped.txt; "toggle-late" renames repo away, links it to the
+	// private directory, unlinks it and renames the real directory back, once, and then only waits for stop.
+	late := strings.HasSuffix(swap, "-late")
+	swap = strings.TrimSuffix(swap, "-late")
+	if late {
+		msg := filepath.Join(os.Getenv("SC_TEST_PRIVATE_DIR"), "COMMIT_MSG")
+		for {
+			if _, err := os.Stat(stop); err == nil {
+				return 0
+			}
+			if _, err := os.Stat(msg); err == nil {
+				break
+			}
+			_ = clock.Real{}.Sleep(context.Background(), time.Millisecond)
+		}
+	}
+	if swap == "toggle" {
+		_ = os.Rename(repo, repo+".real")
+		_ = os.Symlink(os.Getenv("SC_TEST_PRIVATE_DIR"), repo)
+		_ = os.Remove(repo)
+		_ = os.Rename(repo+".real", repo)
+		_ = os.WriteFile(filepath.Join(out, "swapped.txt"), nil, 0o644)
+		for {
+			if _, err := os.Stat(stop); err == nil {
+				return 0
+			}
+			_ = clock.Real{}.Sleep(context.Background(), 5*time.Millisecond)
+		}
+	}
 	if swap != "" {
 		target := os.Getenv("SC_TEST_PRIVATE_DIR")
 		if swap == "decoy" {
@@ -1059,6 +1111,7 @@ func lingerForged(repo, out, stop, swap string) int {
 			_ = os.WriteFile(filepath.Join(target, "DECOY-CANARY-0031.txt"), []byte("DECOY-CANARY-0031\n"), 0o644)
 		}
 		_ = os.Rename(repo, repo+".real")
+		_ = os.WriteFile(filepath.Join(out, "swapped.txt"), nil, 0o644)
 		for {
 			if _, err := os.Stat(stop); err == nil {
 				return 0
