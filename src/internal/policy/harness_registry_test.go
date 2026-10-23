@@ -20,8 +20,12 @@ var harnessRegistryCases = []struct{ dir, code string }{
 	{"telemetry-prompts", "HARNESS_TELEMETRY_CONTENT_CAPTURE"},
 }
 
-// 28-AC-1: each of the 7 harness registry fixtures is rejected with its own distinct error code and no other.
+// 28-AC-1: each of the 7 harness registry fixtures is rejected with its own distinct error code. The schema-level
+// fixtures may also carry the generic POLICY_SCHEMA_INVALID (F04 26-AC-1 reports it for the same documents); no
+// other code, in particular no other HARNESS_* code, is allowed. The two invariant-level fixtures are
+// schema-valid and must yield exactly their own code.
 func TestHarnessRegistry_FixturesRejectedWithDistinctCodes_28AC1(t *testing.T) {
+	invariantLevel := map[string]bool{"repo-config-not-ignored": true, "worker-timeout-production": true}
 	distinct := map[string]bool{}
 	for _, c := range harnessRegistryCases {
 		distinct[c.code] = true
@@ -31,8 +35,14 @@ func TestHarnessRegistry_FixturesRejectedWithDistinctCodes_28AC1(t *testing.T) {
 			for _, i := range issues {
 				got[i.Code] = true
 			}
-			if !sameKeys(got, map[string]bool{c.code: true}) {
-				t.Errorf("issue codes = %v, want exactly [%s]; issues:\n%s", keys(got), c.code, joinIssues(issues))
+			if !got[c.code] {
+				t.Errorf("issue codes = %v, want to contain %s; issues:\n%s", keys(got), c.code, joinIssues(issues))
+			}
+			for code := range got {
+				if code == c.code || (code == "POLICY_SCHEMA_INVALID" && !invariantLevel[c.dir]) {
+					continue
+				}
+				t.Errorf("unexpected code %s beside %s; issues:\n%s", code, c.code, joinIssues(issues))
 			}
 		})
 	}

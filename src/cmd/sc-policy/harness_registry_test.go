@@ -8,8 +8,11 @@ import (
 )
 
 // 28-AC-1: `sc-policy check` (the body of `make policy-check`) rejects each registry fixture, printing its own
-// distinct code, and accepts the committed policy/harnesses.yaml.
+// distinct code, and accepts the committed policy/harnesses.yaml. Schema-level fixtures may also print the generic
+// POLICY_SCHEMA_INVALID (F04 26-AC-1); the invariant-level ones (repo-config-not-ignored,
+// worker-timeout-production) print exactly their own code. No other code is allowed.
 func TestCheck_HarnessRegistryFixtures_28AC1(t *testing.T) {
+	invariantLevel := map[string]bool{"repo-config-not-ignored": true, "worker-timeout-production": true}
 	cases := []struct{ dir, code string }{
 		{"tag-image", "HARNESS_IMAGE_NOT_DIGEST_PINNED"},
 		{"reserved-hermes", "HARNESS_NAME_RESERVED"},
@@ -28,10 +31,13 @@ func TestCheck_HarnessRegistryFixtures_28AC1(t *testing.T) {
 			found := false
 			for _, l := range strings.Split(out+errs, "\n") {
 				if m := line.FindStringSubmatch(l); m != nil {
-					if m[1] != c.code {
+					switch {
+					case m[1] == c.code:
+						found = true
+					case m[1] == "POLICY_SCHEMA_INVALID" && !invariantLevel[c.dir]:
+					default:
 						t.Errorf("unexpected code %s in line %q", m[1], l)
 					}
-					found = true
 				}
 			}
 			if !found {
