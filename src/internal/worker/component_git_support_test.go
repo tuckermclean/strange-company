@@ -524,11 +524,12 @@ func fakeSSHMain(args []string) int {
 
 // harnessOp is one step of the data-driven harness double.
 type harnessOp struct {
-	Op      string `json:"op"` // write, delete, commit, hostile, record-head, commondir, parent-repo, replace-head
-	Path    string `json:"path,omitempty"`
-	Content string `json:"content,omitempty"`
-	Msg     string `json:"msg,omitempty"`
-	N       int    `json:"n,omitempty"`
+	Op      string   `json:"op"` // write, delete, commit, hostile, record-head, commondir, parent-repo, replace-head
+	Path    string   `json:"path,omitempty"`
+	Content string   `json:"content,omitempty"`
+	Msg     string   `json:"msg,omitempty"`
+	N       int      `json:"n,omitempty"`
+	Args    []string `json:"args,omitempty"` // git: arguments after the fixed -C/-c prefix; write-hex: Content is hex
 }
 
 // TestHelperProcess_FakeHarness is the harness child started by the test shim: the cooperative fake harness
@@ -571,6 +572,20 @@ func harnessDouble(args []string) int {
 			p := filepath.Join(repo, op.Path)
 			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil || os.WriteFile(p, []byte(op.Content), 0o644) != nil {
 				fmt.Fprintln(os.Stderr, "double: write", op.Path)
+				return 2
+			}
+		case "write-hex":
+			// S5a review: write raw bytes (hex in Content), for binary and non-UTF-8 files.
+			raw, err := hex.DecodeString(op.Content)
+			p := filepath.Join(repo, op.Path)
+			if err != nil || os.MkdirAll(filepath.Dir(p), 0o755) != nil || os.WriteFile(p, raw, 0o644) != nil {
+				fmt.Fprintln(os.Stderr, "double: write-hex", op.Path)
+				return 2
+			}
+		case "git":
+			// S5a review: run git with op.Args in the workspace as the harness (pack-refs, checkout --orphan, ...).
+			if o, err := gitH(op.Args...); err != nil {
+				fmt.Fprintln(os.Stderr, "double: git:", o)
 				return 2
 			}
 		case "delete":
