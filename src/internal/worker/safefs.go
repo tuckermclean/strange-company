@@ -367,23 +367,6 @@ func renameat(dfd int, from, to string) error {
 	}
 }
 
-func fstatatNoFollow(dfd int, name string, st *syscall.Stat_t) error {
-	p, err := syscall.BytePtrFromString(name)
-	if err != nil {
-		return err
-	}
-	for {
-		_, _, e := syscall.Syscall6(syscall.SYS_NEWFSTATAT, uintptr(dfd), uintptr(unsafe.Pointer(p)), uintptr(unsafe.Pointer(st)), 0x100, 0, 0)
-		if e == syscall.EINTR {
-			continue
-		}
-		if e != 0 {
-			return e
-		}
-		return nil
-	}
-}
-
 // refuse logs symlink_refused once per path.
 func (pl *pipeline) refuse(path string, err error) {
 	if pl.refused == nil {
