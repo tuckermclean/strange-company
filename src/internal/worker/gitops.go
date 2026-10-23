@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -95,11 +96,19 @@ func pinRepoEnv(repo string) []string {
 
 // git runs one hardened git command in dir. Its stderr is returned scrubbed.
 func (w *worker) git(timeout time.Duration, dir string, extraEnv []string, args ...string) gitOut {
+	return w.gitIn(timeout, dir, extraEnv, nil, args...)
+}
+
+// gitIn is git with the given standard input.
+func (w *worker) gitIn(timeout time.Duration, dir string, extraEnv []string, stdin []byte, args ...string) gitOut {
 	ctx, cancel := context.WithTimeout(w.sig, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, gitBinary, append(append([]string{}, gitHardening...), args...)...)
 	cmd.Dir = dir
 	cmd.Env = append(w.gitEnv(), extraEnv...)
+	if stdin != nil {
+		cmd.Stdin = bytes.NewReader(stdin)
+	}
 	var out capBuf
 	var errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
@@ -125,7 +134,18 @@ func (pl *pipeline) privGit() string { return pl.w.privPath("git") }
 
 // gitPost runs a git command against the private GIT_DIR, never trusting the commit-graph.
 func (pl *pipeline) gitPost(timeout time.Duration, extraEnv []string, args ...string) gitOut {
-	return pl.w.git(timeout, pl.repo, append(pl.pinPrivateEnv(), extraEnv...), append([]string{"-c", "core.commitGraph=false", "-c", "gc.auto=0", "-c", "maintenance.auto=false"}, args...)...)
+	return pl.gitPostIn(timeout, extraEnv, nil, args...)
+}
+
+// postFlags keep the post-harness git commands from trusting the commit-graph, a multi-pack-index or reachability
+// bitmaps of the shared (harness-writable) object store.
+var postFlags = []string{
+	"-c", "core.commitGraph=false", "-c", "core.multiPackIndex=false", "-c", "pack.useBitmaps=false",
+	"-c", "gc.auto=0", "-c", "maintenance.auto=false",
+}
+
+func (pl *pipeline) gitPostIn(timeout time.Duration, extraEnv []string, stdin []byte, args ...string) gitOut {
+	return pl.w.gitIn(timeout, pl.repo, append(pl.pinPrivateEnv(), extraEnv...), stdin, append(append([]string{}, postFlags...), args...)...)
 }
 
 // tail returns the last n bytes of s on a rune boundary.
@@ -321,52 +341,23 @@ func (pl *pipeline) setupPrivateGit() error {
 	if r := pl.gitPost(60*time.Second, nil, "read-tree", g.StartCommit); r.err != nil {
 		return errors.New("read-tree: " + tail(r.stderr, 300))
 	}
+	// The commit and trees of start_commit are copied into the private object store, which git consults before the
+	// alternates: an object the harness forges in the shared store cannot change what the diff is taken against.
+	objs := pl.gitPost(120*time.Second, nil, "rev-list", "--objects", "--filter=blob:none", "-n1", g.StartCommit)
+	if objs.err != nil {
+		return errors.New("rev-list: " + tail(objs.stderr, 300))
+	}
+	if r := pl.gitPostIn(120*time.Second, nil, objs.stdout, "pack-objects", "-q", filepath.Join(gd, "objects", "pack", "pack")); r.err != nil {
+		return errors.New("pack-objects: " + tail(r.stderr, 300))
+	}
 	pl.priv = true
 	return nil
 }
 
 var shaRe = regexp.MustCompile(`^[0-9a-f]{40}([0-9a-f]{24})?\n?$`)
 
-// readRegular reads a small regular file below base without following a symlink at any component.
-func readRegular(base, rel string, limit int64) ([]byte, bool) {
-	cur := base
-	parts := strings.Split(rel, "/")
-	for i, part := range parts {
-		if part == "" || part == "." || part == ".." {
-			return nil, false
-		}
-		cur = filepath.Join(cur, part)
-		st, err := os.Lstat(cur)
-		if err != nil {
-			return nil, false
-		}
-		if i < len(parts)-1 {
-			if !st.IsDir() {
-				return nil, false
-			}
-		} else if !st.Mode().IsRegular() || st.Size() > limit {
-			return nil, false
-		}
-	}
-	f, err := os.Open(cur)
-	if err != nil {
-		return nil, false
-	}
-	defer f.Close()
-	b := make([]byte, limit+1)
-	n, _ := f.Read(b)
-	if int64(n) > limit {
-		return nil, false
-	}
-	return b[:n], true
-}
-
-// packedRef looks ref up in the workspace packed-refs file; "" when absent or corrupt.
-func packedRef(gd, ref string) string {
-	b, ok := readRegular(gd, "packed-refs", 1<<20)
-	if !ok {
-		return ""
-	}
+// packedRef looks ref up in the content of the workspace packed-refs file; "" when absent or corrupt.
+func packedRef(b []byte, ref string) string {
 	for _, l := range strings.Split(string(b), "\n") {
 		if l == "" || l[0] == '#' || l[0] == '^' {
 			continue
@@ -378,11 +369,22 @@ func packedRef(gd, ref string) string {
 	return ""
 }
 
+// readGit reads a small regular file of the workspace .git without following a link at any component.
+func (pl *pipeline) readGit(rel string, limit int64) ([]byte, bool) {
+	b, err := readRegularFile(pl.repo, ".git/"+rel, limit)
+	if err != nil {
+		if isRefusal(err) {
+			pl.refuse(filepath.Join(pl.repo, ".git", rel), err)
+		}
+		return nil, false
+	}
+	return b, true
+}
+
 // harnessHead returns the commit the harness left on the workspace branch, read as a plain file (the workspace
 // refs are not trusted beyond that); "" when it is missing or corrupt.
 func (pl *pipeline) harnessHead() string {
-	gd := filepath.Join(pl.repo, ".git")
-	b, ok := readRegular(gd, "HEAD", 4096)
+	b, ok := pl.readGit("HEAD", 4096)
 	if !ok {
 		return ""
 	}
@@ -392,10 +394,12 @@ func (pl *pipeline) harnessHead() string {
 		if !strings.HasPrefix(ref, "refs/") {
 			return ""
 		}
-		if b, ok = readRegular(gd, ref, 256); ok {
+		if b, ok = pl.readGit(ref, 256); ok {
 			h = strings.TrimSpace(string(b))
+		} else if pb, pok := pl.readGit("packed-refs", 1<<20); pok {
+			h = packedRef(pb, ref)
 		} else {
-			h = packedRef(gd, ref)
+			h = ""
 		}
 	}
 	if !shaRe.MatchString(h) {
@@ -465,31 +469,36 @@ func (pl *pipeline) snapshotInternals() error {
 	return nil
 }
 
-func isRealDir(p string) bool {
-	st, err := os.Lstat(p)
-	return err == nil && st.IsDir()
-}
-
 // restoreInternals restores the snapshot before any post-harness git command and logs git_internals_restored
-// when anything differed. A .git (or its hooks / objects/info) that is not a real directory is tampering.
+// when anything differed. A .git (or hooks, info, objects, objects/info) that is not a real directory is tampering.
+// Every read, write and delete below goes through safefs.go: nothing is followed through a link the harness planted.
 func (pl *pipeline) restoreInternals() *stageFail {
 	if pl.restored {
 		return nil
 	}
 	w := pl.w
-	gd := filepath.Join(pl.repo, ".git")
-	for _, d := range []string{gd, filepath.Join(gd, "hooks"), filepath.Join(gd, "objects", "info")} {
-		if st, err := os.Lstat(d); err == nil && !st.IsDir() {
-			return &stageFail{reason: "internal", detail: "workspace_tampered"}
-		} else if err != nil && d == gd {
-			return &stageFail{reason: "internal", detail: "workspace_tampered"}
+	tampered := &stageFail{reason: "internal", detail: "workspace_tampered"}
+	for _, d := range []string{".git", ".git/hooks", ".git/info", ".git/objects", ".git/objects/info"} {
+		f, err := openDir(pl.repo, d)
+		switch {
+		case err == nil:
+			_ = f.Close()
+		case errors.Is(err, os.ErrNotExist) && d != ".git":
+		default:
+			pl.refuse(filepath.Join(pl.repo, d), err)
+			return tampered
 		}
 	}
-	if st, err := os.Lstat(filepath.Join(gd, "HEAD")); err != nil || !st.Mode().IsRegular() {
-		return &stageFail{reason: "internal", detail: "workspace_tampered"}
+	if b, ok := pl.readGit("HEAD", 4096); !ok || !headRe.Match(b) {
+		return tampered
 	}
-	if b, err := os.ReadFile(filepath.Join(gd, "HEAD")); err != nil || len(b) > 4096 || !headRe.Match(b) {
-		return &stageFail{reason: "internal", detail: "workspace_tampered"}
+	// guard turns a refused removal or write into workspace_tampered; other errors are tolerated as before.
+	guard := func(rel string, err error) *stageFail {
+		if err != nil && isRefusal(err) {
+			pl.refuse(filepath.Join(pl.repo, rel), err)
+			return tampered
+		}
+		return nil
 	}
 	dir := pl.snapDir()
 	var differed []string
@@ -500,42 +509,50 @@ func (pl *pipeline) restoreInternals() *stageFail {
 		if _, err := os.Lstat(filepath.Join(dir, "present-"+strings.ReplaceAll(n, "/", "_"))); err == nil {
 			continue
 		}
-		if _, err := os.Lstat(filepath.Join(gd, n)); err == nil {
-			_ = os.RemoveAll(filepath.Join(gd, n))
+		removed, err := removeRel(pl.repo, ".git/"+n)
+		if f := guard(".git/"+n, err); f != nil {
+			return f
+		}
+		if removed {
 			differed = append(differed, n)
 		}
 	}
 	for _, f := range snapFiles {
-		target := filepath.Join(gd, f.rel)
+		rel := ".git/" + f.rel
 		want, werr := os.ReadFile(filepath.Join(dir, f.name))
 		_, absentErr := os.Lstat(filepath.Join(dir, f.name+".absent"))
 		wantAbsent := werr != nil && absentErr == nil
-		st, lerr := os.Lstat(target)
 		switch {
 		case wantAbsent:
-			if lerr == nil {
-				_ = os.RemoveAll(target)
+			removed, err := removeRel(pl.repo, rel)
+			if sf := guard(rel, err); sf != nil {
+				return sf
+			}
+			if removed {
 				differed = append(differed, f.rel)
 			}
 		case werr != nil:
 			return &stageFail{reason: "internal", detail: "git internals snapshot unreadable"}
 		default:
-			same := false
-			if lerr == nil && st.Mode().IsRegular() {
-				if cur, err := os.ReadFile(target); err == nil && bytes.Equal(cur, want) {
-					same = true
-				}
+			cur, rerr := readRegularFile(pl.repo, rel, int64(len(want))+1)
+			if rerr == nil && bytes.Equal(cur, want) {
+				continue
 			}
-			if !same {
-				_ = os.RemoveAll(target)
-				if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			if isRefusal(rerr) {
+				pl.refuse(filepath.Join(pl.repo, rel), rerr)
+			}
+			if _, err := removeRel(pl.repo, rel); err != nil {
+				return &stageFail{reason: "internal", detail: "restore " + f.rel + ": " + err.Error()}
+			}
+			if strings.Contains(f.rel, "/") {
+				if err := mkdirRel(pl.repo, rel, 0o755); err != nil && !errors.Is(err, syscall.EEXIST) {
 					return &stageFail{reason: "internal", detail: "restore " + f.rel + ": " + err.Error()}
 				}
-				if err := os.WriteFile(target, want, 0o644); err != nil {
-					return &stageFail{reason: "internal", detail: "restore " + f.rel + ": " + err.Error()}
-				}
-				differed = append(differed, f.rel)
 			}
+			if err := writeRelNew(pl.repo, rel, want, 0o644); err != nil {
+				return &stageFail{reason: "internal", detail: "restore " + f.rel + ": " + err.Error()}
+			}
+			differed = append(differed, f.rel)
 		}
 	}
 	known := map[string]bool{}
@@ -544,25 +561,32 @@ func (pl *pipeline) restoreInternals() *stageFail {
 			known[n] = true
 		}
 	}
-	if ents, err := os.ReadDir(filepath.Join(gd, "hooks")); err == nil {
-		for _, e := range ents {
-			if !known[e.Name()] {
-				_ = os.RemoveAll(filepath.Join(gd, "hooks", e.Name()))
-				differed = append(differed, filepath.Join("hooks", e.Name()))
+	if hd, err := openDir(pl.repo, ".git/hooks"); err == nil {
+		names, _ := hd.Readdirnames(-1)
+		_ = hd.Close()
+		for _, n := range names {
+			if !known[n] {
+				if _, err := removeRel(pl.repo, ".git/hooks/"+n); err == nil {
+					differed = append(differed, filepath.Join("hooks", n))
+				}
 			}
 		}
 	}
 	if _, err := os.Lstat(filepath.Join(dir, "alternates.present")); err != nil {
-		alt := filepath.Join(gd, "objects", "info", "alternates")
-		if _, err := os.Lstat(alt); err == nil {
-			_ = os.RemoveAll(alt)
+		removed, err := removeRel(pl.repo, ".git/objects/info/alternates")
+		if f := guard(".git/objects/info/alternates", err); f != nil {
+			return f
+		}
+		if removed {
 			differed = append(differed, filepath.Join("objects", "info", "alternates"))
 		}
 	}
 	for _, n := range []string{"commit-graph", "commit-graphs"} {
-		p := filepath.Join(gd, "objects", "info", n)
-		if _, err := os.Lstat(p); err == nil {
-			_ = os.RemoveAll(p)
+		removed, err := removeRel(pl.repo, ".git/objects/info/"+n)
+		if f := guard(".git/objects/info/"+n, err); f != nil {
+			return f
+		}
+		if removed {
 			differed = append(differed, filepath.Join("objects", "info", n))
 		}
 	}
