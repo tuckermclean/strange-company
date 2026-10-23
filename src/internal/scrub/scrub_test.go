@@ -242,3 +242,64 @@ func TestScrub_ValueScrubsTypedContainers_N2(t *testing.T) {
 		})
 	}
 }
+
+// 27-R-3, B2: keys inside JSON-escaped text (harness stream lines) are redacted although the escape ends in a
+// letter or hex digit; ordinary words stay untouched, also when marshalled.
+func TestScrub_SkPatternJSONEscapedBoundary_B2(t *testing.T) {
+	keys := map[string]string{
+		"ant":   "sk-ant-" + rep("Ab1", 10),
+		"proj":  "sk-proj-" + rep("Ab1", 10),
+		"plain": "sk-" + rep("Ab1", 10),
+	}
+	for kn, k := range keys {
+		for name, text := range map[string]string{
+			"newline": "x\n" + k, "tab": "\t" + k, "angle": "<" + k + ">", "amp": "a&" + k,
+		} {
+			t.Run(kn+"/"+name, func(t *testing.T) {
+				b, err := json.Marshal(text)
+				if err != nil {
+					t.Fatal(err)
+				}
+				out := scrub.New().String(string(b))
+				if strings.Contains(out, k[len("sk-"):]) || strings.Contains(out, rep("Ab1", 4)) {
+					t.Errorf("key body leaked: %q", out)
+				}
+			})
+		}
+	}
+	for _, word := range []string{"task-token-missing-detail-abc", "risk-assessment-for-the-feature", "desk-reference-handbook-volume"} {
+		t.Run("not_redacted_json/"+word, func(t *testing.T) {
+			b, _ := json.Marshal("see\n" + word + " <" + word + ">")
+			sc := scrub.New()
+			if out := sc.String(string(b)); out != string(b) || sc.Redactions() != 0 {
+				t.Errorf("ordinary text altered: %q", out)
+			}
+		})
+	}
+}
+
+// 27-R-3, NB3: Value keeps integers exact inside typed containers.
+func TestScrub_ValuePreservesIntegers_NB3(t *testing.T) {
+	type typed struct {
+		A int64  `json:"a"`
+		B uint64 `json:"b"`
+	}
+	for name, tc := range map[string]struct {
+		in   any
+		want string
+	}{
+		"struct":     {typed{A: 1 << 60, B: 1 << 63}, `{"a":1152921504606846976,"b":9223372036854775808}`},
+		"typed-map":  {map[string]int64{"a": 1 << 60}, `{"a":1152921504606846976}`},
+		"typed-slice": {[]uint64{1 << 63}, `[9223372036854775808]`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			b, err := json.Marshal(scrub.New().Value(tc.in))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(b) != tc.want {
+				t.Errorf("got %s want %s", b, tc.want)
+			}
+		})
+	}
+}

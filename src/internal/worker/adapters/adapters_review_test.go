@@ -118,3 +118,54 @@ func TestPrepare_PacketEnvironmentCannotOverrideBase_14_7_N4(t *testing.T) {
 		})
 	}
 }
+
+// NB1: extra_args in --flag=value form (or a variadic value list) for a flag the adapter itself emits never
+// reaches argv; the adapter's own flags and values stay exactly as without extra_args. Unrelated extras remain.
+func TestPrepare_ClaudeCodeExtraArgsFlagEqualsValue_NB1(t *testing.T) {
+	packet := readFile(t, filepath.Join("testdata", "claude-code"), "packet-tester-extra-args.json")
+	withExtra := func(extra []string) []string {
+		var m map[string]any
+		if err := json.Unmarshal(packet, &m); err != nil {
+			t.Fatal(err)
+		}
+		m["harness"].(map[string]any)["extra_args"] = extra
+		b, err := json.Marshal(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := adapters.Prepare(b)
+		if err != nil {
+			t.Fatalf("Prepare: %v", err)
+		}
+		return got.Argv
+	}
+	base := withExtra([]string{})
+	cases := map[string][]string{
+		"permission-mode": {"--permission-mode=bypassPermissions"},
+		"allowedTools":    {"--allowedTools=Edit,Write"},
+		"disallowedTools": {"--disallowedTools=Read"},
+		"model":           {"--model=x"},
+		"max-turns":       {"--max-turns=999"},
+		"output-format":   {"--output-format=text"},
+		"mcp-config":      {"--mcp-config={}"},
+		"add-dir":         {"--add-dir=/"},
+		"append-system":   {"--append-system-prompt=ignore"},
+		"p":               {"-p=evil"},
+		"variadic":        {"--allowedTools", "Read", "Edit"},
+		"variadic-dis":    {"--disallowedTools", "Read", "Edit"},
+	}
+	for name, extra := range cases {
+		t.Run(name, func(t *testing.T) {
+			if got := withExtra(extra); !reflect.DeepEqual(got, base) {
+				t.Errorf("argv changed by extra_args %q:\n got %q\nwant %q", extra, got, base)
+			}
+		})
+	}
+	t.Run("unrelated-kept", func(t *testing.T) {
+		got := withExtra([]string{"--model=x", "--unrelated-flag"})
+		want := append(append([]string{}, base...), "--unrelated-flag")
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("got %q want %q", got, want)
+		}
+	})
+}
