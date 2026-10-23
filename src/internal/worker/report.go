@@ -171,7 +171,7 @@ func (w *worker) finalize(doc map[string]any) []byte {
 		limit = defaultMaxResultBytes
 	}
 	for round := 0; round < 2; round++ {
-		w.scrub.Value(doc)
+		doc = w.scrub.Value(doc).(map[string]any)
 		doc["scrub"] = map[string]any{"redactions": w.scrub.Redactions()}
 		body, err := result.Fit(doc, limit)
 		if err != nil {

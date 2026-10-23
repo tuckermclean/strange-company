@@ -118,11 +118,9 @@ func prepareClaudeCode(p *packet) Prepared {
 		"--append-system-prompt", systemAddendum,
 		"--no-session-persistence",
 	}
-	argv = append(argv, p.Harness.ExtraArgs...)
+	argv = append(argv, dedupeExtraArgs(p.Harness.ExtraArgs)...)
 	env := baseEnv()
-	for k, v := range p.Harness.Environment {
-		env[k] = v
-	}
+	mergePacketEnv(env, p.Harness.Environment)
 	env["ANTHROPIC_API_KEY"] = gatewayTokenRef
 	env["ANTHROPIC_BASE_URL"] = p.Gateway.BaseURLs[p.Gateway.APIFamily]
 	if p.Gateway.MaxOutputTokens > 0 {
@@ -151,9 +149,7 @@ func prepareFake(p *packet) Prepared {
 		"--out", "/workspace/out",
 	}
 	env := baseEnv()
-	for k, v := range p.Harness.Environment {
-		env[k] = v
-	}
+	mergePacketEnv(env, p.Harness.Environment)
 	env["SC_FAKE_GATEWAY_URL"] = p.Gateway.BaseURLs["fake"]
 	env["SC_FAKE_GATEWAY_TOKEN"] = gatewayTokenRef
 	return Prepared{Argv: argv, Env: env, Files: []File{}}
@@ -218,4 +214,42 @@ func PrechecksEnabled(packetJSON []byte) (bool, error) {
 		return false, err
 	}
 	return !k.SkipPrechecks, nil
+}
+
+// adapterFlags are the claude-code flags the adapter emits itself; true means the flag takes a value.
+var adapterFlags = map[string]bool{
+	"-p": true, "--output-format": true, "--verbose": false, "--bare": false, "--strict-mcp-config": false,
+	"--mcp-config": true, "--model": true, "--max-turns": true, "--permission-mode": true,
+	"--allowedTools": true, "--disallowedTools": true, "--add-dir": true, "--append-system-prompt": true,
+	"--no-session-persistence": false,
+}
+
+// dedupeExtraArgs drops extra arguments that repeat a flag the adapter already emits (with its value, if any).
+func dedupeExtraArgs(extra []string) []string {
+	out := []string{}
+	for i := 0; i < len(extra); i++ {
+		if takesValue, ok := adapterFlags[extra[i]]; ok {
+			if takesValue {
+				i++
+			}
+			continue
+		}
+		out = append(out, extra[i])
+	}
+	return out
+}
+
+// mergePacketEnv adds packet harness.environment to env, except the names the worker owns: SC_*, PATH, HOME,
+// TMPDIR and the proxy variables (plan 27 section 14.7).
+func mergePacketEnv(env, packetEnv map[string]string) {
+	for k, v := range packetEnv {
+		switch strings.ToUpper(k) {
+		case "PATH", "HOME", "TMPDIR", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY", "ALL_PROXY":
+			continue
+		}
+		if strings.HasPrefix(k, "SC_") {
+			continue
+		}
+		env[k] = v
+	}
 }

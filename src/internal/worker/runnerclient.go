@@ -109,7 +109,7 @@ func (w *worker) postResult(body []byte, mode reportMode) int {
 			return c
 		}
 		if w.sig.Err() != nil {
-			return ExitSIGTERM
+			return w.lastPost(body)
 		}
 		d := resultBackoff(n)
 		if !w.clk.Now().Add(d).Before(end) {
@@ -117,9 +117,18 @@ func (w *worker) postResult(body []byte, mode reportMode) int {
 			return ExitPostFailed
 		}
 		if w.clk.Sleep(w.sig, d) != nil {
-			return ExitSIGTERM
+			return w.lastPost(body)
 		}
 	}
+}
+
+// lastPost is the one more single 5 s attempt with the identical body after SIGTERM ended the retry window
+// (plan 27 section 14.14); the code is always ExitSIGTERM.
+func (w *worker) lastPost(body []byte) int {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, _ = w.postOnce(ctx, body)
+	return ExitSIGTERM
 }
 
 func (w *worker) postOnce(ctx context.Context, body []byte) (int, error) {
