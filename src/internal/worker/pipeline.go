@@ -10,8 +10,6 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
-
-	"strange.company/sc/internal/worker/adapters"
 )
 
 // The Git pipeline of sc-worker after the credential check: clone, checkout, context, harness, claim, pre-checks,
@@ -86,6 +84,7 @@ type fullPacket struct {
 		Adapter              string `json:"adapter"`
 		CLIVersion           string `json:"cli_version"`
 		DisableWorkerTimeout bool   `json:"disable_worker_timeout"`
+		FakeScenario         string `json:"fake_scenario"`
 	} `json:"harness"`
 	ScopedACs []string `json:"-"`
 }
@@ -130,9 +129,7 @@ func (w *worker) runPipeline() int {
 	}
 	_ = json.Unmarshal(pl.p.TaskRaw, &task)
 	pl.p.Task.TaskID, pl.p.ScopedACs = task.TaskID, task.Scoped
-	if k, err := adapters.DeriveFakeKnobs(w.pktRaw); err == nil {
-		pl.skipPrechecks = k.SkipPrechecks
-	}
+	pl.skipPrechecks = w.knobs.SkipPrechecks
 	defer func() {
 		if pl.keyPath != "" {
 			_ = os.Remove(pl.keyPath)
@@ -311,6 +308,10 @@ func (pl *pipeline) commitAndPush() (string, *stageFail) {
 		if last.err == nil {
 			break
 		}
+		// A workspace swapped under the push ends it at once (no retry ladder, no backoff; S5c-r3 F2).
+		if f := pl.verifyRepo(); f != nil {
+			return "", f
+		}
 		out := string(last.stdout) + last.stderr
 		if strings.Contains(out, "rejected") || strings.Contains(out, "stale info") || strings.Contains(out, "non-fast-forward") {
 			return "", &stageFail{reason: "push_rejected", detail: tail(out, 1024)}
@@ -467,6 +468,9 @@ func (pl *pipeline) decorate(doc map[string]any) {
 		code = -1
 	}
 	hr["exit_code"], hr["stream_complete"], hr["terminal_event_seen"] = code, true, pl.hs.terminal
+	if pl.hs.denialsSeen {
+		hr["permission_denials"] = pl.hs.denials
+	}
 	if s, ok := pl.hout.res.Signal.(string); ok && (s == "SIGTERM" || s == "SIGKILL") {
 		hr["signal"] = s
 	}
@@ -519,6 +523,13 @@ func (pl *pipeline) finishFail(f *stageFail) int {
 func (pl *pipeline) finishClaim(commit string, pushed bool) int {
 	w := pl.w
 	c := pl.claim
+	if w.knobs.SkipReport {
+		// Fake knob skip_report (push-no-result): the work is pushed, but no result is posted or printed (27 section 14.12).
+		w.log("info", "fake_skip_report", map[string]any{"commit": commit})
+		w.stopHeartbeat()
+		w.reported.Store(true)
+		return ExitOK
+	}
 	doc := w.failedResult("internal", "")
 	delete(doc, "failure")
 	doc["state"] = c.State
@@ -538,7 +549,25 @@ func (pl *pipeline) finishClaim(commit string, pushed bool) int {
 		doc["branch"] = pl.p.Git.Branch
 	}
 	pl.decorate(doc)
+	if w.knobs.RawResult {
+		pl.corruptResult(doc)
+	}
 	return w.report(doc, modeNormal)
+}
+
+// corruptResult is the fake knob raw_result (plan 28 section 8.2): the posted body is deliberately schema-invalid, so
+// that the Runner's 422 path is exercised. malformed-result posts state "done", malformed-handoff an unknown
+// handoff.recommended_next_role.
+func (pl *pipeline) corruptResult(doc map[string]any) {
+	pl.w.rawResult = true
+	switch pl.p.Harness.FakeScenario {
+	case "malformed-result":
+		doc["state"] = "done"
+	case "malformed-handoff":
+		if h, ok := doc["handoff"].(map[string]any); ok {
+			h["recommended_next_role"] = "deployer"
+		}
+	}
 }
 
 // textLinesOnly drops every line holding a NUL byte or invalid UTF-8, so the logged partial diff stays binary-free,

@@ -12,6 +12,7 @@ import (
 
 	"strange.company/sc/internal/clock"
 	"strange.company/sc/internal/scrub"
+	"strange.company/sc/internal/worker/adapters"
 )
 
 // Exit codes of plan 27 section 14.14.
@@ -179,6 +180,7 @@ func (w *worker) run() int {
 		}
 		return w.report(doc, modeNormal)
 	}
+	w.knobs, _ = adapters.DeriveFakeKnobs(raw)
 	defer w.stopHeartbeat()
 	w.startHeartbeat()
 

@@ -222,6 +222,8 @@ var adapterFlags = map[string]bool{
 	"--mcp-config": true, "--model": true, "--max-turns": true, "--permission-mode": true,
 	"--allowedTools": true, "--disallowedTools": true, "--add-dir": true, "--append-system-prompt": true,
 	"--no-session-persistence": false,
+	// kebab-case aliases of the camelCase tool flags (the same options for the CLI; S2-FU2)
+	"--allowed-tools": true, "--disallowed-tools": true,
 }
 
 // dedupeExtraArgs drops extra arguments that repeat a flag the adapter already emits (with its value, if any).
@@ -237,7 +239,7 @@ func dedupeExtraArgs(extra []string) []string {
 		if hasEq {
 			continue
 		}
-		if name == "--allowedTools" || name == "--disallowedTools" { // variadic: swallow the value list
+		if name == "--allowedTools" || name == "--disallowedTools" || name == "--allowed-tools" || name == "--disallowed-tools" { // variadic: swallow the value list
 			for i+1 < len(extra) && !strings.HasPrefix(extra[i+1], "-") {
 				i++
 			}

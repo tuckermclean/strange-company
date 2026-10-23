@@ -14,6 +14,7 @@ import (
 	"strange.company/sc/internal/clock"
 	"strange.company/sc/internal/scrub"
 	"strange.company/sc/internal/version"
+	"strange.company/sc/internal/worker/adapters"
 )
 
 // packetInfo is the subset of worker-input.schema.yaml that sc-worker itself reads.
@@ -61,8 +62,11 @@ type worker struct {
 	started                   time.Time
 
 	pktRaw       []byte
+	knobs        adapters.FakeKnobs // fake harness knobs (plan 28 section 8.2); all off unless the adapter is fake
 	pi           packetInfo
 	haveIdentity bool // pi carries enough to build a schema-valid result
+
+	rawResult bool // fake knob raw_result: the self-validation of the result is skipped on purpose
 
 	phase    atomic.Value // string
 	cancelRq atomic.Bool
@@ -170,7 +174,7 @@ func (w *worker) startHeartbeat() {
 			var hr struct {
 				CancelRequested bool `json:"cancel_requested"`
 			}
-			if json.Unmarshal(resp, &hr) == nil && hr.CancelRequested {
+			if json.Unmarshal(resp, &hr) == nil && hr.CancelRequested && !w.knobs.DisableCancel {
 				w.cancelRq.Store(true)
 			}
 		}

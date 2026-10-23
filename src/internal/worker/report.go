@@ -183,6 +183,10 @@ func (w *worker) finalize(doc map[string]any) []byte {
 		if err := json.Unmarshal(body, &v); err == nil {
 			err = validateAgainst("worker-result", v)
 		}
+		if err != nil && w.rawResult {
+			// Fake knob raw_result: the invalid body is posted on purpose (plan 28 section 8.2).
+			return body
+		}
 		if err != nil {
 			w.log("error", "result_self_invalid", map[string]any{"detail": oneLine(err.Error())})
 			doc = w.failedResult("internal", "result_self_invalid")

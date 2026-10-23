@@ -304,6 +304,9 @@ type harnessState struct {
 	truncated int
 	logCut    bool
 	cap       bool
+
+	denialsSeen bool             // the terminal event carried a permission_denials list
+	denials     []map[string]any // its entries (tool, summary), bounded as the result schema bounds them
 }
 
 var gwCodeRe = regexp.MustCompile(`\bSC_[A-Z][A-Z_]{2,}\b`)
@@ -322,9 +325,31 @@ func (hs *harnessState) parse(line string) {
 			Type    string `json:"type"`
 			IsError bool   `json:"is_error"`
 			Turns   int    `json:"num_turns"`
+			Denials *[]struct {
+				Tool    string `json:"tool"`
+				Name    string `json:"tool_name"`
+				Summary string `json:"summary"`
+			} `json:"permission_denials"`
 		}
 		if json.Unmarshal([]byte(line), &ev) == nil && (ev.Type == "sc_fake_result" || ev.Type == "result") {
 			hs.terminal, hs.isError, hs.numTurns = true, ev.IsError, ev.Turns
+			if ev.Denials != nil {
+				hs.denialsSeen, hs.denials = true, []map[string]any{}
+				for _, d := range *ev.Denials {
+					tool := d.Tool
+					if tool == "" {
+						tool = d.Name
+					}
+					if len(hs.denials) >= 100 || tool == "" {
+						continue
+					}
+					e := map[string]any{"tool": clip(tool, 120)}
+					if d.Summary != "" {
+						e["summary"] = clip(d.Summary, 300)
+					}
+					hs.denials = append(hs.denials, e)
+				}
+			}
 		}
 	}
 	if !strings.Contains(line, "SC_") {
