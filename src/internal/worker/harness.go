@@ -137,6 +137,7 @@ func (pl *pipeline) runShim(kind string, argv []string, env map[string]string, c
 	var off int64
 	var partial []byte
 	var cancelAt time.Time
+	waitExtra := 10 * time.Second
 	cancelWritten := false
 	for {
 		for _, l := range readNew(stream, &off, &partial) {
@@ -171,8 +172,12 @@ func (pl *pipeline) runShim(kind string, argv []string, env map[string]string, c
 				cb, _ := json.Marshal(map[string]any{"term_grace_seconds": cg})
 				_ = writeAtomic(filepath.Join(dir, fmt.Sprintf("cancel-%d", n)), cb)
 				cancelWritten, cancelAt, grace = true, now, cg
+				if w.sig.Err() != nil {
+					// Pod deletion: the kubelet kills the pod 30 s after the signal.
+					waitExtra = 3 * time.Second
+				}
 			}
-		} else if !now.Before(cancelAt.Add(time.Duration(grace)*time.Second + 10*time.Second)) {
+		} else if !now.Before(cancelAt.Add(time.Duration(grace)*time.Second + waitExtra)) {
 			out.lost = true
 			return out
 		}

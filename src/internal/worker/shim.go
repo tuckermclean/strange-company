@@ -141,28 +141,35 @@ func Shim(cfg ShimConfig) int {
 		if sigRecv.Load() && !forwarded {
 			// A container SIGTERM goes to the running process groups (plan 27 section 7.4).
 			forwarded = true
-			s.terminateAll(0)
+			s.terminateAll(0, true)
 		}
 		if forwarded && s.idle() {
 			s.wg.Wait()
 			return 128 + int(syscall.SIGTERM)
 		}
-		if st, err := os.Lstat(s.dir); err == nil && st.IsDir() {
+		st, err := os.Lstat(s.dir)
+		hasDir := err == nil && st.IsDir()
+		if hasDir {
 			if _, err := os.Lstat(filepath.Join(s.dir, "done")); err == nil {
-				s.terminateAll(0)
+				// sc-worker is finished with the shim: whatever still runs is killed at once.
+				s.terminateAll(killNow, false)
 				s.wg.Wait()
 				return 0
 			}
+		}
+		if hasDir || !forwarded {
 			ref := began
 			if ast, err := os.Lstat(filepath.Join(s.dir, "alive")); err == nil {
 				ref = ast.ModTime()
 			}
 			if s.clk.Now().Sub(ref) > aliveStale {
 				fmt.Fprintln(s.errw, "sc-worker shim: sc-worker's alive file is stale; leaving")
-				s.terminateAll(0)
+				s.terminateAll(0, false)
 				s.wg.Wait()
 				return 1
 			}
+		}
+		if hasDir {
 			if !forwarded {
 				s.scan(handled)
 			}
@@ -178,14 +185,24 @@ func (s *shimState) idle() bool {
 	return len(s.running) == 0
 }
 
-// terminateAll asks every running job to terminate; grace 0 means the job's own term_grace_seconds.
-func (s *shimState) terminateAll(grace time.Duration) {
+// killNow is the termination request that skips the grace period (SIGKILL at once).
+const killNow = time.Duration(-1)
+
+// podTermGraceCap bounds the grace after a container SIGTERM (plan 27 section 14.14).
+const podTermGraceCap = 20 * time.Second
+
+// terminateAll asks every running job to terminate; grace 0 means the job's own term_grace_seconds, capped at
+// podTermGraceCap when podCap is set.
+func (s *shimState) terminateAll(grace time.Duration, podCap bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, j := range s.running {
 		g := grace
-		if g <= 0 {
+		if g == 0 {
 			g = j.grace
+		}
+		if podCap && g > podTermGraceCap {
+			g = podTermGraceCap
 		}
 		j.terminate(g)
 	}
@@ -481,15 +498,36 @@ func (s *shimState) runJob(j *shimJob) {
 		timeoutC = s.after(ctx, time.Duration(req.TimeoutSeconds)*time.Second)
 	}
 	var killC <-chan struct{}
+	var killAt time.Time
+	var killStop context.CancelFunc
 	terminating := false
 	term := func(g time.Duration) {
-		if terminating {
+		if g < 0 {
+			_ = syscall.Kill(-pgid, syscall.SIGKILL)
+			terminating = true
 			return
 		}
+		at := s.clk.Now().Add(g)
+		if terminating && !at.Before(killAt) {
+			return
+		}
+		if !terminating {
+			_ = syscall.Kill(-pgid, syscall.SIGTERM)
+		}
 		terminating = true
-		_ = syscall.Kill(-pgid, syscall.SIGTERM)
-		killC = s.after(ctx, g)
+		if killStop != nil {
+			killStop()
+		}
+		var kctx context.Context
+		kctx, killStop = context.WithCancel(ctx)
+		killAt = at
+		killC = s.after(kctx, g)
 	}
+	defer func() {
+		if killStop != nil {
+			killStop()
+		}
+	}()
 	var waitErr error
 loop:
 	for {
