@@ -84,7 +84,13 @@ func (w *worker) gitEnv() []string {
 		"PATH=/usr/local/bin:/usr/bin:/bin", "HOME=" + w.privPath("home"), "TMPDIR=" + w.privPath("tmp"), "LC_ALL=C",
 		"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=" + w.privPath("gitconfig"), "GIT_TERMINAL_PROMPT=0",
 		"GIT_LFS_SKIP_SMUDGE=1", "GIT_SSH_COMMAND=" + w.sshCommand(), "GIT_ALLOW_PROTOCOL=ssh",
+		"GIT_NO_REPLACE_OBJECTS=1",
 	}
+}
+
+// pinRepoEnv pins git to the work tree: no discovery, so a broken .git cannot fall back to a parent repository.
+func pinRepoEnv(repo string) []string {
+	return []string{"GIT_DIR=" + filepath.Join(repo, ".git"), "GIT_WORK_TREE=" + repo, "GIT_CEILING_DIRECTORIES=" + filepath.Dir(repo)}
 }
 
 // git runs one hardened git command in dir. Its stderr is returned scrubbed.
@@ -110,7 +116,8 @@ func (w *worker) git(timeout time.Duration, dir string, extraEnv []string, args 
 }
 
 func (w *worker) gitRepo(timeout time.Duration, extraEnv []string, args ...string) gitOut {
-	return w.git(timeout, filepath.Join(w.cfg.WorkspaceDir, "repo"), extraEnv, args...)
+	repo := filepath.Join(w.cfg.WorkspaceDir, "repo")
+	return w.git(timeout, repo, append(pinRepoEnv(repo), extraEnv...), args...)
 }
 
 // tail returns the last n bytes of s on a rune boundary.
@@ -171,13 +178,13 @@ func (pl *pipeline) clone() *stageFail {
 	if r := w.git(30*time.Second, w.cfg.WorkspaceDir, nil, "init", "-q", pl.repo); r.err != nil {
 		return &stageFail{reason: "clone_failed", detail: "git init: " + tail(r.stderr, 1024)}
 	}
-	if r := w.git(30*time.Second, pl.repo, nil, "remote", "add", "origin", g.CloneURL); r.err != nil {
+	if r := w.git(30*time.Second, pl.repo, pinRepoEnv(pl.repo), "remote", "add", "origin", g.CloneURL); r.err != nil {
 		return &stageFail{reason: "clone_failed", detail: "git remote add: " + tail(r.stderr, 1024)}
 	}
 	spec := "+" + g.FetchRef + ":refs/remotes/origin/" + strings.TrimPrefix(g.FetchRef, "refs/heads/")
 	var last gitOut
 	for attempt := 0; attempt < 2; attempt++ {
-		last = w.git(300*time.Second, pl.repo, nil, "fetch", "-q", "--no-tags", "--prune", "origin", spec)
+		last = w.git(300*time.Second, pl.repo, pinRepoEnv(pl.repo), "fetch", "-q", "--no-tags", "--prune", "origin", spec)
 		if last.err == nil {
 			return nil
 		}
@@ -199,7 +206,7 @@ func (pl *pipeline) remoteHead(ref string) (string, error) {
 	w := pl.w
 	var last gitOut
 	for attempt := 0; attempt < 2; attempt++ {
-		last = w.git(60*time.Second, pl.repo, nil, "ls-remote", "origin", ref)
+		last = w.git(60*time.Second, pl.repo, pinRepoEnv(pl.repo), "ls-remote", "origin", ref)
 		if last.err == nil {
 			for _, l := range strings.Split(last.text(), "\n") {
 				f := strings.Fields(l)
@@ -221,11 +228,11 @@ func (pl *pipeline) checkout() *stageFail {
 	w := pl.w
 	g := pl.p.Git
 	for _, c := range []string{g.StartCommit, g.BaseCommit} {
-		if r := w.git(30*time.Second, pl.repo, nil, "cat-file", "-e", c+"^{commit}"); r.err != nil {
+		if r := w.git(30*time.Second, pl.repo, pinRepoEnv(pl.repo), "cat-file", "-e", c+"^{commit}"); r.err != nil {
 			return &stageFail{reason: "checkout_mismatch", detail: "commit not in the fetched history: " + c}
 		}
 	}
-	if r := w.git(30*time.Second, pl.repo, nil, "merge-base", "--is-ancestor", g.BaseCommit, g.StartCommit); r.err != nil {
+	if r := w.git(30*time.Second, pl.repo, pinRepoEnv(pl.repo), "merge-base", "--is-ancestor", g.BaseCommit, g.StartCommit); r.err != nil {
 		return &stageFail{reason: "checkout_mismatch", detail: "base_commit is not an ancestor of start_commit"}
 	}
 	ref := "refs/heads/" + g.Branch
@@ -254,14 +261,14 @@ func (pl *pipeline) checkout() *stageFail {
 	}
 	var r gitOut
 	if g.BranchMode == "readonly" {
-		r = w.git(60*time.Second, pl.repo, nil, "switch", "-q", "--detach", g.StartCommit)
+		r = w.git(60*time.Second, pl.repo, pinRepoEnv(pl.repo), "switch", "-q", "--detach", g.StartCommit)
 	} else {
-		r = w.git(60*time.Second, pl.repo, nil, "switch", "-q", "-c", g.Branch, g.StartCommit)
+		r = w.git(60*time.Second, pl.repo, pinRepoEnv(pl.repo), "switch", "-q", "-c", g.Branch, g.StartCommit)
 	}
 	if r.err != nil {
 		return &stageFail{reason: "checkout_mismatch", detail: "switch: " + tail(r.stderr, 1024)}
 	}
-	if r := w.git(30*time.Second, pl.repo, nil, "rev-parse", "HEAD"); r.err != nil || r.text() != g.StartCommit {
+	if r := w.git(30*time.Second, pl.repo, pinRepoEnv(pl.repo), "rev-parse", "HEAD"); r.err != nil || r.text() != g.StartCommit {
 		return &stageFail{reason: "checkout_mismatch", detail: "HEAD is not start_commit after checkout"}
 	}
 	if err := pl.snapshotInternals(); err != nil {
@@ -272,6 +279,11 @@ func (pl *pipeline) checkout() *stageFail {
 
 // ---------------------------------------------------------------------------------------------------------------
 // git internals snapshot and restore (plan 27 section 13.3)
+
+// redirectFiles are repository-redirecting files removed after the harness when they did not exist before it.
+var redirectFiles = []string{"commondir", "gitdir", "info/grafts", "shallow", "objects/info/alternates"}
+
+var headRe = regexp.MustCompile(`^(ref: refs/[^\x00-\x20]+|[0-9a-f]{40}|[0-9a-f]{64})\n?$`)
 
 var snapFiles = []struct{ rel, name string }{
 	{"config", "config"}, {filepath.Join("info", "attributes"), "info-attributes"}, {filepath.Join("info", "exclude"), "info-exclude"},
@@ -299,6 +311,13 @@ func (pl *pipeline) snapshotInternals() error {
 		}
 		if err := os.WriteFile(filepath.Join(dir, f.name), b, 0o600); err != nil {
 			return err
+		}
+	}
+	for _, n := range redirectFiles {
+		if _, err := os.Lstat(filepath.Join(gd, n)); err == nil {
+			if err := os.WriteFile(filepath.Join(dir, "present-"+strings.ReplaceAll(n, "/", "_")), nil, 0o600); err != nil {
+				return err
+			}
 		}
 	}
 	var hooks []string
@@ -336,8 +355,26 @@ func (pl *pipeline) restoreInternals() *stageFail {
 			return &stageFail{reason: "internal", detail: "workspace_tampered"}
 		}
 	}
+	if st, err := os.Lstat(filepath.Join(gd, "HEAD")); err != nil || !st.Mode().IsRegular() {
+		return &stageFail{reason: "internal", detail: "workspace_tampered"}
+	}
+	if b, err := os.ReadFile(filepath.Join(gd, "HEAD")); err != nil || len(b) > 4096 || !headRe.Match(b) {
+		return &stageFail{reason: "internal", detail: "workspace_tampered"}
+	}
 	dir := pl.snapDir()
 	var differed []string
+	for _, n := range redirectFiles {
+		if n == "objects/info/alternates" {
+			continue // handled below
+		}
+		if _, err := os.Lstat(filepath.Join(dir, "present-"+strings.ReplaceAll(n, "/", "_"))); err == nil {
+			continue
+		}
+		if _, err := os.Lstat(filepath.Join(gd, n)); err == nil {
+			_ = os.RemoveAll(filepath.Join(gd, n))
+			differed = append(differed, n)
+		}
+	}
 	for _, f := range snapFiles {
 		target := filepath.Join(gd, f.rel)
 		want, werr := os.ReadFile(filepath.Join(dir, f.name))
