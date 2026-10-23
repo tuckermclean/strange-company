@@ -21,8 +21,10 @@ var (
 	harnessScenarioPtr = regexp.MustCompile(`^/spec/harnesses/[^/]+/fake/scenario$`)
 	harnessTelemetry   = regexp.MustCompile(`^/spec/harnesses/[^/]+/defaults/environment/(OTEL_LOG_USER_PROMPTS|OTEL_LOG_TOOL_DETAILS|OTEL_EXPORTER_OTLP_(TRACES_|LOGS_)?ENDPOINT|CLAUDE_CODE_ENABLE_TELEMETRY)$`)
 	harnessAdditional  = regexp.MustCompile(`^additional properties (.+) not allowed$`)
-	harnessCredential  = regexp.MustCompile(`(?i)(secret|credential|password|passwd|token|api[-_]?key|private[-_]?key|auth(orization)?|bearer)`)
+	harnessCredential  = regexp.MustCompile(`(?i)(secret|credential|password|passwd|token|api[-_]?key|private[-_]?key|authorization|bearer)`)
 )
+
+var harnessKnownName = map[string]bool{"tokenDelivery": true, "baseUrlEnv": true}
 
 // harnessSchemaCode classifies one schema error of a HarnessRegistry document by instance location. A schema
 // error that matches none of the faults stays POLICY_SCHEMA_INVALID, so no fault is ever dropped.
@@ -38,13 +40,15 @@ func harnessSchemaCode(ptr, msg string) string {
 		return CodeHarnessTelemetry
 	case harnessEntryPtr.MatchString(ptr):
 		if m := harnessAdditional.FindStringSubmatch(msg); m != nil {
-			names := strings.Split(m[1], ", ")
-			for _, n := range names {
-				if !harnessCredential.MatchString(strings.Trim(n, "'")) {
-					return CodeSchemaInvalid
+			for _, n := range strings.Split(m[1], ", ") {
+				n = strings.Trim(n, "'")
+				// Names the entry schema itself defines (tokenDelivery lives under gateway) are misplaced, not
+				// provider credentials.
+				if !harnessKnownName[n] && harnessCredential.MatchString(n) {
+					return CodeHarnessCredentialField
 				}
 			}
-			return CodeHarnessCredentialField
+			return CodeSchemaInvalid
 		}
 	}
 	return CodeSchemaInvalid

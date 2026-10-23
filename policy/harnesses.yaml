@@ -89,7 +89,7 @@ spec:
         baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
         tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
       capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
-      fake: {scenario: deadline-exceeded}
+      fake: {scenario: deadline-exceeded, disableWorkerTimeout: true}
       signature: {keyRef: cosign:strange-company/release, required: true}
       enabled: true
       stage: test-only
