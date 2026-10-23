@@ -1,0 +1,682 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://strange.company/contracts/worker-result/v1alpha1
+title: WorkerResult
+description: |
+  The structured result a worker posts to the Agent Runner (`POST /v1/worker/result`,
+  SC-WORKER-TASK-TOKEN) before exiting. Owning plan 27; SPEC §67–§69.
+
+  The result is a *claim*. The Runner independently verifies every Git fact (branch head,
+  commit ancestry, changed paths, protected paths, test manifest), re-scans the diff and the
+  handoff for secrets, and decides the execution outcome and any task transition (plan 26
+  "result ingestion"). `state` is the worker's reported outcome, not a task state:
+
+  | state | meaning | typical Runner follow-up |
+  |---|---|---|
+  | completed | the role's bounded work is done; a commit is present iff the role pushes | RED/GREEN verification, or review verdict ingestion |
+  | failed | the worker could not complete (see `failure.reason`) | failure class + retry policy (plan 29) |
+  | blocked | cannot proceed without information or permission; questions in handoff | Hermes / NEEDS_HUMAN per plan 29 |
+  | test_spec_conflict | implementer believes an acceptance test is invalid (SPEC §53) | task -> TEST_SPEC_CONFLICT |
+  | already_satisfied | tester believes the behavior exists; tests are still committed and CI decides (SPEC §51) | RED verification still runs |
+
+  The handoff is the handoff contract owned by plan 30 (`$ref`
+  https://strange.company/contracts/handoff/v1alpha1).
+type: object
+additionalProperties: false
+required: [schema_version, task_id, execution_id, repository, role, state, branch, base_commit, start_commit, commit, pushed, summary, validation, harness_report, handoff, timings]
+properties:
+  schema_version:
+    const: v1alpha1
+  task_id:
+    type: string
+    pattern: "^sc-[0-9]+$"
+  execution_id:
+    type: string
+    pattern: "^sc-[0-9]+-x[0-9]+$"
+  repository:
+    type: string
+    pattern: "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+  role:
+    type: string
+    enum: [researcher, planner, tester, implementer, reviewer]
+  state:
+    type: string
+    enum: [completed, failed, blocked, test_spec_conflict, already_satisfied]
+  branch:
+    description: "`agent/<task-id>` for pushing roles; null for read-only roles."
+    oneOf:
+      - type: string
+        pattern: "^agent/sc-[0-9]+$"
+      - type: "null"
+  base_commit:
+    $ref: "#/$defs/GitSha"
+  start_commit:
+    $ref: "#/$defs/GitSha"
+  commit:
+    description: The single commit this execution created and pushed, or null.
+    oneOf:
+      - $ref: "#/$defs/GitSha"
+      - type: "null"
+  pushed:
+    type: boolean
+  summary:
+    type: string
+    minLength: 1
+    maxLength: 4000
+  failure:
+    type: object
+    additionalProperties: false
+    required: [reason, detail]
+    properties:
+      reason:
+        type: string
+        enum:
+          - packet_invalid
+          - credentials_missing
+          - clone_failed
+          - checkout_mismatch
+          - branch_exists
+          - branch_moved
+          - context_invalid
+          - harness_start_failed
+          - harness_error
+          - harness_timeout
+          - harness_stream_incomplete
+          - malformed_harness_output
+          - model_unavailable
+          - budget_denied
+          - emergency_stop
+          - diff_precheck_failed
+          - secret_detected
+          - commit_failed
+          - push_rejected
+          - cancelled
+          - internal
+      detail:
+        type: string
+        maxLength: 2000
+  conflict:
+    description: Required when state is test_spec_conflict.
+    type: object
+    additionalProperties: false
+    required: [ac_ids, tests, explanation]
+    properties:
+      ac_ids:
+        type: array
+        minItems: 1
+        items: {type: string, pattern: "^AC-[1-9][0-9]{0,2}$"}
+      tests:
+        type: array
+        minItems: 1
+        maxItems: 50
+        items: {type: string, maxLength: 400}
+      explanation:
+        type: string
+        minLength: 20
+        maxLength: 4000
+  role_output:
+    oneOf:
+      - $ref: "#/$defs/TesterOutput"
+      - $ref: "#/$defs/ImplementerOutput"
+      - $ref: "#/$defs/ReviewerOutput"
+      - $ref: "#/$defs/ResearchReport"
+      - $ref: "#/$defs/PlanOutput"
+  validation:
+    description: Advisory local validation results (SPEC §36). Never counted as RED/GREEN evidence.
+    type: array
+    maxItems: 10
+    items:
+      type: object
+      additionalProperties: false
+      required: [name, exit_code, duration_ms, timed_out]
+      properties:
+        name:
+          type: string
+          pattern: "^[a-z][a-z0-9-]{0,40}$"
+        command:
+          type: string
+          maxLength: 1000
+        exit_code:
+          type: integer
+        duration_ms:
+          type: integer
+          minimum: 0
+        timed_out:
+          type: boolean
+        output_tail:
+          description: Last <= 8 KiB of scrubbed output.
+          type: string
+          maxLength: 8192
+  harness_report:
+    type: object
+    additionalProperties: false
+    required: [adapter, cli_version, exit_code, stream_complete, terminal_event_seen]
+    properties:
+      adapter:
+        type: string
+        enum: [claude-code, codex, opencode, fake]
+      cli_version:
+        type: string
+        maxLength: 40
+      exit_code:
+        description: Harness process exit code; -1 if killed by sc-worker.
+        type: integer
+      signal:
+        type: string
+        enum: [SIGTERM, SIGKILL]
+      stream_complete:
+        description: The END framing marker was written (L-2). False means killed mid-run.
+        type: boolean
+      terminal_event_seen:
+        type: boolean
+      is_error:
+        type: boolean
+      num_turns:
+        type: integer
+        minimum: 0
+      permission_denials:
+        description: Attempted forbidden actions reported by the harness (Claude Code permission_denials).
+        type: array
+        maxItems: 100
+        items:
+          type: object
+          additionalProperties: false
+          required: [tool]
+          properties:
+            tool: {type: string, maxLength: 120}
+            summary: {type: string, maxLength: 300}
+      self_reported_usage:
+        description: Harness-reported usage, kept only as a cross-check against the Gateway ledger (ADR-0004, L-3).
+        type: object
+        additionalProperties: false
+        properties:
+          input_tokens: {type: integer, minimum: 0}
+          output_tokens: {type: integer, minimum: 0}
+          cached_input_tokens: {type: integer, minimum: 0}
+          cost_usd: {type: number, minimum: 0}
+  handoff:
+    $ref: "https://strange.company/contracts/handoff/v1alpha1"
+  timings:
+    type: object
+    additionalProperties: false
+    required: [started_at, finished_at]
+    properties:
+      started_at: {type: string, format: date-time}
+      clone_finished_at: {type: string, format: date-time}
+      harness_started_at: {type: string, format: date-time}
+      harness_finished_at: {type: string, format: date-time}
+      finished_at: {type: string, format: date-time}
+  scrub:
+    type: object
+    additionalProperties: false
+    required: [redactions]
+    properties:
+      redactions:
+        description: Number of known-secret or pattern matches redacted by sc-worker in this result and its logs.
+        type: integer
+        minimum: 0
+allOf:
+  - if: {properties: {state: {const: completed}}}
+    then: {required: [role_output]}
+  - if: {properties: {state: {const: failed}}}
+    then: {required: [failure]}
+  - if: {properties: {state: {const: test_spec_conflict}}}
+    then:
+      required: [conflict]
+      properties: {role: {const: implementer}}
+  - if: {properties: {state: {const: already_satisfied}}}
+    then:
+      required: [role_output]
+      properties: {role: {const: tester}}
+  - if: {properties: {pushed: {const: true}}}
+    then:
+      properties:
+        commit: {$ref: "#/$defs/GitSha"}
+        branch: {type: string}
+  - if: {properties: {role: {enum: [researcher, planner, reviewer]}}}
+    then:
+      properties:
+        pushed: {const: false}
+        commit: {type: "null"}
+        branch: {type: "null"}
+$defs:
+  GitSha:
+    type: string
+    pattern: "^[a-f0-9]{40}$"
+  RepoPath:
+    type: string
+    pattern: "^(?!/)(?!.*(^|/)\\.\\.(/|$))[A-Za-z0-9._@+/-]{1,400}$"
+  TesterOutput:
+    type: object
+    additionalProperties: false
+    required: [kind, test_files, ac_mapping]
+    properties:
+      kind: {const: tester}
+      test_files:
+        type: array
+        minItems: 1
+        maxItems: 100
+        items: {$ref: "#/$defs/RepoPath"}
+      ac_mapping:
+        type: array
+        minItems: 1
+        items:
+          type: object
+          additionalProperties: false
+          required: [ac_id, tests]
+          properties:
+            ac_id: {type: string, pattern: "^AC-[1-9][0-9]{0,2}$"}
+            tests:
+              type: array
+              minItems: 1
+              items: {type: string, maxLength: 300}
+  ImplementerOutput:
+    type: object
+    additionalProperties: false
+    required: [kind, changed_files, ac_addressed]
+    properties:
+      kind: {const: implementer}
+      changed_files:
+        type: array
+        maxItems: 2000
+        items: {$ref: "#/$defs/RepoPath"}
+      ac_addressed:
+        type: array
+        items: {type: string, pattern: "^AC-[1-9][0-9]{0,2}$"}
+  ReviewerOutput:
+    type: object
+    additionalProperties: false
+    required: [kind, verdict, checks, findings]
+    properties:
+      kind: {const: reviewer}
+      purpose:
+        description: Echo of the packet's `execution.purpose` (plans 21/29). Absent means `final_review`.
+        type: string
+        enum: [final_review, test_review, investigation, adjudication]
+      verdict:
+        type: string
+        enum: [approve, request_changes, reject]
+      inspected_paths:
+        description: |
+          Paths the reviewer inspected beyond the packet (e.g. with `git diff`) because the delivered
+          implementation_diff omitted them. Guard G_REVIEW_INPUT_COMPLETE (plan 29) accepts a review only
+          if the packet diff was complete or every omitted path is listed here. Plan 26 keeps the
+          cumulative implementation diff within the reviewer budget, so this list is normally empty.
+        type: array
+        maxItems: 2000
+        items: {$ref: "#/$defs/RepoPath"}
+      conflict_decision:
+        description: Required when `purpose` is `adjudication` (TEST_SPEC_CONFLICT, plan 21 §14.6).
+        type: object
+        additionalProperties: false
+        required: [verdict, ac_ids, rationale]
+        properties:
+          verdict: {type: string, enum: [test_valid, test_invalid, spec_ambiguous]}
+          ac_ids:
+            type: array
+            minItems: 1
+            items: {type: string, pattern: "^AC-[1-9][0-9]{0,2}$"}
+          rationale: {type: string, minLength: 20, maxLength: 4000}
+          proposed_test_change:
+            description: Required for `test_invalid`.
+            type: string
+            maxLength: 4000
+        allOf:
+          - if: {properties: {verdict: {const: test_invalid}}}
+            then: {required: [proposed_test_change]}
+      reviewed_commit:
+        $ref: "#/$defs/GitSha"
+      checks:
+        description: The reviewer's legitimacy checks (SPEC §55). The Runner requires all five ids.
+        type: array
+        minItems: 5
+        items:
+          type: object
+          additionalProperties: false
+          required: [id, result]
+          properties:
+            id:
+              type: string
+              enum: [red_failed_for_right_reason, acceptance_tests_intact, green_not_by_bypass, all_ac_covered, no_out_of_scope_changes]
+            result:
+              type: string
+              enum: [pass, fail, unknown]
+            note:
+              type: string
+              maxLength: 1000
+      findings:
+        type: array
+        maxItems: 100
+        items:
+          type: object
+          additionalProperties: false
+          required: [severity, text]
+          properties:
+            severity: {type: string, enum: [blocker, major, minor, nit]}
+            ac_id: {type: string, pattern: "^AC-[1-9][0-9]{0,2}$"}
+            path: {$ref: "#/$defs/RepoPath"}
+            line: {type: integer, minimum: 1}
+            text: {type: string, maxLength: 2000}
+    allOf:
+      - if: {properties: {purpose: {const: adjudication}}, required: [purpose]}
+        then: {required: [conflict_decision]}
+  ResearchReport:
+    type: object
+    additionalProperties: false
+    required: [kind, report_markdown]
+    properties:
+      kind: {const: research_report}
+      report_markdown:
+        type: string
+        minLength: 1
+        maxLength: 65536
+      references:
+        type: array
+        maxItems: 100
+        items: {type: string, maxLength: 400}
+      context_proposals:
+        description: |
+          Proposed repository-context changes distilled from learned knowledge (SPEC §43). Workers
+          never edit protected context paths; the Runner opens one Forgejo issue per accepted
+          proposal, labelled `sc/context-proposal`, for a human to turn into a reviewed PR (plan 25).
+        type: array
+        maxItems: 5
+        items:
+          type: object
+          additionalProperties: false
+          required: [path, rationale, proposed_content]
+          properties:
+            path:
+              type: string
+              pattern: "^(AGENTS\\.md|\\.strange-company/[A-Za-z0-9._/-]{1,200})$"
+            rationale:
+              type: string
+              minLength: 20
+              maxLength: 2000
+            proposed_content:
+              description: Full proposed file content (Markdown or YAML), or a unified diff against the base revision.
+              type: string
+              minLength: 1
+              maxLength: 32768
+            evidence_refs:
+              description: Task ids, execution ids or evidence object keys supporting the proposal.
+              type: array
+              maxItems: 20
+              items: {type: string, maxLength: 300}
+  HarnessClaim:
+    description: |
+      The structured claim a harness writes to `/workspace/out/claim.json` (plan 27 §7.2, §14.9).
+      sc-worker validates it, adds identity, Git and harness facts, and turns it into a WorkerResult.
+      `failed` means the model reports that it could not complete the role.
+    type: object
+    additionalProperties: false
+    required: [state, summary, handoff]
+    properties:
+      state:
+        type: string
+        enum: [completed, failed, blocked, test_spec_conflict, already_satisfied]
+      summary:
+        type: string
+        minLength: 1
+        maxLength: 4000
+      role_output:
+        $ref: "#/properties/role_output"
+      conflict:
+        $ref: "#/properties/conflict"
+      handoff:
+        $ref: "https://strange.company/contracts/handoff/v1alpha1"
+    allOf:
+      - if: {properties: {state: {const: completed}}}
+        then: {required: [role_output]}
+      - if: {properties: {state: {const: already_satisfied}}}
+        then: {required: [role_output]}
+      - if: {properties: {state: {const: test_spec_conflict}}}
+        then: {required: [conflict]}
+  PlanOutput:
+    type: object
+    additionalProperties: false
+    required: [kind, proposed_acceptance_criteria]
+    properties:
+      kind: {const: plan}
+      proposed_acceptance_criteria:
+        type: array
+        minItems: 1
+        maxItems: 50
+        items:
+          type: object
+          additionalProperties: false
+          required: [id, text]
+          properties:
+            id: {type: string, pattern: "^AC-[1-9][0-9]{0,2}$"}
+            text: {type: string, maxLength: 2000}
+      proposed_subtasks:
+        type: array
+        maxItems: 20
+        items:
+          type: object
+          additionalProperties: false
+          required: [title, objective]
+          properties:
+            title: {type: string, maxLength: 200}
+            objective: {type: string, maxLength: 4000}
+      ambiguities:
+        type: array
+        maxItems: 30
+        items: {type: string, maxLength: 1000}
+examples:
+  - schema_version: v1alpha1
+    task_id: sc-184
+    execution_id: sc-184-x1
+    repository: projects/example
+    role: tester
+    state: completed
+    branch: agent/sc-184
+    base_commit: 0123456789abcdef0123456789abcdef01234567
+    start_commit: 0123456789abcdef0123456789abcdef01234567
+    commit: 89abcdef0123456789abcdef0123456789abcdef
+    pushed: true
+    summary: Added redirect_test.go with two tests mapping to AC-1 and AC-2.
+    role_output:
+      kind: tester
+      test_files: [internal/httpx/redirect_test.go]
+      ac_mapping:
+        - {ac_id: AC-1, tests: [TestRedirect307PreservesMethod]}
+        - {ac_id: AC-2, tests: [TestRedirect307PreservesBody]}
+    validation:
+      - {name: unit, command: go test ./..., exit_code: 1, duration_ms: 8200, timed_out: false, output_tail: "--- FAIL: TestRedirect307PreservesMethod"}
+    harness_report:
+      adapter: claude-code
+      cli_version: 2.1.290
+      exit_code: 0
+      stream_complete: true
+      terminal_event_seen: true
+      is_error: false
+      num_turns: 14
+      permission_denials: []
+      self_reported_usage: {input_tokens: 51200, output_tokens: 3100, cost_usd: 0.21}
+    handoff:
+      what_i_did: Wrote two failing tests for 307 handling.
+      what_remains: Implement method and body preservation in httpx.Client.
+      recommended_next_role: implementer
+      questions: []
+      known_risks: [The body test depends on GetBody being set by the caller.]
+    timings:
+      started_at: "2026-10-13T12:00:05Z"
+      clone_finished_at: "2026-10-13T12:00:09Z"
+      harness_started_at: "2026-10-13T12:00:10Z"
+      harness_finished_at: "2026-10-13T12:09:40Z"
+      finished_at: "2026-10-13T12:10:02Z"
+    scrub: {redactions: 0}
+  - schema_version: v1alpha1
+    task_id: sc-184
+    execution_id: sc-184-x4
+    repository: projects/example
+    role: reviewer
+    state: completed
+    branch: null
+    base_commit: 0123456789abcdef0123456789abcdef01234567
+    start_commit: fedcba9876543210fedcba9876543210fedcba98
+    commit: null
+    pushed: false
+    summary: Implementation legitimately satisfies AC-1 and AC-2.
+    role_output:
+      kind: reviewer
+      verdict: approve
+      reviewed_commit: fedcba9876543210fedcba9876543210fedcba98
+      checks:
+        - {id: red_failed_for_right_reason, result: pass}
+        - {id: acceptance_tests_intact, result: pass}
+        - {id: green_not_by_bypass, result: pass}
+        - {id: all_ac_covered, result: pass}
+        - {id: no_out_of_scope_changes, result: pass}
+      findings:
+        - {severity: nit, path: internal/httpx/client.go, line: 88, text: Consider naming the constant.}
+    validation: []
+    harness_report: {adapter: claude-code, cli_version: 2.1.290, exit_code: 0, stream_complete: true, terminal_event_seen: true, is_error: false, num_turns: 6}
+    handoff: {what_i_did: Reviewed red and green evidence and the diff., what_remains: Human merge., recommended_next_role: null, questions: [], known_risks: []}
+    timings: {started_at: "2026-10-13T13:00:00Z", finished_at: "2026-10-13T13:06:00Z"}
+  - schema_version: v1alpha1
+    task_id: sc-184
+    execution_id: sc-184-x5
+    repository: projects/example
+    role: reviewer
+    state: completed
+    branch: null
+    base_commit: 0123456789abcdef0123456789abcdef01234567
+    start_commit: fedcba9876543210fedcba9876543210fedcba98
+    commit: null
+    pushed: false
+    summary: AC-1's test over-specifies the redirect count; the criterion allows any 307 chain.
+    role_output:
+      kind: reviewer
+      purpose: adjudication
+      verdict: request_changes
+      conflict_decision:
+        verdict: test_invalid
+        ac_ids: [AC-1]
+        rationale: The test asserts exactly one redirect hop, but AC-1 only requires that the method is preserved on 307.
+        proposed_test_change: Assert the method on the final request instead of the hop count.
+      checks:
+        - {id: red_failed_for_right_reason, result: pass}
+        - {id: acceptance_tests_intact, result: pass}
+        - {id: green_not_by_bypass, result: unknown}
+        - {id: all_ac_covered, result: pass}
+        - {id: no_out_of_scope_changes, result: pass}
+      findings: []
+    validation: []
+    harness_report: {adapter: claude-code, cli_version: 2.1.290, exit_code: 0, stream_complete: true, terminal_event_seen: true, is_error: false, num_turns: 9}
+    handoff: {what_i_did: Adjudicated the conflict on AC-1., what_remains: Human approval of the test change., recommended_next_role: tester, questions: [], known_risks: []}
+    timings: {started_at: "2026-10-13T14:00:00Z", finished_at: "2026-10-13T14:05:00Z"}
+x-invalid-examples:
+  - reason: Adjudicating reviewer (purpose adjudication) without a conflict_decision.
+    value:
+      schema_version: v1alpha1
+      task_id: sc-1
+      execution_id: sc-1-x4
+      repository: a/b
+      role: reviewer
+      state: completed
+      branch: null
+      base_commit: 0123456789abcdef0123456789abcdef01234567
+      start_commit: 0123456789abcdef0123456789abcdef01234567
+      commit: null
+      pushed: false
+      summary: s
+      role_output: {kind: reviewer, purpose: adjudication, verdict: approve, checks: [{id: red_failed_for_right_reason, result: unknown}, {id: acceptance_tests_intact, result: unknown}, {id: green_not_by_bypass, result: unknown}, {id: all_ac_covered, result: unknown}, {id: no_out_of_scope_changes, result: unknown}], findings: []}
+      validation: []
+      harness_report: {adapter: fake, cli_version: "0.1.0", exit_code: 0, stream_complete: true, terminal_event_seen: true}
+      handoff: {what_i_did: x, what_remains: x, recommended_next_role: null, questions: [], known_risks: []}
+      timings: {started_at: "2026-10-13T13:00:00Z", finished_at: "2026-10-13T13:06:00Z"}
+  - reason: Reviewer (read-only role) claims a pushed commit.
+    value:
+      schema_version: v1alpha1
+      task_id: sc-1
+      execution_id: sc-1-x3
+      repository: a/b
+      role: reviewer
+      state: completed
+      branch: agent/sc-1
+      base_commit: 0123456789abcdef0123456789abcdef01234567
+      start_commit: 0123456789abcdef0123456789abcdef01234567
+      commit: 89abcdef0123456789abcdef0123456789abcdef
+      pushed: true
+      summary: s
+      role_output: {kind: reviewer, verdict: approve, checks: [{id: red_failed_for_right_reason, result: pass}, {id: acceptance_tests_intact, result: pass}, {id: green_not_by_bypass, result: pass}, {id: all_ac_covered, result: pass}, {id: no_out_of_scope_changes, result: pass}], findings: []}
+      validation: []
+      harness_report: {adapter: fake, cli_version: "0.1.0", exit_code: 0, stream_complete: true, terminal_event_seen: true}
+      handoff: {what_i_did: x, what_remains: x, recommended_next_role: null, questions: [], known_risks: []}
+      timings: {started_at: "2026-10-13T13:00:00Z", finished_at: "2026-10-13T13:06:00Z"}
+  - reason: Failed result without a failure reason.
+    value:
+      schema_version: v1alpha1
+      task_id: sc-1
+      execution_id: sc-1-x1
+      repository: a/b
+      role: tester
+      state: failed
+      branch: agent/sc-1
+      base_commit: 0123456789abcdef0123456789abcdef01234567
+      start_commit: 0123456789abcdef0123456789abcdef01234567
+      commit: null
+      pushed: false
+      summary: s
+      validation: []
+      harness_report: {adapter: fake, cli_version: "0.1.0", exit_code: 1, stream_complete: true, terminal_event_seen: true}
+      handoff: {what_i_did: x, what_remains: x, recommended_next_role: null, questions: [], known_risks: []}
+      timings: {started_at: "2026-10-13T13:00:00Z", finished_at: "2026-10-13T13:06:00Z"}
+  - reason: test_spec_conflict reported by a tester (only implementers may raise it) and without conflict details.
+    value:
+      schema_version: v1alpha1
+      task_id: sc-1
+      execution_id: sc-1-x1
+      repository: a/b
+      role: tester
+      state: test_spec_conflict
+      branch: agent/sc-1
+      base_commit: 0123456789abcdef0123456789abcdef01234567
+      start_commit: 0123456789abcdef0123456789abcdef01234567
+      commit: null
+      pushed: false
+      summary: s
+      validation: []
+      harness_report: {adapter: fake, cli_version: "0.1.0", exit_code: 0, stream_complete: true, terminal_event_seen: true}
+      handoff: {what_i_did: x, what_remains: x, recommended_next_role: null, questions: [], known_risks: []}
+      timings: {started_at: "2026-10-13T13:00:00Z", finished_at: "2026-10-13T13:06:00Z"}
+  - reason: Pushed claim without a commit SHA.
+    value:
+      schema_version: v1alpha1
+      task_id: sc-1
+      execution_id: sc-1-x2
+      repository: a/b
+      role: implementer
+      state: completed
+      branch: agent/sc-1
+      base_commit: 0123456789abcdef0123456789abcdef01234567
+      start_commit: 0123456789abcdef0123456789abcdef01234567
+      commit: null
+      pushed: true
+      summary: s
+      role_output: {kind: implementer, changed_files: [a.go], ac_addressed: [AC-1]}
+      validation: []
+      harness_report: {adapter: fake, cli_version: "0.1.0", exit_code: 0, stream_complete: true, terminal_event_seen: true}
+      handoff: {what_i_did: x, what_remains: x, recommended_next_role: null, questions: [], known_risks: []}
+      timings: {started_at: "2026-10-13T13:00:00Z", finished_at: "2026-10-13T13:06:00Z"}
+  - reason: Extra top-level field (e.g. a worker trying to set task state directly).
+    value:
+      schema_version: v1alpha1
+      task_id: sc-1
+      execution_id: sc-1-x2
+      repository: a/b
+      role: implementer
+      state: completed
+      task_state: GREEN_VERIFIED
+      branch: agent/sc-1
+      base_commit: 0123456789abcdef0123456789abcdef01234567
+      start_commit: 0123456789abcdef0123456789abcdef01234567
+      commit: 89abcdef0123456789abcdef0123456789abcdef
+      pushed: true
+      summary: s
+      role_output: {kind: implementer, changed_files: [a.go], ac_addressed: [AC-1]}
+      validation: []
+      harness_report: {adapter: fake, cli_version: "0.1.0", exit_code: 0, stream_complete: true, terminal_event_seen: true}
+      handoff: {what_i_did: x, what_remains: x, recommended_next_role: null, questions: [], known_risks: []}
+      timings: {started_at: "2026-10-13T13:00:00Z", finished_at: "2026-10-13T13:06:00Z"}
