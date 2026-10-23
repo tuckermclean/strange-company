@@ -2,7 +2,6 @@ package worker
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"os"
 	"os/signal"
@@ -201,7 +200,7 @@ func (w *worker) run() int {
 
 // exit logs the reason on stderr and returns the code.
 func (w *worker) exit(code int, msg string) int {
-	fmt.Fprintf(w.errw, "sc-worker: exit %d: %s\n", code, msg)
+	w.errf("sc-worker: exit %d: %s\n", code, msg)
 	return code
 }
 

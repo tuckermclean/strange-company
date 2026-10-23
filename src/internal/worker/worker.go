@@ -119,6 +119,17 @@ func (w *worker) log(level, event string, fields map[string]any) {
 	_, _ = w.out.Write(append(b, '\n'))
 }
 
+// errf writes one scrubbed line to stderr.
+func (w *worker) errf(format string, args ...any) {
+	line := fmt.Sprintf(format, args...)
+	if w.scrub != nil {
+		line = w.scrub.String(line)
+	}
+	w.logMu.Lock()
+	defer w.logMu.Unlock()
+	_, _ = io.WriteString(w.errw, line)
+}
+
 func (w *worker) deadline() (time.Time, bool) {
 	t, err := time.Parse(time.RFC3339, w.pi.Execution.DeadlineAt)
 	return t, err == nil
@@ -193,7 +204,7 @@ func (w *worker) onPanic(r any) (code int) {
 	code = ExitPanic
 	defer func() { _ = recover() }()
 	w.log("error", "panic", map[string]any{"value": fmt.Sprint(r)})
-	fmt.Fprintf(w.errw, "sc-worker: panic: %v\n", r)
+	w.errf("sc-worker: panic: %v\n", r)
 	w.stopHeartbeat()
 	if w.haveIdentity && !w.reported.Load() {
 		w.report(w.failedResult("internal", "panic"), modeSingle)
