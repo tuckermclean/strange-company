@@ -46,12 +46,40 @@ type shimOutcome struct {
 
 func (pl *pipeline) shimDir() string { return filepath.Join(pl.w.cfg.WorkspaceDir, ".sc-shim") }
 
+// writeAtomic writes path through path.tmp and a rename; files of the shim directory are group-readable and not
+// world-accessible (plan 27 section 7.4).
 func writeAtomic(path string, b []byte) error {
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+	if err := os.WriteFile(tmp, b, 0o640); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp, 0o640); err != nil {
+		_ = os.Remove(tmp)
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+// startAlive keeps the shim's `alive` file fresh (plan 27 section 7.4: the shim leaves when it is older than
+// 120 s) until the returned stop function is called.
+func (w *worker) startAlive() (stop func()) {
+	dir := filepath.Join(w.cfg.WorkspaceDir, ".sc-shim")
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var last time.Time
+		for {
+			if now := w.clk.Now(); last.IsZero() || now.Sub(last) >= 15*time.Second {
+				_ = writeAtomic(filepath.Join(dir, "alive"), []byte(w.stamp(now)))
+				last = now
+			}
+			if w.clk.Sleep(ctx, time.Second) != nil {
+				return
+			}
+		}
+	}()
+	return func() { cancel(); <-done }
 }
 
 // readNew returns the complete lines appended to path since *off; *partial carries an unterminated tail.
@@ -103,8 +131,9 @@ func (pl *pipeline) runShim(kind string, argv []string, env map[string]string, c
 	stream := filepath.Join(dir, fmt.Sprintf("stream-%d.log", n))
 	resPath := filepath.Join(dir, fmt.Sprintf("res-%d.json", n))
 	start := w.clk.Now()
-	hardStop := start.Add(time.Duration(timeout)*time.Second + 5*time.Second)
-	lastAlive := start
+	// The shim enforces the timeout itself (SIGTERM, then SIGKILL after the grace period); sc-worker's own
+	// backstop fires only when the shim failed to do so.
+	hardStop := start.Add(time.Duration(timeout+grace)*time.Second + 5*time.Second)
 	var off int64
 	var partial []byte
 	var cancelAt time.Time
@@ -134,16 +163,18 @@ func (pl *pipeline) runShim(kind string, argv []string, env map[string]string, c
 				out.backstop = true
 			}
 			if out.cancelled || out.backstop {
-				_ = writeAtomic(filepath.Join(dir, fmt.Sprintf("cancel-%d", n)), []byte("{}"))
-				cancelWritten, cancelAt = true, now
+				// The SIGTERM path waits min(term_grace_seconds, 20 s) before the SIGKILL (plan 27 section 14.14).
+				cg := grace
+				if w.sig.Err() != nil && cg > 20 {
+					cg = 20
+				}
+				cb, _ := json.Marshal(map[string]any{"term_grace_seconds": cg})
+				_ = writeAtomic(filepath.Join(dir, fmt.Sprintf("cancel-%d", n)), cb)
+				cancelWritten, cancelAt, grace = true, now, cg
 			}
 		} else if !now.Before(cancelAt.Add(time.Duration(grace)*time.Second + 10*time.Second)) {
 			out.lost = true
 			return out
-		}
-		if now.Sub(lastAlive) >= 15*time.Second {
-			_ = writeAtomic(filepath.Join(dir, "alive"), []byte(w.stamp(now)))
-			lastAlive = now
 		}
 		_ = w.clk.Sleep(nilCtx, shimPoll)
 	}

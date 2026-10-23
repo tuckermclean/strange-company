@@ -133,11 +133,20 @@ func (w *worker) run() int {
 	w.scrub = scrub.New(w.secrets...)
 
 	// Step 4: workspace and private layout.
-	for _, d := range []string{"repo", "context", "out", ".sc-shim"} {
+	for _, d := range []string{"repo", "context", "out"} {
 		if err := os.MkdirAll(filepath.Join(cfg.WorkspaceDir, d), 0o755); err != nil {
 			return w.exit(ExitEnv, "workspace: "+err.Error())
 		}
 	}
+	// The shim directory is shared with the harness container: group-writable, closed to others (plan 27 section 7.4).
+	shimDir := filepath.Join(cfg.WorkspaceDir, ".sc-shim")
+	if err := os.MkdirAll(shimDir, 0o770); err != nil {
+		return w.exit(ExitEnv, "workspace: "+err.Error())
+	}
+	if err := os.Chmod(shimDir, 0o770); err != nil {
+		return w.exit(ExitEnv, "workspace: "+err.Error())
+	}
+	defer w.startAlive()()
 	if err := os.MkdirAll(cfg.PrivateDir, 0o700); err != nil {
 		return w.exit(ExitEnv, "private dir: "+err.Error())
 	}
