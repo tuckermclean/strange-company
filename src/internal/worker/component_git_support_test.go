@@ -722,6 +722,38 @@ func harnessDouble(args []string) int {
 		case "bigline":
 			// S4: one stdout line of op.N bytes.
 			fmt.Println(strings.Repeat("A", op.N))
+		case "straddle":
+			// S5b (S4-N5a): one stdout line of op.N 'A' bytes, op.Content, and Args[0] (default 100) 'B' bytes.
+			trail := 100
+			if len(op.Args) > 0 {
+				fmt.Sscanf(op.Args[0], "%d", &trail)
+			}
+			fmt.Println(strings.Repeat("A", op.N) + op.Content + strings.Repeat("B", trail))
+		case "stream-direct":
+			// S5b (S4-N5b): the harness appends op.N MiB of 'x' without a newline to the shim stream file itself.
+			f, err := os.OpenFile(filepath.Join(filepath.Dir(out), ".sc-shim", "stream-1.log"), os.O_WRONLY|os.O_APPEND, 0)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "double: stream-direct:", err)
+				return 2
+			}
+			chunk := bytes.Repeat([]byte("x"), 1<<20)
+			for i := 0; i < op.N; i++ {
+				if _, err := f.Write(chunk); err != nil {
+					fmt.Fprintln(os.Stderr, "double: stream-direct:", err)
+					return 2
+				}
+			}
+			_ = f.Close()
+		case "write-gen":
+			// S5b: file op.Path = op.N 'a' bytes, op.Content, then Args[1] repeated Args[0] times, then a newline.
+			var k int
+			fmt.Sscanf(op.Args[0], "%d", &k)
+			body := strings.Repeat("a", op.N) + op.Content + strings.Repeat(op.Args[1], k) + "\n"
+			p := filepath.Join(repo, op.Path)
+			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil || os.WriteFile(p, []byte(body), 0o644) != nil {
+				fmt.Fprintln(os.Stderr, "double: write-gen", op.Path)
+				return 2
+			}
 		case "lie-commit-graph":
 			// S5a (S3-NB3): write a commit-graph in which start_commit's tree is the tree of the staged working tree,
 			// so that a diff against start_commit that trusts the graph shows nothing.
@@ -780,16 +812,27 @@ func harnessDouble(args []string) int {
 	if summary == "" {
 		summary = "Add tests for Add covering AC-1 and AC-2"
 	}
+	handoff := map[string]any{
+		"what_i_did": "Test double wrote the claim.", "what_remains": "Nothing.",
+		"recommended_next_role": nil, "questions": []any{}, "known_risks": []any{},
+	}
+	if raw := os.Getenv("SC_TEST_HARNESS_HANDOFF"); raw != "" { // S5b: JSON object merged over the default handoff
+		var over map[string]any
+		if err := json.Unmarshal([]byte(raw), &over); err != nil {
+			fmt.Fprintln(os.Stderr, "double: handoff:", err)
+			return 2
+		}
+		for k, v := range over {
+			handoff[k] = v
+		}
+	}
 	state := os.Getenv("SC_TEST_HARNESS_STATE")
 	if state == "" {
 		state = "completed"
 	}
 	claim := map[string]any{
 		"state": state, "summary": summary,
-		"handoff": map[string]any{
-			"what_i_did": "Test double wrote the claim.", "what_remains": "Nothing.",
-			"recommended_next_role": nil, "questions": []any{}, "known_risks": []any{},
-		},
+		"handoff": handoff,
 	}
 	switch role {
 	case "tester":
