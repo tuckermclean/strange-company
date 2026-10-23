@@ -228,13 +228,24 @@ var adapterFlags = map[string]bool{
 func dedupeExtraArgs(extra []string) []string {
 	out := []string{}
 	for i := 0; i < len(extra); i++ {
-		if takesValue, ok := adapterFlags[extra[i]]; ok {
-			if takesValue {
+		name, _, hasEq := strings.Cut(extra[i], "=")
+		takesValue, ok := adapterFlags[name]
+		if !ok {
+			out = append(out, extra[i])
+			continue
+		}
+		if hasEq {
+			continue
+		}
+		if name == "--allowedTools" || name == "--disallowedTools" { // variadic: swallow the value list
+			for i+1 < len(extra) && !strings.HasPrefix(extra[i+1], "-") {
 				i++
 			}
 			continue
 		}
-		out = append(out, extra[i])
+		if takesValue {
+			i++
+		}
 	}
 	return out
 }
