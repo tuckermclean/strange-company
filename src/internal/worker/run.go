@@ -126,7 +126,11 @@ func (w *worker) run() int {
 		return w.exit(ExitNoTaskToken, "task-token missing or empty")
 	}
 	w.token = tok
-	w.scrub = scrub.New(tok, w.readSecret("gateway-token"), w.readSecret("deploy-key"))
+	w.secrets = []string{tok, w.readSecret("gateway-token"), w.readSecret("deploy-key")}
+	if b, err := os.ReadFile(filepath.Join(cfg.HarnessSecretsDir, "egress-token")); err == nil {
+		w.secrets = append(w.secrets, string(b))
+	}
+	w.scrub = scrub.New(w.secrets...)
 
 	// Step 4: workspace and private layout.
 	for _, d := range []string{"repo", "context", "out", ".sc-shim"} {
@@ -191,11 +195,8 @@ func (w *worker) run() int {
 		return w.report(w.failedResult("credentials_missing", "missing or empty: "+strings.Join(absent, ", ")), modeNormal)
 	}
 
-	// The pipeline after the credential check (clone, checkout, context, harness, validation, commit, push;
-	// plan 27 sections 14.4 to 14.11) belongs to the later slices of F07. Until they land the worker reports
-	// that it stopped here, so no execution is silently dropped.
-	w.setPhase("reporting")
-	return w.report(w.failedResult("internal", "pipeline_not_implemented"), modeNormal)
+	// Plan 27 sections 14.3 to 14.12: clone, checkout, context, harness, claim, pre-checks, commit, push, result.
+	return w.runPipeline()
 }
 
 // exit logs the reason on stderr and returns the code.
