@@ -115,6 +115,19 @@ func (w *worker) git(timeout time.Duration, dir string, extraEnv []string, args 
 	return res
 }
 
+// pinPrivateEnv pins git to the sc-worker-private GIT_DIR (plan 27 section 13.3, operator decision 2026-10-23):
+// nothing the harness can write under the workspace .git is read, only its objects, through alternates.
+func (pl *pipeline) pinPrivateEnv() []string {
+	return []string{"GIT_DIR=" + pl.privGit(), "GIT_WORK_TREE=" + pl.repo, "GIT_CEILING_DIRECTORIES=" + filepath.Dir(pl.repo)}
+}
+
+func (pl *pipeline) privGit() string { return pl.w.privPath("git") }
+
+// gitPost runs a git command against the private GIT_DIR, never trusting the commit-graph.
+func (pl *pipeline) gitPost(timeout time.Duration, extraEnv []string, args ...string) gitOut {
+	return pl.w.git(timeout, pl.repo, append(pl.pinPrivateEnv(), extraEnv...), append([]string{"-c", "core.commitGraph=false"}, args...)...)
+}
+
 func (w *worker) gitRepo(timeout time.Duration, extraEnv []string, args ...string) gitOut {
 	repo := filepath.Join(w.cfg.WorkspaceDir, "repo")
 	return w.git(timeout, repo, append(pinRepoEnv(repo), extraEnv...), args...)
@@ -206,7 +219,11 @@ func (pl *pipeline) remoteHead(ref string) (string, error) {
 	w := pl.w
 	var last gitOut
 	for attempt := 0; attempt < 2; attempt++ {
-		last = w.git(60*time.Second, pl.repo, pinRepoEnv(pl.repo), "ls-remote", "origin", ref)
+		if pl.priv {
+			last = pl.gitPost(60*time.Second, nil, "ls-remote", "origin", ref)
+		} else {
+			last = w.git(60*time.Second, pl.repo, pinRepoEnv(pl.repo), "ls-remote", "origin", ref)
+		}
 		if last.err == nil {
 			for _, l := range strings.Split(last.text(), "\n") {
 				f := strings.Fields(l)
@@ -274,7 +291,107 @@ func (pl *pipeline) checkout() *stageFail {
 	if err := pl.snapshotInternals(); err != nil {
 		return &stageFail{reason: "internal", detail: "git internals snapshot: " + err.Error()}
 	}
+	if err := pl.setupPrivateGit(); err != nil {
+		return &stageFail{reason: "internal", detail: "private git dir: " + err.Error()}
+	}
 	return nil
+}
+
+// setupPrivateGit builds the sc-worker-private GIT_DIR: its own config (written here, nothing from the
+// workspace), a detached HEAD and an index at start_commit, empty hooks/ and info/, and an object directory whose
+// alternates file points at the workspace clone's objects. New objects are written privately.
+func (pl *pipeline) setupPrivateGit() error {
+	gd := pl.privGit()
+	if err := os.RemoveAll(gd); err != nil {
+		return err
+	}
+	for _, d := range []string{"hooks", "info", "refs/heads", "refs/tags", "objects/info", "objects/pack"} {
+		if err := os.MkdirAll(filepath.Join(gd, d), 0o700); err != nil {
+			return err
+		}
+	}
+	g := pl.p.Git
+	cfg := "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = false\n" +
+		"[remote \"origin\"]\n\turl = " + quoteConfig(g.CloneURL) + "\n"
+	files := map[string]string{
+		"config":                  cfg,
+		"HEAD":                    g.StartCommit + "\n",
+		"objects/info/alternates": filepath.Join(pl.repo, ".git", "objects") + "\n",
+	}
+	for n, c := range files {
+		if err := os.WriteFile(filepath.Join(gd, n), []byte(c), 0o600); err != nil {
+			return err
+		}
+	}
+	if r := pl.gitPost(60*time.Second, nil, "read-tree", g.StartCommit); r.err != nil {
+		return errors.New("read-tree: " + tail(r.stderr, 300))
+	}
+	pl.priv = true
+	return nil
+}
+
+var shaRe = regexp.MustCompile(`^[0-9a-f]{40}([0-9a-f]{24})?\n?$`)
+
+// readRegular reads a small regular file below base without following a symlink at any component.
+func readRegular(base, rel string, limit int64) ([]byte, bool) {
+	cur := base
+	parts := strings.Split(rel, "/")
+	for i, part := range parts {
+		if part == "" || part == "." || part == ".." {
+			return nil, false
+		}
+		cur = filepath.Join(cur, part)
+		st, err := os.Lstat(cur)
+		if err != nil {
+			return nil, false
+		}
+		if i < len(parts)-1 {
+			if !st.IsDir() {
+				return nil, false
+			}
+		} else if !st.Mode().IsRegular() || st.Size() > limit {
+			return nil, false
+		}
+	}
+	f, err := os.Open(cur)
+	if err != nil {
+		return nil, false
+	}
+	defer f.Close()
+	b := make([]byte, limit+1)
+	n, _ := f.Read(b)
+	if int64(n) > limit {
+		return nil, false
+	}
+	return b[:n], true
+}
+
+// harnessHead returns the commit the harness left on the workspace branch, read as a plain file (the workspace
+// refs are not trusted beyond that); "" when it is missing or corrupt.
+func (pl *pipeline) harnessHead() string {
+	gd := filepath.Join(pl.repo, ".git")
+	b, ok := readRegular(gd, "HEAD", 4096)
+	if !ok {
+		return ""
+	}
+	h := strings.TrimSpace(string(b))
+	if strings.HasPrefix(h, "ref: ") {
+		ref := strings.TrimPrefix(h, "ref: ")
+		if !strings.HasPrefix(ref, "refs/") {
+			return ""
+		}
+		if b, ok = readRegular(gd, ref, 256); !ok {
+			return ""
+		}
+		h = strings.TrimSpace(string(b))
+	}
+	if !shaRe.MatchString(h) {
+		return ""
+	}
+	if r := pl.gitPost(30*time.Second, nil, "cat-file", "-e", h+"^{commit}"); r.err != nil {
+		return ""
+	}
+	return h
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -427,6 +544,13 @@ func (pl *pipeline) restoreInternals() *stageFail {
 		if _, err := os.Lstat(alt); err == nil {
 			_ = os.RemoveAll(alt)
 			differed = append(differed, filepath.Join("objects", "info", "alternates"))
+		}
+	}
+	for _, n := range []string{"commit-graph", "commit-graphs"} {
+		p := filepath.Join(gd, "objects", "info", n)
+		if _, err := os.Lstat(p); err == nil {
+			_ = os.RemoveAll(p)
+			differed = append(differed, filepath.Join("objects", "info", n))
 		}
 	}
 	pl.restored = true
