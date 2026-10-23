@@ -109,6 +109,8 @@ type pipeline struct {
 	claim                             *claimDoc
 	validation                        []any
 	skipPrechecks                     bool
+	repoDev, repoIno                  uint64 // identity of <workspace>/repo recorded at clone time
+	repoRec                           bool
 	refused                           map[string]bool // paths already reported as symlink_refused
 
 	cloneEnd, harnessStart, harnessEnd time.Time
@@ -232,7 +234,13 @@ func (pl *pipeline) commitAndPush() (string, *stageFail) {
 		w.log("info", "harness_commits_folded", map[string]any{"count": n})
 	}
 	if r := pl.gitPost(120*time.Second, nil, "add", "-A", "--", ":/"); r.err != nil {
+		if f := pl.verifyRepo(); f != nil {
+			return "", f
+		}
 		return "", &stageFail{reason: "commit_failed", detail: "git add: " + tail(r.stderr, 500)}
+	}
+	if f := pl.verifyRepo(); f != nil {
+		return "", f
 	}
 	ns := pl.gitPost(60*time.Second, nil, "diff", "--cached", "--name-status", "-M", "-z", g.StartCommit)
 	if ns.err != nil {
@@ -288,6 +296,9 @@ func (pl *pipeline) commitAndPush() (string, *stageFail) {
 	}
 	sha := pl.gitPost(30*time.Second, nil, "rev-parse", "HEAD").text()
 
+	if f := pl.verifyRepo(); f != nil {
+		return "", f
+	}
 	// Push.
 	w.setPhase("pushing")
 	ref := "refs/heads/" + g.Branch

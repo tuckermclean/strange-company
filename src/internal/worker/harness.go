@@ -92,7 +92,7 @@ func (t *streamTail) takeDropped() int {
 
 // open opens the stream file below the tail's root without following a link.
 func (t *streamTail) open(path string) (*os.File, error) {
-	rel, ok := strings.CutPrefix(path, t.root+"/")
+	rel, ok := strings.CutPrefix(filepath.Clean(path), filepath.Clean(t.root)+"/")
 	if !ok {
 		return nil, errBadPath
 	}

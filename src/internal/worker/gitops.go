@@ -130,6 +130,75 @@ func (pl *pipeline) pinPrivateEnv() []string {
 	return []string{"GIT_DIR=" + pl.privGit(), "GIT_WORK_TREE=" + pl.repo, "GIT_CEILING_DIRECTORIES=" + filepath.Dir(pl.repo)}
 }
 
+// The helpers below resolve a path below the repository beneath the workspace directory ("repo/<rel>", no symlink
+// followed at any component, repo itself included).
+func (pl *pipeline) rReadFile(rel string, limit int64) ([]byte, error) {
+	return readRegularFile(pl.w.cfg.WorkspaceDir, "repo/"+rel, limit)
+}
+
+func (pl *pipeline) rOpenDir(rel string) (*os.File, error) {
+	return openDir(pl.w.cfg.WorkspaceDir, "repo/"+rel)
+}
+
+func (pl *pipeline) rRemove(rel string) (bool, error) {
+	return removeRel(pl.w.cfg.WorkspaceDir, "repo/"+rel)
+}
+
+func (pl *pipeline) rMkdir(rel string, mode uint32) error {
+	return mkdirRel(pl.w.cfg.WorkspaceDir, "repo/"+rel, mode)
+}
+
+func (pl *pipeline) rWriteNew(rel string, data []byte, mode uint32) error {
+	return writeRelNew(pl.w.cfg.WorkspaceDir, "repo/"+rel, data, mode)
+}
+
+// recordRepo opens <workspace>/repo without following a link and remembers its (device, inode).
+func (pl *pipeline) recordRepo() error {
+	root, err := openRoot(pl.w.cfg.WorkspaceDir)
+	if err != nil {
+		return err
+	}
+	defer syscall.Close(root)
+	fd, err := syscall.Openat(root, "repo", syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return err
+	}
+	defer syscall.Close(fd)
+	var st syscall.Stat_t
+	if err := syscall.Fstat(fd, &st); err != nil {
+		return err
+	}
+	pl.repoDev, pl.repoIno, pl.repoRec = uint64(st.Dev), uint64(st.Ino), true
+	return nil
+}
+
+// verifyRepo checks, without following a link, that <workspace>/repo is still the directory recorded at clone time.
+func (pl *pipeline) verifyRepo() *stageFail {
+	if !pl.repoRec {
+		return nil
+	}
+	tampered := &stageFail{reason: "internal", detail: "workspace_tampered"}
+	root, err := openRoot(pl.w.cfg.WorkspaceDir)
+	if err != nil {
+		return &stageFail{reason: "internal", detail: "workspace: " + err.Error()}
+	}
+	defer syscall.Close(root)
+	var st syscall.Stat_t
+	if err := fstatatNoFollow(root, "repo", &st); err != nil {
+		pl.refuse(pl.repo, errNotRegular)
+		return tampered
+	}
+	switch {
+	case st.Mode&syscall.S_IFMT == syscall.S_IFLNK:
+		pl.refuse(pl.repo, errSymlink)
+		return tampered
+	case st.Mode&syscall.S_IFMT != syscall.S_IFDIR, uint64(st.Dev) != pl.repoDev, uint64(st.Ino) != pl.repoIno:
+		pl.refuse(pl.repo, errNotRegular)
+		return tampered
+	}
+	return nil
+}
+
 func (pl *pipeline) privGit() string { return pl.w.privPath("git") }
 
 // gitPost runs a git command against the private GIT_DIR, never trusting the commit-graph.
@@ -145,6 +214,9 @@ var postFlags = []string{
 }
 
 func (pl *pipeline) gitPostIn(timeout time.Duration, extraEnv []string, stdin []byte, args ...string) gitOut {
+	if pl.verifyRepo() != nil {
+		return gitOut{err: errors.New("workspace_tampered"), code: -1}
+	}
 	return pl.w.gitIn(timeout, pl.repo, append(pl.pinPrivateEnv(), extraEnv...), stdin, append(append([]string{}, postFlags...), args...)...)
 }
 
@@ -205,6 +277,9 @@ func (pl *pipeline) clone() *stageFail {
 	g := pl.p.Git
 	if r := w.git(30*time.Second, w.cfg.WorkspaceDir, nil, "init", "-q", pl.repo); r.err != nil {
 		return &stageFail{reason: "clone_failed", detail: "git init: " + tail(r.stderr, 1024)}
+	}
+	if err := pl.recordRepo(); err != nil {
+		return &stageFail{reason: "internal", detail: "repo directory: " + err.Error()}
 	}
 	if r := w.git(30*time.Second, pl.repo, pinRepoEnv(pl.repo), "remote", "add", "origin", g.CloneURL); r.err != nil {
 		return &stageFail{reason: "clone_failed", detail: "git remote add: " + tail(r.stderr, 1024)}
@@ -371,7 +446,7 @@ func packedRef(b []byte, ref string) string {
 
 // readGit reads a small regular file of the workspace .git without following a link at any component.
 func (pl *pipeline) readGit(rel string, limit int64) ([]byte, bool) {
-	b, err := readRegularFile(pl.repo, ".git/"+rel, limit)
+	b, err := pl.rReadFile(".git/"+rel, limit)
 	if err != nil {
 		if isRefusal(err) {
 			pl.refuse(filepath.Join(pl.repo, ".git", rel), err)
@@ -473,13 +548,16 @@ func (pl *pipeline) snapshotInternals() error {
 // when anything differed. A .git (or hooks, info, objects, objects/info) that is not a real directory is tampering.
 // Every read, write and delete below goes through safefs.go: nothing is followed through a link the harness planted.
 func (pl *pipeline) restoreInternals() *stageFail {
+	if f := pl.verifyRepo(); f != nil {
+		return f
+	}
 	if pl.restored {
 		return nil
 	}
 	w := pl.w
 	tampered := &stageFail{reason: "internal", detail: "workspace_tampered"}
 	for _, d := range []string{".git", ".git/hooks", ".git/info", ".git/objects", ".git/objects/info"} {
-		f, err := openDir(pl.repo, d)
+		f, err := pl.rOpenDir(d)
 		switch {
 		case err == nil:
 			_ = f.Close()
@@ -509,7 +587,7 @@ func (pl *pipeline) restoreInternals() *stageFail {
 		if _, err := os.Lstat(filepath.Join(dir, "present-"+strings.ReplaceAll(n, "/", "_"))); err == nil {
 			continue
 		}
-		removed, err := removeRel(pl.repo, ".git/"+n)
+		removed, err := pl.rRemove(".git/" + n)
 		if f := guard(".git/"+n, err); f != nil {
 			return f
 		}
@@ -524,7 +602,7 @@ func (pl *pipeline) restoreInternals() *stageFail {
 		wantAbsent := werr != nil && absentErr == nil
 		switch {
 		case wantAbsent:
-			removed, err := removeRel(pl.repo, rel)
+			removed, err := pl.rRemove(rel)
 			if sf := guard(rel, err); sf != nil {
 				return sf
 			}
@@ -534,22 +612,22 @@ func (pl *pipeline) restoreInternals() *stageFail {
 		case werr != nil:
 			return &stageFail{reason: "internal", detail: "git internals snapshot unreadable"}
 		default:
-			cur, rerr := readRegularFile(pl.repo, rel, int64(len(want))+1)
+			cur, rerr := pl.rReadFile(rel, int64(len(want))+1)
 			if rerr == nil && bytes.Equal(cur, want) {
 				continue
 			}
 			if isRefusal(rerr) {
 				pl.refuse(filepath.Join(pl.repo, rel), rerr)
 			}
-			if _, err := removeRel(pl.repo, rel); err != nil {
+			if _, err := pl.rRemove(rel); err != nil {
 				return &stageFail{reason: "internal", detail: "restore " + f.rel + ": " + err.Error()}
 			}
 			if strings.Contains(f.rel, "/") {
-				if err := mkdirRel(pl.repo, rel, 0o755); err != nil && !errors.Is(err, syscall.EEXIST) {
+				if err := pl.rMkdir(rel, 0o755); err != nil && !errors.Is(err, syscall.EEXIST) {
 					return &stageFail{reason: "internal", detail: "restore " + f.rel + ": " + err.Error()}
 				}
 			}
-			if err := writeRelNew(pl.repo, rel, want, 0o644); err != nil {
+			if err := pl.rWriteNew(rel, want, 0o644); err != nil {
 				return &stageFail{reason: "internal", detail: "restore " + f.rel + ": " + err.Error()}
 			}
 			differed = append(differed, f.rel)
@@ -561,19 +639,19 @@ func (pl *pipeline) restoreInternals() *stageFail {
 			known[n] = true
 		}
 	}
-	if hd, err := openDir(pl.repo, ".git/hooks"); err == nil {
+	if hd, err := pl.rOpenDir(".git/hooks"); err == nil {
 		names, _ := hd.Readdirnames(-1)
 		_ = hd.Close()
 		for _, n := range names {
 			if !known[n] {
-				if _, err := removeRel(pl.repo, ".git/hooks/"+n); err == nil {
+				if _, err := pl.rRemove(".git/hooks/" + n); err == nil {
 					differed = append(differed, filepath.Join("hooks", n))
 				}
 			}
 		}
 	}
 	if _, err := os.Lstat(filepath.Join(dir, "alternates.present")); err != nil {
-		removed, err := removeRel(pl.repo, ".git/objects/info/alternates")
+		removed, err := pl.rRemove(".git/objects/info/alternates")
 		if f := guard(".git/objects/info/alternates", err); f != nil {
 			return f
 		}
@@ -582,7 +660,7 @@ func (pl *pipeline) restoreInternals() *stageFail {
 		}
 	}
 	for _, n := range []string{"commit-graph", "commit-graphs"} {
-		removed, err := removeRel(pl.repo, ".git/objects/info/"+n)
+		removed, err := pl.rRemove(".git/objects/info/" + n)
 		if f := guard(".git/objects/info/"+n, err); f != nil {
 			return f
 		}

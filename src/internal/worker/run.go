@@ -67,7 +67,7 @@ func DefaultConfig() Config {
 		cfg.SecretsDir = v
 	}
 	if v := os.Getenv("SC_WORKSPACE"); v != "" {
-		cfg.WorkspaceDir = v
+		cfg.WorkspaceDir = filepath.Clean(v)
 	}
 	return cfg
 }

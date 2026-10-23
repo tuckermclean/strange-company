@@ -70,7 +70,7 @@ func DefaultShimConfig() ShimConfig {
 		Stderr:            os.Stderr,
 	}
 	if v := os.Getenv("SC_WORKSPACE"); v != "" {
-		cfg.WorkspaceDir = v
+		cfg.WorkspaceDir = filepath.Clean(v)
 	}
 	return cfg
 }

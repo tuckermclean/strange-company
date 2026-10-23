@@ -2,7 +2,6 @@ package worker
 
 import (
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -352,12 +351,37 @@ func writeAtomic(path string, b []byte) error {
 		return err
 	}
 	// The rename is resolved through the descriptor of the directory the temporary file was created in.
-	dir := fmt.Sprintf("/proc/self/fd/%d/", dfd)
-	if err := os.Rename(dir+name+".tmp", dir+name); err != nil {
+	if err := renameat(dfd, name+".tmp", name); err != nil {
 		_ = unlinkat(dfd, name+".tmp", 0)
 		return err
 	}
 	return nil
+}
+
+func renameat(dfd int, from, to string) error {
+	for {
+		err := syscall.Renameat(dfd, from, dfd, to)
+		if !errors.Is(err, syscall.EINTR) {
+			return err
+		}
+	}
+}
+
+func fstatatNoFollow(dfd int, name string, st *syscall.Stat_t) error {
+	p, err := syscall.BytePtrFromString(name)
+	if err != nil {
+		return err
+	}
+	for {
+		_, _, e := syscall.Syscall6(syscall.SYS_NEWFSTATAT, uintptr(dfd), uintptr(unsafe.Pointer(p)), uintptr(unsafe.Pointer(st)), 0x100, 0, 0)
+		if e == syscall.EINTR {
+			continue
+		}
+		if e != 0 {
+			return e
+		}
+		return nil
+	}
 }
 
 // refuse logs symlink_refused once per path.
