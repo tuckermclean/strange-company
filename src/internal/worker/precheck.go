@@ -156,15 +156,23 @@ func runPrechecks(pol fullPolicy, changes []change, patchBytes int, required boo
 }
 
 // secretPaths returns the files whose added lines match the scrubber sets (plan 27 sections 13.4 and 14.10).
-// The patch is `git diff -U0`; only added lines are examined and no matched value is returned.
+// The patch is a plain `git diff --cached`; only added lines are examined (header lines are recognised only
+// between a `diff --git` line and the first hunk, so an added line that looks like a header is still scanned)
+// and no matched value is returned.
 func secretPaths(secrets []string, patch string) []string {
 	s := scrub.New(secrets...)
 	added := map[string]*strings.Builder{}
 	var order []string
 	cur := ""
+	inHeader := false
 	for _, l := range strings.Split(patch, "\n") {
 		switch {
-		case strings.HasPrefix(l, "+++ "):
+		case !inHeader && strings.HasPrefix(l, "diff --git "):
+			inHeader = true
+			cur = ""
+		case inHeader && strings.HasPrefix(l, "@@"):
+			inHeader = false
+		case inHeader && strings.HasPrefix(l, "+++ "):
 			cur = strings.TrimPrefix(strings.TrimPrefix(l, "+++ "), "b/")
 			if l == "+++ /dev/null" {
 				cur = ""
@@ -173,7 +181,7 @@ func secretPaths(secrets []string, patch string) []string {
 				added[cur] = &strings.Builder{}
 				order = append(order, cur)
 			}
-		case strings.HasPrefix(l, "+") && cur != "":
+		case !inHeader && strings.HasPrefix(l, "+") && cur != "":
 			added[cur].WriteString(l[1:])
 			added[cur].WriteByte('\n')
 		}

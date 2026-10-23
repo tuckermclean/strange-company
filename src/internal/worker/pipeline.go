@@ -190,7 +190,7 @@ func (pl *pipeline) run() int {
 		return w.terminate()
 	}
 	if claim.State == "failed" {
-		return pl.finishFail(&stageFail{reason: "harness_error", detail: "claim: the harness reported state failed", partial: true})
+		return pl.finishFail(&stageFail{reason: "harness_error", detail: "claim_failed: the harness reported state failed", partial: true})
 	}
 	if !commitState {
 		if g.PushAllowed {
