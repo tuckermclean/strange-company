@@ -94,6 +94,7 @@ type pipeline struct {
 	repo    string
 	keyPath string
 	lease   string
+	priv    bool // the private GIT_DIR is set up
 
 	restored, doneWritten, harnessRan bool
 	reqN                              int
@@ -216,31 +217,24 @@ func (pl *pipeline) commitAndPush() (string, *stageFail) {
 	if f := pl.restoreInternals(); f != nil {
 		return "", f
 	}
-	head := w.gitRepo(30*time.Second, nil, "rev-parse", "HEAD")
-	if head.err != nil {
-		return "", &stageFail{reason: "diff_precheck_failed", detail: "head_not_descendant (HEAD unreadable)", partial: true}
-	}
-	if head.text() != g.StartCommit {
-		if r := w.gitRepo(30*time.Second, nil, "merge-base", "--is-ancestor", g.StartCommit, "HEAD"); r.err != nil {
+	if head := pl.harnessHead(); head != "" && head != g.StartCommit {
+		if r := pl.gitPost(30*time.Second, nil, "merge-base", "--is-ancestor", g.StartCommit, head); r.err != nil {
 			return "", &stageFail{reason: "diff_precheck_failed", detail: "head_not_descendant", partial: true}
 		}
-		count := w.gitRepo(30*time.Second, nil, "rev-list", "--count", g.StartCommit+"..HEAD").text()
-		if r := w.gitRepo(60*time.Second, nil, "reset", "-q", "--soft", g.StartCommit); r.err != nil {
-			return "", &stageFail{reason: "commit_failed", detail: "reset --soft: " + tail(r.stderr, 500)}
-		}
+		count := pl.gitPost(30*time.Second, nil, "rev-list", "--count", g.StartCommit+".."+head).text()
 		var n int
 		fmt.Sscanf(count, "%d", &n)
 		w.log("info", "harness_commits_folded", map[string]any{"count": n})
 	}
-	if r := w.gitRepo(120*time.Second, nil, "add", "-A", "--", ":/"); r.err != nil {
+	if r := pl.gitPost(120*time.Second, nil, "add", "-A", "--", ":/"); r.err != nil {
 		return "", &stageFail{reason: "commit_failed", detail: "git add: " + tail(r.stderr, 500)}
 	}
-	ns := w.gitRepo(60*time.Second, nil, "diff", "--cached", "--name-status", "-M", "-z", g.StartCommit)
+	ns := pl.gitPost(60*time.Second, nil, "diff", "--cached", "--name-status", "-M", "-z", g.StartCommit)
 	if ns.err != nil {
 		return "", &stageFail{reason: "commit_failed", detail: "git diff: " + tail(ns.stderr, 500)}
 	}
 	changes := parseNameStatus(ns.stdout)
-	patch := w.gitRepo(120*time.Second, nil, "diff", "--cached", "--no-ext-diff", "--no-textconv", "-M", g.StartCommit)
+	patch := pl.gitPost(120*time.Second, nil, "diff", "--cached", "--no-ext-diff", "--no-textconv", "--text", "-M", g.StartCommit)
 	if patch.err != nil {
 		return "", &stageFail{reason: "commit_failed", detail: "git diff: " + tail(patch.stderr, 500)}
 	}
@@ -278,23 +272,23 @@ func (pl *pipeline) commitAndPush() (string, *stageFail) {
 		"GIT_AUTHOR_NAME=" + c.AuthorName, "GIT_AUTHOR_EMAIL=" + c.AuthorEmail, "GIT_AUTHOR_DATE=" + when,
 		"GIT_COMMITTER_NAME=" + c.AuthorName, "GIT_COMMITTER_EMAIL=" + c.AuthorEmail, "GIT_COMMITTER_DATE=" + when,
 	}
-	if r := w.gitRepo(120*time.Second, ident, "commit", "-q", "--no-verify", "--cleanup=verbatim", "-F", msgPath); r.err != nil {
+	if r := pl.gitPost(120*time.Second, ident, "commit", "-q", "--no-verify", "--cleanup=verbatim", "-F", msgPath); r.err != nil {
 		return "", &stageFail{reason: "commit_failed", detail: "git commit: " + tail(r.stderr, 500)}
 	}
-	if n := w.gitRepo(30*time.Second, nil, "rev-list", "--count", g.StartCommit+"..HEAD").text(); n != "1" {
+	if n := pl.gitPost(30*time.Second, nil, "rev-list", "--count", g.StartCommit+"..HEAD").text(); n != "1" {
 		return "", &stageFail{reason: "commit_failed", detail: "expected one commit on top of start_commit, found " + n}
 	}
-	if p := w.gitRepo(30*time.Second, nil, "rev-parse", "HEAD^").text(); p != g.StartCommit {
+	if p := pl.gitPost(30*time.Second, nil, "rev-parse", "HEAD^").text(); p != g.StartCommit {
 		return "", &stageFail{reason: "commit_failed", detail: "the commit's parent is not start_commit"}
 	}
-	sha := w.gitRepo(30*time.Second, nil, "rev-parse", "HEAD").text()
+	sha := pl.gitPost(30*time.Second, nil, "rev-parse", "HEAD").text()
 
 	// Push.
 	w.setPhase("pushing")
 	ref := "refs/heads/" + g.Branch
 	var last gitOut
 	for attempt := 0; ; attempt++ {
-		last = w.gitRepo(120*time.Second, nil, "push", "--porcelain", "--no-verify", "origin", pl.lease, "HEAD:"+ref)
+		last = pl.gitPost(120*time.Second, nil, "push", "--porcelain", "--no-verify", "origin", pl.lease, "HEAD:"+ref)
 		if last.err == nil {
 			break
 		}
@@ -382,13 +376,13 @@ func (pl *pipeline) partialDiff() string {
 	if pl.restoreInternals() != nil {
 		return ""
 	}
-	if r := w.gitRepo(120*time.Second, nil, "add", "-A", "--", ":/"); r.err != nil {
+	if r := pl.gitPost(120*time.Second, nil, "add", "-A", "--", ":/"); r.err != nil {
 		return ""
 	}
-	if r := w.gitRepo(60*time.Second, nil, "diff", "--cached", "--quiet", g.StartCommit); r.err == nil || r.code != 1 {
+	if r := pl.gitPost(60*time.Second, nil, "diff", "--cached", "--quiet", g.StartCommit); r.err == nil || r.code != 1 {
 		return ""
 	}
-	d := w.gitRepo(120*time.Second, nil, "diff", "--cached", "--no-ext-diff", "--no-textconv", g.StartCommit)
+	d := pl.gitPost(120*time.Second, nil, "diff", "--cached", "--no-ext-diff", "--no-textconv", "--text", g.StartCommit)
 	if d.err != nil {
 		return ""
 	}
@@ -409,7 +403,7 @@ func (pl *pipeline) partialDiff() string {
 	}
 	fmt.Fprintln(w.out, "::SC-PARTIAL-DIFF-END::")
 	w.logMu.Unlock()
-	ns := w.gitRepo(60*time.Second, nil, "diff", "--cached", "--numstat", g.StartCommit)
+	ns := pl.gitPost(60*time.Second, nil, "diff", "--cached", "--numstat", g.StartCommit)
 	var parts []string
 	for _, l := range strings.Split(ns.text(), "\n") {
 		if f := strings.Split(l, "\t"); len(f) == 3 {
