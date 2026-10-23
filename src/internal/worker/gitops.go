@@ -12,6 +12,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"strange.company/sc/internal/clock"
 )
 
 // Git layer of sc-worker (plan 27 sections 13.3 and 14.3 to 14.11). Every invocation runs /usr/bin/git with the
@@ -27,6 +29,71 @@ var gitHardening = []string{
 }
 
 const gitOutCap = 16 << 20
+
+// transportGrace is how long a network git command may run without any child process (after it had one) before it is
+// considered stuck on a transport that is gone: ssh exited, but a lingering descendant of it holds the pipe git reads,
+// so git never sees the end of the stream (S4-NB-d). The wait is real time: the subject is a real process.
+const transportGrace = 10 * time.Second
+
+const transportPoll = 500 * time.Millisecond
+
+// networkGit reports whether args (a git argument list, leading -c pairs included) is a command that talks to the
+// remote through the ssh transport.
+func networkGit(args []string) bool {
+	for i := 0; i < len(args); i++ {
+		if args[i] == "-c" {
+			i++
+			continue
+		}
+		switch args[i] {
+		case "fetch", "push", "ls-remote", "clone":
+			return true
+		}
+		return false
+	}
+	return false
+}
+
+// watchTransport polls the children of the git process pid until stop is closed. When git has had a child (its
+// transport) and has had none for transportGrace, it kills git's process group and reports true.
+func watchTransport(pid int, stop <-chan struct{}) bool {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		<-stop
+		cancel()
+	}()
+	seen := false
+	idle := time.Duration(0)
+	for {
+		if (clock.Real{}).Sleep(ctx, transportPoll) != nil {
+			return false
+		}
+		live := false
+		for _, p := range procTable() {
+			if p.ppid != pid {
+				continue
+			}
+			seen = true // an ended transport (a zombie git has not reaped) counts as a child git has had
+			if !p.zombie {
+				live = true
+			}
+		}
+		switch {
+		case live:
+			idle = 0
+		case seen:
+			idle += transportPoll
+			if idle >= transportGrace {
+				_ = syscall.Kill(-pid, syscall.SIGKILL)
+				return true
+			}
+		}
+	}
+}
+
+// gitWaitDelay bounds how long Wait lingers for output pipes that a descendant of git still holds open.
+const gitWaitDelay = 3 * time.Second
 
 type capBuf struct {
 	b     []byte
@@ -112,8 +179,37 @@ func (w *worker) gitIn(timeout time.Duration, dir string, extraEnv []string, std
 	var out capBuf
 	var errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
-	err := cmd.Run()
-	res := gitOut{stdout: out.b, total: out.total, stderr: w.scrub.String(errb.String()), err: err}
+	// git runs in a process group of its own: a timeout kills the whole group, and a background child that outlives git
+	// (an ssh left holding the output pipes) can delay Wait by gitWaitDelay at most and is killed with the group (S4-NB-d).
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		return cmd.Process.Kill()
+	}
+	cmd.WaitDelay = gitWaitDelay
+	var err error
+	lingered := false
+	if err = cmd.Start(); err == nil {
+		stop := make(chan struct{})
+		flag := make(chan bool, 1)
+		if networkGit(args) {
+			go func() { flag <- watchTransport(cmd.Process.Pid, stop) }()
+		} else {
+			flag <- false
+		}
+		err = cmd.Wait()
+		close(stop)
+		lingered = <-flag
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+	if errors.Is(err, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.Success() {
+		err = nil // git succeeded; only a lingering descendant kept the pipes open
+	}
+	msg := errb.String()
+	if lingered {
+		msg += "sc-worker: git was killed: its transport process had ended but a lingering process kept git waiting\n"
+	}
+	res := gitOut{stdout: out.b, total: out.total, stderr: w.scrub.String(msg), err: err}
 	if err != nil {
 		res.code = -1
 		var ee *exec.ExitError

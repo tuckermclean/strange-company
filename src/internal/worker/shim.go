@@ -99,6 +99,7 @@ type shimState struct {
 type shimJob struct {
 	n      string
 	grace  time.Duration
+	pgid   int                // process group of the job's leader (0 until it started)
 	cancel chan time.Duration // termination request with the grace period (buffered, non-blocking sends)
 	kill   chan struct{}      // closed once for the immediate kill; never dropped, whatever sits in cancel
 	once   sync.Once
@@ -126,6 +127,9 @@ func Shim(cfg ShimConfig) int {
 		s.errw = io.Discard
 	}
 	s.dir = filepath.Join(cfg.WorkspaceDir, ".sc-shim")
+	// The shim adopts the orphans of its jobs (a double-forked, setsid'd harness descendant is re-parented to the
+	// nearest subreaper), so that it can find and kill them after each job (plan 27 section 7.4, review S4 N4).
+	_, _, _ = syscall.RawSyscall(syscall.SYS_PRCTL, prSetChildSubreaper, 1, 0)
 
 	var sigRecv atomic.Bool
 	sigc := make(chan os.Signal, 4)
@@ -190,6 +194,19 @@ func (s *shimState) idle() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.running) == 0
+}
+
+// prSetChildSubreaper is PR_SET_CHILD_SUBREAPER of prctl(2).
+const prSetChildSubreaper = 36
+
+// ShimSweepMode names how the shim kills the leftovers of a job: "all" when it is PID 1 of its container (the
+// container's init: kill(-1, SIGKILL) reaches every process), "descendants" anywhere else (it walks its own process
+// tree). Nothing else may ever lead to kill(-1).
+func ShimSweepMode(pid int) string {
+	if pid == 1 {
+		return "all"
+	}
+	return "descendants"
 }
 
 // killNow is the termination request that skips the grace period (SIGKILL at once).
@@ -506,6 +523,9 @@ func (s *shimState) runJob(j *shimJob) {
 		return
 	}
 	pgid := cmd.Process.Pid
+	s.mu.Lock()
+	j.pgid = pgid
+	s.mu.Unlock()
 	exited := make(chan error, 1)
 	go func() { exited <- cmd.Wait() }()
 
@@ -547,10 +567,24 @@ func (s *shimState) runJob(j *shimJob) {
 		}
 	}()
 	var waitErr error
+	forgedHandled := false
 	killReq := j.kill
+	resPath := filepath.Join(s.dir, "res-"+j.n+".json")
+	pollCtx, pollStop := context.WithCancel(ctx)
+	defer pollStop()
+	pollC := s.after(pollCtx, shimPollInterval)
 loop:
 	for {
 		select {
+		case <-pollC:
+			pollC = s.after(pollCtx, shimPollInterval)
+			// Only the shim writes res-<n>.json, and only when the job is over: a file that exists while the job runs is
+			// forged by the harness, which is then killed with every descendant (plan 27 section 7.4, review S4 N4).
+			if _, err := os.Lstat(resPath); err == nil && !forgedHandled {
+				forgedHandled = true
+				fmt.Fprintf(s.errw, "sc-worker shim: res-%s.json appeared while the job runs; killing it\n", j.n)
+				term(killNow)
+			}
 		case waitErr = <-exited:
 			break loop
 		case <-timeoutC:
@@ -567,8 +601,11 @@ loop:
 			_ = syscall.Kill(-pgid, syscall.SIGKILL)
 		}
 	}
-	// Whatever is left in the group dies with the leader.
+	// Whatever is left in the group dies with the leader, and so does everything else that is still alive below the
+	// shim (processes that left the group or double-forked), before res-<n>.json is published.
 	_ = syscall.Kill(-pgid, syscall.SIGKILL)
+	pollStop()
+	s.sweep(j)
 	so.flush()
 	se.flush()
 

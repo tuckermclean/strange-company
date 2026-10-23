@@ -1,5 +1,5 @@
-// Package fakeharness is the library entry of the sc-fake-harness binary (plan 28 section 8.2): the cooperative
-// fake harness that sc-worker runs through the shim in the component tests.
+// Package fakeharness is the library entry of the sc-fake-harness binary (plan 28 section 8.2): the fake harness
+// that sc-worker runs through the shim in the component tests. It implements the scenarios of plan 28 section 14.4.
 package fakeharness
 
 import (
@@ -8,10 +8,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -19,13 +21,20 @@ import (
 	"strange.company/sc/internal/clock"
 )
 
+// maxOverBudgetCalls bounds the tight loop of the over-budget scenario (plan 28 section 14.4).
+const maxOverBudgetCalls = 10000
+
+// maxSpendLoopCalls bounds the spend-loop scenario (one request per second).
+const maxSpendLoopCalls = 7200
+
 // Run executes the fake harness for the given sc-fake-harness argv (without the program name) and environment
 // and returns the process exit code. args carry --scenario, --role, --attempt, --task, --execution, --repo,
 // --context and --out; getenv answers SC_FAKE_GATEWAY_URL and SC_FAKE_GATEWAY_TOKEN.
 //
-// This build implements the cooperative tester and implementer behaviours of the scenarios success, red-valid
-// and push, and the scenarios failure, timeout and ignore-cancel for every role (plan 28 section 14.4); the
-// other scenarios belong to later slices of F07.
+// Every scenario of the table first dumps its environment and file list to <out> (27-AC-5) and then calls the
+// Gateway at least once (28-AC-7); what follows is the behavior of its row. Scenarios whose effect is produced by an
+// sc-worker knob (skip_report, raw_result, disable_cancel, parent_override, ...) behave here like their cooperative
+// base.
 func Run(args []string, getenv func(string) string, stdout, stderr io.Writer) int {
 	f := map[string]string{}
 	for i := 0; i < len(args); i++ {
@@ -47,36 +56,33 @@ func Run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 			return 2
 		}
 	}
-	step := func(name string) {
-		b, _ := json.Marshal(map[string]any{"type": "sc_fake_step", "step": name})
-		fmt.Fprintln(stdout, string(b))
-	}
-	result := func(isErr bool) {
-		b, _ := json.Marshal(map[string]any{"type": "sc_fake_result", "is_error": isErr, "num_turns": 1})
-		fmt.Fprintln(stdout, string(b))
-	}
-
 	scenario := f["scenario"]
-	switch scenario {
-	case "success", "red-valid", "push":
-		if f["role"] != "tester" && f["role"] != "implementer" {
-			fmt.Fprintf(stderr, "sc-fake-harness: role %q is not implemented for scenario %s in this build\n", f["role"], scenario)
-			return 2
-		}
-	case "failure", "timeout", "ignore-cancel":
-	default:
-		fmt.Fprintf(stderr, "sc-fake-harness: scenario %q is not implemented in this build\n", scenario)
+	sp, ok := scenarios[scenario]
+	if !ok {
+		fmt.Fprintf(stderr, "sc-fake-harness: scenario %q is not known\n", scenario)
 		return 2
 	}
+	if !sp.allows(f["role"]) {
+		fmt.Fprintf(stderr, "sc-fake-harness: role %q is not valid for scenario %s\n", f["role"], scenario)
+		return 2
+	}
+	r := &run{
+		scenario: scenario, role: f["role"], repo: f["repo"], ctxDir: f["context"], out: f["out"],
+		attempt: 1, getenv: getenv, stdout: stdout, stderr: stderr, f: f,
+	}
+	fmt.Sscanf(f["attempt"], "%d", &r.attempt)
+
+	// 27-AC-5: what this container can see, whatever the scenario does next.
+	dumpEnvironment(r.out)
 
 	// The signal handling of timeout (exit on SIGTERM) and ignore-cancel (swallow it) is armed before the model call.
 	sigCtx, stopSig := context.WithCancel(context.Background())
 	defer stopSig()
-	if scenario == "timeout" || scenario == "ignore-cancel" {
+	if sp.sleeper {
 		sigc := make(chan os.Signal, 8)
 		signal.Notify(sigc, syscall.SIGTERM)
 		defer signal.Stop(sigc)
-		if scenario == "timeout" {
+		if scenario != "ignore-cancel" {
 			var cancel context.CancelFunc
 			sigCtx, cancel = context.WithCancel(sigCtx)
 			defer cancel()
@@ -101,77 +107,134 @@ func Run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	}
 
 	// Every scenario first calls the Gateway (plan 28 section 9.2, Fake).
-	step("gateway_request")
-	if code, ok := gatewayCall(getenv, f); !ok {
+	r.step("gateway_request")
+	if code, ok := r.gatewaySequence(); !ok {
 		if code != "" {
 			fmt.Fprintf(stdout, "SC_%s\n", code)
 		}
-		result(true)
+		r.result(true, nil)
 		return 1
 	}
 
-	switch scenario {
-	case "failure":
-		step("plan")
-		step("work")
-		result(true)
+	switch {
+	case scenario == "failure":
+		r.step("plan")
+		r.step("work")
+		r.result(true, nil)
 		return 1
-	case "timeout", "ignore-cancel":
+	case sp.sleeper:
 		// After the model call the fake sleeps for 24 h; timeout honors SIGTERM, ignore-cancel does not.
 		if err := (clock.Real{}).Sleep(sigCtx, 24*time.Hour); err != nil {
 			return 143
 		}
-		result(false)
+		r.result(false, nil)
+		return 0
+	case scenario == "malformed-stream":
+		fmt.Fprintln(stdout, "this is not json")
+		fmt.Fprintln(stdout, "<<<garbage>>> 0xdeadbeef")
+		return 0
+	case scenario == "claim-missing":
+		r.step("plan")
+		r.result(false, nil)
 		return 0
 	}
 
-	push := f["scenario"] == "push"
-	var claim map[string]any
-	var err error
-	step("write_files")
-	switch f["role"] {
-	case "tester":
-		claim, err = tester(f["repo"], push)
-	default:
-		claim, err = implementer(f["repo"], push)
-	}
+	r.step("write_files")
+	claim, err := sp.work(r)
 	if err != nil {
 		fmt.Fprintf(stderr, "sc-fake-harness: %v\n", err)
-		result(true)
+		r.result(true, nil)
 		return 1
 	}
-	step("write_claim")
+	r.step("write_claim")
 	b, _ := json.Marshal(claim)
-	if err := os.WriteFile(filepath.Join(f["out"], "claim.json"), b, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(r.out, "claim.json"), b, 0o644); err != nil {
 		fmt.Fprintf(stderr, "sc-fake-harness: claim: %v\n", err)
-		result(true)
+		r.result(true, nil)
 		return 1
 	}
-	result(false)
+	if sp.after != nil {
+		sp.after(r)
+	}
+	r.result(false, sp.denials)
 	return 0
+}
+
+// run is the state of one invocation.
+type run struct {
+	scenario, role, repo, ctxDir, out string
+	attempt                           int
+	getenv                            func(string) string
+	stdout, stderr                    io.Writer
+	f                                 map[string]string
+}
+
+func (r *run) step(name string) {
+	b, _ := json.Marshal(map[string]any{"type": "sc_fake_step", "step": name})
+	fmt.Fprintln(r.stdout, string(b))
+}
+
+// result prints the terminal event; denials, when not nil, becomes its permission_denials list.
+func (r *run) result(isErr bool, denials []map[string]any) {
+	ev := map[string]any{"type": "sc_fake_result", "is_error": isErr, "num_turns": 1}
+	if denials != nil {
+		ev["permission_denials"] = denials
+	}
+	b, _ := json.Marshal(ev)
+	fmt.Fprintln(r.stdout, string(b))
+}
+
+// gatewaySequence issues the Gateway requests of the scenario. ok is false when the scenario must stop: the Gateway
+// denied the request (code is the x-sc-error-code without the SC_ prefix) or there was no Gateway.
+func (r *run) gatewaySequence() (code string, ok bool) {
+	switch r.scenario {
+	case "over-budget":
+		// A tight loop until the first non-200 (28-AC-7), at most maxOverBudgetCalls requests.
+		for i := 0; i < maxOverBudgetCalls; i++ {
+			if code, ok := r.gatewayCall("fake-model"); !ok {
+				return code, false
+			}
+		}
+		return "", false
+	case "spend-loop":
+		// One request per second until any non-200.
+		for i := 0; i < maxSpendLoopCalls; i++ {
+			if code, ok := r.gatewayCall("fake-model"); !ok {
+				return code, false
+			}
+			_ = (clock.Real{}).Sleep(context.Background(), time.Second)
+		}
+		return "", false
+	case "model-switch":
+		if code, ok := r.gatewayCall("fake-model"); !ok {
+			return code, false
+		}
+		// The second request names a model outside allowed_models; the denial is expected and does not end the run.
+		if _, ok := r.gatewayCall("fake-model-b"); !ok {
+			r.step("model_b_denied")
+		}
+		return "", true
+	}
+	return r.gatewayCall("fake-model")
 }
 
 // gatewayCall posts the fixed fake request; ok is false on any non-200, with the x-sc-error-code header value
 // (without the SC_ prefix) in code.
-func gatewayCall(getenv func(string) string, f map[string]string) (code string, ok bool) {
-	url := strings.TrimRight(getenv("SC_FAKE_GATEWAY_URL"), "/")
+func (r *run) gatewayCall(model string) (code string, ok bool) {
+	url := strings.TrimRight(r.getenv("SC_FAKE_GATEWAY_URL"), "/")
 	if url == "" {
 		return "", false
 	}
-	attempt := f["attempt"]
-	if attempt == "" {
-		attempt = "1"
-	}
 	body, _ := json.Marshal(map[string]any{
-		"model": "fake-model", "max_tokens": 64, "stream": false,
-		"messages": []any{map[string]any{"role": "user", "content": f["scenario"] + "/" + f["role"] + "/" + attempt}},
+		"model": model, "max_tokens": 64, "stream": false,
+		"messages": []any{map[string]any{"role": "user", "content": fmt.Sprintf("%s/%s/%d", r.scenario, r.role, r.attempt)}},
 	})
 	req, err := http.NewRequest(http.MethodPost, url+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		return "", false
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if tok := getenv("SC_FAKE_GATEWAY_TOKEN"); tok != "" {
+	if tok := r.getenv("SC_FAKE_GATEWAY_TOKEN"); tok != "" {
 		req.Header.Set("Authorization", "Bearer "+tok)
 	}
 	cl := &http.Client{Timeout: 30 * time.Second}
@@ -187,99 +250,24 @@ func gatewayCall(getenv func(string) string, f map[string]string) (code string, 
 	return "", true
 }
 
-const testSource = `package calc
-
-import "testing"
-
-func TestAddAC1(t *testing.T) {
-	if Add(2, 3) != 5 {
-		t.Fatal("Add(2, 3) != 5")
-	}
-}
-
-func TestAddAC2(t *testing.T) {
-	if Add(-1, 1) != 0 {
-		t.Fatal("Add(-1, 1) != 0")
-	}
-}
-`
-
-func write(repo, rel, content string) error {
-	p := filepath.Join(repo, filepath.FromSlash(rel))
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(p, []byte(content), 0o644)
-}
-
-func handoff(did string) map[string]any {
-	return map[string]any{
-		"what_i_did": did, "what_remains": "Nothing.", "recommended_next_role": nil,
-		"questions": []any{}, "known_risks": []any{},
-	}
-}
-
-// tester writes calc/add_ac_test.go (and two more test files for the push scenario).
-func tester(repo string, push bool) (map[string]any, error) {
-	files := []string{"calc/add_ac_test.go"}
-	if err := write(repo, files[0], testSource); err != nil {
-		return nil, err
-	}
-	if push {
-		extra := map[string]string{
-			"calc/add_edge_test.go": "package calc\n\nimport \"testing\"\n\nfunc TestAddEdgeZero(t *testing.T) {\n\tif Add(0, 0) != 0 {\n\t\tt.Fatal(\"Add(0, 0) != 0\")\n\t}\n}\n",
-			"calc/add_neg_test.go":  "package calc\n\nimport \"testing\"\n\nfunc TestAddNegative(t *testing.T) {\n\tif Add(-2, -3) != -5 {\n\t\tt.Fatal(\"Add(-2, -3) != -5\")\n\t}\n}\n",
-		}
-		for _, n := range []string{"calc/add_edge_test.go", "calc/add_neg_test.go"} {
-			if err := write(repo, n, extra[n]); err != nil {
-				return nil, err
+// dumpEnvironment writes the environment (NAME=VALUE per line, sorted) to <out>/env.txt and the files below /var/run
+// and /var/sc (the equivalent of `find /var/run /var/sc -type f`) to <out>/files.txt (27-AC-5, plan 27 section 22).
+// It is best effort: a scenario never fails because of the dump.
+func dumpEnvironment(out string) {
+	env := os.Environ()
+	sort.Strings(env)
+	_ = os.WriteFile(filepath.Join(out, "env.txt"), []byte(strings.Join(env, "\n")+"\n"), 0o644)
+	var files []string
+	for _, root := range []string{"/var/run", "/var/sc"} {
+		_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return nil
 			}
-			files = append(files, n)
-		}
-	}
-	fl := make([]any, len(files))
-	for i, f := range files {
-		fl[i] = f
-	}
-	return map[string]any{
-		"state": "completed", "summary": "Add tests for Add covering AC-1 and AC-2",
-		"role_output": map[string]any{"kind": "tester", "test_files": fl, "ac_mapping": []any{
-			map[string]any{"ac_id": "AC-1", "tests": []any{"TestAddAC1"}},
-			map[string]any{"ac_id": "AC-2", "tests": []any{"TestAddAC2"}},
-		}},
-		"handoff": handoff("Wrote the acceptance tests for Add."),
-	}, nil
-}
-
-// implementer makes Add return a+b (and adds two documentation files for the push scenario).
-func implementer(repo string, push bool) (map[string]any, error) {
-	p := filepath.Join(repo, "calc", "calc.go")
-	b, err := os.ReadFile(p)
-	if err != nil {
-		return nil, err
-	}
-	const stub = "func Add(a, b int) int { return 0 }"
-	if !bytes.Contains(b, []byte(stub)) {
-		return nil, fmt.Errorf("calc/calc.go has no stub Add to implement")
-	}
-	if err := os.WriteFile(p, bytes.Replace(b, []byte(stub), []byte("func Add(a, b int) int { return a + b }"), 1), 0o644); err != nil {
-		return nil, err
-	}
-	changed := []any{"calc/calc.go"}
-	if push {
-		for n, c := range map[string]string{
-			"calc/doc.go":     "// Package calc is the tiny library the fake harness scenarios work on.\npackage calc\n",
-			"calc/CHANGES.md": "# Changes\n\n- Add returns the sum of its arguments.\n",
-		} {
-			if err := write(repo, n, c); err != nil {
-				return nil, err
+			if d.Type().IsRegular() {
+				files = append(files, p)
 			}
-		}
-		changed = append(changed, "calc/CHANGES.md", "calc/doc.go")
+			return nil
+		})
 	}
-	return map[string]any{
-		"state": "completed", "summary": "Make Add return the sum of its arguments",
-		"role_output": map[string]any{"kind": "implementer", "changed_files": changed, "ac_addressed": []any{"AC-1"}},
-		"handoff":     handoff("Implemented Add."),
-	}, nil
+	_ = os.WriteFile(filepath.Join(out, "files.txt"), []byte(strings.Join(files, "\n")+"\n"), 0o644)
 }

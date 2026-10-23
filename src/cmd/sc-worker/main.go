@@ -18,8 +18,7 @@ func run(args []string) int {
 		return worker.Shim(worker.DefaultShimConfig())
 	}
 	if len(args) == 1 && args[0] == "selftest" {
-		fmt.Fprintf(os.Stderr, "sc-worker %s: not implemented\n", args[0])
-		return 2
+		return worker.SelfTest(worker.DefaultSelfTestEnv(), os.Stdout, os.Stderr)
 	}
 	fmt.Fprintln(os.Stderr, "usage: sc-worker run|shim|selftest")
 	return 2
