@@ -48,20 +48,6 @@ type shimOutcome struct {
 
 func (pl *pipeline) shimDir() string { return filepath.Join(pl.w.cfg.WorkspaceDir, ".sc-shim") }
 
-// writeAtomic writes path through path.tmp and a rename; files of the shim directory are group-readable and not
-// world-accessible (plan 27 section 7.4).
-func writeAtomic(path string, b []byte) error {
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o640); err != nil {
-		return err
-	}
-	if err := os.Chmod(tmp, 0o640); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	return os.Rename(tmp, path)
-}
-
 // startAlive keeps the shim's `alive` file fresh (plan 27 section 7.4: the shim leaves when it is older than
 // 120 s) until the returned stop function is called.
 func (w *worker) startAlive() (stop func()) {
@@ -90,6 +76,8 @@ const maxTailLine = 1 << 20
 
 // streamTail follows a shim stream file.
 type streamTail struct {
+	root       string // trusted directory the stream path is resolved beneath
+	refuse     func(path string, err error)
 	off        int64
 	buf        []byte // unterminated tail, at most maxTailLine bytes
 	discarding bool   // the rest of the current line is dropped
@@ -102,24 +90,50 @@ func (t *streamTail) takeDropped() int {
 	return n
 }
 
+// open opens the stream file below the tail's root without following a link.
+func (t *streamTail) open(path string) (*os.File, error) {
+	rel, ok := strings.CutPrefix(path, t.root+"/")
+	if !ok {
+		return nil, errBadPath
+	}
+	f, err := openRegular(t.root, rel, os.O_RDONLY)
+	if err != nil && isRefusal(err) && t.refuse != nil {
+		t.refuse(path, err)
+	}
+	return f, err
+}
+
+// size is the current size of the stream file (0 when it is not a regular file).
+func (t *streamTail) size(path string) int64 {
+	f, err := t.open(path)
+	if err != nil {
+		return 0
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return 0
+	}
+	return st.Size()
+}
+
 // read returns the complete lines appended to path since the last call; buf carries an unterminated tail. It reads at
 // most one 8 MiB chunk.
 func (t *streamTail) read(path string) []string { return t.readTo(path, -1) }
 
 // readTo is read limited to the offsets below end (end < 0: no limit).
 func (t *streamTail) readTo(path string, end int64) []string {
-	st, err := os.Lstat(path)
-	if err != nil || !st.Mode().IsRegular() || st.Size() <= t.off {
-		return nil
-	}
 	if end >= 0 && end <= t.off {
 		return nil
 	}
-	f, err := os.Open(path)
+	f, err := t.open(path)
 	if err != nil {
 		return nil
 	}
 	defer f.Close()
+	if st, err := f.Stat(); err != nil || st.Size() <= t.off {
+		return nil
+	}
 	if _, err := f.Seek(t.off, io.SeekStart); err != nil {
 		return nil
 	}
@@ -166,9 +180,12 @@ func (t *streamTail) readTo(path string, end int64) []string {
 const drainBudget = 8 << 20
 
 // drain reads the stream file up to end (its size when the result file appeared; the shim flushes the stream before
-// it writes the result) and at most drainBudget more bytes, and stops at once when stop reports true.
-func (t *streamTail) drain(path string, end int64, stop func() bool, onLine func(string)) {
-	if limit := t.off + drainBudget; end < 0 || end > limit {
+// it writes the result) and at most drainBudget more bytes, and stops at once when stop reports true. It returns
+// false when it stopped early (budget or stop): the unterminated tail is then not a whole line.
+func (t *streamTail) drain(path string, end int64, stop func() bool, onLine func(string)) (complete bool) {
+	limit := t.off + drainBudget
+	budgetCut := end < 0 || end > limit
+	if budgetCut {
 		end = limit
 	}
 	for !stop() {
@@ -177,9 +194,10 @@ func (t *streamTail) drain(path string, end int64, stop func() bool, onLine func
 			onLine(l)
 		}
 		if t.off == before {
-			return
+			return !(budgetCut && t.off >= limit)
 		}
 	}
+	return false
 }
 
 // runShim sends one run request and tails its stream until the result file appears. timeout is the shim's
@@ -205,7 +223,7 @@ func (pl *pipeline) runShim(kind string, argv []string, env map[string]string, c
 	// The shim enforces the timeout itself (SIGTERM, then SIGKILL after the grace period); sc-worker's own
 	// backstop fires only when the shim failed to do so.
 	hardStop := start.Add(time.Duration(timeout+grace)*time.Second + 5*time.Second)
-	var tail streamTail
+	tail := streamTail{root: w.cfg.WorkspaceDir, refuse: pl.refuse}
 	account := func() { pl.hs.bytes += tail.takeDropped() }
 	var cancelAt time.Time
 	waitExtra := 10 * time.Second
@@ -216,23 +234,25 @@ func (pl *pipeline) runShim(kind string, argv []string, env map[string]string, c
 		}
 		pl.flushOut()
 		account()
-		if b, err := os.ReadFile(resPath); err == nil {
-			if st, lerr := os.Lstat(resPath); lerr == nil && st.Mode().IsRegular() && json.Unmarshal(b, &out.res) == nil {
+		if b, err := readRegularFile(w.cfg.WorkspaceDir, ".sc-shim/"+filepath.Base(resPath), 1<<20); err == nil {
+			if json.Unmarshal(b, &out.res) == nil {
 				out.haveRes = true
-				end := int64(-1)
-				if sst, serr := os.Lstat(stream); serr == nil && sst.Mode().IsRegular() {
-					end = sst.Size()
+				complete := tail.drain(stream, tail.size(stream), func() bool { return w.sig.Err() != nil }, onLine)
+				if complete {
+					if len(tail.buf) > 0 {
+						onLine(string(tail.buf))
+					}
 				} else {
-					end = 0
+					// A half line is not emitted: a secret cut inside it would no longer be recognised.
+					tail.dropped += len(tail.buf)
 				}
-				tail.drain(stream, end, func() bool { return w.sig.Err() != nil }, onLine)
-				if len(tail.buf) > 0 {
-					onLine(string(tail.buf))
-				}
+				tail.buf = tail.buf[:0]
 				pl.flushOut()
 				account()
 				return out
 			}
+		} else if isRefusal(err) {
+			pl.refuse(resPath, err)
 		}
 		now := w.clk.Now()
 		if !cancelWritten {

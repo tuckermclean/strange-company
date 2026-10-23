@@ -3,6 +3,7 @@ package worker
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -59,17 +60,23 @@ func allowedClaimState(role, state string) bool {
 
 // readClaim reads and validates /workspace/out/claim.json. why explains an unusable claim ("" when it is usable).
 func (pl *pipeline) readClaim() (*claimDoc, string) {
-	path := filepath.Join(pl.w.cfg.WorkspaceDir, "out", "claim.json")
-	st, err := os.Lstat(path)
-	if err != nil || !st.Mode().IsRegular() {
+	f, err := openRegular(pl.w.cfg.WorkspaceDir, "out/claim.json", os.O_RDONLY)
+	if err != nil {
+		if isRefusal(err) {
+			pl.refuse(filepath.Join(pl.w.cfg.WorkspaceDir, "out", "claim.json"), err)
+		}
 		return nil, "claim.json absent"
 	}
-	if st.Size() > maxClaimBytes {
+	defer f.Close()
+	if st, err := f.Stat(); err != nil || st.Size() > maxClaimBytes {
 		return nil, "claim.json larger than 512 KiB"
 	}
-	b, err := os.ReadFile(path)
+	b, err := io.ReadAll(io.LimitReader(f, maxClaimBytes+1))
 	if err != nil {
 		return nil, "claim.json unreadable"
+	}
+	if len(b) > maxClaimBytes {
+		return nil, "claim.json larger than 512 KiB"
 	}
 	var v any
 	if err := json.Unmarshal(b, &v); err != nil {

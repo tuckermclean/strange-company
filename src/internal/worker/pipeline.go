@@ -109,6 +109,7 @@ type pipeline struct {
 	claim                             *claimDoc
 	validation                        []any
 	skipPrechecks                     bool
+	refused                           map[string]bool // paths already reported as symlink_refused
 
 	cloneEnd, harnessStart, harnessEnd time.Time
 }
@@ -170,6 +171,7 @@ func (pl *pipeline) run() int {
 	if w.sig.Err() != nil {
 		return w.terminate()
 	}
+	pl.scanNotes()
 	w.setPhase("validating")
 	if verdict != "ok" {
 		pl.shimDone()

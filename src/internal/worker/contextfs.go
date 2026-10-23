@@ -97,10 +97,4 @@ func (pl *pipeline) materialize() *stageFail {
 	return nil
 }
 
-func writeReadonly(path string, b []byte) error {
-	_ = os.Remove(path)
-	if err := os.WriteFile(path, b, 0o444); err != nil {
-		return err
-	}
-	return os.Chmod(path, 0o444)
-}
+func writeReadonly(path string, b []byte) error { return writeNoFollow(path, b, 0o444) }
