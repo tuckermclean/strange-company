@@ -565,7 +565,7 @@ func harnessDouble(args []string) int {
 		return strings.TrimSpace(string(b)), err
 	}
 	fmt.Println(`{"type":"sc_fake_step","step":"double_start"}`)
-	lingerStop := ""
+	lingerStop, lingerSwap := "", ""
 	// S5c: @repo@, @out@, @ws@, @shim@, @private@ and @secrets@ stand for the directories of the run; a relative path
 	// is relative to the repository.
 	ws := filepath.Dir(out)
@@ -913,7 +913,7 @@ func harnessDouble(args []string) int {
 				}
 			case "linger":
 				// S5a: after the claim, forge the shim result and keep rewriting the workspace .git until op.Path exists.
-				lingerStop = op.Path
+				lingerStop, lingerSwap = op.Path, op.Content
 			case "hostile":
 				canary := os.Getenv("SC_TEST_CANARY")
 				script := "#!/bin/sh\n: > '" + canary + "'\n"
@@ -996,7 +996,7 @@ func harnessDouble(args []string) int {
 		return c
 	}
 	if lingerStop != "" {
-		return lingerForged(repo, out, lingerStop)
+		return lingerForged(repo, out, lingerStop, lingerSwap)
 	}
 	return 0
 }
@@ -1004,7 +1004,7 @@ func harnessDouble(args []string) int {
 // lingerForged is the S5a hostile harness: it posts a forged shim result (exit 0) for its own request, so that
 // sc-worker proceeds, and then keeps rewriting the workspace .git (config with core.fsmonitor, core.hooksPath,
 // include.path and a filter driver, info/attributes selecting the filter, hooks) until the stop file exists.
-func lingerForged(repo, out, stop string) int {
+func lingerForged(repo, out, stop, swap string) int {
 	canary := os.Getenv("SC_TEST_CANARY")
 	ws := filepath.Dir(out)
 	gd := filepath.Join(repo, ".git")
@@ -1045,6 +1045,30 @@ func lingerForged(repo, out, stop string) int {
 		now := clock.Real{}.Now().UTC().Format(time.RFC3339)
 		forged, _ := json.Marshal(map[string]any{"id": req.ID, "exit_code": 0, "signal": nil, "started_at": now, "finished_at": now, "timed_out": false})
 		atomic(filepath.Join(ws, ".sc-shim", "res-"+m[1]+".json"), string(forged), 0o644)
+	}
+	// S5c review 1 (N1): swap=private or decoy: right after the forged result, replace the repository directory by a symlink to
+	// the private directory, or to a copy of the repository holding a distinctive extra file, and keep it that way.
+	if swap != "" {
+		target := os.Getenv("SC_TEST_PRIVATE_DIR")
+		if swap == "decoy" {
+			target = filepath.Join(filepath.Dir(target), "decoy")
+			if o, err := exec.Command("cp", "-a", repo, target).CombinedOutput(); err != nil {
+				fmt.Fprintln(os.Stderr, "double: decoy:", string(o))
+				return 2
+			}
+			_ = os.WriteFile(filepath.Join(target, "DECOY-CANARY-0031.txt"), []byte("DECOY-CANARY-0031\n"), 0o644)
+		}
+		_ = os.Rename(repo, repo+".real")
+		for {
+			if _, err := os.Stat(stop); err == nil {
+				return 0
+			}
+			if st, err := os.Lstat(repo); err != nil || st.Mode()&os.ModeSymlink == 0 {
+				_ = os.RemoveAll(repo)
+				_ = os.Symlink(target, repo)
+			}
+			_ = clock.Real{}.Sleep(context.Background(), time.Millisecond)
+		}
 	}
 	for {
 		if _, err := os.Stat(stop); err == nil {
@@ -1249,6 +1273,8 @@ type gitSpec struct {
 	// S4: run the production shim (worker.Shim) as a separate process instead of the test-owned goroutine, and/or
 	// give sc-worker the real clock (the packet deadline must then be in the real future).
 	realShim, realClock bool
+	// N3: SC_WORKSPACE as given to sc-worker, when it must differ from the cleaned workspace path.
+	scWorkspace func(workspace string) string
 }
 
 type gitRun struct {
@@ -1348,9 +1374,13 @@ func runGit(t *testing.T, sp gitSpec) *gitRun {
 	})
 	p := &process{done: make(chan struct{})}
 	p.cmd = exec.Command(exe, "-test.run=^TestHelperProcess_ScWorkerGit$")
+	wsEnv := dirs["workspace"]
+	if sp.scWorkspace != nil {
+		wsEnv = sp.scWorkspace(dirs["workspace"])
+	}
 	p.cmd.Env = []string{
 		gitHelperEnv + "=" + string(hc),
-		"SC_SECRETS_DIR=" + dirs["secrets"], "SC_WORKSPACE=" + dirs["workspace"],
+		"SC_SECRETS_DIR=" + dirs["secrets"], "SC_WORKSPACE=" + wsEnv,
 		"SC_RUNNER_URL=" + gr.stub.srv.URL, "SC_TASK_ID=sc-1", "SC_EXECUTION_ID=sc-1-x1",
 		"HOME=" + dirs["home"], "TMPDIR=" + dirs["tmp"], "PATH=" + os.Getenv("PATH"),
 	}

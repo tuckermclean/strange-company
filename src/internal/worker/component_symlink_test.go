@@ -384,7 +384,9 @@ func TestDrain_EarlyStopDoesNotEmitHalfLine_BudgetEnd_S5bNa(t *testing.T) {
 // gateway token in the stream file; the drain after the result file stops at once, and the half-line must not be
 // emitted.
 func TestDrain_EarlyStopDoesNotEmitHalfLine_SIGTERM_S5bNa(t *testing.T) {
-	ops := symlinkOps(harnessOp{Op: "stream-raw", Content: "zzzz" + gwCanary[:20]}, harnessOp{Op: "hang"})
+	// B1: the shim must have appended the double's earlier stdout line before the raw write, or the line is completed.
+	ops := symlinkOps(harnessOp{Op: "wait-stream", Content: "double_start"},
+		harnessOp{Op: "stream-raw", Content: "zzzz" + gwCanary[:20]}, harnessOp{Op: "hang"})
 	gr := s4Run(t, s4Opts{mode: "ops", ops: ops})
 	waitUntil(t, 60*time.Second, "the harness to be ready", func() bool { return gr.outFile("ready.txt") != "" })
 	// Let sc-worker poll the stream file at least once (real time, 100 ms poll).
@@ -427,6 +429,93 @@ func TestPrechecks_ForgedSharedObjectsCannotChangeStartTree_S5aN1(t *testing.T) 
 			}
 			if got := fx.refsDigest(); got != before {
 				t.Errorf("remote refs changed:\n%s", fx.refList())
+			}
+		})
+	}
+}
+
+// S5c review 1 (N1): /workspace/repo itself must not be followed when it is swapped for a symlink. A harness process
+// that outlives the harness phase replaces <workspace>/repo, right after its claim and forged result and for as long
+// as sc-worker runs, by a link to (private) the private directory or (decoy) a copy of the repository with a
+// distinctive extra file. The run ends failed/internal workspace_tampered, or completes pushing exactly the harness's
+// change; nothing from the private directory or the decoy is in any pushed commit, and the private directory is unchanged.
+func TestSymlinkSafety_RepoDirSwappedByLingeringHarness_S5cN1(t *testing.T) {
+	for _, target := range []string{"private", "decoy"} {
+		t.Run(target, func(t *testing.T) {
+			t.Parallel()
+			fx := buildFixture(t, false)
+			before := fx.refsDigest()
+			stop := filepath.Join(t.TempDir(), "stop-writer")
+			ops := symlinkOps(harnessOp{Op: "write", Path: "@private@/swap-canary.txt", Content: "PRIVATE-SWAP-CANARY-0044\n"},
+				harnessOp{Op: "snapshot-private"}, harnessOp{Op: "linger", Path: stop, Content: target})
+			gr := runGit(t, gitSpec{fx: fx, mode: "ops", ops: ops, pkt: gitPacket(t, fx, pktOpts{})})
+			go func() {
+				<-gr.proc.done
+				_ = os.WriteFile(stop, nil, 0o644)
+			}()
+			t.Cleanup(func() { _ = os.WriteFile(stop, nil, 0o644) })
+			res := gr.finish(t)
+			wantNoCanary(t, gr)
+			wantAbsentEverywhere(t, gr, "PRIVATE-SWAP-CANARY-0044", "DECOY-CANARY-0031")
+			wantTamperedOrSafe(t, fx, before, res, "calc/add_ac_test.go", addACTestSrc)
+			if res["state"] == "completed" {
+				for _, f := range []string{"swap-canary.txt", "DECOY-CANARY-0031.txt", "gitconfig"} {
+					if _, err := gitTry(fx.bare, nil, "cat-file", "-e", resStr(res, "commit")+":"+f); err == nil {
+						t.Errorf("the pushed commit contains %s from behind the swapped repository directory", f)
+					}
+				}
+			}
+			wantPrivateUntouched(t, gr)
+		})
+	}
+}
+
+// S5c review 1 (N1, non-race): the harness replaces /workspace/repo by a symlink before it exits. The run is refused
+// with failed/internal workspace_tampered, the event symlink_refused names repo, and nothing is pushed.
+func TestSymlinkSafety_RepoDirSymlinkBeforeExit_WorkspaceTampered_S5cN1(t *testing.T) {
+	fx := buildFixture(t, false)
+	before := fx.refsDigest()
+	ops := symlinkOps(harnessOp{Op: "snapshot-private"}, harnessOp{Op: "symlink", Path: "@repo@", Content: "@private@"})
+	gr := runGit(t, gitSpec{fx: fx, mode: "ops", ops: ops, pkt: gitPacket(t, fx, pktOpts{})})
+	res := gr.finish(t)
+	if detail := wantFailedResult(t, res, "internal"); detail != "workspace_tampered" {
+		t.Errorf("detail = %q, want workspace_tampered", detail)
+	}
+	named := false
+	for _, p := range gr.refusedPaths() {
+		if p == "repo" || strings.HasSuffix(p, "/repo") {
+			named = true
+		}
+	}
+	if !named {
+		t.Errorf("no symlink_refused event naming repo (events with paths %q)", gr.refusedPaths())
+	}
+	wantPrivateUntouched(t, gr)
+	if got := fx.refsDigest(); got != before {
+		t.Errorf("remote refs changed:\n%s", fx.refList())
+	}
+}
+
+// S5c review 1 (N3): SC_WORKSPACE need not be a cleaned path (trailing slash, a doubled or a "/./" separator). A normal
+// run still reads the harness stream: it completes, BEGIN and END are present (finish checks the framing) and the
+// stream line the harness printed is on stdout.
+func TestWorkspace_UncleanedSCWorkspaceStillReadsStream_S5cN3(t *testing.T) {
+	forms := map[string]func(string) string{
+		"trailing_slash": func(ws string) string { return ws + "/" },
+		"double_slash":   func(ws string) string { return filepath.Dir(ws) + "//" + filepath.Base(ws) },
+		"dot_segment":    func(ws string) string { return filepath.Dir(ws) + "/./" + filepath.Base(ws) },
+	}
+	for name, form := range forms {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			ops := symlinkOps(harnessOp{Op: "print", Content: "UNCLEAN-WS-STREAM-MARK"})
+			gr := s4Run(t, s4Opts{mode: "ops", ops: ops, scWorkspace: form})
+			res := gr.finishWithin(t, 90*time.Second, "start")
+			if res["state"] != "completed" {
+				t.Errorf("state = %v, want completed; failure %v", res["state"], res["failure"])
+			}
+			if !strings.Contains(gr.proc.stdout.String(), "UNCLEAN-WS-STREAM-MARK") {
+				t.Errorf("the stream line the harness printed never reached stdout (stream not read)")
 			}
 		})
 	}
