@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"strange.company/sc/internal/worker/adapters"
 )
@@ -82,10 +84,29 @@ func (w *worker) startAlive() (stop func()) {
 	return func() { cancel(); <-done }
 }
 
-// readNew returns the complete lines appended to path since *off; *partial carries an unterminated tail.
-func readNew(path string, off *int64, partial *[]byte) []string {
+// maxTailLine bounds the unterminated tail that sc-worker holds for one stream line. A longer line is cut here (the
+// framer truncates it to 64 KiB after scrubbing it whole) and the rest of that line is dropped unread into memory.
+const maxTailLine = 1 << 20
+
+// streamTail follows a shim stream file.
+type streamTail struct {
+	off        int64
+	buf        []byte // unterminated tail, at most maxTailLine bytes
+	discarding bool   // the rest of the current line is dropped
+	dropped    int    // bytes dropped since the last call of takeDropped
+}
+
+func (t *streamTail) takeDropped() int {
+	n := t.dropped
+	t.dropped = 0
+	return n
+}
+
+// read returns the complete lines appended to path since the last call; buf carries an unterminated tail. It reads at
+// most one 8 MiB chunk.
+func (t *streamTail) read(path string) []string {
 	st, err := os.Lstat(path)
-	if err != nil || !st.Mode().IsRegular() || st.Size() <= *off {
+	if err != nil || !st.Mode().IsRegular() || st.Size() <= t.off {
 		return nil
 	}
 	f, err := os.Open(path)
@@ -93,22 +114,55 @@ func readNew(path string, off *int64, partial *[]byte) []string {
 		return nil
 	}
 	defer f.Close()
-	if _, err := f.Seek(*off, io.SeekStart); err != nil {
+	if _, err := f.Seek(t.off, io.SeekStart); err != nil {
 		return nil
 	}
 	b, _ := io.ReadAll(io.LimitReader(f, 8<<20))
-	*off += int64(len(b))
-	*partial = append(*partial, b...)
+	t.off += int64(len(b))
 	var lines []string
-	for {
-		i := strings.IndexByte(string(*partial), '\n')
+	for len(b) > 0 {
+		i := bytes.IndexByte(b, '\n')
+		piece := b
+		if i >= 0 {
+			piece = b[:i]
+		}
+		if t.discarding {
+			t.dropped += len(piece)
+		} else {
+			t.buf = append(t.buf, piece...)
+			if len(t.buf) > maxTailLine {
+				t.dropped += len(t.buf) - maxTailLine
+				t.buf = t.buf[:maxTailLine]
+				lines = append(lines, string(t.buf))
+				t.buf, t.discarding = t.buf[:0], true
+			}
+		}
 		if i < 0 {
 			break
 		}
-		lines = append(lines, strings.TrimSuffix(string((*partial)[:i]), "\r"))
-		*partial = (*partial)[i+1:]
+		if t.discarding {
+			t.dropped++ // the newline
+		} else {
+			lines = append(lines, strings.TrimSuffix(string(t.buf), "\r"))
+			t.buf = t.buf[:0]
+		}
+		t.discarding = false
+		b = b[i+1:]
 	}
 	return lines
+}
+
+// drain reads the stream file to its end.
+func (t *streamTail) drain(path string, onLine func(string)) {
+	for {
+		before := t.off
+		for _, l := range t.read(path) {
+			onLine(l)
+		}
+		if t.off == before {
+			return
+		}
+	}
 }
 
 // runShim sends one run request and tails its stream until the result file appears. timeout is the shim's
@@ -134,24 +188,24 @@ func (pl *pipeline) runShim(kind string, argv []string, env map[string]string, c
 	// The shim enforces the timeout itself (SIGTERM, then SIGKILL after the grace period); sc-worker's own
 	// backstop fires only when the shim failed to do so.
 	hardStop := start.Add(time.Duration(timeout+grace)*time.Second + 5*time.Second)
-	var off int64
-	var partial []byte
+	var tail streamTail
+	account := func() { pl.hs.bytes += tail.takeDropped() }
 	var cancelAt time.Time
 	waitExtra := 10 * time.Second
 	cancelWritten := false
 	for {
-		for _, l := range readNew(stream, &off, &partial) {
+		for _, l := range tail.read(stream) {
 			onLine(l)
 		}
+		account()
 		if b, err := os.ReadFile(resPath); err == nil {
 			if st, lerr := os.Lstat(resPath); lerr == nil && st.Mode().IsRegular() && json.Unmarshal(b, &out.res) == nil {
 				out.haveRes = true
-				for _, l := range readNew(stream, &off, &partial) {
-					onLine(l)
+				tail.drain(stream, onLine)
+				if len(tail.buf) > 0 {
+					onLine(string(tail.buf))
 				}
-				if len(partial) > 0 {
-					onLine(string(partial))
-				}
+				account()
 				return out
 			}
 		}
@@ -252,11 +306,12 @@ func (pl *pipeline) emit(line string) {
 		w.logMu.Unlock()
 		return
 	}
-	line = w.scrub.String(line)
+	// The whole (bounded) line is scrubbed before it is truncated, so a secret across the cut is still caught.
+	line = escapeControls(w.scrub.String(line))
 	if len(line) > maxStreamLine {
 		hs.truncated++
 		cut := len(line) - maxStreamLine
-		line = line[:maxStreamLine] + fmt.Sprintf(" …[truncated %d bytes]", cut)
+		line = line[:utf8Boundary(line, maxStreamLine)] + fmt.Sprintf(" …[truncated %d bytes]", cut)
 	}
 	// A harness line must never pass for sc-worker framing.
 	if strings.HasPrefix(line, "::SC-") || strings.HasPrefix(line, "::STRANGE-COMPANY-") {
@@ -412,4 +467,39 @@ func (pl *pipeline) validate() []any {
 		}
 	}
 	return out
+}
+
+// utf8Boundary returns the largest index n' <= n that does not split a rune of s.
+func utf8Boundary(s string, n int) int {
+	if n >= len(s) {
+		return len(s)
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return n
+}
+
+// escapeControls makes C0 and C1 control characters (and DEL) visible as \u00XX; tab and newline stay. Terminal
+// escape sequences in harness output or in a diff therefore never reach the operator's terminal raw.
+func escapeControls(s string) string {
+	clean := true
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; (c < 0x20 && c != '\t' && c != '\n') || c == 0x7f || c == 0xc2 {
+			clean = false
+			break
+		}
+	}
+	if clean {
+		return s
+	}
+	var b strings.Builder
+	for _, r := range s {
+		if (r < 0x20 && r != '\t' && r != '\n') || (r >= 0x7f && r <= 0x9f) {
+			fmt.Fprintf(&b, "\\u%04x", r)
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }

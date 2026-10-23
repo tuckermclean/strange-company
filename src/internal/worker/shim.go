@@ -49,7 +49,8 @@ const (
 	shimPollInterval      = 50 * time.Millisecond
 	// aliveStale is the age of sc-worker's `alive` file after which the shim leaves on its own (plan 27 section 7.4).
 	aliveStale = 120 * time.Second
-	// maxShimLine bounds one buffered output line; longer output is split (the framer truncates at 64 KiB anyway).
+	// maxShimLine bounds one buffered output line; the rest of a longer line is dropped up to its newline, so that
+	// sc-worker always scrubs a line whole before it truncates it (the framer truncates at 64 KiB anyway).
 	maxShimLine   = 1 << 20
 	maxShimReq    = 4 << 20
 	defaultGrace  = 10
@@ -99,9 +100,15 @@ type shimJob struct {
 	n      string
 	grace  time.Duration
 	cancel chan time.Duration // termination request with the grace period (buffered, non-blocking sends)
+	kill   chan struct{}      // closed once for the immediate kill; never dropped, whatever sits in cancel
+	once   sync.Once
 }
 
 func (j *shimJob) terminate(grace time.Duration) {
+	if grace < 0 {
+		j.once.Do(func() { close(j.kill) })
+		return
+	}
 	select {
 	case j.cancel <- grace:
 	default:
@@ -230,7 +237,7 @@ func (s *shimState) scan(handled map[string]bool) {
 	})
 	for _, n := range fresh {
 		handled[n] = true
-		j := &shimJob{n: n, cancel: make(chan time.Duration, 1)}
+		j := &shimJob{n: n, cancel: make(chan time.Duration, 1), kill: make(chan struct{})}
 		s.mu.Lock()
 		s.running[n] = j
 		s.mu.Unlock()
@@ -283,21 +290,32 @@ type shimLines struct {
 	w      io.Writer
 	prefix string
 	buf    []byte
+	skip   bool // the rest of the current line is dropped (it is longer than maxShimLine)
 }
 
 func (l *shimLines) Write(p []byte) (int, error) {
-	l.buf = append(l.buf, p...)
-	for {
-		i := bytes.IndexByte(l.buf, '\n')
+	rest := p
+	for len(rest) > 0 {
+		i := bytes.IndexByte(rest, '\n')
+		chunk := rest
+		if i >= 0 {
+			chunk = rest[:i]
+		}
+		if !l.skip {
+			l.buf = append(l.buf, chunk...)
+			if len(l.buf) > maxShimLine {
+				l.emit(l.buf[:maxShimLine])
+				l.buf, l.skip = nil, true
+			}
+		}
 		if i < 0 {
 			break
 		}
-		l.emit(l.buf[:i])
-		l.buf = l.buf[i+1:]
-	}
-	for len(l.buf) > maxShimLine {
-		l.emit(l.buf[:maxShimLine])
-		l.buf = l.buf[maxShimLine:]
+		if !l.skip {
+			l.emit(l.buf)
+		}
+		l.buf, l.skip = l.buf[:0], false
+		rest = rest[i+1:]
 	}
 	return len(p), nil
 }
@@ -529,6 +547,7 @@ func (s *shimState) runJob(j *shimJob) {
 		}
 	}()
 	var waitErr error
+	killReq := j.kill
 loop:
 	for {
 		select {
@@ -540,6 +559,9 @@ loop:
 			term(grace)
 		case g := <-j.cancel:
 			term(g)
+		case <-killReq:
+			killReq = nil
+			term(killNow)
 		case <-killC:
 			killC = nil
 			_ = syscall.Kill(-pgid, syscall.SIGKILL)
