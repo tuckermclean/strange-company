@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -102,6 +103,7 @@ type pipeline struct {
 	contextNames                      []string
 	env                               map[string]string
 	hs                                harnessState
+	obuf                              []byte // harness lines not yet written to stdout (see flushOut)
 	hout                              shimOutcome
 	verdict                           string
 	claim                             *claimDoc
@@ -387,7 +389,13 @@ func (pl *pipeline) partialDiff() string {
 	if d.err != nil {
 		return ""
 	}
-	text, dropped := textLinesOnly(string(d.stdout))
+	raw := d.stdout
+	if d.total > len(d.stdout) {
+		// The capture was cut: its last line is unterminated and may hold half a secret that no filter could
+		// recognise, so it is dropped.
+		raw = raw[:bytes.LastIndexByte(raw, '\n')+1]
+	}
+	text, dropped := textLinesOnly(string(raw))
 	// Scrub the whole captured text first and cut afterwards, so that a secret across the cut is redacted; the cut
 	// never splits a rune. Control characters are made visible.
 	text = escapeControls(w.scrub.String(text))
