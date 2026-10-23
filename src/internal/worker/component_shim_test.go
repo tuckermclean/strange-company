@@ -138,7 +138,8 @@ type s4Opts struct {
 	maxLog        int // limits.max_log_bytes (default 10 MiB)
 	validation    []any
 	cancelAfterHB int
-	env           map[string]string // extra environment of the harness double (S5b)
+	env           map[string]string   // extra environment of the harness double (S5b)
+	scWorkspace   func(string) string // SC_WORKSPACE as sc-worker sees it (S5c review 1, N3)
 }
 
 // s4Run starts the production shim and sc-worker (real clock) for a tester run against the bare fixture.
@@ -167,7 +168,7 @@ func s4Run(t *testing.T, o s4Opts) *gitRun {
 	}
 	pkt["execution"].(map[string]any)["deadline_at"] = clock.Real{}.Now().Add(3 * time.Hour).UTC().Format(time.RFC3339)
 	validate(t, "worker-input", pkt)
-	gr := runGit(t, gitSpec{fx: fx, pkt: pkt, mode: o.mode, ops: o.ops, shimEnv: o.env, realShim: true, realClock: true})
+	gr := runGit(t, gitSpec{fx: fx, pkt: pkt, mode: o.mode, ops: o.ops, shimEnv: o.env, realShim: true, realClock: true, scWorkspace: o.scWorkspace})
 	if o.cancelAfterHB > 0 {
 		gr.stub.setCancelAfter(o.cancelAfterHB)
 	}
