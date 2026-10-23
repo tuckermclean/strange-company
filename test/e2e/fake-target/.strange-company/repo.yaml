@@ -1,0 +1,17 @@
+# Repository context of the fake-target fixture (plan 28 section 14.5).
+apiVersion: strange.company/v1alpha1
+kind: RepositoryContext
+metadata:
+  name: fake-target
+spec:
+  project: sc-e2e
+  purpose: "Fixture repository for the fake harness scenarios: a Go module with a deliberately incomplete Add."
+  languages: [go]
+  importantPaths:
+    - {path: "calc/**", description: "the library under test"}
+  buildCommands:
+    - go build ./...
+  testCommands:
+    - go test ./...
+  contextFiles:
+    agentsMd: AGENTS.md

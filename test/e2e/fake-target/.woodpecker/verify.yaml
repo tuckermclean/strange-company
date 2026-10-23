@@ -1,0 +1,6 @@
+# Verification pipeline stub of the fake-target fixture (plans 20 and 22).
+steps:
+  - name: verify
+    image: docker.io/library/golang@sha256:2d658507a011f1eadc0114d7a421b312b2e77d9042a24036a26e267cc9231677
+    commands:
+      - go test ./...
