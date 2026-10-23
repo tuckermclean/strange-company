@@ -111,6 +111,9 @@ type pipeline struct {
 	skipPrechecks                     bool
 	repoDev, repoIno                  uint64 // identity of <workspace>/repo recorded at clone time
 	repoRec                           bool
+	tampered, wsRec                   bool   // a post-harness check found the workspace swapped; wsIno/ctime baseline taken
+	wsIno                             uint64 // workspace directory identity and ctime at the first post-harness check
+	wsCtimSec, wsCtimNsec             int64
 	refused                           map[string]bool // paths already reported as symlink_refused
 
 	cloneEnd, harnessStart, harnessEnd time.Time
@@ -495,6 +498,10 @@ func (pl *pipeline) finishFail(f *stageFail) int {
 	if w.sig.Err() != nil {
 		pl.shimDone()
 		return w.terminate()
+	}
+	if pl.tampered {
+		// A swapped workspace outranks whatever stage noticed it (a git failure, a rejected push, a failed diff).
+		f = &stageFail{reason: "internal", detail: "workspace_tampered"}
 	}
 	detail := f.detail
 	if f.partial && pl.harnessRan {

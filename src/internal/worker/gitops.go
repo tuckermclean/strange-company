@@ -172,29 +172,54 @@ func (pl *pipeline) recordRepo() error {
 	return nil
 }
 
-// verifyRepo checks, without following a link, that <workspace>/repo is still the directory recorded at clone time.
+// errWorkspaceTampered is returned by a post-harness git call when the workspace no longer is what sc-worker recorded.
+var errWorkspaceTampered = errors.New("workspace_tampered")
+
+// verifyRepo checks, without following a link, that <workspace>/repo is still the directory recorded at clone time
+// and, once the harness has ended, that the workspace directory itself (inode and ctime) did not change since the
+// first check: a rename pair of entries below it (the repo toggled away and back) moves its ctime.
 func (pl *pipeline) verifyRepo() *stageFail {
 	if !pl.repoRec {
 		return nil
 	}
 	tampered := &stageFail{reason: "internal", detail: "workspace_tampered"}
+	fail := func(err error) *stageFail {
+		pl.tampered = true
+		pl.refuse(pl.repo, err)
+		return tampered
+	}
 	root, err := openRoot(pl.w.cfg.WorkspaceDir)
 	if err != nil {
 		return &stageFail{reason: "internal", detail: "workspace: " + err.Error()}
 	}
 	defer syscall.Close(root)
+	var ws syscall.Stat_t
+	if err := syscall.Fstat(root, &ws); err != nil {
+		return &stageFail{reason: "internal", detail: "workspace: " + err.Error()}
+	}
+	if pl.harnessRan {
+		ino, sec, nsec := uint64(ws.Ino), int64(ws.Ctim.Sec), int64(ws.Ctim.Nsec)
+		if !pl.wsRec {
+			pl.wsIno, pl.wsCtimSec, pl.wsCtimNsec, pl.wsRec = ino, sec, nsec, true
+		} else if ino != pl.wsIno || sec != pl.wsCtimSec || nsec != pl.wsCtimNsec {
+			return fail(errNotRegular)
+		}
+	}
+	// openat with O_PATH|O_NOFOLLOW opens the entry itself, a link included; fstat then tells what it is.
+	fd, err := syscall.Openat(root, "repo", oPath|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return fail(errNotRegular)
+	}
+	defer syscall.Close(fd)
 	var st syscall.Stat_t
-	if err := fstatatNoFollow(root, "repo", &st); err != nil {
-		pl.refuse(pl.repo, errNotRegular)
-		return tampered
+	if err := syscall.Fstat(fd, &st); err != nil {
+		return fail(errNotRegular)
 	}
 	switch {
 	case st.Mode&syscall.S_IFMT == syscall.S_IFLNK:
-		pl.refuse(pl.repo, errSymlink)
-		return tampered
+		return fail(errSymlink)
 	case st.Mode&syscall.S_IFMT != syscall.S_IFDIR, uint64(st.Dev) != pl.repoDev, uint64(st.Ino) != pl.repoIno:
-		pl.refuse(pl.repo, errNotRegular)
-		return tampered
+		return fail(errNotRegular)
 	}
 	return nil
 }
@@ -215,9 +240,14 @@ var postFlags = []string{
 
 func (pl *pipeline) gitPostIn(timeout time.Duration, extraEnv []string, stdin []byte, args ...string) gitOut {
 	if pl.verifyRepo() != nil {
-		return gitOut{err: errors.New("workspace_tampered"), code: -1}
+		return gitOut{err: errWorkspaceTampered, code: -1}
 	}
-	return pl.w.gitIn(timeout, pl.repo, append(pl.pinPrivateEnv(), extraEnv...), stdin, append(append([]string{}, postFlags...), args...)...)
+	r := pl.w.gitIn(timeout, pl.repo, append(pl.pinPrivateEnv(), extraEnv...), stdin, append(append([]string{}, postFlags...), args...)...)
+	if r.err != nil && pl.verifyRepo() != nil {
+		// Whatever git said, a swapped workspace is what failed.
+		return gitOut{err: errWorkspaceTampered, code: -1}
+	}
+	return r
 }
 
 // tail returns the last n bytes of s on a rune boundary.
