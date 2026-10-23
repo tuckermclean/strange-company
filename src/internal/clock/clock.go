@@ -4,6 +4,7 @@ package clock
 
 import (
 	"context"
+	"sync"
 	"time"
 )
 
@@ -18,8 +19,56 @@ type Clock interface {
 // Real is the wall clock.
 type Real struct{}
 
-// SC-STUB(F07 27-AC-2)
-func (Real) Now() time.Time { return time.Time{} }
+// Now returns the current wall-clock instant.
+func (Real) Now() time.Time { return time.Now() }
 
-// SC-STUB(F07 27-AC-2)
-func (Real) Sleep(ctx context.Context, d time.Duration) error { return nil }
+// Sleep blocks for d or until ctx is done.
+func (Real) Sleep(ctx context.Context, d time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if d <= 0 {
+		return nil
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// Fake is a manually driven clock for tests: Sleep advances it by the slept duration and returns at once, so
+// retry and backoff logic runs without waiting. It is safe for concurrent use.
+type Fake struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+// NewFake returns a Fake whose current instant is start.
+func NewFake(start time.Time) *Fake { return &Fake{now: start} }
+
+// Now returns the fake instant.
+func (f *Fake) Now() time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.now
+}
+
+// Advance moves the fake instant forward by d.
+func (f *Fake) Advance(d time.Duration) {
+	f.mu.Lock()
+	f.now = f.now.Add(d)
+	f.mu.Unlock()
+}
+
+// Sleep advances the clock by d unless ctx is already done.
+func (f *Fake) Sleep(ctx context.Context, d time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	f.Advance(d)
+	return nil
+}
