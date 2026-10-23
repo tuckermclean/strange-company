@@ -356,7 +356,8 @@ func (c stillClock) Sleep(ctx context.Context, d time.Duration) error {
 
 type gitHelperConfig struct {
 	PrivateDir, HarnessSecretsDir, HomeDir, TmpDir, SSHProgram, ClockStart string
-	RealClock                                                              bool // S4: real elapsed time is the subject
+	RealClock                                                              bool   // S4: real elapsed time is the subject
+	SleepLog                                                               string // S6a: file that records every Sleep duration
 }
 
 // TestHelperProcess_ScWorkerGit is the child side of the Git component harness; it does nothing in a normal run.
@@ -378,6 +379,9 @@ func TestHelperProcess_ScWorkerGit(t *testing.T) {
 	cfg.SSHProgram = hc.SSHProgram
 	if !hc.RealClock {
 		cfg.Clock = stillClock{clock.NewFake(start)}
+	}
+	if hc.SleepLog != "" {
+		cfg.Clock = sleepRecorder{Clock: cfg.Clock, path: hc.SleepLog}
 	}
 	cfg.Stdout, cfg.Stderr = os.Stdout, os.Stderr
 	os.Exit(worker.Run(cfg))
@@ -796,6 +800,15 @@ func harnessDouble(args []string) int {
 				}
 				if o, err := gitH("replace", "-f", head, fake); err != nil {
 					fmt.Fprintln(os.Stderr, "double: replace:", o)
+					return 2
+				}
+			case "double-fork":
+				// S6a (S4-N4): a double-forked, setsid'd background sleeper that outlives the harness; out/linger.pid carries
+				// its pid.
+				c := exec.Command("/bin/sh", "-c", `sleep 1000 >/dev/null 2>&1 & echo $! > "$1"`, "sh", filepath.Join(out, "linger.pid"))
+				c.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+				if err := c.Run(); err != nil {
+					fmt.Fprintln(os.Stderr, "double: double-fork:", err)
 					return 2
 				}
 			case "record-proc":
@@ -1328,6 +1341,14 @@ type gitSpec struct {
 	realShim, realClock bool
 	// N3: SC_WORKSPACE as given to sc-worker, when it must differ from the cleaned workspace path.
 	scWorkspace func(workspace string) string
+	// S6a: the stub Gateway answers request n (1-based) for the given model with a status and an x-sc-error-code
+	// (nil: always 200); stub configures the stub Runner before sc-worker starts; sshScript replaces the ssh wrapper
+	// script (it receives the run directories and the shell words that run the fake ssh helper); sleepLog records
+	// every Sleep duration of sc-worker's clock in gitRun.sleeps.
+	gateway   func(n int, model string) (status int, code string)
+	stub      func(*stubRunner)
+	sshScript func(dirs map[string]string, helper string) string
+	sleepLog  bool
 }
 
 type gitRun struct {
@@ -1343,6 +1364,9 @@ type gitRun struct {
 	shimDone   chan struct{}
 	shimProc   *process // set when the production shim runs as a process
 	dirs       map[string]string
+	gwMu       sync.Mutex
+	gwModels   []string // S6a: the model of every request the stub Gateway received, in order
+	sleepPath  string
 }
 
 // runGit starts the shim and sc-worker for the packet and returns at once; call finish to wait for the result.
@@ -1386,12 +1410,34 @@ func runGit(t *testing.T, sp gitSpec) *gitRun {
 	})
 	writeTestFile(t, cfgPath, string(cb), 0o644)
 	sshProg := filepath.Join(dirs["bin"], "ssh")
-	writeTestFile(t, sshProg, "#!/bin/sh\nSC_TEST_HELPER=fake-ssh exec '"+exe+"' -test.run='^TestHelperProcess_FakeSSH$' -- '"+cfgPath+"' \"$@\"\n", 0o755)
+	helperWords := "env SC_TEST_HELPER=fake-ssh '" + exe + "' -test.run='^TestHelperProcess_FakeSSH$' -- '" + cfgPath + "'"
+	if sp.sshScript != nil {
+		writeTestFile(t, sshProg, sp.sshScript(dirs, helperWords), 0o755)
+	} else {
+		writeTestFile(t, sshProg, "#!/bin/sh\nexec "+helperWords+" \"$@\"\n", 0o755)
+	}
 
 	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.Copy(io.Discard, r.Body)
-		gr.gwHits.Add(1)
+		body, _ := io.ReadAll(r.Body)
+		n := int(gr.gwHits.Add(1))
+		var req struct {
+			Model string `json:"model"`
+		}
+		_ = json.Unmarshal(body, &req)
+		gr.gwMu.Lock()
+		gr.gwModels = append(gr.gwModels, req.Model)
+		gr.gwMu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
+		if sp.gateway != nil {
+			if status, code := sp.gateway(n, req.Model); status != http.StatusOK {
+				if code != "" {
+					w.Header().Set("x-sc-error-code", code)
+				}
+				w.WriteHeader(status)
+				_, _ = io.WriteString(w, `{"error":"denied"}`)
+				return
+			}
+		}
 		_, _ = io.WriteString(w, `{"id":"fake","choices":[]}`)
 	}))
 	t.Cleanup(gw.Close)
@@ -1421,9 +1467,15 @@ func runGit(t *testing.T, sp gitSpec) *gitRun {
 	}
 
 	gr.stub = newStubRunner(t, sp.pkt)
+	if sp.stub != nil {
+		sp.stub(gr.stub)
+	}
+	if sp.sleepLog {
+		gr.sleepPath = filepath.Join(root, "sleeps.log")
+	}
 	hc, _ := json.Marshal(gitHelperConfig{
 		PrivateDir: dirs["private"], HarnessSecretsDir: dirs["harness-secrets"], HomeDir: dirs["home"], TmpDir: dirs["tmp"],
-		SSHProgram: sshProg, ClockStart: clockOrigin, RealClock: sp.realClock,
+		SSHProgram: sshProg, ClockStart: clockOrigin, RealClock: sp.realClock, SleepLog: gr.sleepPath,
 	})
 	p := &process{done: make(chan struct{})}
 	p.cmd = exec.Command(exe, "-test.run=^TestHelperProcess_ScWorkerGit$")

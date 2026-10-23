@@ -98,6 +98,11 @@ func (gr *gitRun) startRealShim(t *testing.T, exe string, dirs map[string]string
 	if v := extra["SC_TEST_SHIM_GOMAXPROCS"]; v != "" { // S5b: a single-P shim makes scheduling races deterministic
 		p.cmd.Env = append(p.cmd.Env, "GOMAXPROCS="+v)
 	}
+	for k, v := range extra { // S6a: SC_TEST_SHIM_ENV_<NAME> poisons the shim's own environment with NAME=v
+		if name, ok := strings.CutPrefix(k, "SC_TEST_SHIM_ENV_"); ok {
+			p.cmd.Env = append(p.cmd.Env, name+"="+v)
+		}
+	}
 	p.cmd.Stdout, p.cmd.Stderr = &p.stdout, &p.stderr
 	if err := p.cmd.Start(); err != nil {
 		t.Fatal(err)
