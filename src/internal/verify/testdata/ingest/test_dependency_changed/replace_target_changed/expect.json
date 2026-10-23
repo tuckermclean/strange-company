@@ -1,0 +1,13 @@
+{
+  "manifest": [],
+  "violations": [
+    {
+      "code": "TEST_TAMPER",
+      "sub_code": "test_dependency_changed",
+      "path": "go.mod"
+    }
+  ],
+  "allow_extra": [
+    "TEST_TAMPER/discovery_config_changed go.mod"
+  ]
+}

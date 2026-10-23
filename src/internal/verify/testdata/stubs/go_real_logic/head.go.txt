@@ -1,0 +1,14 @@
+package httpx
+
+func Existing() int {
+	return 1
+}
+
+// SC-STUB(sc-9 AC-1)
+func ReplayBody(b []byte) int {
+	n := len(b)
+	if n > 0 {
+		return n
+	}
+	return 0
+}

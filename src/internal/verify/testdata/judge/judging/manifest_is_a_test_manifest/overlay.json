@@ -1,0 +1,6 @@
+{
+ "manifest": {
+  "kind": "test"
+ },
+ "redigest": true
+}

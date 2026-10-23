@@ -1,0 +1,10 @@
+{
+ "integrity": {
+  "discovery_changes": [
+   {
+    "kind": "whole_file_changed",
+    "path": ".golangci.yaml"
+   }
+  ]
+ }
+}

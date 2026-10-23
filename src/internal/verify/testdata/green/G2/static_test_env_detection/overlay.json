@@ -1,0 +1,12 @@
+{
+ "integrity": {
+  "static_findings": [
+   {
+    "code": "test_env_detection",
+    "line": 3,
+    "path": "pkg/impl.go",
+    "severity": "violation"
+   }
+  ]
+ }
+}

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<testsuites>
+<testsuite name="s" tests="4">
+<testcase classname="pkg.Suite" name="testOne" time="0.001"/>
+<testcase classname="pkg.Suite" name="testTwo" time="0.001"><failure message="expected 1 got 2" type="failure"></failure></testcase>
+<testcase classname="pkg.Suite" name="testThree" time="0.001"><error message="NullPointerException" type="error"></error></testcase>
+<testcase classname="pkg.Suite" name="testFour" time="0.001"><skipped/></testcase>
+</testsuite>
+</testsuites>

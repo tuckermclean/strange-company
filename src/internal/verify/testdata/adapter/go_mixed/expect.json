@@ -1,0 +1,26 @@
+{
+  "build_failed": false,
+  "timed_out": false,
+  "tests": [
+    {
+      "id": "unit::example.com/x/p.TestA",
+      "status": "failed_assertion"
+    },
+    {
+      "id": "unit::example.com/x/p.TestB",
+      "status": "passed"
+    },
+    {
+      "id": "unit::example.com/x/p.TestC",
+      "status": "skipped"
+    },
+    {
+      "id": "unit::example.com/x/p.TestD",
+      "status": "passed"
+    },
+    {
+      "id": "unit::example.com/x/p.TestD/sub",
+      "status": "passed"
+    }
+  ]
+}

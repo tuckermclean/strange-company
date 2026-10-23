@@ -1,0 +1,13 @@
+{
+ "observed": {
+  "checks": [
+   {
+    "duration_ms": 1,
+    "exit_code": 0,
+    "name": "lint",
+    "required": true,
+    "timed_out": true
+   }
+  ]
+ }
+}

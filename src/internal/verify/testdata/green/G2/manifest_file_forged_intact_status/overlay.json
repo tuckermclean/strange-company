@@ -1,0 +1,12 @@
+{
+ "integrity": {
+  "manifest_files": [
+   {
+    "actual_blob": "9daeafb9864cf43055ae93beb0afd6c7d144bfa4",
+    "expected_blob": "3b18e512dba79e4c8300dd08aeb37f8e728b8dad",
+    "path": "pkg/behavior_test.go",
+    "status": "intact"
+   }
+  ]
+ }
+}

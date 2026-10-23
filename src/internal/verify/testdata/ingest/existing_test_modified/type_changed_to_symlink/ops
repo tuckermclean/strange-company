@@ -1,0 +1,1 @@
+symlink pkg/old_test.go core_test.go

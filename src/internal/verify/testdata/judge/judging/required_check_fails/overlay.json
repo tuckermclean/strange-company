@@ -1,0 +1,13 @@
+{
+ "green": {
+  "checks": [
+   {
+    "duration_ms": 1,
+    "exit_code": 1,
+    "name": "lint",
+    "required": true,
+    "timed_out": false
+   }
+  ]
+ }
+}

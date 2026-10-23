@@ -1,0 +1,25 @@
+{
+  "outcome": "partially_satisfied",
+  "reasons": [
+    "change_ac_not_failing"
+  ],
+  "ac_results": [
+    {
+      "ac_id": "AC-1",
+      "kind": "change",
+      "tests": [
+        "unit::example.com/x/internal/httpx.TestNew"
+      ],
+      "outcome": "failing_assertion"
+    },
+    {
+      "ac_id": "AC-2",
+      "kind": "change",
+      "tests": [
+        "unit::example.com/x/internal/httpx.TestTwo"
+      ],
+      "outcome": "passing"
+    }
+  ],
+  "schema_valid": true
+}

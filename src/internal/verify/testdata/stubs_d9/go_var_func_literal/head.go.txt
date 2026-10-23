@@ -1,0 +1,7 @@
+package httpx
+
+func Existing() int {
+	return 1
+}
+
+var Handler = func() int { return 1 }

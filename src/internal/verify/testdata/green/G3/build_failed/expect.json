@@ -1,0 +1,6 @@
+{
+ "contains": [
+  "build_failed"
+ ],
+ "outcome": "green_fail"
+}

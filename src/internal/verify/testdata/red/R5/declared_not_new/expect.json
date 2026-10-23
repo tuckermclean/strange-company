@@ -1,0 +1,8 @@
+{
+  "outcome": "red_invalid",
+  "decisive": "declared_test_not_new",
+  "reasons": [
+    "declared_test_not_new"
+  ],
+  "schema_valid": true
+}

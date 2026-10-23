@@ -1,0 +1,6 @@
+{
+ "outcome": "tamper_detected",
+ "reasons": [
+  "existing_test_modified"
+ ]
+}

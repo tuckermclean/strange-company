@@ -1,0 +1,12 @@
+{
+ "integrity": {
+  "static_findings": [
+   {
+    "code": "protected_path_changed",
+    "line": 3,
+    "path": ".woodpecker/ci.yaml",
+    "severity": "violation"
+   }
+  ]
+ }
+}

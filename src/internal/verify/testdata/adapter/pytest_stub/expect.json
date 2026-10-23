@@ -1,0 +1,10 @@
+{
+  "build_failed": false,
+  "timed_out": false,
+  "tests": [
+    {
+      "id": "unit::tests/test_x.py::test_stub",
+      "status": "stub_unimplemented"
+    }
+  ]
+}

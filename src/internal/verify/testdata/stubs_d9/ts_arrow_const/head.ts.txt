@@ -1,0 +1,7 @@
+export function existing(): number {
+  return 1;
+}
+
+export const handler = (): number => {
+  return 1;
+};

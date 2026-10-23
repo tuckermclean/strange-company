@@ -1,0 +1,10 @@
+{
+  "manifest": [],
+  "violations": [
+    {
+      "code": "TEST_TAMPER",
+      "sub_code": "discovery_config_changed",
+      "path": "go.work"
+    }
+  ]
+}

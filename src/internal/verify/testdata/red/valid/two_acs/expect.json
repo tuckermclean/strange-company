@@ -1,0 +1,27 @@
+{
+  "outcome": "red_valid",
+  "reasons": [],
+  "new_tests": [
+    "unit::example.com/x/internal/httpx.TestKeep",
+    "unit::example.com/x/internal/httpx.TestNew"
+  ],
+  "ac_results": [
+    {
+      "ac_id": "AC-1",
+      "kind": "change",
+      "tests": [
+        "unit::example.com/x/internal/httpx.TestNew"
+      ],
+      "outcome": "failing_assertion"
+    },
+    {
+      "ac_id": "AC-2",
+      "kind": "preservation",
+      "tests": [
+        "unit::example.com/x/internal/httpx.TestKeep"
+      ],
+      "outcome": "passing"
+    }
+  ],
+  "schema_valid": true
+}

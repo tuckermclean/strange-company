@@ -1,0 +1,10 @@
+{
+ "id_sets": {
+  "base_passing": [
+   "unit::example.com/x/pkg.TestOld1",
+   "unit::example.com/x/pkg.TestOld2",
+   "unit::example.com/x/pkg.TestOld3",
+   "unit::example.com/x/other.TestOld9"
+  ]
+ }
+}

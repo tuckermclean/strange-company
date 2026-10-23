@@ -1,0 +1,10 @@
+{
+ "green": {
+  "judge_checks": [
+   {
+    "id": "J-1",
+    "status": "pass"
+   }
+  ]
+ }
+}

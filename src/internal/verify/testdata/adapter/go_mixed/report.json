@@ -1,0 +1,22 @@
+{"Time": "2026-10-13T12:00:00Z", "Action": "start", "Package": "example.com/x/p"}
+{"Time": "2026-10-13T12:00:00Z", "Action": "run", "Package": "example.com/x/p", "Test": "TestA"}
+{"Time": "2026-10-13T12:00:00Z", "Action": "output", "Package": "example.com/x/p", "Output": "=== RUN   TestA\n", "Test": "TestA"}
+{"Time": "2026-10-13T12:00:00Z", "Action": "output", "Package": "example.com/x/p", "Output": "    a_test.go:12: got 1, want 2\n", "Test": "TestA"}
+{"Time": "2026-10-13T12:00:00Z", "Action": "output", "Package": "example.com/x/p", "Output": "--- FAIL: TestA (0.00s)\n", "Test": "TestA"}
+{"Time": "2026-10-13T12:00:00Z", "Action": "fail", "Package": "example.com/x/p", "Test": "TestA"}
+{"Time": "2026-10-13T12:00:00Z", "Action": "run", "Package": "example.com/x/p", "Test": "TestB"}
+{"Time": "2026-10-13T12:00:00Z", "Action": "output", "Package": "example.com/x/p", "Output": "--- PASS: TestB (0.00s)\n", "Test": "TestB"}
+{"Time": "2026-10-13T12:00:00Z", "Action": "pass", "Package": "example.com/x/p", "Test": "TestB"}
+{"Time": "2026-10-13T12:00:00Z", "Action": "run", "Package": "example.com/x/p", "Test": "TestC"}
+{"Time": "2026-10-13T12:00:00Z", "Action": "output", "Package": "example.com/x/p", "Output": "    c_test.go:5: skipping\n", "Test": "TestC"}
+{"Time": "2026-10-13T12:00:00Z", "Action": "output", "Package": "example.com/x/p", "Output": "--- SKIP: TestC (0.00s)\n", "Test": "TestC"}
+{"Time": "2026-10-13T12:00:00Z", "Action": "skip", "Package": "example.com/x/p", "Test": "TestC"}
+{"Time": "2026-10-13T12:00:00Z", "Action": "run", "Package": "example.com/x/p", "Test": "TestD"}
+{"Time": "2026-10-13T12:00:00Z", "Action": "run", "Package": "example.com/x/p", "Test": "TestD/sub"}
+{"Time": "2026-10-13T12:00:00Z", "Action": "output", "Package": "example.com/x/p", "Output": "--- PASS: TestD/sub (0.00s)\n", "Test": "TestD/sub"}
+{"Time": "2026-10-13T12:00:00Z", "Action": "pass", "Package": "example.com/x/p", "Test": "TestD/sub"}
+{"Time": "2026-10-13T12:00:00Z", "Action": "output", "Package": "example.com/x/p", "Output": "--- PASS: TestD (0.00s)\n", "Test": "TestD"}
+{"Time": "2026-10-13T12:00:00Z", "Action": "pass", "Package": "example.com/x/p", "Test": "TestD"}
+{"Time": "2026-10-13T12:00:00Z", "Action": "output", "Package": "example.com/x/p", "Output": "FAIL\n"}
+{"Time": "2026-10-13T12:00:00Z", "Action": "output", "Package": "example.com/x/p", "Output": "FAIL\texample.com/x/p\t0.003s\n"}
+{"Time": "2026-10-13T12:00:00Z", "Action": "fail", "Package": "example.com/x/p"}

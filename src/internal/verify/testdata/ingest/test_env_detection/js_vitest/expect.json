@@ -1,0 +1,11 @@
+{
+  "manifest": [],
+  "violations": [
+    {
+      "code": "TEST_TAMPER",
+      "sub_code": "test_env_detection",
+      "path": "app/main.js",
+      "line": 1
+    }
+  ]
+}

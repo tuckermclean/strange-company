@@ -1,0 +1,26 @@
+package httpx
+
+import "testing"
+
+func TestA(t *testing.T) {
+	if Do(1) != 2 {
+		t.Errorf("a")
+	}
+}
+
+func TestB(t *testing.T) {
+	defer func() { _ = recover() }()
+	got := Do(2)
+	if got != 3 {
+		t.Errorf("b: %d", got)
+	}
+	if got < 0 {
+		t.Errorf("negative")
+	}
+}
+
+func TestC(t *testing.T) {
+	if Do(4) != 5 {
+		t.Errorf("c")
+	}
+}

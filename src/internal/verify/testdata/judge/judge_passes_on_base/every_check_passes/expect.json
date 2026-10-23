@@ -1,0 +1,25 @@
+{
+ "ac_results": [
+  {
+   "ac_id": "AC-1",
+   "kind": "change",
+   "outcome": "passing",
+   "tests": [
+    "judge::J-1"
+   ]
+  },
+  {
+   "ac_id": "AC-2",
+   "kind": "change",
+   "outcome": "passing",
+   "tests": [
+    "judge::J-2"
+   ]
+  }
+ ],
+ "function": "validate",
+ "outcome": "already_satisfied",
+ "reasons": [
+  "judge_passes_on_base"
+ ]
+}

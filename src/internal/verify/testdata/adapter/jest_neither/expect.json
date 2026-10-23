@@ -1,0 +1,10 @@
+{
+  "build_failed": false,
+  "timed_out": false,
+  "tests": [
+    {
+      "id": "unit::src/redirect.test.js::redirect boom",
+      "status": "failed_error"
+    }
+  ]
+}

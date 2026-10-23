@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<testsuites>
+<testsuite name="s" tests="4">
+<testcase classname="my-crate::tests" name="test_ok" time="0.001"/>
+<testcase classname="my-crate::tests" name="test_assert" time="0.001"><failure message="thread 'tests::test_assert' panicked at src/lib.rs:9:5:
+assertion `left == right` failed
+  left: 1
+ right: 2"></failure></testcase>
+<testcase classname="my-crate::tests" name="test_unwrap" time="0.001"><failure message="thread 'tests::test_unwrap' panicked at src/lib.rs:12:9:
+called `Option::unwrap()` on a `None` value"></failure></testcase>
+<testcase classname="my-crate::tests" name="test_stub" time="0.001"><failure message="thread 'tests::test_stub' panicked at src/lib.rs:3:5:
+not yet implemented: SC-STUB-NOT-IMPLEMENTED"></failure></testcase>
+</testsuite>
+</testsuites>

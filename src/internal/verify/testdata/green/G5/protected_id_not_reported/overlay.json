@@ -1,0 +1,5 @@
+{
+ "protected_test_ids": [
+  "unit::example.com/x/pkg.TestOld2"
+ ]
+}

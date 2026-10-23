@@ -1,0 +1,6 @@
+{"Time": "2026-10-13T12:00:00Z", "Action": "run", "Package": "example.com/x/p", "Test": "TestG"}
+{"Time": "2026-10-13T12:00:00Z", "Action": "output", "Package": "example.com/x/p", "Output": "exit status 3\n", "Test": "TestG"}
+{"Time": "2026-10-13T12:00:00Z", "Action": "output", "Package": "example.com/x/p", "Output": "--- FAIL: TestG (0.00s)\n", "Test": "TestG"}
+{"Time": "2026-10-13T12:00:00Z", "Action": "fail", "Package": "example.com/x/p", "Test": "TestG"}
+{"Time": "2026-10-13T12:00:00Z", "Action": "output", "Package": "example.com/x/p", "Output": "FAIL\texample.com/x/p\t0.004s\n"}
+{"Time": "2026-10-13T12:00:00Z", "Action": "fail", "Package": "example.com/x/p"}

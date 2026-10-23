@@ -750,3 +750,236 @@ Follow-ups (not blocking GATE-F05):
   - the trajectory loader silently skips `*.YML`, `*.Yaml` and `*~` files.
 - **Plan 29 / contract:** an auxiliary execution can outlive T003 or T067 into states where T091 is not accepted. This fails closed, but a lost `auxiliary_result_recorded` then blocks dispatch until a human cancels. The 20 fallback-covered guards have no sibling-fails fixture. Reject an empty `Event.Role` on dispatch events once the Runner always sets it. Not specified in F05: `blocked_results` and `conflicts_raised` increments, the plan 31 escalation ladder, §16.4 failure-signature normalisation, and `returnTargets` per mode.
 - **Plans:** plan 29 §22 and 29-AC-3 should name `src/internal/statemachine`; 29-AC-4 should name the bare-package command (D3).
+
+### F06 — verifier-lib
+
+Branch `node/F06-verifier-lib`, built with `/sc-node F06` from `main` b1098ba (owning plan `plans/22-verification-policy.md`). Library `src/internal/verify`:
+- adapters and normalisation (go-test-json, junit-xml, pytest, jest, vitest and nextest JUnit);
+- the declared-stub check (Go AST; canonical-layout allowlist for Python, TS/JS and Rust);
+- `ClassifyRed` R0–R11 and `ClassifyRedGen` (R1b, R11b, R12–R14);
+- `BuildManifest`;
+- Git diff derivation (`DeriveDiff`, `AddedLines`, `CrossCheckCompare`, `RevList`, `IsAncestor`, `LsTree`);
+- `CheckIngestion` and `DeriveDiscoveryProtection` with fail-closed go.mod, TOML, INI and JSON recognisers;
+- `ValidateExemption` and `CheckScope`;
+- `ClassifyGreen` G0–G9 with `DeriveIntegrity` and `DeriveIsolationFiles`;
+- `ClassifyJudge` and `ClassifyJudging`;
+- the observer behind `src/cmd/sc-verify` (`run`, `emit`, `classify`).
+
+In `src/internal/policy` it adds `Effective.Name`, `policy.MatchGlob` and the `ENFORCEMENT_PLANE_NOT_ELEVATED` invariant, enforced in `MergePolicy` and `Check`.
+
+Slices:
+- S1: red-core (22-AC-4..7).
+- S2: red-generations (22-AC-26, 22-AC-30, 22-AC-9, 22-AC-24 RED part, 22-AC-32 `manifest_too_large`).
+- S3: ingestion (22-AC-8, 22-AC-22, 22-AC-31, 22-AC-32 discovery).
+- S4: policy-scope (22-AC-10, 22-AC-11, 22-AC-33).
+- S5: green (22-AC-23, 22-AC-25, 22-AC-27, 22-AC-24 GREEN part).
+- S6: judges and completeness (22-AC-3). S6 was re-sliced after its budget ran out: S6a holds judges, completeness and determinism; S6b holds the research-report recogniser.
+- S7: observer (22-AC-29, 22-AC-24 child env and replay export, 22-AC-32 `toolingFrom`).
+
+**Status: every slice approved by its last review; every GATE-F06 criterion has passing evidence below.**
+
+Decisions (orchestrator, under the operator's standing delegation unless marked operator). The full text is in the node brief `out/sc-node/F06/brief.md`.
+- **D1–D7 (brief):**
+  - Paths are `src/internal/verify` and `src/cmd/sc-verify`; 22-AC-3 reads `go test ./src/internal/verify/...`.
+  - The bare red target is `test GO_TEST_PKGS=…`.
+  - The enforcement plane reads plan 22 §9.3's `jobbuilder` as `src/internal/jobs/**`. The invariant lives in the F04 loader, applies to repository `strange-company` only, and uses glob inclusion.
+  - For strange-company, `test/e2e/**` is protected and is not a test path (D4).
+  - pytest, jest, vitest and nextest fixtures are hand-recorded (D5; re-recording is 22-AC-12 at C04).
+  - Classification is pure; Git derivation is tested on real scratch repositories, and the observer on real fixture modules (D6).
+- **D8–D13 (S1):**
+  - interface choices (D8);
+  - non-function stub declarations and the protected-path check in R1 (D9);
+  - a fail-closed stub check and R10/R11 reason order (D10);
+  - the canonical-layout allowlist for line languages, with foreign line terminators an error (D11, D12);
+  - no panic on open stubs; existing Go TypeSpecs gain no lines except a marked, untagged named field; fresh Rust/TS type names; Python annotation spaces (D13).
+- **D14–D16 (S2):**
+  - S2 RED audit answers; 22-AC-9's "digest equal" is read against the placeholder digest in `examples[0]` (D14).
+  - One structural primitive for R1b/R12/R13, keyed by `(file, func)` (D15).
+  - cgo and import doc comments; fail-closed generation facts; manifest limits that agree with the real schema validator (D16).
+- **D17–D19 (S3):**
+  - S3 RED audit answers (D17).
+  - Semantic-key and discovery parsers are fail-closed recognisers of a canonical subset; Git ignores grafts (D18).
+  - Odd line terminators and NUL are errors; gitlinks are skipped in semantic loops; the TOML and go.mod subsets are tightened (D19).
+- **D20 (operator):** `ENFORCEMENT_PLANE_NOT_ELEVATED` is also reported by `Check` (`make policy-check`). The six merged F04 fixtures named `strange-company` received the real `merge.elevatedPaths` block. No other key and no `.expect` file changed.
+- **D21 (S4):** the `refactor` (characterization) class denies the repository's test, fixture and test-infra paths. `CheckScope` reports `GITLINK_DENIED` for every role and refuses inconsistent decisions. Auto for a repository-human class keeps the stale-auto escalation.
+- **D22 (S5):** a manifest file is modified on a blob or mode change, or when CheckIngestion flags it. Truncated reports whose failing counts exceed the reported failures fail G5. Count and exit-code inconsistencies, an unbound baseline and warning downgrades of §14.6 codes are `verification_infra_failed`.
+- **D23–D25 (S6):**
+  - The JudgeArtifact check agrees with the real schema, backed by a differential test; the report recogniser fails closed; G2 facts apply in judging; the characterization base observation is bound; unusable inputs are refused (D23).
+  - Anchors and aliases are refused; container-nested fences and HTML fail closed; inline-hidden ids do not count; the base SHA is bound (D24).
+  - AC ids are matched only before the first `<`, `![`, `](` or `][` (D25).
+- **Re-slice (operator instruction "if that attempt fails, refactor your slicing for this node and try again").** S6's four attempts were spent; S6a was closed as approved and S6b opened with a fresh budget.
+- **D26–D27 (S6b):** outside an open top-level fence, any indented fence or `<` opener fails a research report closed; `<` rules do not apply inside a top-level fence. A recorded CommonMark oracle corpus guards this (`testdata/report_oracle/`, markdown-it-py 3.0.0 in commonmark mode, seed 27, 3252 entries).
+- **D28 (S7):**
+  - The replay and base-tooling trees are snapshotted from Git blobs before any workspace code runs and extracted into private directories.
+  - `run` is non-dumpable.
+  - The repo-validation schema is mirrored, with a differential test.
+  - A NUL file carrying a stub marker refuses the export.
+  - `emit` follows plan 20 §8.4.
+  - Non-linux builds compile.
+- **Operator:**
+  - one extra S1 attempt beyond CD-63's four (attempt 5, Opus);
+  - re-slicing S6;
+  - D20.
+
+#### S1 — red-core (22-AC-4, 22-AC-5, 22-AC-6, 22-AC-7)
+
+| Commit | Role |
+|---|---|
+| 58e0ea5, 2f506e2 → 3e30d95 | RED (97 failures) + RED fix (escaped jest fixture, gofmt) → attempt 1. CI [39439498894](https://github.com/tuckermclean/strange-company/actions/runs/39439498894) success |
+| 8c45999, 2e9108b → 7d34d2e | review 1 request_changes (stubs ignore non-function declarations; R1 had no protected-path check) → RED (D9) + data fix → attempt 2. CI [39452969621](https://github.com/tuckermclean/strange-company/actions/runs/39452969621) success |
+| bfe9691 → 4a2916b, 3e9f19e | review 2 request_changes (stub check must fail closed; R10/R11 order) → RED (D10) → attempt 3. CI [39463742752](https://github.com/tuckermclean/strange-company/actions/runs/39463742752) success |
+| 179c74f → bb8b7fb | review 3 request_changes (still fails open in six ways) → RED (D11/D12) → attempt 4 (Opus, CD-63). CI [39473865028](https://github.com/tuckermclean/strange-company/actions/runs/39473865028) success |
+| 39911e6 → 7743b39 | review 4 request_changes (panic on an open brace; existing Go type gains lines) → RED (D13) → attempt 5 (Opus, operator-approved exception). CI [39490032191](https://github.com/tuckermclean/strange-company/actions/runs/39490032191) success |
+| — | review 5 **approve** at 7743b39 (240k-run fuzz with the recover bypassed: 0 panics) |
+
+#### S2 — red-generations (22-AC-26, 22-AC-30, 22-AC-9, 22-AC-24 RED, 22-AC-32 `manifest_too_large`)
+
+| Commit | Role |
+|---|---|
+| e498d77 → 0a956e4 | RED → attempt 1. CI [39502038250](https://github.com/tuckermclean/strange-company/actions/runs/39502038250) success |
+| 73539ff, d9e1510 → b321307 | review 1 request_changes (bare-name keying; non-function edits ignored) → RED (D15) → attempt 2 test_spec_conflict → test fix d9e1510 → attempt 3. CI [39507619874](https://github.com/tuckermclean/strange-company/actions/runs/39507619874) success |
+| f26d2ed, 5e25f97 → 0040df3, 8a5cc38 | review 2 request_changes (cgo preamble; inconsistent facts skipped) → RED (D16) → attempt 4 (Opus) test_spec_conflict → test fix 5e25f97 → attempt 4's patch + chore drift test. CI [39516182552](https://github.com/tuckermclean/strange-company/actions/runs/39516182552) success |
+| — | review 3 **approve** at 8a5cc38 |
+
+#### S3 — ingestion (22-AC-8, 22-AC-22, 22-AC-31, 22-AC-32 discovery)
+
+| Commit | Role |
+|---|---|
+| 70e17ca → a6aa64f | RED (215 subtests, 125 fixtures) → attempt 1. CI [39528114551](https://github.com/tuckermclean/strange-company/actions/runs/39528114551) success |
+| 5c09054, 3c33367 → 428044e | review 1 request_changes (four parser bypasses) → RED (D18; amended by the orchestrator before push) → attempt 2 test_spec_conflict → test fix 3c33367 → attempt 2's patch. CI [39531964379](https://github.com/tuckermclean/strange-company/actions/runs/39531964379) success |
+| 3e56986 → dba7b22 | review 2 request_changes (INI section hidden behind odd line terminators) → RED (D19) → attempt 3. CI [39538561806](https://github.com/tuckermclean/strange-company/actions/runs/39538561806) success |
+| — | review 3 **approve** at dba7b22 (158-case parser oracle; 33 scenarios × Validation on/off) |
+
+#### S4 — policy-scope (22-AC-10, 22-AC-11, 22-AC-33)
+
+| Commit | Role |
+|---|---|
+| 57b19c0 → 92a147c | RED → attempt 1. CI [39549613378](https://github.com/tuckermclean/strange-company/actions/runs/39549613378) success |
+| 08a7331 → 6b81d23 | RED (D20, operator: Check-level invariant + six F04 fixtures) → GREEN 2. CI [39555357012](https://github.com/tuckermclean/strange-company/actions/runs/39555357012) success |
+| e8d8d53 → 9a8d7fa | review 1 request_changes (refactor producer could touch test-classified paths) → RED (D21) → attempt 3. CI [39565021054](https://github.com/tuckermclean/strange-company/actions/runs/39565021054) success |
+| — | review 2 **approve** at 9a8d7fa |
+
+#### S5 — green (22-AC-23, 22-AC-25, 22-AC-27, 22-AC-24 GREEN)
+
+| Commit | Role |
+|---|---|
+| 1734f10 → bdaa8ad | RED (141 leaves, 96 fixtures) → attempt 1. CI [39574643830](https://github.com/tuckermclean/strange-company/actions/runs/39574643830) success |
+| 7305b73, dae914a → d531b7b | review 1 request_changes (manifest file judged by blob only; failures dropped by truncation) → RED (D22) → attempt 2 test_spec_conflict → setup-only helper fix dae914a → attempt 2's patch. CI [39579996521](https://github.com/tuckermclean/strange-company/actions/runs/39579996521) success |
+| — | review 2 **approve** at d531b7b |
+
+#### S6a — judges, completeness, determinism (22-AC-3)
+
+| Commit | Role |
+|---|---|
+| ca1df36 → f71955d | RED (98 judge fixtures; completeness and 100× tests) → attempt 1. CI [39591942751](https://github.com/tuckermclean/strange-company/actions/runs/39591942751) success |
+| 2718f3a → e882c41 | review 1 request_changes (JudgeArtifact looser than the schema; report counted unrendered headings) → RED (D23) → attempt 2. CI [39602732660](https://github.com/tuckermclean/strange-company/actions/runs/39602732660) success |
+| e090e2a, 83ae24a → a7b502c | review 2 request_changes (alias-bomb hang; container fences and HTML) → RED (D24) + bounded-bomb test fix 83ae24a (RED 3 had been OOM-killed) → attempt 3. CI [39619548175](https://github.com/tuckermclean/strange-company/actions/runs/39619548175) success |
+| c8d3a28 → e803da5 | review 3 request_changes (partial tag/link stripping) → RED (D25) → attempt 4 (Opus). CI [39631783334](https://github.com/tuckermclean/strange-company/actions/runs/39631783334) success |
+| — | review 4 request_changes on the recogniser only (list-item fences); everything else approved → re-slice |
+
+#### S6b — research-report recogniser (22-AC-3 judge rule)
+
+| Commit | Role |
+|---|---|
+| 9d5b078 → aa238f3 | RED (D26: six repros + CommonMark oracle corpus, 39 fail-opens at head) → attempt 1. CI [39643029415](https://github.com/tuckermclean/strange-company/actions/runs/39643029415) success |
+| ff9ee2f → 02f71b1 | review 1 request_changes (indented HTML openers in list continuation) → RED (D27; corpus re-recorded, seed 27) → attempt 2. CI [39654185436](https://github.com/tuckermclean/strange-company/actions/runs/39654185436) success |
+| — | review 2 **approve** at 02f71b1 (240k random reports from three generators: 0 fail-opens) |
+
+#### S7 — observer (22-AC-29, 22-AC-24 child env and replay export, 22-AC-32 `toolingFrom`)
+
+| Commit | Role |
+|---|---|
+| 83f2268 → 30688e7 | RED (17 functions; satisfiability with 22 mutations caught) → attempt 1. CI [39672027912](https://github.com/tuckermclean/strange-company/actions/runs/39672027912) success |
+| e9beca9 → c2ab364 | review 1 request_changes (replay and base tooling read the workspace `.git` after head ran; `run` dumpable) → RED (D28; identification-only helper edits) → attempt 2. CI [39680925312](https://github.com/tuckermclean/strange-company/actions/runs/39680925312) success |
+| — | review 2 **approve** at c2ab364 (all-state `.git` poisoning, `/proc` surface, 10/10 runs and runs under load) |
+
+#### F06 — gate evidence
+
+| Criterion | Test(s) / evidence | Status |
+|---|---|---|
+| 22-AC-3 | `TestFixtureCompleteness_22AC3` (inventory derived from the plan 22 §14.3/§14.6/§14.7/§14.8 tables and the red/green-result enums), `TestClassification_100xByteIdentical_22AC3`, `TestJudgeFixtures_100xByteIdentical_22AC3`, `TestGoBuiltHomes_100xByteIdentical_D23_22AC3`, `TestClassifyJudge_*`/`TestClassifyJudging_*` (98 fixtures + D23–D27), `TestReportRecogniser_NeverAddressesWhatCommonMarkHides_D26_22AC3`; `go test ./src/internal/verify/...` passes | pass |
+| 22-AC-4 | `TestAnalyzeStubs_*`, `TestClassifyRed_StubFixtures_22AC4`, D9–D13 suites (`d9`/`d10`/`d11`/`d13_test.go`) | pass |
+| 22-AC-5 | `TestClassifyRed_ErrorClass*`, `TestNormalizeReport_*`, `TestLoadAdapters_*` | pass |
+| 22-AC-6 | `TestClassifyRed_AlreadySatisfied*`, R10 order tests | pass |
+| 22-AC-7 | `TestClassifyRed_Baseline*`, `UnusableFacts_FailClosed` | pass |
+| 22-AC-8 | `TestCheckIngestion_Fixtures_22AC8` (119 fixtures), `_Roles`, `_DeterministicAndSorted`, `_StartAfterRed`, `_AddedLineParsing`, `_HostileGitConfig`, `_BinaryFiles`, `TestAddedLines_*`, D18/D19 recogniser suites | pass |
+| 22-AC-9 | `TestBuildManifest_Sc184MatchesSchemaExample_22AC9` (digest per D14), `_DigestCoversTheDocument`, `_OnlyForRedValid`, `_CumulativeGeneration`, D15/D16 schema and determinism tests, `manifest_limits_test.go` drift test | pass |
+| 22-AC-10 | `TestValidateExemption_Decisions`, `_NotAllowed`, `_RepositoryGlobs`, `_ModeAndJustification`, `_PureAndDeterministic` (all `_22AC10`) | pass |
+| 22-AC-11 | `TestCheckScope_DocumentationOnlyProducer`, `_MetadataProducerEscalation`, `_ClassesByPathClass`, `_InvalidInputsFailClosed`, `_DeterministicOrder`, `TestValidateExemption_AbsentOrEmptyAllowList…`, D21 tests; F04 `TestCheck_AutoClassOverlappingHumanClassFails_22AC11` | pass |
+| 22-AC-22 | `TestCheckIngestion_Fixtures_22AC22`, `TestCheckIngestion_GoMod_D18_22AC22`, `_GoModSeparators_D19`, `_GoModCanonicalSubset_D19` | pass |
+| 22-AC-23 | `TestClassifyGreen_IsolationRun_G4b`, `_ImplementerMocksOnly_TamperDetected`, `TestDeriveIsolationFiles_*`, D22 N1/N2 tests | pass |
+| 22-AC-24 | RED: `TestClassifyRedGen_R11bNondeterministic`, `_R11bMarkerConditional`, `_R11bRepeatFacts_FailClosed`; GREEN: `TestClassifyGreen_RedReplay_G9_22AC24`; observer: `TestRun_ChildEnvironmentIsBuiltFromScratch`, `_SuiteEnvCannotReintroduceSCVariables`, `_ReplayExportHasNoGitNoSCVariablesNoStubMarkers`, D28 B1/N3 tests | pass |
+| 22-AC-25 | `TestClassifyGreen_FullSuiteComparison_G5b`, `_PreexistingTestRenamedOutOfDiscovery`, `_TruncatedHidesFailure_D22`; the RED clause in `testdata/red/R8` | pass |
+| 22-AC-26 | `TestClassifyRedGen_R12DropsManifestTest`, `_R12Twins`, `_R13UnapprovedTestChange`, `_R13Twins`, `_TesterDeletion`, D15/D16 R13 tests | pass |
+| 22-AC-27 | `TestClassifyGreen_Integrity_G2`, `TestDeriveIntegrity_*` (foreign commits incl. adversaries, head descent, manifest files from Git, stub markers, ingestion violations), D22 B1/N3 tests | pass |
+| 22-AC-29 | `TestRunEmit_RedObservation`, `TestRun_SealsReportBeforeParsing`, `_KillsDetachedDescendantsBeforeSealing` (setsid, setpgid, double fork, sleeper), `_ReportSymlinkOutsideWorkspaceIsNotFollowed`, `_PlantedRecordSymlinksAreNotFollowed`, `TestEmit_RefusesTamperedRecord`, `TestRun_ProcEnvironOfRunHoldsNoNonce`, `_NonceInLaunchEnvironmentNeverReachesTheSuite`, `_SuiteCannotOpenRunProcMemOrEnviron_D28B2`, `TestRunEmit_ForgedPassLinesLeaveProtectedStatusUnchanged` | pass |
+| 22-AC-30 | `TestClassifyRedGen_R1bExistingTestWeakened`, `_R1bTwins`, `_R1bUnparsableGo_FailClosed`, `_R12EarlyReturn`, `_R12BodyEdits`, D15/D16 R1b/R12 tests; `G_STRENGTHEN_AUTHORIZED` by F05 (`accounting_d14_test.go`, trajectory `already-satisfied-needs-human`) | pass |
+| 22-AC-31 | `TestDeriveDiff_*`, `TestCrossCheckCompare`, `TestRevListAndIsAncestor` (+ `_IgnoreGrafts_D18`), `TestLsTree`, `TestCheckIngestion_ProtectedPaths*`, `_Gitlinks`, `_DiffTooLargeBeforeAnyRule`, `_MergeCommitResolution`, `TestCheckIngestionManyFiles_EveryViolationSeen` | pass |
+| 22-AC-32 | `TestClassifyRedGen_R14ManifestTooLarge_22AC32` (61 KiB), D15/D16 per-item limits, `TestManifestLimits_MatchSchema_D16`; discovery: `TestDeriveDiscoveryProtection_*`, `TestCheckIngestion_IncludedMakefileAndConfigPaths_22AC32`, D18/D19 Make suites; `toolingFrom`: `TestRun_CheckWithoutToolingFromRunsBaseTooling_22AC32`, `_RedRunExecutesNoCheck`, D28 base-hash tests | pass |
+| 22-AC-33 | policy `TestMergePolicy_*_22AC33`, `TestCheck_Plane*_D20_22AC33`, `TestSCPolicyCheckCommand_PlaneGlobOmitted_D20_22AC33`; verify `TestCheckScope_E2EProtectedForStrangeCompany`, `TestClassifyRed_E2E…`, `TestCheckIngestion_E2E…`, `TestCheckScope_TesterAndImplementerProtectedPaths`, `TestCheckScope_GitlinkDeniedForEveryRole_D21_22AC33` | pass |
+| TDD discipline | local `make tdd-discipline-check TDD_BASE=b1098ba` on the evidence head (checker and policy from base): pass: 31 RED commits, 1,617 distinct RED failures, `build_ok`, 0 failures, 18 `TDD_RED_TEST_MODIFIED` warnings (the post-RED test changes listed below), 2 superseded (the bomb cases) | pass |
+
+Deviations and disclosures:
+- **History rewrite (orchestrator, operator-instructed):** the first discipline dry run (on b44b19d) failed `TDD_RED_TESTS_NOT_GREEN` on two REDs: 0160fbb (the superseded bomb cases below) and 84e8ce4. In 84e8ce4, two subtest names of `TestDeriveDiff_OnlyObjectIDs_22AC31` embedded a `t.TempDir()` path, so their ids changed on every replay, and neither a later commit nor a `TDD-Superseded` line could match them.
+  - A tester's two-line test-only fix (the name uses `PWN` for the temp path; the revision passed to `DeriveDiff` is unchanged) was squashed into that RED, which is now 70e17ca.
+  - Commits before it keep their SHAs. Every commit from S3 on is rewritten; the SHAs above are the rewritten ones. Reviews and CI ran on the pre-rewrite SHAs (tag `f06-pre-rewrite` = b44b19d, head of the reviewed branch); the map is `git log --reverse --format=%h b1098ba..f06-pre-rewrite` against the same range of c2ab364, line by line. A fresh reviewer approved the rewrite (range-diff, trees, superseded lines). CI on the rewritten head: [39717986310](https://github.com/tuckermclean/strange-company/actions/runs/39717986310) success.
+  - `git range-diff b1098ba f06-pre-rewrite c2ab364` shows one changed patch (70e17ca, those two lines); every other commit is identical, and c2ab364's tree is b44b19d's plus those two lines.
+- **Superseded RED tests:** `TestClassifyJudge_AliasBombAndAnchors_D24_22AC3/invalid/bomb_8_levels` and `…/bomb_10_levels` (RED e090e2a) were replaced by the bounded 5- and 6-level cases in RED 83ae24a. The evidence head commit carries the two `TDD-Superseded` lines.
+- **Changes to this node's own RED tests and fixtures after their RED** (each is a one-purpose commit or an orchestrator-recorded decision; no assertion was loosened except where a test contradicted the decided rule):
+  - 2f506e2: escaped jest fixture.
+  - 2e9108b: duplicate ids.
+  - d9e1510: the R14 per-item cases drop a red-result schema assertion their input made impossible.
+  - 5e25f97: a U+2028 case becomes `\n`, after the RED 3 audit chose to agree with the validator.
+  - 3c33367: one TOML subcase becomes a twin, because both spellings decode equal.
+  - dae914a: setup-only scenario baseline binding.
+  - 83ae24a: the alias-bomb cases are bounded, so RED fails on assertions rather than OOM; `bomb_8_levels` and `bomb_10_levels` were removed.
+  - ff9ee2f: the oracle corpus is re-recorded (D27(c)).
+  - e9beca9: helpers identify `run` by cmdline.
+  - 5c09054: amended by the orchestrator before push (the guard hook reserves rewrites).
+- **Changes to merged F04 tests:** the six policy fixtures under D20 (operator-approved).
+- **Attempt counts:** S1 used five implementer attempts (attempt 5 an operator-approved exception). S6 used four and was re-sliced (S6b used two). Several attempts stopped on a test_spec_conflict; the orchestrator then committed the implementer's unchanged patch after a tester's test fix.
+- **Protected and elevated paths:** `src/internal/verify/**` and `src/cmd/sc-verify/**` are elevated (enforcement plane). `src/internal/policy/**` is elevated. No protected path changed, except the six F04 test fixtures under D20.
+- **Dependencies:** `verify` imports `regexp2` and `jsonschema/v6`, already pinned for `src/internal/contracts`; `go.mod` is unchanged.
+
+Follow-ups (not blocking GATE-F06):
+- **Contracts (human PR, protected):**
+  - `repo-validation.schema.yaml` `Suite.report.path` uses `oneOf [const "-", RepoPath]`, and "-" matches both, so the real schema rejects every stdout-report suite. Use `anyOf`, or exclude "-" from RepoPath.
+  - `test-manifest.schema.yaml` `examples[0]` has a placeholder digest and a Go `stub_unimplemented` test.
+  - The red-result reasons have no schema reason for an invalid judge; the green-result reasons have no producer-scope reason.
+  - The platform semantic-key lists miss package.json `pretest`/`posttest`, `overrides`/`resolutions`, Cargo `[target.*.dev-dependencies]`, `[replace]`, `.cargo/config` and tsconfig `extends` (`policy/verification.yaml`).
+- **Plan 22 wording:**
+  - §9.3 `jobbuilder` → `jobs`.
+  - `test/e2e` is protected vs elevated.
+  - §14.5 `.eslintrc*` vs the RepoPath pattern.
+  - 22-AC-3's path.
+  - Plain `make policy-check` never reads `.strange-company/`; caught by `make test` and `MergePolicy` today (`mk/policy.mk` human PR).
+- **C04, together with 22-AC-12 re-recording:**
+  - real pytest JUnit (failure `type`/prefix);
+  - Rust/jest panic text only in the JUnit body;
+  - the isolation run (G4b) and repeats (R11b) production in `sc-verify`;
+  - `redScope` (ignored today: the head run is unscoped, fail closed);
+  - Rust/Python/JS observation;
+  - the judge subject in `sc-verify run`;
+  - the `install` and `lint-policy` subcommands;
+  - `--policy` vs the plan 20 command;
+  - GOTOOLCHAIN/GOWORK in the child env;
+  - line-language method stubs;
+  - non-Go R1b;
+  - TS overloads;
+  - preservation-criterion judging;
+  - artifactPaths scoped to the task;
+  - fenced code in list items in research reports, and column-0 `<` lines, both failing closed;
+  - re-recording the oracle against GFM/goldmark.
+- **Plan gaps (recorded, fail closed or unreachable):**
+  - new declarations in an existing file (`init()`, `TestMain`, methods, `//go:linkname`, `//go:embed`) can affect existing tests;
+  - a new file with `#cgo CFLAGS`;
+  - a marked Go field can shadow a promoted method;
+  - Go method stubs matching well-known interfaces;
+  - Rust prelude names;
+  - Make `$(eval $(X))` evasion in base content;
+  - `.git/shallow`;
+  - `contracts.ParseYAML` alias expansion is unbounded for every caller;
+  - CheckScope accepts a forged `granted/auto` decision for a class the repository does not allow (§9.2 checks at task creation);
+  - the replay is detectable (design residual of G9);
+  - a fake `--- PASS` for a non-existent test is observable (SI-07 reviewer-packet statement).
+- **Test-only:** `TestBuildManifest_CumulativeGeneration_22AC9` aliases a slice (harmless; needs operator approval to fix).

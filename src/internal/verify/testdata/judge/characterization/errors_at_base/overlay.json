@@ -1,0 +1,26 @@
+{
+ "approval": "human",
+ "base_checks": [
+  {
+   "id": "J-1",
+   "status": "error"
+  },
+  {
+   "id": "J-2",
+   "status": "pass"
+  }
+ ],
+ "observed": {
+  "judge_checks": [
+   {
+    "id": "J-1",
+    "status": "pass"
+   },
+   {
+    "id": "J-2",
+    "status": "pass"
+   }
+  ]
+ },
+ "task_class": "refactor"
+}

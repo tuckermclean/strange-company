@@ -1,0 +1,7 @@
+{
+ "approval": "human",
+ "producer_paths": [
+  "src/impl.go"
+ ],
+ "task_class": "refactor"
+}

@@ -1,0 +1,25 @@
+{
+ "observed": {
+  "runs": [
+   {
+    "adapter": "go-test-json",
+    "build_failed": false,
+    "commit": "fedcba9876543210fedcba9876543210fedcba98",
+    "counts": {
+     "failed_assertion": 0,
+     "failed_error": 0,
+     "passed": 7,
+     "skipped": 1,
+     "stub_unimplemented": 0,
+     "total": 8
+    },
+    "duration_ms": 44000,
+    "exit_code": 0,
+    "report_found": true,
+    "suite": "other",
+    "timed_out": false,
+    "tree": "head"
+   }
+  ]
+ }
+}

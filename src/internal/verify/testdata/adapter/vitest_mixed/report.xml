@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<testsuites>
+<testsuite name="s" tests="3">
+<testcase classname="redirect" name="keeps method" file="src/redirect.test.js" time="0.001"><failure message="AssertionError: expected 'GET' to be 'POST'" type="AssertionError"></failure></testcase>
+<testcase classname="redirect" name="uses helper" file="src/redirect.test.js" time="0.001"><failure message="ReferenceError: replayBody is not defined" type="ReferenceError"></failure></testcase>
+<testcase classname="redirect" name="ok" file="src/redirect.test.js" time="0.001"/>
+</testsuite>
+</testsuites>

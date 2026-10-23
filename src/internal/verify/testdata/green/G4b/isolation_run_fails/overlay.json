@@ -1,0 +1,20 @@
+{
+ "observed": {
+  "isolation": {
+   "tests": [
+    {
+     "id": "unit::example.com/x/pkg.TestNewBehavior",
+     "status": "failed_assertion"
+    },
+    {
+     "id": "unit::example.com/x/pkg.TestStubbed",
+     "status": "passed"
+    },
+    {
+     "id": "unit::example.com/x/pkg.TestKeepsWorking",
+     "status": "passed"
+    }
+   ]
+  }
+ }
+}

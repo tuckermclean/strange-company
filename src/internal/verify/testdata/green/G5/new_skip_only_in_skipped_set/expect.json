@@ -1,0 +1,6 @@
+{
+ "contains": [
+  "new_skip_vs_base"
+ ],
+ "outcome": "tamper_detected"
+}

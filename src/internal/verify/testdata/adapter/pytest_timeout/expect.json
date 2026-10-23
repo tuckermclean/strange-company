@@ -1,0 +1,10 @@
+{
+  "build_failed": false,
+  "timed_out": true,
+  "tests": [
+    {
+      "id": "unit::tests/test_x.py::test_slow",
+      "status": "failed_error"
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+{
+ "function": "judging",
+ "outcome": "judging_fail",
+ "reasons": [
+  "judge_check_failed"
+ ]
+}

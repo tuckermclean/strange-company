@@ -1,0 +1,23 @@
+{
+ "ac_results": [
+  {
+   "ac_id": "AC-1",
+   "kind": "change",
+   "outcome": "failing_assertion",
+   "tests": [
+    "judge::J-1"
+   ]
+  },
+  {
+   "ac_id": "AC-2",
+   "kind": "change",
+   "outcome": "failing_assertion",
+   "tests": [
+    "judge::J-1"
+   ]
+  }
+ ],
+ "function": "validate",
+ "outcome": "judge_valid",
+ "reasons": []
+}

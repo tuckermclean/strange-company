@@ -1,0 +1,7 @@
+{
+ "contains": [
+  "validation_config_mismatch"
+ ],
+ "function": "judging",
+ "outcome": "judging_fail"
+}

@@ -1,0 +1,7 @@
+{
+ "contains": [
+  "judge_check_failed"
+ ],
+ "function": "judging",
+ "outcome": "judging_fail"
+}

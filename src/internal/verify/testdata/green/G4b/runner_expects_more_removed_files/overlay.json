@@ -1,0 +1,6 @@
+{
+ "isolation_files": [
+  "pkg/mine_test.go",
+  "__mocks__/http.js"
+ ]
+}

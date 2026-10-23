@@ -312,7 +312,7 @@ func check(dir string, opts Options) (string, map[string]Resource, []Issue) {
 		}
 	}
 	issues = append(issues, crossFileInvariants(resources, names)...)
-	var protected []string
+	var protected, elevated []string
 	paths := make([]string, 0, len(resources))
 	for p := range resources {
 		paths = append(paths, p)
@@ -322,9 +322,11 @@ func check(dir string, opts Options) (string, map[string]Resource, []Issue) {
 		if r := resources[p]; r.Kind == "VerificationPolicy" {
 			issues = append(issues, verificationInvariants(p, mapAt(r.Doc, "spec"))...)
 			protected = append(protected, strList(r.Doc, "spec", "protectedPaths")...)
+			elevated = append(elevated, strList(r.Doc, "spec", "merge", "elevatedPaths")...)
 		}
 	}
 	issues = append(issues, repoSideInvariants(protected, repoDocs[repoPolicyFile], repoDocs[repoValidationFile])...)
+	issues = append(issues, planeIssues(append(append([]string{}, protected...), elevated...), repoDocs[repoPolicyFile])...)
 	sortIssues(issues)
 	return rev, resources, issues
 }

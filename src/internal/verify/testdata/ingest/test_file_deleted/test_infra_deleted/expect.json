@@ -1,0 +1,10 @@
+{
+  "manifest": [],
+  "violations": [
+    {
+      "code": "TEST_TAMPER",
+      "sub_code": "test_file_deleted",
+      "path": "internal/testutil/eq.go"
+    }
+  ]
+}

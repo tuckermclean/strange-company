@@ -1,0 +1,10 @@
+{
+  "manifest": [],
+  "violations": [
+    {
+      "code": "TEST_TAMPER",
+      "sub_code": "test_dependency_changed",
+      "path": "vendor/github.com/x/z/z.go"
+    }
+  ]
+}

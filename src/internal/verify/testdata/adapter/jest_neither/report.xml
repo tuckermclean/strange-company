@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<testsuites>
+<testsuite name="s" tests="1">
+<testcase classname="redirect" name="boom" file="src/redirect.test.js" time="0.001"><failure message="Error: boom">Error: boom</failure></testcase>
+</testsuite>
+</testsuites>

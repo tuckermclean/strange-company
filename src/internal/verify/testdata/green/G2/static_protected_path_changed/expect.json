@@ -1,0 +1,13 @@
+{
+ "only_from": [
+  "manifest_file_changed",
+  "discovery_config_changed",
+  "skip_marker_added",
+  "test_env_detection",
+  "test_file_deleted",
+  "existing_test_modified",
+  "test_dependency_changed",
+  "foreign_commit"
+ ],
+ "outcome": "tamper_detected"
+}

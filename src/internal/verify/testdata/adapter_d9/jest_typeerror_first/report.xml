@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<testsuites>
+<testsuite name="s" tests="1">
+<testcase classname="redirect" name="calls helper" file="src/redirect.test.js" time="0.001"><failure message="TypeError: replayBody is not a function&#10;&#10;Expected: 1&#10;Received: 2">TypeError: replayBody is not a function
+    at Object.&lt;anonymous&gt;</failure></testcase>
+</testsuite>
+</testsuites>

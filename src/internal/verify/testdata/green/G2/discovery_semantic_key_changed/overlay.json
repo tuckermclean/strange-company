@@ -1,0 +1,11 @@
+{
+ "integrity": {
+  "discovery_changes": [
+   {
+    "key": "replace",
+    "kind": "semantic_key_changed",
+    "path": "go.mod"
+   }
+  ]
+ }
+}

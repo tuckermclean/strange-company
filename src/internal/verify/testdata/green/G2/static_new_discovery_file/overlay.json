@@ -1,0 +1,12 @@
+{
+ "integrity": {
+  "static_findings": [
+   {
+    "code": "new_discovery_file",
+    "line": 3,
+    "path": "pkg/x/go.mod",
+    "severity": "violation"
+   }
+  ]
+ }
+}

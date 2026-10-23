@@ -1,0 +1,15 @@
+{
+  "manifest": [],
+  "violations": [
+    {
+      "code": "TEST_TAMPER",
+      "sub_code": "test_file_deleted",
+      "path": "tests/a.py"
+    },
+    {
+      "code": "TEST_TAMPER",
+      "sub_code": "test_file_deleted",
+      "path": "tests/b.py"
+    }
+  ]
+}

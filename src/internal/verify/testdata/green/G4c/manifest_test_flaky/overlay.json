@@ -1,0 +1,10 @@
+{
+ "observed": {
+  "repeats": {
+   "inconsistent": [
+    "unit::example.com/x/pkg.TestNewBehavior"
+   ],
+   "runs": 3
+  }
+ }
+}

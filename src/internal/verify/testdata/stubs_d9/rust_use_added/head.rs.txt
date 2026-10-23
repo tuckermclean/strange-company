@@ -1,0 +1,5 @@
+use std::fmt;
+
+pub fn existing() -> u32 {
+    1
+}

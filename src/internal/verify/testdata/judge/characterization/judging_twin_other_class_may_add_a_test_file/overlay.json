@@ -1,0 +1,5 @@
+{
+ "producer_paths": [
+  "docs/example_test.go"
+ ]
+}

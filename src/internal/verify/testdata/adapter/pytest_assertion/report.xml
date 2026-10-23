@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<testsuites>
+<testsuite name="s" tests="4">
+<testcase classname="tests.test_x" name="test_ok" file="tests/test_x.py" time="0.001"/>
+<testcase classname="tests.test_x" name="test_a" file="tests/test_x.py" time="0.001"><failure message="assert 1 == 2" type="AssertionError">def test_a(): assert 1 == 2</failure></testcase>
+<testcase classname="tests.test_x" name="test_p[1-2]" file="tests/test_x.py" time="0.001"><failure message="assert 1 == 2" type="AssertionError"></failure></testcase>
+<testcase classname="tests.test_x" name="test_skip" file="tests/test_x.py" time="0.001"><skipped type="pytest.skip" message="later"/></testcase>
+</testsuite>
+</testsuites>

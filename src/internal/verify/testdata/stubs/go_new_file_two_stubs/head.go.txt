@@ -1,0 +1,11 @@
+package httpx
+
+// SC-STUB(sc-9 AC-1)
+func ReplayBody(b []byte) []byte {
+	return nil
+}
+
+// SC-STUB(sc-9 AC-2)
+func Stamp() string {
+	return ""
+}

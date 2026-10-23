@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<testsuites>
+<testsuite name="s" tests="1">
+<testcase classname="Test suite failed to run" name="Test suite failed to run" file="src/redirect.test.js" time="0.001"><failure message="Test suite failed to run
+
+Cannot find module './redirect' from 'src/redirect.test.js'"></failure></testcase>
+</testsuite>
+</testsuites>

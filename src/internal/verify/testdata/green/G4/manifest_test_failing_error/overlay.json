@@ -1,0 +1,31 @@
+{
+ "observed": {
+  "tests": [
+   {
+    "id": "unit::example.com/x/pkg.TestNewBehavior",
+    "status_head": "passed",
+    "suite": "unit"
+   },
+   {
+    "id": "unit::example.com/x/pkg.TestStubbed",
+    "status_head": "passed",
+    "suite": "unit"
+   },
+   {
+    "id": "unit::example.com/x/pkg.TestKeepsWorking",
+    "status_head": "failed_error",
+    "suite": "unit"
+   },
+   {
+    "id": "unit::example.com/x/pkg.TestOld1",
+    "status_head": "passed",
+    "suite": "unit"
+   },
+   {
+    "id": "unit::example.com/x/pkg.TestSkippedAtBase",
+    "status_head": "skipped",
+    "suite": "unit"
+   }
+  ]
+ }
+}

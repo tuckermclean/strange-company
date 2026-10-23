@@ -1,0 +1,12 @@
+{
+  "manifest": [
+    "tests/test_core.py"
+  ],
+  "violations": [
+    {
+      "code": "TEST_TAMPER",
+      "sub_code": "manifest_file_changed",
+      "path": "tests/test_core.py"
+    }
+  ]
+}

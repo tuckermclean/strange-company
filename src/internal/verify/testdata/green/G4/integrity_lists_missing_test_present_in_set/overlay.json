@@ -1,0 +1,7 @@
+{
+ "integrity": {
+  "protected_tests_missing": [
+   "unit::example.com/x/pkg.TestNewBehavior"
+  ]
+ }
+}

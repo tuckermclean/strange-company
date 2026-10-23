@@ -1,0 +1,4 @@
+{"Time": "2026-10-13T12:00:00Z", "Action": "output", "Package": "example.com/x/p", "Output": "# example.com/x/p [example.com/x/p.test]\n"}
+{"Time": "2026-10-13T12:00:00Z", "Action": "output", "Package": "example.com/x/p", "Output": "./a_test.go:9:12: undefined: Compute\n"}
+{"Time": "2026-10-13T12:00:00Z", "Action": "output", "Package": "example.com/x/p", "Output": "FAIL\texample.com/x/p [build failed]\n"}
+{"Time": "2026-10-13T12:00:00Z", "Action": "fail", "Package": "example.com/x/p"}

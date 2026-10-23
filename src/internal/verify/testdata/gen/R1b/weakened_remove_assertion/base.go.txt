@@ -1,0 +1,19 @@
+package httpx
+
+import "testing"
+
+func TestExisting(t *testing.T) {
+	got := Do(1)
+	if got != 1 {
+		t.Errorf("first: %d", got)
+	}
+	if got != 1 {
+		t.Errorf("second: %d", got)
+	}
+}
+
+func TestOld(t *testing.T) {
+	if Do(2) != 2 {
+		t.Errorf("old")
+	}
+}

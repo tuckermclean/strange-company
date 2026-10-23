@@ -1,0 +1,11 @@
+{
+  "manifest": [],
+  "violations": [
+    {
+      "code": "TEST_TAMPER",
+      "sub_code": "skip_marker_added",
+      "path": "tests/test_new.py",
+      "line": 4
+    }
+  ]
+}
