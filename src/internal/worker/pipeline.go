@@ -387,17 +387,22 @@ func (pl *pipeline) partialDiff() string {
 	if d.err != nil {
 		return ""
 	}
-	text := textLinesOnly(string(d.stdout))
+	text, dropped := textLinesOnly(string(d.stdout))
+	// Scrub the whole captured text first and cut afterwards, so that a secret across the cut is redacted; the cut
+	// never splits a rune. Control characters are made visible.
+	text = escapeControls(w.scrub.String(text))
 	const limit = 1 << 20
 	truncated := len(text) > limit || d.total > len(d.stdout)
 	if len(text) > limit {
-		text = text[:limit]
+		text = text[:utf8Boundary(text, limit)]
 	}
-	text = w.scrub.String(text)
 	w.logMu.Lock()
 	fmt.Fprintf(w.out, "::SC-PARTIAL-DIFF-BEGIN::\n%s", text)
 	if !strings.HasSuffix(text, "\n") {
 		fmt.Fprintln(w.out)
+	}
+	if dropped > 0 {
+		fmt.Fprintf(w.out, "[%d non-text lines dropped by sc-worker]\n", dropped)
 	}
 	if truncated {
 		fmt.Fprintln(w.out, "[diff truncated by sc-worker]")
@@ -508,15 +513,18 @@ func (pl *pipeline) finishClaim(commit string, pushed bool) int {
 	return w.report(doc, modeNormal)
 }
 
-// textLinesOnly drops every line holding a NUL byte or invalid UTF-8, so the logged partial diff stays binary-free.
-func textLinesOnly(s string) string {
+// textLinesOnly drops every line holding a NUL byte or invalid UTF-8, so the logged partial diff stays binary-free,
+// and returns the number of lines it dropped.
+func textLinesOnly(s string) (string, int) {
 	lines := strings.SplitAfter(s, "\n")
 	out := lines[:0]
+	dropped := 0
 	for _, l := range lines {
 		if strings.IndexByte(l, 0) >= 0 || !utf8.ValidString(l) {
+			dropped++
 			continue
 		}
 		out = append(out, l)
 	}
-	return strings.Join(out, "")
+	return strings.Join(out, ""), dropped
 }

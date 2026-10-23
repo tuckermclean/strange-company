@@ -126,7 +126,8 @@ func (w *worker) run() int {
 		return w.exit(ExitNoTaskToken, "task-token missing or empty")
 	}
 	w.token = tok
-	w.secrets = []string{tok, w.readSecret("gateway-token"), w.readSecret("deploy-key")}
+	// All four secret files are in the exact-match set (27-AC-4); known_hosts is public but must not reach the log.
+	w.secrets = []string{tok, w.readSecret("gateway-token"), w.readSecret("deploy-key"), w.readSecret("known_hosts")}
 	if b, err := os.ReadFile(filepath.Join(cfg.HarnessSecretsDir, "egress-token")); err == nil {
 		w.secrets = append(w.secrets, string(b))
 	}
