@@ -57,6 +57,7 @@ type worker struct {
 
 	runnerURL, taskID, execID string
 	token                     string
+	secrets                   []string // exact-match scrubber set (also used by the diff secret scan)
 	started                   time.Time
 
 	pktRaw       []byte
