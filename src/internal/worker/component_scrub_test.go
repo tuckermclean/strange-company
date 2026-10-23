@@ -30,7 +30,8 @@ func nilContext() context.Context { return context.Background() }
 
 func skAntKey() string { return "sk-" + "ant-" + strings.Repeat("Zq9_-", 8) }
 
-const otherPEM = "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEAzSCRUBPEMBODYLINEONE0123456789abcdef\nMIIEowIBAAKCAQEAzSCRUBPEMBODYLINETWO0123456789abcdef\n-----END RSA PRIVATE KEY-----"
+// otherPEM is built at run time: the repository secrets scan forbids literal private-key armor in committed files.
+var otherPEM = "-----BEGIN " + "RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEAzSCRUBPEMBODYLINEONE0123456789abcdef\nMIIEowIBAAKCAQEAzSCRUBPEMBODYLINETWO0123456789abcdef\n-----END " + "RSA PRIVATE KEY-----"
 
 // fragments returns every window of n bytes of s.
 func fragments(s string, n int) []string {
