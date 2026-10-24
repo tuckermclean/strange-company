@@ -121,8 +121,15 @@ die() {
 # cgroup manager; the toolbox wrapper falls back to cgroupfs in the same situation.
 ENG_ARGS=()
 if [ "$ENGINE" = podman ] && [ ! -S "${XDG_RUNTIME_DIR:-/nonexistent}/bus" ]; then ENG_ARGS=(--cgroup-manager=cgroupfs); fi
-# tmpfs owned by the container user: podman chowns with the U option, docker takes uid= and gid=
+# tmpfs owned by the container user: podman chowns with the U option (it rejects uid=), docker takes uid= and gid=.
+# Every tmpfs below says `exec` explicitly: Docker mounts --tmpfs noexec by default (podman does not), but the
+# production counterparts are Kubernetes emptyDir volumes, which allow execution (`go run` builds and runs from /tmp).
 case $ENGINE in podman) TMPFS_OWN=U ;; *) TMPFS_OWN=uid=65532,gid=65532 ;; esac
+# The strace sidecar only (never the sc-worker or harness containers): Docker's default AppArmor profile limits ptrace
+# to peers of the same profile and some hosts load stricter ones, so the tracer runs unconfined there; podman has no
+# default AppArmor profile.
+TRACER_SEC=()
+if [ "$ENGINE" = docker ]; then TRACER_SEC=(--security-opt apparmor=unconfined); fi
 eng() { "$ENGINE" "${ENG_ARGS[@]}" "$@"; }
 infra() { eng exec -i "$INFRA" "$@"; }
 
@@ -201,8 +208,8 @@ resolve_image() {
 # base run flags of a container from the image under test (27 section 11, 28 section 13.1)
 image_flags() {
 	printf '%s\n' --read-only --user 65532:65532 --cap-drop ALL --security-opt no-new-privileges --security-opt label=disable \
-		--tmpfs /home/worker:rw,nosuid,nodev,$TMPFS_OWN,mode=0700,size=64m \
-		--tmpfs /tmp:rw,nosuid,nodev,$TMPFS_OWN,mode=1777,size=64m
+		--tmpfs /home/worker:rw,exec,nosuid,nodev,$TMPFS_OWN,mode=0700,size=64m \
+		--tmpfs /tmp:rw,exec,nosuid,nodev,$TMPFS_OWN,mode=1777,size=64m
 }
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -235,7 +242,7 @@ image_test() {
 	esac
 
 	# read-only root, uid 65532: sc-worker selftest exits 0
-	if eng run --rm "${flags[@]}" --tmpfs /workspace:rw,nosuid,nodev,$TMPFS_OWN,mode=0755,size=64m \
+	if eng run --rm "${flags[@]}" --tmpfs /workspace:rw,exec,nosuid,nodev,$TMPFS_OWN,mode=0755,size=64m \
 		--entrypoint /usr/local/bin/sc-worker "$IMG" selftest >"$TMP/selftest.out" 2>&1; then
 		pass "28-AC-3 read-only, uid 65532: sc-worker selftest exits 0 ($(tr -d '\n' <"$TMP/selftest.out"))"
 	else
@@ -511,7 +518,7 @@ run_case() {
 	TRACE_OK=0
 	if [ "$trace" = 1 ]; then
 		track_c "$T"
-		eng run -d --name "$T" --pid "container:$W" --network none --cap-add SYS_PTRACE --security-opt label=disable \
+		eng run -d --name "$T" --pid "container:$W" --network none --cap-add SYS_PTRACE --security-opt label=disable "${TRACER_SEC[@]}" \
 			-v "$WS:/workspace" --entrypoint sh "$TOOLS_IMG" -c '
 set -eu
 strace -f -qq -y -s 400 -e trace=%file,openat2 -o /tmp/trace.log -p 1 &
