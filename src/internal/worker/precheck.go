@@ -159,7 +159,10 @@ func runPrechecks(pol fullPolicy, changes []change, patchBytes int, required boo
 // The patch is a plain `git diff --cached`; only added lines are examined (header lines are recognised only
 // between a `diff --git` line and the first hunk, so an added line that looks like a header is still scanned)
 // and no matched value is returned.
-func secretPaths(secrets []string, patch string) []string {
+//
+// pathHit reports a secret pattern in a path name (the diff --git line, a +++ line, or a rename/copy target in a
+// header); the path is then not returned because it would carry the secret.
+func secretPaths(secrets []string, patch string) (hits []string, pathHit bool) {
 	s := scrub.New(secrets...)
 	added := map[string]*strings.Builder{}
 	var order []string
@@ -170,9 +173,13 @@ func secretPaths(secrets []string, patch string) []string {
 		case !inHeader && strings.HasPrefix(l, "diff --git "):
 			inHeader = true
 			cur = ""
+			pathHit = pathHit || s.String(l) != l
+		case inHeader && (strings.HasPrefix(l, "rename to ") || strings.HasPrefix(l, "copy to ")):
+			pathHit = pathHit || s.String(l) != l
 		case inHeader && strings.HasPrefix(l, "@@"):
 			inHeader = false
 		case inHeader && strings.HasPrefix(l, "+++ "):
+			pathHit = pathHit || s.String(l) != l
 			cur = strings.TrimPrefix(strings.TrimPrefix(l, "+++ "), "b/")
 			if l == "+++ /dev/null" {
 				cur = ""
@@ -186,12 +193,11 @@ func secretPaths(secrets []string, patch string) []string {
 			added[cur].WriteByte('\n')
 		}
 	}
-	var hits []string
 	for _, p := range order {
 		t := added[p].String()
 		if s.String(t) != t {
 			hits = append(hits, p)
 		}
 	}
-	return hits
+	return hits, pathHit
 }
