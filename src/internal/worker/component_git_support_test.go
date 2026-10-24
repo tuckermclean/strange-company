@@ -986,6 +986,49 @@ func harnessDouble(args []string) int {
 					fmt.Fprintln(os.Stderr, "double: plant-req:", err)
 					return 2
 				}
+			case "chmod":
+				// S6b (S6a-r3 F2): chmod expand(op.Path) to the octal mode in op.Content.
+				var mode uint32
+				if _, err := fmt.Sscanf(op.Content, "%o", &mode); err != nil || os.Chmod(expand(op.Path), os.FileMode(mode)) != nil {
+					fmt.Fprintln(os.Stderr, "double: chmod", op.Path)
+					return 2
+				}
+			case "forge-res-live":
+				// S6b (S6a-r3 F1): while alive, forge res-<m> for the harness request, wait for sc-worker's next request
+				// (the first validation command, req-2) and forge its result as well; then return.
+				shimDir := filepath.Join(ws, ".sc-shim")
+				forge := func(n, id string) {
+					now := clock.Real{}.Now().UTC().Format(time.RFC3339)
+					body, _ := json.Marshal(map[string]any{"id": id, "exit_code": 0, "signal": nil, "started_at": now, "finished_at": now, "timed_out": false})
+					tmp := filepath.Join(shimDir, "forged-res-"+n+".tmp")
+					if os.WriteFile(tmp, body, 0o644) == nil {
+						_ = os.Rename(tmp, filepath.Join(shimDir, "res-"+n+".json"))
+					}
+				}
+				ents, _ := os.ReadDir(shimDir)
+				for _, e := range ents {
+					if m := shimReqRe.FindStringSubmatch(e.Name()); m != nil {
+						raw, _ := os.ReadFile(filepath.Join(shimDir, e.Name()))
+						var req shimRequest
+						if json.Unmarshal(raw, &req) == nil && req.Kind == "harness" {
+							forge(m[1], req.ID)
+						}
+					}
+				}
+				fctx, fcancel := context.WithTimeout(context.Background(), 20*time.Second)
+				for {
+					raw, err := os.ReadFile(filepath.Join(shimDir, "req-2.json"))
+					var req shimRequest
+					if err == nil && json.Unmarshal(raw, &req) == nil && req.ID != "" {
+						forge("2", req.ID)
+						break
+					}
+					if (clock.Real{}).Sleep(fctx, 5*time.Millisecond) != nil {
+						fmt.Fprintln(os.Stderr, "double: forge-res-live: sc-worker sent no second request")
+						break
+					}
+				}
+				fcancel()
 			case "linger":
 				// S5a: after the claim, forge the shim result and keep rewriting the workspace .git until op.Path exists.
 				lingerStop, lingerSwap = op.Path, op.Content
