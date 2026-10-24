@@ -250,8 +250,13 @@ image_test() {
 	fi
 
 	# no setuid/setgid files (28 section 13.1)
-	out=$(eng run --rm "${flags[@]}" --entrypoint find "$IMG" / -xdev -perm /6000 -type f 2>/dev/null || true)
-	if [ -z "$out" ]; then pass "28-AC-3 find / -xdev -perm /6000 -type f is empty"; else fail "28-AC-3 setuid/setgid files: $(echo "$out" | tr '\n' ' ')"; fi
+	# as root (still read-only, no new privileges) so that no directory is hidden from the walk by its mode; any find
+	# error (an unreadable directory) fails the check instead of being discarded
+	local frc=0
+	out=$(eng run --rm --read-only --user 0:0 --cap-drop ALL --cap-add DAC_READ_SEARCH --security-opt no-new-privileges \
+		--security-opt label=disable --entrypoint find "$IMG" / -xdev -perm /6000 -type f 2>"$TMP/find.err") || frc=$?
+	if [ "$frc" != 0 ]; then fail "28-AC-3 find / -xdev -perm /6000 -type f exited $frc: $(head -c 300 "$TMP/find.err" | tr '\n' ' ')"
+	elif [ -z "$out" ]; then pass "28-AC-3 find / -xdev -perm /6000 -type f (as root) is empty"; else fail "28-AC-3 setuid/setgid files: $(echo "$out" | tr '\n' ' ')"; fi
 
 	# programs: sc-worker, the fake harness, git, ssh, sh, make
 	if eng run --rm "${flags[@]}" --entrypoint sh "$IMG" -c \
@@ -260,6 +265,27 @@ image_test() {
 		pass "28-AC-3 contents: sc-worker, sc-fake-harness, git, ssh, sh, make are on PATH"
 	else
 		fail "28-AC-3 contents: $(cat "$TMP/prog.out")"
+	fi
+
+	# the Go toolchain (28 section 13.1 contents, section 9.3): a fake run against test/e2e/fake-target validates with go test
+	if eng run --rm "${flags[@]}" -e HOME=/home/worker --entrypoint sh "$IMG" -c \
+		'set -e; test "$(go env GOTOOLCHAIN)" = local; go version | grep -q "^go version go1\.27\."; d=$(mktemp -d); cd "$d"; printf "module x\n\ngo 1.27\n" > go.mod; printf "package main\n\nfunc main() { println(\"ok\") }\n" > main.go; go run . 2>&1 | grep -qx ok' \
+		>"$TMP/go.out" 2>&1; then
+		pass "28-AC-3 contents: a working Go toolchain (go1.27.x, GOTOOLCHAIN=local) as uid 65532 on the read-only root"
+	else
+		fail "28-AC-3 contents: no working Go toolchain in the image (go version / go run as 65532, GOTOOLCHAIN=local): $(tr '\n' ' ' <"$TMP/go.out" | cut -c1-240)"
+	fi
+
+	# sc-worker-version is derived from the inputs id like the binary's stamped version (in-<first 12 of SC_INPUTS_ID>)
+	local wv rev
+	wv=$(eng image inspect --format '{{index .Config.Labels "strange.company/sc-worker-version"}}' "$IMG" 2>/dev/null || true)
+	rev=$(eng image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$IMG" 2>/dev/null || true)
+	if [[ $rev =~ ^[0-9a-f]{40}$ ]]; then
+		expect_eq "28-AC-3 label strange.company/sc-worker-version is in-<first 12 of the inputs id>" "in-${rev:0:12}" "$wv"
+	elif [[ $wv =~ ^in-[0-9a-z]{1,12}$ ]]; then
+		pass "28-AC-3 label strange.company/sc-worker-version has the in-<inputs12> form ($wv)"
+	else
+		fail "28-AC-3 label strange.company/sc-worker-version '$wv' is not in-<inputs12>"
 	fi
 
 	# no package manager usable at run time
@@ -329,7 +355,16 @@ image_test() {
 offline_go_tests() { # 27-AC-1 and the helper binary
 	mkdir -p "$OUTDIR"
 	echo "== 27-AC-1: go test in the ci image with --network none"
-	local envs="export GOFLAGS=-mod=readonly GOPROXY=off GOTOOLCHAIN=local GOCACHE=$REPO/.cache/go/build GOMODCACHE=$REPO/.cache/go/mod"
+	local gocache=${SC_L2_GO_CACHE:-$REPO/.cache/go}
+	local envs="export GOFLAGS=-mod=readonly GOPROXY=off GOTOOLCHAIN=local GOCACHE=$gocache/build GOMODCACHE=$gocache/mod"
+	# The offline steps below cannot fetch modules, and a fresh runner has an empty module cache: warm it first, WITH
+	# network (same step as test/e2e/verify/run and .github/workflows/verify.yaml). Only the runs after it are offline.
+	if [ "${SC_L2_SKIP_GOTEST:-}" != 1 ]; then
+		mkdir -p "$gocache"
+		(cd "$REPO" && ./bootstrap --engine "$ENGINE" exec --image ci -- sh -c \
+			"export GOFLAGS=-mod=readonly GOTOOLCHAIN=local GOCACHE=$gocache/build GOMODCACHE=$gocache/mod; cd src && go mod download") ||
+			die "cannot warm the Go module cache with network (go mod download in the ci image)"
+	fi
 	if [ "${SC_L2_SKIP_GOTEST:-}" = 1 ]; then
 		gap "27-AC-1 go test skipped (SC_L2_SKIP_GOTEST=1, local debugging only)"
 	elif (cd "$REPO" && ./bootstrap --engine "$ENGINE" exec --image ci --network none -- sh -c \
@@ -385,9 +420,17 @@ start_infra() {
 	infra cat /state/known_hosts >"$SEC/known_hosts"
 	printf '%s' "$GW_TOKEN" >"$HSEC/gateway-token"
 	printf '%s' "$EG_TOKEN" >"$HSEC/egress-token"
-	# 0444: the uid 65532 in the container must read host-owned bind mounts (a kubelet projects 0440 plus fsGroup)
+	# harness secrets: 0444, the uid 65532 in the container must read host-owned bind mounts
 	chmod 0755 "$SEC" "$HSEC"
 	chmod 0444 "$SEC"/* "$HSEC"/*
+	# The sc-worker secrets are mounted from a volume whose files are 0440 and owned by 65532, like a kubelet secret
+	# volume with defaultMode 0440 and fsGroup (plan 27 section 10): OpenSSH rejects such a key file directly, so only
+	# sc-worker's 0600 copy can push.
+	SECVOL=$PREFIX-secrets
+	eng volume create "$SECVOL" >/dev/null || die "cannot create the secrets volume"
+	track_v "$SECVOL"
+	eng run --rm --security-opt label=disable --user 0:0 -v "$SECVOL:/v" -v "$SEC:/src:ro" --entrypoint sh "$TOOLS_IMG" -c \
+		'cp /src/* /v/ && chown 65532:65532 /v/* && chmod 0440 /v/*' >/dev/null || die "cannot fill the secrets volume"
 }
 
 stub() { infra curl -fsS "$@"; }
@@ -462,7 +505,7 @@ run_case() {
 	eng run -d --name "$W" --network "$NET" --cgroupns host "${flags[@]}" "${podenv[@]}" \
 		--tmpfs /var/sc/private:rw,nosuid,nodev,$TMPFS_OWN,mode=0700,size=64m \
 		-e SC_SECRETS_DIR=/var/run/sc/secrets -e "L2_GATE=$gate" \
-		-v "$WS:/workspace" -v "$SEC:/var/run/sc/secrets:ro" \
+		-v "$WS:/workspace" -v "$SECVOL:/var/run/sc/secrets:ro" \
 		--entrypoint sh "$IMG" -c "$boot" >/dev/null || die "cannot start the sc-worker container"
 
 	TRACE_OK=0
@@ -499,6 +542,85 @@ end_case() {
 
 result_field() { printf '%s' "$STATE" | jqs -r "$1"; }
 
+# trace_verdict TRACEFILE PLANT-REGEX: the 27-AC-24 rule over a `strace -f -y` log, printing VIOLATION lines and a final
+# "SEEN <n> EXAM <m>" line. strace -f splits a call that blocks into "<pid> name(... <unfinished ...>" and a later
+# "<pid> <... name resumed>...) = N<path>"; the two halves of a pid are joined before the rule is applied (a result
+# can only be judged on the joined call). SEEN counts calls that name the planted path below /workspace; EXAM counts
+# those that prove the link was examined after it was planted: an open-family call with O_NOFOLLOW or
+# RESOLVE_NO_SYMLINKS, or any call that failed with ELOOP or ENOTDIR.
+trace_verdict() {
+	PLANT=$2 awk '
+/^[0-9]+ +<\.\.\. [a-z0-9_]+ resumed>/ {
+	pid = $1; k = index($0, "resumed>")
+	if (!(pid in pend)) next
+	line = pid " " pend[pid] substr($0, k + 8); delete pend[pid]
+	judge(line); next
+}
+/^[0-9]+ +[a-z0-9_]+\(.*<unfinished \.\.\.>$/ {
+	pid = $1; l = $0; sub(/^[0-9]+ +/, "", l); sub(/ *<unfinished \.\.\.>$/, "", l)
+	pend[pid] = l; next
+}
+/^[0-9]+ +[a-z0-9_]+\(/ { judge($0) }
+function judge(line,   sys, dir, path, full, d, r, exam) {
+	sys = line; sub(/^[0-9]+ +/, "", sys); sub(/\(.*/, "", sys)
+	dir = ""
+	if (match(line, /\([A-Z_0-9]+<[^>]*>/)) { d = substr(line, RSTART, RLENGTH); sub(/^\([A-Z_0-9]+</, "", d); sub(/>$/, "", d); dir = d }
+	path = ""
+	if (match(line, /"[^"]*"/)) path = substr(line, RSTART + 1, RLENGTH - 2)
+	if (path == "") return
+	full = (substr(path, 1, 1) == "/") ? path : dir "/" path
+	if (full !~ /^\/workspace\// || full !~ ENVIRON["PLANT"]) return
+	seen++
+	if (line ~ / = -1 (ELOOP|ENOTDIR)( |$)/) exam = 1
+	if (sys ~ /^(open|openat|openat2|creat)$/ && line ~ /(O_NOFOLLOW|RESOLVE_NO_SYMLINKS)/) exam = 1
+	if (exam) examined++
+	if (sys ~ /^(open|openat|openat2|creat)$/ && match(line, / = [0-9]+<[^>]*>$/)) {
+		r = substr(line, RSTART, RLENGTH); sub(/^ = [0-9]+</, "", r); sub(/>$/, "", r)
+		if (r !~ /^\/workspace(\/|$)/) print "VIOLATION " line
+	}
+}
+END { print "SEEN " seen + 0 " EXAM " examined + 0 }' "$1"
+}
+
+# trace_selftest: the rule must flag what it is meant to flag before it is trusted on a real trace (B2: split calls).
+trace_selftest() {
+	local f=$TMP/selftest.trace v
+	local pl='/claim\.json$'
+	local d='AT_FDCWD</workspace>'
+	# non-split call that follows the link out of /workspace
+	printf '%s\n' "100 openat($d, \"/workspace/claim.json\", O_RDONLY) = 7</var/sc/private/gitconfig>" >"$f"
+	v=$(trace_verdict "$f" "$pl")
+	case $v in *VIOLATION*) pass "trace rule self-test: a violating call is flagged" ;; *) fail "trace rule self-test: a violating call is not flagged" ;; esac
+	# the same call split by strace -f, another pid interleaved
+	printf '%s\n' "100 openat($d, \"/workspace/claim.json\", O_RDONLY <unfinished ...>" \
+		"101 openat($d, \"/workspace/other\", O_RDONLY) = 8</workspace/other>" \
+		"100 <... openat resumed>) = 7</var/sc/private/gitconfig>" >"$f"
+	v=$(trace_verdict "$f" "$pl")
+	case $v in *VIOLATION*) pass "trace rule self-test: a violating call split by <unfinished>/<resumed> is flagged" ;; *) fail "trace rule self-test: a split violating call is not flagged (fail-open)" ;; esac
+	# a split call that stays inside /workspace passes and is examined (O_NOFOLLOW in the first half)
+	printf '%s\n' "100 openat($d, \"/workspace/claim.json\", O_RDONLY|O_NOFOLLOW <unfinished ...>" \
+		"100 <... openat resumed>) = 7</workspace/claim.json>" >"$f"
+	v=$(trace_verdict "$f" "$pl")
+	case $v in *VIOLATION*) fail "trace rule self-test: a split call resolving inside /workspace is flagged" ;; *"SEEN 1 EXAM 1") pass "trace rule self-test: a clean split call passes and counts as examined" ;; *) fail "trace rule self-test: clean split call verdict '$v'" ;; esac
+	# refused with ELOOP in the resumed half
+	printf '%s\n' "100 openat($d, \"/workspace/claim.json\", O_RDONLY <unfinished ...>" \
+		"100 <... openat resumed>) = -1 ELOOP (Too many levels of symbolic links)" >"$f"
+	v=$(trace_verdict "$f" "$pl")
+	case $v in *"SEEN 1 EXAM 1") pass "trace rule self-test: an ELOOP result counts as examined" ;; *) fail "trace rule self-test: ELOOP verdict '$v'" ;; esac
+	# a relative path resolved against the dirfd that -y prints
+	printf '%s\n' "100 openat(AT_FDCWD</workspace>, \"claim.json\", O_RDONLY) = 7</etc/passwd>" >"$f"
+	v=$(trace_verdict "$f" "$pl")
+	case $v in *VIOLATION*) pass "trace rule self-test: a relative path is resolved against the dirfd" ;; *) fail "trace rule self-test: a relative violating path is not flagged" ;; esac
+	# a clean trace with only a plain clone-time open: no violation, but nothing proves the link was examined
+	printf '%s\n' "100 openat($d, \"/workspace/claim.json\", O_RDONLY) = 7</workspace/claim.json>" "100 unlinkat($d, \"/workspace/claim.json\", 0) = 0" >"$f"
+	v=$(trace_verdict "$f" "$pl")
+	case $v in *VIOLATION*) fail "trace rule self-test: a clean trace is flagged" ;; *"SEEN 2 EXAM 0") pass "trace rule self-test: a clean trace passes and a plain open does not count as examined" ;; *) fail "trace rule self-test: clean trace verdict '$v'" ;; esac
+	# an unrelated path and a path outside /workspace are ignored
+	printf '%s\n' "100 openat($d, \"/etc/claim.json\", O_RDONLY) = 7</etc/x>" "100 openat($d, \"/workspace/a\", O_RDONLY) = 7</etc/x>" >"$f"
+	v=$(trace_verdict "$f" "$pl")
+	case $v in "SEEN 0 EXAM 0") pass "trace rule self-test: other paths are ignored" ;; *) fail "trace rule self-test: other paths verdict '$v'" ;; esac
+}
+
 # 27-AC-24 strace rule over $TMP/NAME.trace; arguments: NAME PLANT-REGEX (matched against the absolute path).
 # For every file system call whose path (absolute, or relative to the dirfd that -y prints as FD<path>) is below /workspace
 # and names the planted path: the call is "seen"; an open-family call that succeeded must resolve (the -y path of the
@@ -513,28 +635,11 @@ check_trace() {
 		fail "27-AC-24 [$name] the strace sidecar produced no trace (tracer: $(tr '\n' ' ' <"$TMP/$name.tracer.log" 2>/dev/null | cut -c1-200)); ptrace across containers is not permitted here. Re-run with SC_L2_STRACE=skip to accept this gap."
 		return
 	fi
-	PLANT=$plant awk '
-function after(str, re,   t) { t = str; sub(re, "", t); return t }
-$0 !~ /^[0-9]+ +[a-z0-9_]+\(/ { next }
-{
-	sys = $0; sub(/^[0-9]+ +/, "", sys); sub(/\(.*/, "", sys)
-	dir = ""
-	if (match($0, /\([A-Z_0-9]+<[^>]*>/)) { d = substr($0, RSTART, RLENGTH); sub(/^\([A-Z_0-9]+</, "", d); sub(/>$/, "", d); dir = d }
-	path = ""
-	if (match($0, /"[^"]*"/)) path = substr($0, RSTART + 1, RLENGTH - 2)
-	if (path == "") next
-	full = (substr(path, 1, 1) == "/") ? path : dir "/" path
-	if (full !~ /^\/workspace\// || full !~ ENVIRON["PLANT"]) next
-	seen++
-	if (sys ~ /^(open|openat|openat2|creat)$/ && match($0, / = [0-9]+<[^>]*>$/)) {
-		r = substr($0, RSTART, RLENGTH); sub(/^ = [0-9]+</, "", r); sub(/>$/, "", r)
-		if (r !~ /^\/workspace(\/|$)/) print "VIOLATION " $0
-	}
-}
-END { print "SEEN " seen + 0 }' "$tr" >"$TMP/$name.trace.verdict"
-	local viol seen
+	trace_verdict "$tr" "$plant" >"$TMP/$name.trace.verdict"
+	local viol seen exam
 	viol=$(grep '^VIOLATION' "$TMP/$name.trace.verdict" || true)
-	seen=$(sed -n 's/^SEEN //p' "$TMP/$name.trace.verdict")
+	seen=$(sed -n 's/^SEEN \([0-9]*\).*/\1/p' "$TMP/$name.trace.verdict")
+	exam=$(sed -n 's/^SEEN [0-9]* EXAM //p' "$TMP/$name.trace.verdict")
 	if [ -n "$viol" ]; then
 		fail "27-AC-24 [$name] an open resolved a planted symlink: $(echo "$viol" | head -n 3 | cut -c1-260)"
 	else
@@ -542,6 +647,10 @@ END { print "SEEN " seen + 0 }' "$tr" >"$TMP/$name.trace.verdict"
 	fi
 	if [ "${seen:-0}" -lt 1 ]; then
 		fail "27-AC-24 [$name] the trace never shows a call on the planted path (vacuous): $plant"
+	elif [ "${exam:-0}" -lt 1 ]; then
+		fail "27-AC-24 [$name] $seen call(s) name the planted path but none examined the link (no O_NOFOLLOW or RESOLVE_NO_SYMLINKS open, no ELOOP or ENOTDIR result): clone-time calls alone do not show that the planted link was refused"
+	else
+		pass "27-AC-24 [$name] the planted link was examined $exam time(s) with O_NOFOLLOW/RESOLVE_NO_SYMLINKS or refused with ELOOP/ENOTDIR"
 	fi
 }
 
@@ -617,14 +726,15 @@ case_success() {
 	# plan 27 section 25 Q3 / section 10: OpenSSH rejects the group/world-readable key, the 0600 copy works
 	local ctl ctl6
 	local sshopts="-o IdentitiesOnly=yes -o UserKnownHostsFile=/var/run/sc/secrets/known_hosts -o StrictHostKeyChecking=yes -o BatchMode=yes"
-	# a key file owned by the current user with group read (0440) is rejected, its 0600 copy is accepted
-	ctl=$(eng run --rm --network "$NET" "${CTL_FLAGS[@]}" -v "$SEC:/var/run/sc/secrets:ro" --entrypoint sh "$IMG" -c \
-		"cp /var/run/sc/secrets/deploy-key /tmp/k && chmod 0440 /tmp/k && ssh -i /tmp/k $sshopts git@forgejo-ssh.forgejo.svc.cluster.local true" 2>&1 || true)
-	if printf '%s' "$ctl" | grep -q 'UNPROTECTED PRIVATE KEY FILE'; then pass "plan 27 Q3 control: ssh rejects a 0440 deploy key owned by the current user (UNPROTECTED PRIVATE KEY FILE)"; else fail "plan 27 Q3 control: ssh did not reject the 0440 key: $(echo "$ctl" | head -n 2 | tr '\n' ' ')"; fi
-	if eng run --rm --network "$NET" "${CTL_FLAGS[@]}" -v "$SEC:/var/run/sc/secrets:ro" --entrypoint sh "$IMG" -c \
+	# the mounted key is owned by 65532 with mode 0440: OpenSSH refuses it as it is, and accepts its 0600 copy
+	ctl=$(eng run --rm --network "$NET" "${CTL_FLAGS[@]}" -v "$SECVOL:/var/run/sc/secrets:ro" --entrypoint sh "$IMG" -c \
+		"stat -c '%u %a' /var/run/sc/secrets/deploy-key; ssh -i /var/run/sc/secrets/deploy-key $sshopts git@forgejo-ssh.forgejo.svc.cluster.local true" 2>&1 || true)
+	case $ctl in "65532 440"*) pass "plan 27 Q3 setup: the mounted deploy-key is owned by 65532 with mode 0440" ;; *) fail "plan 27 Q3 setup: the mounted deploy-key is not 0440 owned by 65532 ($(echo "$ctl" | head -n 1))" ;; esac
+	if printf '%s' "$ctl" | grep -q 'UNPROTECTED PRIVATE KEY FILE'; then pass "plan 27 Q3 control: ssh rejects the mounted 0440 deploy key (UNPROTECTED PRIVATE KEY FILE)"; else fail "plan 27 Q3 control: ssh did not reject the 0440 key: $(echo "$ctl" | head -n 3 | tr '\n' ' ')"; fi
+	if eng run --rm --network "$NET" "${CTL_FLAGS[@]}" -v "$SECVOL:/var/run/sc/secrets:ro" --entrypoint sh "$IMG" -c \
 		"cp /var/run/sc/secrets/deploy-key /tmp/k && chmod 0600 /tmp/k && ssh -i /tmp/k $sshopts git@forgejo-ssh.forgejo.svc.cluster.local true" >/dev/null 2>&1; then ctl6=ok; else ctl6=rejected; fi
 	expect_eq "plan 27 Q3 control: ssh accepts the 0600 copy of the same key" ok "$ctl6"
-	if [ -n "$sha" ]; then pass "plan 27 Q3: sc-worker pushed with the 0600 copy of the same key (real ssh)"; else fail "plan 27 Q3: no push with the copied key"; fi
+	if [ -n "$sha" ]; then pass "plan 27 Q3: sc-worker pushed over real ssh although the mounted key is 0440 (only its 0600 copy is usable)"; else fail "plan 27 Q3: no push with the copied key"; fi
 	end_case
 }
 
@@ -691,7 +801,7 @@ run_case_async_ignore_cancel() {
 	track_c "$W"
 	eng run -d --name "$W" --network "$NET" --cgroupns host "${flags[@]}" "${podenv[@]}" \
 		--tmpfs /var/sc/private:rw,nosuid,nodev,$TMPFS_OWN,mode=0700,size=64m -e SC_SECRETS_DIR=/var/run/sc/secrets \
-		-v "$WS:/workspace" -v "$SEC:/var/run/sc/secrets:ro" --entrypoint /usr/local/bin/sc-worker "$IMG" run >/dev/null
+		-v "$WS:/workspace" -v "$SECVOL:/var/run/sc/secrets:ro" --entrypoint /usr/local/bin/sc-worker "$IMG" run >/dev/null
 
 	local i alive=0
 	for ((i = 0; i < 150; i++)); do # the harness runs once it has called the Gateway
@@ -727,6 +837,7 @@ run_case_async_ignore_cancel() {
 component() {
 	echo "== test-worker-component"
 	check_pins
+	trace_selftest
 	offline_go_tests
 	resolve_image "${SC_HARNESS_IMAGE:-harness-fake}"
 	start_infra
