@@ -132,6 +132,12 @@ case $ENGINE in podman) TMPFS_OWN=U ;; *) TMPFS_OWN=uid=65532,gid=65532 ;; esac
 # default AppArmor profile.
 TRACER_SEC=()
 if [ "$ENGINE" = docker ]; then TRACER_SEC=(--security-opt apparmor=unconfined); fi
+# Rootless podman synthesizes a passwd/group entry for --user (its --passwd default); Docker, containerd and the kubelet
+# do not, so an image without an entry for uid 65532 works on podman and breaks in production (OpenSSH: "No user exists for
+# uid 65532"). Runs of the image under test turn the synthesis off so that every engine sees the same image. The probe asks
+# the installed podman (the flag is absent from older releases, which then keep their behavior).
+PASSWD_OFF=()
+if [ "$ENGINE" = podman ] && podman run --help 2>/dev/null | grep -q -- '--passwd '; then PASSWD_OFF=(--passwd=false); fi
 eng() { "$ENGINE" "${ENG_ARGS[@]}" "$@"; }
 infra() { eng exec -i "$INFRA" "$@"; }
 
@@ -211,7 +217,7 @@ resolve_image() {
 
 # base run flags of a container from the image under test (27 section 11, 28 section 13.1)
 image_flags() {
-	printf '%s\n' --read-only --user 65532:65532 --cap-drop ALL --security-opt no-new-privileges --security-opt label=disable \
+	printf '%s\n' "${PASSWD_OFF[@]}" --read-only --user 65532:65532 --cap-drop ALL --security-opt no-new-privileges --security-opt label=disable \
 		--tmpfs /home/worker:rw,exec,nosuid,nodev,$TMPFS_OWN,mode=0700,size=64m \
 		--tmpfs /tmp:rw,exec,nosuid,nodev,$TMPFS_OWN,mode=1777,size=64m
 }
@@ -276,6 +282,16 @@ image_test() {
 		pass "28-AC-3 contents: sc-worker, sc-fake-harness, git, ssh, sh, make are on PATH"
 	else
 		fail "28-AC-3 contents: $(cat "$TMP/prog.out")"
+	fi
+
+	# uid 65532 has a passwd and group entry with home /home/worker (Docker and the kubelet synthesize none; OpenSSH's ssh
+	# needs getpwuid and exits "No user exists for uid 65532" otherwise). PASSWD_OFF is in flags for podman.
+	if eng run --rm "${flags[@]}" --entrypoint sh "$IMG" -c \
+		'set -u; pw=$(getent passwd 65532) || { echo "getent passwd 65532: no entry"; exit 1; }; gr=$(getent group 65532) || { echo "getent group 65532: no entry"; exit 1; }; home=$(echo "$pw" | cut -d: -f6); test "$home" = /home/worker || { echo "home of 65532 is $home, want /home/worker"; exit 1; }; id -un >/dev/null || { echo "id -un fails"; exit 1; }; ssh -V 2>&1 | grep -q "No user exists" && { echo "ssh -V: No user exists"; exit 1; }; o=$(ssh -G localhost 2>&1); case $o in *"No user exists"*) echo "ssh -G: $o"; exit 1;; esac; exit 0' \
+		>"$TMP/passwd.out" 2>&1; then
+		pass "28-AC-3 uid 65532 resolves (getent passwd/group, home /home/worker) and ssh -V / ssh -G work without engine passwd synthesis"
+	else
+		fail "28-AC-3 uid 65532 has no usable passwd/group entry with home /home/worker (ssh needs getpwuid): $(tr '\n' ' ' <"$TMP/passwd.out" | cut -c1-240)"
 	fi
 
 	# the Go toolchain (28 section 13.1 contents, section 9.3): a fake run against test/e2e/fake-target validates with go test
