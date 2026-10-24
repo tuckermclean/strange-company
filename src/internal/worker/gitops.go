@@ -246,7 +246,7 @@ func (pl *pipeline) rMkdir(rel string, mode uint32) error {
 }
 
 func (pl *pipeline) rWriteNew(rel string, data []byte, mode uint32) error {
-	return writeRelNew(pl.w.cfg.WorkspaceDir, "repo/"+rel, data, mode)
+	return writeRelReplace(pl.w.cfg.WorkspaceDir, "repo/"+rel, data, mode)
 }
 
 // recordRepo opens <workspace>/repo without following a link and remembers its (device, inode).
