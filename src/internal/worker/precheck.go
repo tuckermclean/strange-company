@@ -170,7 +170,7 @@ func secretPaths(secrets []string, patch string) (hits []string, pathHit bool) {
 	inHeader := false
 	for _, l := range strings.Split(patch, "\n") {
 		switch {
-		case !inHeader && strings.HasPrefix(l, "diff --git "):
+		case strings.HasPrefix(l, "diff --git "):
 			inHeader = true
 			cur = ""
 			pathHit = pathHit || s.String(l) != l

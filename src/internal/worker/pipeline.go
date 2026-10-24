@@ -421,6 +421,10 @@ func (pl *pipeline) checkDiff(changes []change, patch gitOut) *stageFail {
 	}
 	if !pl.skipPrechecks {
 		if patch.total > len(patch.stdout) {
+			if patch.total > pl.p.Policy.MaxDiffBytes {
+				v := violation{rule: "max_diff_bytes", note: fmt.Sprintf("%d > %d", patch.total, pl.p.Policy.MaxDiffBytes)}
+				return &stageFail{reason: "diff_precheck_failed", detail: v.String(), partial: true}
+			}
 			return &stageFail{reason: "diff_precheck_failed", detail: "diff_too_large", partial: true}
 		}
 		if f := secretFail(w.secrets, patch); f != nil {
