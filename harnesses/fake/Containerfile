@@ -1,0 +1,62 @@
+# harness-fake image (plan 28 section 13.1, F07 brief D2): one image runs `sc-worker run`, `sc-worker shim` and the
+# fake harness. Build context is the repository root (restricted by .dockerignore). Every FROM is digest-pinned; the
+# digests are those of baseImages in toolbox/tools.lock.yaml. OS packages come from the lock's debianSnapshot.
+
+# ---- gobuild: sc-worker and sc-fake-harness (plan 01 section 6.2 flags), reproducible for one inputs id
+FROM docker.io/library/golang@sha256:2d658507a011f1eadc0114d7a421b312b2e77d9042a24036a26e267cc9231677 AS gobuild
+ARG SC_INPUTS_ID=unknown
+ENV GOTOOLCHAIN=local GOFLAGS=-mod=readonly CGO_ENABLED=0
+WORKDIR /src
+COPY src/ /src/
+RUN set -eu; \
+    id12=$(printf '%s' "$SC_INPUTS_ID" | cut -c1-12); \
+    mkdir -p /out; \
+    go build -trimpath -buildvcs=false \
+      -ldflags "-s -w -X strange.company/sc/internal/version.Version=in-$id12 -X strange.company/sc/internal/version.Commit=$SC_INPUTS_ID" \
+      -o /out/ ./cmd/sc-worker ./cmd/sc-fake-harness
+
+# ---- final: Debian trixie-slim on the lock's snapshot
+FROM docker.io/library/debian@sha256:918311b7b6c4c6f68b232ba516584925f6c78ad82b6fd534b98979df6438e483
+ARG SC_INPUTS_ID=unknown
+COPY toolbox/tools.lock.yaml /usr/share/strange-company/tools.lock.yaml
+RUN set -eu; \
+    lock=/usr/share/strange-company/tools.lock.yaml; \
+    snap=$(sed -n 's/^  debianSnapshot: *\([0-9TZ]*\).*/\1/p' "$lock"); \
+    test -n "$snap"; \
+    printf '%s\n' \
+      'Types: deb' \
+      "URIs: http://snapshot.debian.org/archive/debian/$snap/" \
+      'Suites: trixie trixie-updates' \
+      'Components: main' \
+      'Check-Valid-Until: no' \
+      'Signed-By: /usr/share/keyrings/debian-archive-keyring.pgp' \
+      '' \
+      'Types: deb' \
+      "URIs: http://snapshot.debian.org/archive/debian-security/$snap/" \
+      'Suites: trixie-security' \
+      'Components: main' \
+      'Check-Valid-Until: no' \
+      'Signed-By: /usr/share/keyrings/debian-archive-keyring.pgp' \
+      >/etc/apt/sources.list.d/debian.sources; \
+    apt-get -o Acquire::Retries=5 update; \
+    DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
+      git openssh-client ca-certificates make; \
+    mkdir -p /workspace /home/worker; \
+    chown 65532:65532 /workspace /home/worker; \
+    dpkg --purge --force-depends apt; \
+    dpkg-query -W -f='${Package}\n' | sort -u >/usr/share/strange-company/packages.txt; \
+    rm -rf /var/lib/apt/lists/* /var/cache/apt /var/log/apt /var/log/dpkg.log /var/log/alternatives.log /run/* /etc/apt/sources.list.d/debian.sources; \
+    find / -xdev -perm /6000 -type f -exec chmod a-s {} +; \
+    rm -f /usr/bin/apt /usr/bin/apt-get /usr/bin/apt-cache /usr/bin/apt-config /usr/bin/apt-key /usr/bin/apt-mark \
+      /usr/bin/apt-cdrom /usr/bin/apt-ftparchive /usr/bin/dpkg /usr/bin/dpkg-deb /usr/bin/dpkg-query /usr/bin/dpkg-split \
+      /usr/bin/dpkg-trigger /usr/bin/dpkg-divert /usr/bin/dpkg-statoverride /usr/bin/dpkg-maintscript-helper \
+      /usr/sbin/dpkg-preconfigure /usr/sbin/dpkg-reconfigure
+COPY --from=gobuild /out/sc-worker /usr/local/bin/sc-worker
+COPY --from=gobuild /out/sc-fake-harness /usr/local/bin/sc-fake-harness
+LABEL strange.company/harness="fake" \
+      strange.company/cli-version="fake-0.1.0" \
+      strange.company/sc-worker-version="0.1.0" \
+      org.opencontainers.image.source="https://strange.company/sc" \
+      org.opencontainers.image.revision="${SC_INPUTS_ID}"
+USER 65532:65532
+WORKDIR /workspace
