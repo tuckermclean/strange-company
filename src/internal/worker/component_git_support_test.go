@@ -993,6 +993,21 @@ func harnessDouble(args []string) int {
 					fmt.Fprintln(os.Stderr, "double: plant-req:", err)
 					return 2
 				}
+			case "commit-fill":
+				// S6c-r1 (N4): commit with a message of op.N copies of op.Content (beyond the 16 MiB git output cap).
+				mf := filepath.Join(out, "commit-fill-msg.txt")
+				if err := os.WriteFile(mf, []byte(strings.Repeat(op.Content, op.N)), 0o600); err != nil {
+					fmt.Fprintln(os.Stderr, "double: commit-fill", err)
+					return 2
+				}
+				if o, err := gitH("add", "-A"); err != nil {
+					fmt.Fprintln(os.Stderr, "double: add:", o)
+					return 2
+				}
+				if o, err := gitH("commit", "-q", "--no-verify", "-F", mf); err != nil {
+					fmt.Fprintln(os.Stderr, "double: commit-fill:", o)
+					return 2
+				}
 			case "chmod":
 				// S6b (S6a-r3 F2): chmod expand(op.Path) to the octal mode in op.Content.
 				var mode uint32
