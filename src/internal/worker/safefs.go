@@ -306,6 +306,36 @@ func writeRelNew(base, rel string, data []byte, mode uint32) error {
 	return err
 }
 
+// writeRelReplace puts the file rel below base in place atomically (a temporary name in the same directory, then
+// renameat over the target), so that a concurrent re-creator of the target cannot make it fail with EEXIST. Every
+// directory component is opened without following links; a link at the target is replaced, never followed.
+func writeRelReplace(base, rel string, data []byte, mode uint32) error {
+	i := strings.LastIndexByte(rel, '/')
+	if i < 0 {
+		return errBadPath
+	}
+	d, err := openDir(base, rel[:i])
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	dfd := int(d.Fd())
+	name, tmp := rel[i+1:], ".sc-restore-"+rel[i+1:]+".tmp"
+	for try := 0; ; try++ {
+		if err = writeAt(dfd, tmp, data, os.FileMode(mode)); err == nil {
+			break
+		}
+		if try >= 8 || !errors.Is(err, syscall.EEXIST) {
+			return err
+		}
+	}
+	if err := renameat(dfd, tmp, name); err != nil {
+		_ = unlinkat(dfd, tmp, 0)
+		return err
+	}
+	return nil
+}
+
 // writeNoFollow replaces the file path (whose directory is opened without following a link): an existing entry of
 // that name is unlinked, never followed, and the file is created with O_EXCL|O_NOFOLLOW and fchmod'ed.
 func writeNoFollow(path string, b []byte, mode os.FileMode) error {

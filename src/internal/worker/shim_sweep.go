@@ -77,17 +77,15 @@ type procInfo struct {
 // procTable reads pid -> (ppid, state) of every process from a /proc-shaped directory; ok is false when the
 // directory cannot be read.
 func procTable(root string) (out map[int]procInfo, ok bool) {
-	ents, err := os.ReadDir(root)
-	if err != nil {
-		return nil, false
+	pids := ProcPids(root)
+	if pids == nil {
+		if _, err := os.ReadDir(root); err != nil {
+			return nil, false
+		}
 	}
 	out = map[int]procInfo{}
-	for _, e := range ents {
-		pid, err := strconv.Atoi(e.Name())
-		if err != nil {
-			continue
-		}
-		b, err := os.ReadFile(filepath.Join(root, e.Name(), "stat"))
+	for _, pid := range pids {
+		b, err := os.ReadFile(filepath.Join(root, strconv.Itoa(pid), "stat"))
 		if err != nil {
 			continue
 		}
@@ -107,6 +105,30 @@ func procTable(root string) (out map[int]procInfo, ok bool) {
 		out[pid] = procInfo{ppid: ppid, zombie: f[0] == "Z" || f[0] == "X"}
 	}
 	return out, true
+}
+
+// ProcPids lists the pids found in a /proc-shaped directory (numeric entry names in canonical form with a readable
+// stat file); pids <= 1 are never listed, so that no sweep can ever signal -1, 0 or init. It returns nil when the
+// directory cannot be read.
+func ProcPids(root string) []int {
+	ents, err := os.ReadDir(root)
+	if err != nil {
+		return nil
+	}
+	var pids []int
+	for _, e := range ents {
+		pid, err := strconv.Atoi(e.Name())
+		if err != nil || pid <= 1 || strconv.Itoa(pid) != e.Name() {
+			continue
+		}
+		f, err := os.Open(filepath.Join(root, e.Name(), "stat"))
+		if err != nil {
+			continue
+		}
+		_ = f.Close()
+		pids = append(pids, pid)
+	}
+	return pids
 }
 
 // SweepDescendantsOf kills (SIGKILL) and reaps every descendant of self found in the /proc-shaped directory procRoot

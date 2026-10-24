@@ -37,6 +37,9 @@ type shimResult struct {
 	TimedOut   bool   `json:"timed_out"`
 	// SweepIncomplete is set by the shim when a process of the job outlived the sweep (plan 27 section 7.4).
 	SweepIncomplete bool `json:"sweep_incomplete,omitempty"`
+	// ForeignRequest is set by the shim when a request other than the running one appeared (sc-worker is serial, so
+	// the harness planted it); it was marked handled and never run.
+	ForeignRequest bool `json:"foreign_request,omitempty"`
 }
 
 // shimOutcome is what runShim learned about one request.
@@ -214,6 +217,15 @@ func (pl *pipeline) runShim(kind string, argv []string, env map[string]string, c
 		"timeout_seconds": timeout, "term_grace_seconds": grace,
 	})
 	var out shimOutcome
+	// Only sc-worker creates these names, and only for the request it sends: whatever exists now was planted.
+	for _, pre := range []string{"res-%d.json", "stream-%d.log", "cancel-%d"} {
+		if _, err := os.Lstat(filepath.Join(dir, fmt.Sprintf(pre, n))); err == nil {
+			pl.tampered = true
+			w.log("error", "shim_file_preplanted", map[string]any{"name": fmt.Sprintf(pre, n)})
+			out.lost = true
+			return out
+		}
+	}
 	if err := writeAtomic(filepath.Join(dir, fmt.Sprintf("req-%d.json", n)), req); err != nil {
 		w.log("error", "shim_request_failed", map[string]any{"detail": err.Error()})
 		out.lost = true
@@ -239,7 +251,7 @@ func (pl *pipeline) runShim(kind string, argv []string, env map[string]string, c
 		if b, err := readRegularFile(w.cfg.WorkspaceDir, ".sc-shim/"+filepath.Base(resPath), 1<<20); err == nil {
 			if json.Unmarshal(b, &out.res) == nil {
 				out.haveRes = true
-				if out.res.SweepIncomplete {
+				if out.res.SweepIncomplete || out.res.ForeignRequest {
 					pl.tampered = true // a live descendant may still be rewriting the workspace
 				}
 				complete := tail.drain(stream, tail.size(stream), func() bool { return w.sig.Err() != nil }, onLine)

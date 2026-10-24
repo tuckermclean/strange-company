@@ -93,6 +93,7 @@ type shimState struct {
 	wg      sync.WaitGroup
 	mu      sync.Mutex
 	running map[string]*shimJob
+	handled map[string]bool // request numbers seen (guarded by mu)
 }
 
 // shimJob is one request that the shim is executing.
@@ -119,7 +120,7 @@ func (j *shimJob) terminate(grace time.Duration) {
 // Shim is the whole of `sc-worker shim` (plan 27 section 7.4): it executes the run requests that sc-worker writes
 // to <WorkspaceDir>/.sc-shim and returns the process exit code.
 func Shim(cfg ShimConfig) int {
-	s := &shimState{cfg: cfg, clk: cfg.Clock, errw: cfg.Stderr, running: map[string]*shimJob{}}
+	s := &shimState{cfg: cfg, clk: cfg.Clock, errw: cfg.Stderr, running: map[string]*shimJob{}, handled: map[string]bool{}}
 	if s.clk == nil {
 		s.clk = clock.Real{}
 	}
@@ -145,7 +146,6 @@ func Shim(cfg ShimConfig) int {
 		}
 	}()
 
-	handled := map[string]bool{}
 	began := s.clk.Now()
 	forwarded := false
 	for {
@@ -182,7 +182,7 @@ func Shim(cfg ShimConfig) int {
 		}
 		if hasDir {
 			if !forwarded {
-				s.scan(handled)
+				s.scan()
 			}
 			s.checkCancels()
 		}
@@ -234,26 +234,55 @@ func (s *shimState) terminateAll(grace time.Duration, podCap bool) {
 
 var shimReqName = regexp.MustCompile(`^req-([0-9]+)\.json$`)
 
-// scan starts every request file that was not seen before, in numeric order.
-func (s *shimState) scan(handled map[string]bool) {
+// absorbForeign marks every request file not handled yet as handled without running it and reports whether there was
+// one. sc-worker is serial and writes req-<n+1> only after it read res-<n>, so a request found while a job runs or is
+// swept was planted by the harness.
+func (s *shimState) absorbForeign() bool {
+	ents, err := os.ReadDir(s.dir)
+	if err != nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	foreign := false
+	for _, e := range ents {
+		if m := shimReqName.FindStringSubmatch(e.Name()); m != nil && !s.handled[m[1]] {
+			s.handled[m[1]] = true
+			foreign = true
+		}
+	}
+	return foreign
+}
+
+// scan starts the next request file that was not seen before, but only while no job runs or is swept: the jobs are
+// strictly serial.
+func (s *shimState) scan() {
+	if !s.idle() {
+		return
+	}
 	ents, err := os.ReadDir(s.dir)
 	if err != nil {
 		return
 	}
+
 	var fresh []string
+	s.mu.Lock()
 	for _, e := range ents {
-		if m := shimReqName.FindStringSubmatch(e.Name()); m != nil && !handled[m[1]] {
+		if m := shimReqName.FindStringSubmatch(e.Name()); m != nil && !s.handled[m[1]] {
 			fresh = append(fresh, m[1])
 		}
 	}
+	s.mu.Unlock()
 	sort.Slice(fresh, func(i, k int) bool {
 		if len(fresh[i]) != len(fresh[k]) {
 			return len(fresh[i]) < len(fresh[k])
 		}
 		return fresh[i] < fresh[k]
 	})
-	for _, n := range fresh {
-		handled[n] = true
+	for _, n := range fresh[:min(1, len(fresh))] {
+		s.mu.Lock()
+		s.handled[n] = true
+		s.mu.Unlock()
 		j := &shimJob{n: n, cancel: make(chan time.Duration, 1), kill: make(chan struct{})}
 		s.mu.Lock()
 		s.running[n] = j
@@ -432,6 +461,9 @@ func (s *shimState) runJob(j *shimJob) {
 	started := s.clk.Now()
 	res := shimResult{StartedAt: stamp(started), ExitCode: -1}
 	finish := func() {
+		if s.absorbForeign() {
+			res.ForeignRequest = true
+		}
 		res.FinishedAt = stamp(s.clk.Now())
 		s.writeResult(j.n, res)
 	}
