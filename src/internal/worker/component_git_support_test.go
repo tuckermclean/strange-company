@@ -700,6 +700,13 @@ func harnessDouble(args []string) int {
 					fmt.Fprintln(os.Stderr, "double: write", op.Path)
 					return 2
 				}
+			case "write-fill":
+				// S6c: write op.N copies of op.Content followed by op.Msg (a file larger than the 16 MiB git output cap).
+				p := expand(op.Path)
+				if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil || os.WriteFile(p, []byte(strings.Repeat(op.Content, op.N)+op.Msg), 0o644) != nil {
+					fmt.Fprintln(os.Stderr, "double: write-fill", op.Path)
+					return 2
+				}
 			case "write-hex":
 				// S5a review: write raw bytes (hex in Content), for binary and non-UTF-8 files.
 				raw, err := hex.DecodeString(op.Content)
