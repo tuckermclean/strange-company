@@ -166,6 +166,9 @@ func (pl *pipeline) run() int {
 
 	w.setPhase("harness")
 	verdict, f := pl.runHarness()
+	if f == nil && pl.tampered {
+		f = &stageFail{reason: "internal", detail: "workspace_tampered"}
+	}
 	if f != nil {
 		return pl.finishFail(f)
 	}
@@ -192,6 +195,10 @@ func (pl *pipeline) run() int {
 	commitState := claim.State == "completed" || claim.State == "already_satisfied"
 	if g.PushAllowed && commitState && len(pl.p.Policy.ValidationCommands) > 0 {
 		pl.validation = pl.validate()
+		if pl.tampered && w.sig.Err() == nil {
+			pl.shimDone()
+			return pl.finishFail(&stageFail{reason: "internal", detail: "workspace_tampered"})
+		}
 	}
 	pl.shimDone()
 	if w.sig.Err() != nil {

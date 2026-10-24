@@ -29,7 +29,7 @@ func DefaultSelfTestEnv() SelfTestEnv {
 	return SelfTestEnv{
 		Uid: os.Getuid(), Gid: os.Getgid(),
 		WritableDirs:    []string{"/workspace", "/home/worker", "/tmp"},
-		ReadOnlyDirs:    []string{"/usr"},
+		ReadOnlyDirs:    []string{"/", "/etc", "/var", "/opt", "/bin", "/home", "/usr"},
 		PackageManagers: []string{"/usr/bin/apt-get", "/usr/bin/apt", "/usr/bin/dpkg", "/usr/bin/apk", "/usr/bin/yum", "/usr/bin/dnf"},
 	}
 }

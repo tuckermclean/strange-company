@@ -605,7 +605,7 @@ loop:
 	// shim (processes that left the group or double-forked), before res-<n>.json is published.
 	_ = syscall.Kill(-pgid, syscall.SIGKILL)
 	pollStop()
-	s.sweep(j)
+	res.SweepIncomplete = s.sweep(j)
 	so.flush()
 	se.flush()
 

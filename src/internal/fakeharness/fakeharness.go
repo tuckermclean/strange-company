@@ -259,15 +259,30 @@ func dumpEnvironment(out string) {
 	_ = os.WriteFile(filepath.Join(out, "env.txt"), []byte(strings.Join(env, "\n")+"\n"), 0o644)
 	var files []string
 	for _, root := range []string{"/var/run", "/var/sc"} {
-		_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
-			if err != nil {
-				return nil
-			}
-			if d.Type().IsRegular() {
-				files = append(files, p)
-			}
-			return nil
-		})
+		files = append(files, ListFiles(root, root)...)
 	}
 	_ = os.WriteFile(filepath.Join(out, "files.txt"), []byte(strings.Join(files, "\n")+"\n"), 0o644)
+}
+
+// ListFiles lists the regular files below root, following a symlinked root (on Debian /var/run is a link to /run),
+// named by their path below display.
+func ListFiles(root, display string) []string {
+	real, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return nil
+	}
+	var files []string
+	_ = filepath.WalkDir(real, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.Type().IsRegular() {
+			rel, err := filepath.Rel(real, p)
+			if err == nil {
+				files = append(files, filepath.Join(display, rel))
+			}
+		}
+		return nil
+	})
+	return files
 }
