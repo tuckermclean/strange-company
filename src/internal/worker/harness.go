@@ -218,7 +218,7 @@ func (pl *pipeline) runShim(kind string, argv []string, env map[string]string, c
 	})
 	var out shimOutcome
 	// Only sc-worker creates these names, and only for the request it sends: whatever exists now was planted.
-	for _, pre := range []string{"res-%d.json", "stream-%d.log", "cancel-%d"} {
+	for _, pre := range []string{"res-%d.json", "res-%d.json.tmp", "stream-%d.log", "cancel-%d"} {
 		if _, err := os.Lstat(filepath.Join(dir, fmt.Sprintf(pre, n))); err == nil {
 			pl.tampered = true
 			w.log("error", "shim_file_preplanted", map[string]any{"name": fmt.Sprintf(pre, n)})
@@ -251,6 +251,7 @@ func (pl *pipeline) runShim(kind string, argv []string, env map[string]string, c
 		if b, err := readRegularFile(w.cfg.WorkspaceDir, ".sc-shim/"+filepath.Base(resPath), 1<<20); err == nil {
 			if json.Unmarshal(b, &out.res) == nil {
 				out.haveRes = true
+				pl.consumed = append(pl.consumed, consumedRes{name: filepath.Base(resPath), body: b})
 				if out.res.SweepIncomplete || out.res.ForeignRequest {
 					pl.tampered = true // a live descendant may still be rewriting the workspace
 				}
@@ -298,6 +299,45 @@ func (pl *pipeline) runShim(kind string, argv []string, env map[string]string, c
 			return out
 		}
 		_ = w.clk.Sleep(nilCtx, shimPoll)
+	}
+}
+
+// consumedRes is a result file as sc-worker consumed it.
+type consumedRes struct {
+	name string
+	body []byte
+}
+
+// settleBound is how long sc-worker waits before it re-reads the results it consumed: two polls of the shim plus the
+// bound of the shim's sweep (sweepRounds * sweepPause). A harness that forged res-<n>.json while alive is swept by the
+// shim after it, and the shim's own result then replaces the forged one, flagged where the shim saw foreign requests.
+const settleBound = 2*shimPollInterval + sweepRounds*sweepPause
+
+// checkShimDir records tampering when .sc-shim is no longer a real directory of mode 0770 (the harness may have made
+// it unreadable so that the shim cannot list it; plan 27 section 7.4).
+func (pl *pipeline) checkShimDir() {
+	st, err := os.Lstat(pl.shimDir())
+	if err != nil || st.Mode() != os.ModeDir|0o770 {
+		pl.tampered = true
+		pl.w.log("error", "shim_dir_changed", map[string]any{})
+	}
+}
+
+// recheckResults re-reads every result consumed after the settle bound; a changed body, a vanished file or a result
+// now flagged foreign_request or sweep_incomplete means the harness forged one while it was alive (S6a-r3 F1).
+func (pl *pipeline) recheckResults() {
+	if len(pl.consumed) == 0 {
+		return
+	}
+	_ = pl.w.clk.Sleep(nilCtx, settleBound)
+	pl.checkShimDir()
+	for _, c := range pl.consumed {
+		b, err := readRegularFile(pl.w.cfg.WorkspaceDir, ".sc-shim/"+c.name, 1<<20)
+		var r shimResult
+		if err != nil || !bytes.Equal(b, c.body) || json.Unmarshal(b, &r) != nil || r.ForeignRequest || r.SweepIncomplete {
+			pl.tampered = true
+			pl.w.log("error", "shim_result_changed", map[string]any{"name": c.name})
+		}
 	}
 }
 
@@ -517,6 +557,7 @@ func (pl *pipeline) runHarness() (verdict string, f *stageFail) {
 	verdict = pl.harnessVerdict(out)
 	w.log("info", "harness_exit", map[string]any{"verdict": verdict, "exit_code": out.res.ExitCode,
 		"duration_ms": pl.harnessEnd.Sub(started).Milliseconds()})
+	pl.checkShimDir()
 	return verdict, nil
 }
 
