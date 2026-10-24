@@ -374,16 +374,34 @@ func (pl *pipeline) scanPublishedCommits(head string) *stageFail {
 		if patch.err != nil {
 			return &stageFail{reason: "commit_failed", detail: "git diff: " + tail(patch.stderr, 500)}
 		}
-		if hits := secretPaths(w.secrets, string(patch.stdout)); len(hits) > 0 {
-			return &stageFail{reason: "secret_detected", detail: "secret pattern in added lines of: " + strings.Join(hits, ", ")}
+		if patch.total > len(patch.stdout) {
+			return fail("commit_too_large: " + c)
+		}
+		if f := secretFail(w.secrets, patch); f != nil {
+			return f
 		}
 		obj := pl.gitPost(30*time.Second, nil, "cat-file", "commit", c)
 		if obj.err != nil {
 			return &stageFail{reason: "commit_failed", detail: "git cat-file: " + tail(obj.stderr, 500)}
 		}
+		if obj.total > len(obj.stdout) {
+			return fail("commit_too_large: " + c)
+		}
 		if t := string(obj.stdout); sc.String(t) != t {
 			return &stageFail{reason: "secret_detected", detail: "secret pattern in a harness commit message or identity"}
 		}
+	}
+	return nil
+}
+
+// secretFail scans a patch (added lines and path names); the detail never names a path that carries a secret.
+func secretFail(secrets []string, patch gitOut) *stageFail {
+	hits, pathHit := secretPaths(secrets, string(patch.stdout))
+	if pathHit {
+		return &stageFail{reason: "secret_detected", detail: "secret pattern in a path name"}
+	}
+	if len(hits) > 0 {
+		return &stageFail{reason: "secret_detected", detail: "secret pattern in added lines of: " + strings.Join(hits, ", ")}
 	}
 	return nil
 }
@@ -402,8 +420,11 @@ func (pl *pipeline) checkDiff(changes []change, patch gitOut) *stageFail {
 		}
 	}
 	if !pl.skipPrechecks {
-		if hits := secretPaths(w.secrets, string(patch.stdout)); len(hits) > 0 {
-			return &stageFail{reason: "secret_detected", detail: "secret pattern in added lines of: " + strings.Join(hits, ", ")}
+		if patch.total > len(patch.stdout) {
+			return &stageFail{reason: "diff_precheck_failed", detail: "diff_too_large", partial: true}
+		}
+		if f := secretFail(w.secrets, patch); f != nil {
+			return f
 		}
 		if v := runPrechecks(pl.p.Policy, changes, patch.total, true); len(v) > 0 {
 			parts := make([]string, len(v))
