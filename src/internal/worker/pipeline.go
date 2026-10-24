@@ -10,6 +10,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"strange.company/sc/internal/scrub"
 )
 
 // The Git pipeline of sc-worker after the credential check: clone, checkout, context, harness, claim, pre-checks,
@@ -244,10 +246,10 @@ func (pl *pipeline) commitAndPush() (string, *stageFail) {
 		if r := pl.gitPost(30*time.Second, nil, "merge-base", "--is-ancestor", g.StartCommit, head); r.err != nil {
 			return "", &stageFail{reason: "diff_precheck_failed", detail: "head_not_descendant", partial: true}
 		}
-		count := pl.gitPost(30*time.Second, nil, "rev-list", "--count", g.StartCommit+".."+head).text()
-		var n int
-		fmt.Sscanf(count, "%d", &n)
 		if !w.knobs.SkipFold {
+			count := pl.gitPost(30*time.Second, nil, "rev-list", "--count", g.StartCommit+".."+head).text()
+			var n int
+			fmt.Sscanf(count, "%d", &n)
 			w.log("info", "harness_commits_folded", map[string]any{"count": n})
 		}
 		if w.knobs.SkipFold {
@@ -262,6 +264,9 @@ func (pl *pipeline) commitAndPush() (string, *stageFail) {
 				return "", &stageFail{reason: "commit_failed", detail: "git diff: " + tail(patch.stderr, 500)}
 			}
 			if f := pl.checkDiff(parseNameStatus(ns.stdout), patch); f != nil {
+				return "", f
+			}
+			if f := pl.scanPublishedCommits(head); f != nil {
 				return "", f
 			}
 			return pl.publish(head)
@@ -309,18 +314,78 @@ func (pl *pipeline) commitAndPush() (string, *stageFail) {
 	if r := pl.gitPost(120*time.Second, ident, "commit", "-q", "--no-verify", "--cleanup=verbatim", "-F", msgPath); r.err != nil {
 		return "", &stageFail{reason: "commit_failed", detail: "git commit: " + tail(r.stderr, 500)}
 	}
-	against := g.StartCommit
+	against, againstName := g.StartCommit, "start_commit"
 	if w.knobs.ParentOverride != "" {
-		against = g.BaseCommit
+		against, againstName = g.BaseCommit, "base_commit"
 	}
 	if n := pl.gitPost(30*time.Second, nil, "rev-list", "--count", against+"..HEAD").text(); n != "1" {
-		return "", &stageFail{reason: "commit_failed", detail: "expected one commit on top of start_commit, found " + n}
+		return "", &stageFail{reason: "commit_failed", detail: "expected one commit on top of " + againstName + ", found " + n}
 	}
 	if p := pl.gitPost(30*time.Second, nil, "rev-parse", "HEAD^").text(); p != against {
-		return "", &stageFail{reason: "commit_failed", detail: "the commit's parent is not start_commit"}
+		return "", &stageFail{reason: "commit_failed", detail: "the commit's parent is not " + againstName}
 	}
 	sha := pl.gitPost(30*time.Second, nil, "rev-parse", "HEAD").text()
 	return pl.publish(sha)
+}
+
+// maxSkipFoldCommits bounds the per-commit scan under the fake knob skip_fold: the harness controls the commit count, so
+// a longer chain fails closed instead of costing unbounded git work.
+const maxSkipFoldCommits = 100
+
+// scanPublishedCommits makes skip_fold safe to publish: every commit start..head is single-parent (a merge fails closed,
+// its side parent would reach the remote unscanned), the chain is linear back to start_commit, and each commit's own patch
+// (added lines) and raw object (message, author, committer) are free of secrets.
+func (pl *pipeline) scanPublishedCommits(head string) *stageFail {
+	w := pl.w
+	start := pl.p.Git.StartCommit
+	fail := func(detail string) *stageFail {
+		return &stageFail{reason: "diff_precheck_failed", detail: detail, partial: true}
+	}
+	rl := pl.gitPost(30*time.Second, nil, "rev-list", "--parents", start+".."+head)
+	if rl.err != nil {
+		return &stageFail{reason: "commit_failed", detail: "git rev-list: " + tail(rl.stderr, 500)}
+	}
+	parent := map[string]string{}
+	var commits []string
+	for _, line := range strings.Split(rl.text(), "\n") {
+		f := strings.Fields(line)
+		if len(f) == 0 {
+			continue
+		}
+		if len(f) != 2 {
+			return fail("non_single_parent_commit: " + f[0])
+		}
+		parent[f[0]] = f[1]
+		commits = append(commits, f[0])
+		if len(commits) > maxSkipFoldCommits {
+			return fail(fmt.Sprintf("too_many_commits: more than %d", maxSkipFoldCommits))
+		}
+	}
+	for cur, n := head, 0; cur != start; n++ {
+		p, ok := parent[cur]
+		if !ok || n > len(commits) {
+			return fail("non_linear_history")
+		}
+		cur = p
+	}
+	sc := scrub.New(w.secrets...)
+	for _, c := range commits {
+		patch := pl.gitPost(120*time.Second, nil, "diff", "--no-ext-diff", "--no-textconv", "--text", "-M", c+"^", c)
+		if patch.err != nil {
+			return &stageFail{reason: "commit_failed", detail: "git diff: " + tail(patch.stderr, 500)}
+		}
+		if hits := secretPaths(w.secrets, string(patch.stdout)); len(hits) > 0 {
+			return &stageFail{reason: "secret_detected", detail: "secret pattern in added lines of: " + strings.Join(hits, ", ")}
+		}
+		obj := pl.gitPost(30*time.Second, nil, "cat-file", "commit", c)
+		if obj.err != nil {
+			return &stageFail{reason: "commit_failed", detail: "git cat-file: " + tail(obj.stderr, 500)}
+		}
+		if t := string(obj.stdout); sc.String(t) != t {
+			return &stageFail{reason: "secret_detected", detail: "secret pattern in a harness commit message or identity"}
+		}
+	}
+	return nil
 }
 
 // checkDiff runs the context-leak check, the secret scan and the prechecks over a change list and patch.
