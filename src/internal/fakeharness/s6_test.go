@@ -15,7 +15,7 @@ import (
 	"strange.company/sc/internal/clock"
 )
 
-// Slice S6a of F07: 28-AC-7 for all 52 scenarios of the harness.schema.yaml enum, and the environment / file-list dump of
+// Slice S6a of F07: 28-AC-7 for all 51 scenarios of the harness.schema.yaml enum, and the environment / file-list dump of
 // 27-AC-5 (plan 27 section 22: the fake harness dumps its environment and `find /var/run /var/sc -type f` to
 // /workspace/out).
 
@@ -67,8 +67,8 @@ func scenarioEnum(t *testing.T) []string {
 		return nil
 	}
 	en := find(doc)
-	if len(en) != 52 {
-		t.Fatalf("the fake.scenario enum has %d values, want 52", len(en))
+	if len(en) != 51 { // plan 28 section 14.4 lists 51 rows, the same as the contract enum
+		t.Fatalf("the fake.scenario enum has %d values, want 51", len(en))
 	}
 	return en
 }

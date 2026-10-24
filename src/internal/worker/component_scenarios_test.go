@@ -3,6 +3,7 @@ package worker_test
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"sort"
@@ -10,6 +11,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"strange.company/sc/internal/contracts"
 )
 
 // Slice S6a of F07: 28-AC-4 and 28-AC-7. Every scenario of plan 28 section 14.4 marked coop or wedged, plus
@@ -177,7 +180,12 @@ func runRow(t *testing.T, r scenarioRow) {
 		t.Fatalf("%d result POSTs, want 1; stderr:\n%s", len(posts), gr.proc.stderr.String())
 	}
 	checkFramed(t, gr.proc.stdout.String(), posts[0].Body)
-	res := decodeResult(t, posts[0].Body)
+	var res map[string]any
+	if r.anyPush { // malformed-* rows: the body is deliberately schema-invalid, so decode without validating
+		res = decodeInvalidResult(t, posts[0].Body)
+	} else {
+		res = decodeResult(t, posts[0].Body)
+	}
 	if res["state"] != r.state {
 		t.Errorf("state = %v, want %s (failure %v)", res["state"], r.state, res["failure"])
 	}
@@ -200,6 +208,32 @@ func runRow(t *testing.T, r scenarioRow) {
 	if r.check != nil {
 		r.check(t, &rowCtx{fx: fx, gr: gr, res: res, red: red})
 	}
+}
+
+// decodeInvalidResult decodes a posted body without schema validation and asserts it is NOT a valid worker-result:
+// that is the point of the malformed-* scenarios.
+func decodeInvalidResult(t *testing.T, body []byte) map[string]any {
+	t.Helper()
+	var v any
+	if err := json.Unmarshal(body, &v); err != nil {
+		t.Fatalf("posted body is not JSON: %v", err)
+	}
+	set, err := contracts.CompileSchemas(filepath.Join(repoRoot(t), "contracts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, ok := set["worker-result"]
+	if !ok {
+		t.Fatalf("no compiled schema worker-result")
+	}
+	if err := s.Validate(v); err == nil {
+		t.Errorf("the posted body is schema-valid, want a deliberately schema-invalid body")
+	}
+	m, ok := v.(map[string]any)
+	if !ok {
+		t.Fatalf("posted body is not a JSON object")
+	}
+	return m
 }
 
 func names(res map[string]any, key string) []string {
