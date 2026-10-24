@@ -218,6 +218,9 @@ func (pl *pipeline) run() int {
 		return pl.finishClaim("", false)
 	}
 	pl.recheckResults()
+	if w.sig.Err() != nil {
+		return w.terminate()
+	}
 	if pl.tampered {
 		return pl.finishFail(&stageFail{reason: "internal", detail: "workspace_tampered"})
 	}
@@ -236,7 +239,8 @@ func (pl *pipeline) commitAndPush() (string, *stageFail) {
 	if f := pl.restoreInternals(); f != nil {
 		return "", f
 	}
-	if head := pl.harnessHead(); head != "" && head != g.StartCommit {
+	head := pl.harnessHead()
+	if head != "" && head != g.StartCommit {
 		if r := pl.gitPost(30*time.Second, nil, "merge-base", "--is-ancestor", g.StartCommit, head); r.err != nil {
 			return "", &stageFail{reason: "diff_precheck_failed", detail: "head_not_descendant", partial: true}
 		}
@@ -246,10 +250,20 @@ func (pl *pipeline) commitAndPush() (string, *stageFail) {
 		if !w.knobs.SkipFold {
 			w.log("info", "harness_commits_folded", map[string]any{"count": n})
 		}
-	}
-	if w.knobs.SkipFold {
-		// Fake knob skip_fold (multi-commit, plan 28 section 14.4): the harness's own commits are sent unfolded.
-		if head := pl.harnessHead(); head != "" && head != g.StartCommit {
+		if w.knobs.SkipFold {
+			// Fake knob skip_fold (multi-commit, plan 28 section 14.4): the harness's own commits are sent
+			// unfolded, but the same checks run over start_commit..head as over a folded commit.
+			ns := pl.gitPost(60*time.Second, nil, "diff", "--name-status", "-M", "-z", g.StartCommit, head)
+			if ns.err != nil {
+				return "", &stageFail{reason: "commit_failed", detail: "git diff: " + tail(ns.stderr, 500)}
+			}
+			patch := pl.gitPost(120*time.Second, nil, "diff", "--no-ext-diff", "--no-textconv", "--text", "-M", g.StartCommit, head)
+			if patch.err != nil {
+				return "", &stageFail{reason: "commit_failed", detail: "git diff: " + tail(patch.stderr, 500)}
+			}
+			if f := pl.checkDiff(parseNameStatus(ns.stdout), patch); f != nil {
+				return "", f
+			}
 			return pl.publish(head)
 		}
 	}
@@ -271,27 +285,8 @@ func (pl *pipeline) commitAndPush() (string, *stageFail) {
 	if patch.err != nil {
 		return "", &stageFail{reason: "commit_failed", detail: "git diff: " + tail(patch.stderr, 500)}
 	}
-	// The context directory is a sibling of the working tree; nothing staged may name it.
-	ctxNames := map[string]bool{}
-	for _, n := range pl.contextNames {
-		ctxNames[n] = true
-	}
-	for _, c := range changes {
-		if strings.HasPrefix(c.path, "../") || ctxNames[c.path] {
-			return "", &stageFail{reason: "diff_precheck_failed", detail: "context_leak: " + c.path, partial: true}
-		}
-	}
-	if !pl.skipPrechecks {
-		if hits := secretPaths(w.secrets, string(patch.stdout)); len(hits) > 0 {
-			return "", &stageFail{reason: "secret_detected", detail: "secret pattern in added lines of: " + strings.Join(hits, ", ")}
-		}
-		if v := runPrechecks(pl.p.Policy, changes, patch.total, true); len(v) > 0 {
-			parts := make([]string, len(v))
-			for i, x := range v {
-				parts[i] = x.String()
-			}
-			return "", &stageFail{reason: "diff_precheck_failed", detail: strings.Join(parts, "; "), partial: true}
-		}
+	if f := pl.checkDiff(changes, patch); f != nil {
+		return "", f
 	}
 
 	// Commit.
@@ -314,16 +309,46 @@ func (pl *pipeline) commitAndPush() (string, *stageFail) {
 	if r := pl.gitPost(120*time.Second, ident, "commit", "-q", "--no-verify", "--cleanup=verbatim", "-F", msgPath); r.err != nil {
 		return "", &stageFail{reason: "commit_failed", detail: "git commit: " + tail(r.stderr, 500)}
 	}
-	if w.knobs.ParentOverride == "" {
-		if n := pl.gitPost(30*time.Second, nil, "rev-list", "--count", g.StartCommit+"..HEAD").text(); n != "1" {
-			return "", &stageFail{reason: "commit_failed", detail: "expected one commit on top of start_commit, found " + n}
-		}
-		if p := pl.gitPost(30*time.Second, nil, "rev-parse", "HEAD^").text(); p != g.StartCommit {
-			return "", &stageFail{reason: "commit_failed", detail: "the commit's parent is not start_commit"}
-		}
+	against := g.StartCommit
+	if w.knobs.ParentOverride != "" {
+		against = g.BaseCommit
+	}
+	if n := pl.gitPost(30*time.Second, nil, "rev-list", "--count", against+"..HEAD").text(); n != "1" {
+		return "", &stageFail{reason: "commit_failed", detail: "expected one commit on top of start_commit, found " + n}
+	}
+	if p := pl.gitPost(30*time.Second, nil, "rev-parse", "HEAD^").text(); p != against {
+		return "", &stageFail{reason: "commit_failed", detail: "the commit's parent is not start_commit"}
 	}
 	sha := pl.gitPost(30*time.Second, nil, "rev-parse", "HEAD").text()
 	return pl.publish(sha)
+}
+
+// checkDiff runs the context-leak check, the secret scan and the prechecks over a change list and patch.
+func (pl *pipeline) checkDiff(changes []change, patch gitOut) *stageFail {
+	w := pl.w
+	// The context directory is a sibling of the working tree; nothing staged may name it.
+	ctxNames := map[string]bool{}
+	for _, n := range pl.contextNames {
+		ctxNames[n] = true
+	}
+	for _, c := range changes {
+		if strings.HasPrefix(c.path, "../") || ctxNames[c.path] {
+			return &stageFail{reason: "diff_precheck_failed", detail: "context_leak: " + c.path, partial: true}
+		}
+	}
+	if !pl.skipPrechecks {
+		if hits := secretPaths(w.secrets, string(patch.stdout)); len(hits) > 0 {
+			return &stageFail{reason: "secret_detected", detail: "secret pattern in added lines of: " + strings.Join(hits, ", ")}
+		}
+		if v := runPrechecks(pl.p.Policy, changes, patch.total, true); len(v) > 0 {
+			parts := make([]string, len(v))
+			for i, x := range v {
+				parts[i] = x.String()
+			}
+			return &stageFail{reason: "diff_precheck_failed", detail: strings.Join(parts, "; "), partial: true}
+		}
+	}
+	return nil
 }
 
 // publish verifies the repository and sends sha to the task branch with the lease (plan 27 section 14.11). With the
