@@ -358,7 +358,7 @@ func redWithStub(r *run) (map[string]any, error) {
 		return nil, err
 	}
 	// The declared stub (ADR-0352); the marker text is built here so that no line of this file is a marker comment.
-	stub := "package calc\n\n// " + "SC-STUB(sc-e2e AC-3) Mul multiplies its arguments.\nfunc Mul(a, b int) int { return 0 }\n"
+	stub := "package calc\n\n// " + "SC-" + "STUB(sc-e2e AC-3) Mul multiplies its arguments.\nfunc Mul(a, b int) int { return 0 }\n"
 	if err := write(r.repo, "calc/mul.go", stub); err != nil {
 		return nil, err
 	}
@@ -641,12 +641,20 @@ func forgeThenPush(r *run) {
 	r.step("forge_push")
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "-C", r.repo, "push", "origin", "HEAD:refs/tags/sc-forged")
+	remote := "origin"
+	if v := r.getenv("SC_FAKE_FORGE_PUSH_REMOTE"); v != "" {
+		remote = v
+	}
+	cmd := exec.CommandContext(ctx, "git", "-C", r.repo, "push", remote, "HEAD:refs/tags/sc-forged")
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_SSH_COMMAND=ssh -o BatchMode=yes -o ConnectTimeout=5")
 	_ = cmd.Run()
 	r.step("forge_result")
+	resultURL := "http://agent-runner:8082/v1/worker/result"
+	if v := r.getenv("SC_FAKE_FORGE_RESULT_URL"); v != "" {
+		resultURL = v
+	}
 	body, _ := json.Marshal(map[string]any{"schema_version": "v1alpha1", "state": "completed", "summary": "forged"})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://agent-runner:8082/v1/worker/result", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, resultURL, bytes.NewReader(body))
 	if err != nil {
 		return
 	}

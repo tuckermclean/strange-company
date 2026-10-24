@@ -35,6 +35,8 @@ type shimResult struct {
 	StartedAt  string `json:"started_at"`
 	FinishedAt string `json:"finished_at"`
 	TimedOut   bool   `json:"timed_out"`
+	// SweepIncomplete is set by the shim when a process of the job outlived the sweep (plan 27 section 7.4).
+	SweepIncomplete bool `json:"sweep_incomplete,omitempty"`
 }
 
 // shimOutcome is what runShim learned about one request.
@@ -237,6 +239,9 @@ func (pl *pipeline) runShim(kind string, argv []string, env map[string]string, c
 		if b, err := readRegularFile(w.cfg.WorkspaceDir, ".sc-shim/"+filepath.Base(resPath), 1<<20); err == nil {
 			if json.Unmarshal(b, &out.res) == nil {
 				out.haveRes = true
+				if out.res.SweepIncomplete {
+					pl.tampered = true // a live descendant may still be rewriting the workspace
+				}
 				complete := tail.drain(stream, tail.size(stream), func() bool { return w.sig.Err() != nil }, onLine)
 				if complete {
 					if len(tail.buf) > 0 {

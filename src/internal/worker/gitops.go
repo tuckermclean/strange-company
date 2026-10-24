@@ -70,7 +70,8 @@ func watchTransport(pid int, stop <-chan struct{}) bool {
 			return false
 		}
 		live := false
-		for _, p := range procTable() {
+		tab, _ := procTable("/proc")
+		for _, p := range tab {
 			if p.ppid != pid {
 				continue
 			}
