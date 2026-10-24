@@ -49,6 +49,8 @@ RUN set -eu; \
       git openssh-client ca-certificates make; \
     mkdir -p /workspace /home/worker; \
     chown 65532:65532 /workspace /home/worker; \
+    printf 'worker:x:65532:\n' >>/etc/group; \
+    printf 'worker:x:65532:65532::/home/worker:/usr/sbin/nologin\n' >>/etc/passwd; \
     dpkg --purge --force-depends apt; \
     dpkg-query -W -f='${Package}\n' | sort -u >/usr/share/strange-company/packages.txt; \
     rm -rf /var/lib/apt/lists/* /var/cache/apt /var/log/apt /var/log/dpkg.log /var/log/alternatives.log /run/* /etc/apt/sources.list.d/debian.sources; \
