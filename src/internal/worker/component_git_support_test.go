@@ -971,6 +971,21 @@ func harnessDouble(args []string) int {
 					}
 				}
 				fcancel()
+			case "plant-req":
+				// S6a review 2 (B1'): plant req-99.json (a lingering writer that records its pid in out/forged.pid) and
+				// return at once, without waiting for it to start.
+				shimDir := filepath.Join(filepath.Dir(out), ".sc-shim")
+				body, _ := json.Marshal(map[string]any{"id": "forged-99", "kind": "validation", "cwd": out, "timeout_seconds": 600, "term_grace_seconds": 5,
+					"argv": []string{"/bin/sh", "-c", `echo $$ > "$1/forged.pid"; while :; do echo x >> "$1/forged.log"; done`, "sh", out}})
+				tmp := filepath.Join(shimDir, "forged-99.tmp")
+				if err := os.WriteFile(tmp, body, 0o644); err != nil {
+					fmt.Fprintln(os.Stderr, "double: plant-req:", err)
+					return 2
+				}
+				if err := os.Rename(tmp, filepath.Join(shimDir, "req-99.json")); err != nil {
+					fmt.Fprintln(os.Stderr, "double: plant-req:", err)
+					return 2
+				}
 			case "linger":
 				// S5a: after the claim, forge the shim result and keep rewriting the workspace .git until op.Path exists.
 				lingerStop, lingerSwap = op.Path, op.Content
@@ -1068,6 +1083,10 @@ func harnessDouble(args []string) int {
 // sc-worker proceeds, and then keeps rewriting the workspace .git (config with core.fsmonitor, core.hooksPath,
 // include.path and a filter driver, info/attributes selecting the filter, hooks) until the stop file exists.
 func lingerForged(repo, out, stop, swap string) int {
+	tight := swap == "tight" // S6a review 2: no pause between rewrites
+	if tight {
+		swap = ""
+	}
 	canary := os.Getenv("SC_TEST_CANARY")
 	ws := filepath.Dir(out)
 	gd := filepath.Join(repo, ".git")
@@ -1175,7 +1194,9 @@ func lingerForged(repo, out, stop, swap string) int {
 		for _, h := range []string{"pre-commit", "post-commit", "pre-push"} {
 			atomic(filepath.Join(gd, "hooks", h), script, 0o755)
 		}
-		_ = clock.Real{}.Sleep(context.Background(), 2*time.Millisecond)
+		if !tight {
+			_ = clock.Real{}.Sleep(context.Background(), 2*time.Millisecond)
+		}
 	}
 }
 
@@ -1200,6 +1221,9 @@ type testShim struct {
 	ops                                 []harnessOp
 	extraEnv                            map[string]string
 	resExtra                            map[string]any // S6a review: extra fields of every result file
+
+	// S6a review 2: extra fields of the result of request n only.
+	resExtraByN map[string]map[string]any
 
 	mu      sync.Mutex
 	handled map[string]bool
@@ -1353,6 +1377,9 @@ func (s *testShim) exec(ctx context.Context, dir, n string) {
 	for k, v := range s.resExtra {
 		resDoc[k] = v
 	}
+	for k, v := range s.resExtraByN[n] {
+		resDoc[k] = v
+	}
 	res, _ := json.Marshal(resDoc)
 	tmp := filepath.Join(dir, "res-"+n+".json.tmp")
 	if os.WriteFile(tmp, res, 0o644) == nil {
@@ -1384,6 +1411,8 @@ type gitSpec struct {
 	sleepLog  bool
 	// S6a review: extra fields that the test-owned shim writes into every result file.
 	shimResExtra map[string]any
+	// S6a review 2: extra fields of the result file of request n (key "2" is the first validation command).
+	shimResExtraByN map[string]map[string]any
 }
 
 type gitRun struct {
@@ -1490,7 +1519,7 @@ func runGit(t *testing.T, sp gitSpec) *gitRun {
 		gr.startRealShim(t, exe, dirs, gw.URL, mode, sp.ops, extra)
 	} else {
 		gr.shim = &testShim{ws: dirs["workspace"], hsecrets: dirs["harness-secrets"], home: dirs["home"], tmp: dirs["tmp"],
-			gatewayURL: gw.URL, mode: mode, ops: sp.ops, extraEnv: extra, resExtra: sp.shimResExtra}
+			gatewayURL: gw.URL, mode: mode, ops: sp.ops, extraEnv: extra, resExtra: sp.shimResExtra, resExtraByN: sp.shimResExtraByN}
 		shimCtx, cancel := context.WithCancel(context.Background())
 		gr.cancelShim = cancel
 		gr.shimDone = make(chan struct{})
