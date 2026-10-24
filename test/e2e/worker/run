@@ -1,0 +1,765 @@
+#!/usr/bin/env bash
+# Tier-E container-level evidence for F07 (brief D3 "Layer 2"; plan 27 section 22, plan 28 sections 13.1 and 22).
+# Never a red target and NOT part of VERIFY_TARGETS (brief D4). Two modes, called by the mk targets:
+#
+#   test/e2e/worker/run image-test <image>   make harness-image-test IMAGE=harness-fake        (28-AC-3)
+#   test/e2e/worker/run component            make test-worker-component                       (27-AC-1, 27-AC-5,
+#                                            27-AC-16, 27-AC-24, 27-AC-8 over real ssh, 27-AC-6, plan 27 Q3, 28-AC-7)
+#
+# MK TARGETS (mk/worker.mk, tier E, NOT in VERIFY_TARGETS; both only call this script, from the repository root)
+#   harness-image-test:    test/e2e/worker/run image-test $(IMAGE)      IMAGE is required, e.g. IMAGE=harness-fake
+#   test-worker-component: test/e2e/worker/run component
+#   Both inherit SC_ENGINE from the environment. They run on the host (the script drives the container engine itself and
+#   starts the ci image through ./bootstrap), so like `make toolbox` they must NOT be re-executed in the ci image: the
+#   Makefile needs a host-only branch for these two goals (a pinned Go test checks `make -n` prints the script call).
+#
+# ENVIRONMENT
+#   SC_ENGINE        docker | podman (default podman). Rootless podman is the reference; docker works the same way.
+#   SC_L2_STRACE     "required" (default): the 27-AC-24 strace check must run, if the strace sidecar cannot attach the
+#                    run FAILS. "skip": the check is skipped with a loud GAP line and only the effect assertions run.
+#   SC_L2_ALLOWLIST  override of the allowlist path (default harnesses/<label strange.company/harness>/allowed-packages.txt).
+#   SC_HARNESS_IMAGE component mode only: an image reference to use instead of building harness-fake (local debugging).
+#   SC_L2_SKIP_GOTEST=1  local debugging only: skip the 27-AC-1 go test run (prints a GAP line).
+#   SC_L2_KEEP=1     keep containers, volumes and the temp dir for debugging.
+#
+# INTERFACE EXPECTED FROM THE IMPLEMENTER (this script is the contract; the mk targets only call it)
+#   <image> is either a bare image name `harness-<name>` (the mk target passes IMAGE=harness-fake) or a full image
+#   reference (contains one of / : @), which is used as is (pulled when it is not local).
+#   * A bare name makes THIS script build the image: `$ENGINE build -f harnesses/<name>/Containerfile
+#     --build-arg SC_INPUTS_ID=<HEAD sha> -t localhost/strange-company-harness-<name>:l2 <repository root>`, so
+#     harnesses/fake/Containerfile must build with the repository root as context (no other argument needed). An
+#     ARG SC_INPUTS_ID with a default is allowed and may feed the revision label.
+#   * The image has USER 65532:65532 and contains: /usr/local/bin/sc-worker, /usr/local/bin/sc-fake-harness, git,
+#     ssh, /bin/sh, make, find, tar-free runtime utilities of a Debian base (sh, cat, grep, sleep, ln, rm, id), and
+#     /workspace, /home/worker, /tmp (the script mounts tmpfs/volumes owned by 65532 there). Entrypoint and CMD are
+#     irrelevant: the script always passes --entrypoint.
+#   * Labels (28 section 13.1): strange.company/harness (= "fake" for harness-fake), strange.company/cli-version
+#     (non-empty; for the fake it is the version of the fake harness), strange.company/sc-worker-version (non-empty),
+#     org.opencontainers.image.source and org.opencontainers.image.revision (non-empty).
+#   * Package list for the SBOM check: /var/lib/dpkg/status (read from the image file system, never run), or when the
+#     dpkg database was removed, /usr/share/strange-company/packages.txt (one package name per line). Every package
+#     must be in harnesses/fake/allowed-packages.txt (one name per line, # comments, blank lines ignored; the path maps
+#     plan 28's images/harness-fake/allowed-packages.txt under brief D2) and none may match the 13.1 denylist.
+#   * apt-get/apt/dpkg are absent or fail when run as 65532 on the read-only root.
+#   Not checkable here (no tooling in the ci image): `trivy fs --scanners secret`, `skopeo inspect`, cosign (plan 23's
+#   trusted CI). Substitute: a listing check for credential-looking files and sockets in the image.
+#
+# WHAT THE COMPONENT MODE DOES
+#   1. 27-AC-1: `go test` of the worker packages in the ci image with --network none (no module download possible).
+#   2. Compiles the Layer-1 helper binary (src/internal/worker/layer2_infra_test.go: fixture, packets, stub Runner and
+#      Gateway) and starts the infra container (test/e2e/worker/tools image: debian digest of toolbox/tools.lock.yaml +
+#      openssh-server + strace) on a private network under the names forgejo-ssh.forgejo.svc.cluster.local,
+#      agent-runner.strange-company.svc.cluster.local and model-gateway.strange-company.svc.cluster.local.
+#   3. Per case it runs two containers from the ONE image under test, both uid 65532, --read-only, tmpfs home/tmp:
+#        harness   `sc-worker shim`    mounts /workspace and /var/run/sc/harness-secrets ONLY
+#        sc-worker `sc-worker run`     mounts /workspace, /var/run/sc/secrets, tmpfs /var/sc/private
+#      (27-R-2). Both get a separate cgroup namespace view of the host (--cgroupns host, see 27-AC-16 below).
+#   Cases: success (real-ssh tester run), plant-claim / plant-hooks / plant-notes (27-AC-24, under strace), ignore-cancel
+#   (SIGTERM path).
+#
+# NOTES ON THE EVIDENCE (read before judging a PASS)
+#   27-AC-5 files: secrets are bind-mounted as flat regular files. A real kubelet secret volume holds the same files
+#     below ..<timestamp>/ plus ..data and per-file symlinks; `find -type f` over that layout also lists
+#     ..<timestamp>/<name> paths. The AC says "contains only /var/run/sc/harness-secrets/{gateway-token,egress-token}",
+#     which is only literally true for the flat layout used here, so this check proves "no other file" and cannot prove
+#     the K8s projection layout. Plan 26's Job builder must either mount with subPath or the AC text must be amended.
+#   27-AC-16 cgroup: with the default private cgroup namespace both containers report 0::/ . The check therefore runs
+#     both with --cgroupns host (as a pod's containers differ in the host cgroup tree).
+#   27-AC-24 strace: a sidecar from the tools image (--pid container:<sc-worker>, CAP_SYS_PTRACE) attaches to PID 1 of
+#     the sc-worker container while it waits on a gate file, then releases it, so strace -f -y sees every file system
+#     call of sc-worker, git and ssh. The rule: no successful open-family call that names a planted path below
+#     /workspace may resolve (the -y fd path of the result) outside /workspace, and the trace must show that the planted
+#     path was examined at all. If the sidecar cannot attach (ptrace_scope, seccomp, rootless limits) the run fails
+#     unless SC_L2_STRACE=skip. The effect assertions (nothing pushed, result, events, no secret in output) always run.
+# shellcheck disable=SC2016,SC2015 # single-quoted scripts run inside containers; A && B || C is used for PASS/FAIL reporting
+set -euo pipefail
+
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+REPO=$(cd "$HERE/../../.." && pwd)
+ENGINE=${SC_ENGINE:-podman}
+STRACE_MODE=${SC_L2_STRACE:-required}
+RUN_ID=$$
+PREFIX=scl2-$RUN_ID
+NET=$PREFIX-net
+INFRA=$PREFIX-infra
+OUTDIR=$REPO/out/worker-l2
+TMP=
+FAILS=0
+PASSES=0
+CONTAINERS=()
+VOLUMES=()
+NETWORKS=()
+IMG=
+TOOLS_IMG=
+
+PRELUDE_DEBIAN_DIGEST=sha256:918311b7b6c4c6f68b232ba516584925f6c78ad82b6fd534b98979df6438e483
+
+# ---------------------------------------------------------------------------------------------------------------
+# output and bookkeeping
+
+pass() { PASSES=$((PASSES + 1)); printf 'PASS: %s\n' "$*"; }
+fail() { FAILS=$((FAILS + 1)); printf 'FAIL: %s\n' "$*"; }
+note() { printf '      %s\n' "$*"; }
+gap() { printf 'GAP:  %s\n' "$*"; }
+# expect NAME: runs the rest of the arguments as a command and records PASS or FAIL.
+expect() {
+	local name=$1
+	shift
+	if "$@" >/dev/null 2>&1; then pass "$name"; else fail "$name"; fi
+}
+expect_eq() { # NAME WANT GOT
+	if [ "$2" = "$3" ]; then pass "$1"; else
+		fail "$1 (want '$2', got '$3')"
+	fi
+}
+die() {
+	printf 'FAIL: %s\n' "$*" >&2
+	exit 1
+}
+
+# Rootless podman without a systemd user session (CI runners, ssh logins) cannot create build containers with the systemd
+# cgroup manager; the toolbox wrapper falls back to cgroupfs in the same situation.
+ENG_ARGS=()
+if [ "$ENGINE" = podman ] && [ ! -S "${XDG_RUNTIME_DIR:-/nonexistent}/bus" ]; then ENG_ARGS=(--cgroup-manager=cgroupfs); fi
+# tmpfs owned by the container user: podman chowns with the U option, docker takes uid= and gid=
+case $ENGINE in podman) TMPFS_OWN=U ;; *) TMPFS_OWN=uid=65532,gid=65532 ;; esac
+eng() { "$ENGINE" "${ENG_ARGS[@]}" "$@"; }
+infra() { eng exec -i "$INFRA" "$@"; }
+
+cleanup() {
+	local rc=$?
+	if [ "${SC_L2_KEEP:-}" = 1 ]; then
+		printf 'SC_L2_KEEP=1: leaving containers %s and temp dir %s\n' "${CONTAINERS[*]:-}" "$TMP" >&2
+		exit "$rc"
+	fi
+	local i
+	for ((i = ${#CONTAINERS[@]} - 1; i >= 0; i--)); do eng rm -f -v "${CONTAINERS[i]}" >/dev/null 2>&1 || true; done
+	for ((i = ${#VOLUMES[@]} - 1; i >= 0; i--)); do eng volume rm -f "${VOLUMES[i]}" >/dev/null 2>&1 || true; done
+	for ((i = ${#NETWORKS[@]} - 1; i >= 0; i--)); do eng network rm -f "${NETWORKS[i]}" >/dev/null 2>&1 || true; done
+	[ -z "$TMP" ] || rm -rf "$TMP"
+	exit "$rc"
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM
+
+track_c() { CONTAINERS+=("$1"); }
+track_v() { VOLUMES+=("$1"); }
+
+summary() {
+	printf '\n%s: %d passed, %d failed\n' "$1" "$PASSES" "$FAILS"
+	[ "$FAILS" -eq 0 ]
+}
+
+random_token() { printf '%s-%s' "$1" "$(od -An -N18 -tx1 /dev/urandom | tr -d ' \n')"; }
+
+# ---------------------------------------------------------------------------------------------------------------
+# images
+
+lock_value() { sed -n "$1" "$REPO/toolbox/tools.lock.yaml" | head -n 1; }
+
+check_pins() {
+	local lock_digest
+	lock_digest=$(lock_value 's/^    debian: {ref: [^,]*, digest: "\(sha256:[0-9a-f]*\)"}.*/\1/p')
+	expect_eq "pin: the debian digest of toolbox/tools.lock.yaml is the one this script and tools/Containerfile use" \
+		"$PRELUDE_DEBIAN_DIGEST" "$lock_digest"
+}
+
+build_tools_image() {
+	local snap id
+	snap=$(lock_value 's/^  debianSnapshot: *\([0-9TZ]*\).*/\1/p')
+	[ -n "$snap" ] || die "no debianSnapshot in toolbox/tools.lock.yaml"
+	id=$(sha256sum <"$HERE/tools/Containerfile" | cut -c1-12)
+	TOOLS_IMG=localhost/strange-company-l2-tools:$id-$snap
+	if ! eng image inspect "$TOOLS_IMG" >/dev/null 2>&1; then
+		echo "building $TOOLS_IMG (debian snapshot $snap)"
+		eng build -q -f "$HERE/tools/Containerfile" --build-arg "DEBIAN_SNAPSHOT=$snap" -t "$TOOLS_IMG" "$HERE/tools" >/dev/null ||
+			die "the tools image did not build"
+	fi
+}
+
+# resolve_image ARG: sets IMG (and builds or pulls it).
+resolve_image() {
+	local arg=$1 name dir
+	case $arg in
+	*/* | *:* | *@*)
+		IMG=$arg
+		eng image inspect "$IMG" >/dev/null 2>&1 || eng pull -q "$IMG" >/dev/null || die "cannot pull $IMG"
+		;;
+	harness-*)
+		name=${arg#harness-}
+		dir=$REPO/harnesses/$name
+		[ -f "$dir/Containerfile" ] || die "harnesses/$name/Containerfile does not exist"
+		IMG=localhost/strange-company-harness-$name:l2
+		echo "building $IMG from harnesses/$name/Containerfile"
+		eng build -f "$dir/Containerfile" --build-arg "SC_INPUTS_ID=$(git -C "$REPO" rev-parse HEAD)" -t "$IMG" "$REPO" ||
+			die "the image did not build"
+		;;
+	*) die "image '$arg' is neither harness-<name> nor an image reference" ;;
+	esac
+}
+
+# base run flags of a container from the image under test (27 section 11, 28 section 13.1)
+image_flags() {
+	printf '%s\n' --read-only --user 65532:65532 --cap-drop ALL --security-opt no-new-privileges --security-opt label=disable \
+		--tmpfs /home/worker:rw,nosuid,nodev,$TMPFS_OWN,mode=0700,size=64m \
+		--tmpfs /tmp:rw,nosuid,nodev,$TMPFS_OWN,mode=1777,size=64m
+}
+
+# ---------------------------------------------------------------------------------------------------------------
+# mode image-test (28-AC-3)
+
+image_test() {
+	local ref=$1 ctr user out bad listing
+	resolve_image "$ref"
+	echo "== harness-image-test: $IMG"
+	check_pins
+	local -a flags
+	mapfile -t flags < <(image_flags)
+
+	# runs as uid 65532 (image default and explicit)
+	user=$(eng image inspect --format '{{.Config.User}}' "$IMG")
+	expect_eq "28-AC-3 image USER is 65532:65532" "65532:65532" "$user"
+	out=$(eng run --rm --entrypoint id "$IMG" -u 2>&1 || true)
+	expect_eq "28-AC-3 a container started without --user runs as uid 65532" 65532 "$out"
+
+	# 13.1 labels
+	local lab
+	for lab in strange.company/harness strange.company/cli-version strange.company/sc-worker-version \
+		org.opencontainers.image.source org.opencontainers.image.revision; do
+		out=$(eng image inspect --format "{{index .Config.Labels \"$lab\"}}" "$IMG" 2>/dev/null || true)
+		case $out in "" | "<no value>") fail "28-AC-3 label $lab is missing or empty" ;; *) pass "28-AC-3 label $lab = $out" ;; esac
+	done
+	out=$(eng image inspect --format '{{index .Config.Labels "strange.company/harness"}}' "$IMG" 2>/dev/null || true)
+	case $ref in
+	harness-*) expect_eq "28-AC-3 label strange.company/harness names the harness" "${ref#harness-}" "${out}" ;;
+	esac
+
+	# read-only root, uid 65532: sc-worker selftest exits 0
+	if eng run --rm "${flags[@]}" --tmpfs /workspace:rw,nosuid,nodev,$TMPFS_OWN,mode=0755,size=64m \
+		--entrypoint /usr/local/bin/sc-worker "$IMG" selftest >"$TMP/selftest.out" 2>&1; then
+		pass "28-AC-3 read-only, uid 65532: sc-worker selftest exits 0 ($(tr -d '\n' <"$TMP/selftest.out"))"
+	else
+		fail "28-AC-3 sc-worker selftest exits non-zero: $(tr '\n' ' ' <"$TMP/selftest.out")"
+	fi
+	# the selftest must be able to fail: without the tmpfs mounts the writable directories are read-only
+	if eng run --rm --read-only --user 65532:65532 --cap-drop ALL --entrypoint /usr/local/bin/sc-worker "$IMG" selftest \
+		>/dev/null 2>&1; then
+		fail "28-AC-3 control: selftest passed although /workspace, /home/worker and /tmp are not writable"
+	else
+		pass "28-AC-3 control: selftest fails when the writable directories are not mounted"
+	fi
+
+	# no setuid/setgid files (28 section 13.1)
+	out=$(eng run --rm "${flags[@]}" --entrypoint find "$IMG" / -xdev -perm /6000 -type f 2>/dev/null || true)
+	if [ -z "$out" ]; then pass "28-AC-3 find / -xdev -perm /6000 -type f is empty"; else fail "28-AC-3 setuid/setgid files: $(echo "$out" | tr '\n' ' ')"; fi
+
+	# programs: sc-worker, the fake harness, git, ssh, sh, make
+	if eng run --rm "${flags[@]}" --entrypoint sh "$IMG" -c \
+		'for c in sc-worker sc-fake-harness git ssh sh make find; do command -v "$c" >/dev/null || { echo "missing $c"; exit 1; }; done' \
+		>"$TMP/prog.out" 2>&1; then
+		pass "28-AC-3 contents: sc-worker, sc-fake-harness, git, ssh, sh, make are on PATH"
+	else
+		fail "28-AC-3 contents: $(cat "$TMP/prog.out")"
+	fi
+
+	# no package manager usable at run time
+	if eng run --rm "${flags[@]}" --entrypoint sh "$IMG" -c \
+		'for p in apt-get apt dpkg; do if command -v "$p" >/dev/null 2>&1; then "$p" --help >/dev/null 2>&1 && case $p in dpkg) dpkg -i /nonexistent.deb >/dev/null 2>&1 && exit 1;; *) "$p" install -y --no-download zzz-none >/dev/null 2>&1 && exit 1;; esac; fi; done; exit 0' \
+		>/dev/null 2>&1; then
+		pass "28-AC-3 no package manager is usable at run time (absent or failing as 65532 on the read-only root)"
+	else
+		fail "28-AC-3 a package manager works at run time"
+	fi
+
+	# SBOM: the package list against the allowlist, and the 13.1 denylist
+	ctr=$PREFIX-export
+	eng create --name "$ctr" "$IMG" /bin/true >/dev/null || die "cannot create a container to read the image"
+	track_c "$ctr"
+	local pkgs=$TMP/packages.txt
+	if eng cp "$ctr:/var/lib/dpkg/status" - 2>/dev/null | tar -xO 2>/dev/null |
+		awk 'BEGIN{RS="";FS="\n"} {p="";s=""; for(i=1;i<=NF;i++){ if($i ~ /^Package: /) p=substr($i,10); if($i ~ /^Status: /) s=$i } if(p!="" && s ~ / installed$/ && s !~ /not-installed/) print p}' >"$pkgs" &&
+		[ -s "$pkgs" ]; then
+		note "package list: /var/lib/dpkg/status ($(wc -l <"$pkgs") packages)"
+	elif eng cp "$ctr:/usr/share/strange-company/packages.txt" - 2>/dev/null | tar -xO 2>/dev/null >"$pkgs" && [ -s "$pkgs" ]; then
+		note "package list: /usr/share/strange-company/packages.txt ($(wc -l <"$pkgs") packages)"
+	else
+		fail "28-AC-3 the image has neither /var/lib/dpkg/status nor /usr/share/strange-company/packages.txt (no package list)"
+		: >"$pkgs"
+	fi
+	local hname allow
+	hname=$(eng image inspect --format '{{index .Config.Labels "strange.company/harness"}}' "$IMG" 2>/dev/null || true)
+	case $hname in "" | "<no value>") hname=${ref#harness-} ;; esac
+	allow=${SC_L2_ALLOWLIST:-$REPO/harnesses/$hname/allowed-packages.txt}
+	if [ -f "$allow" ]; then
+		grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' "$allow" | tr -d ' \t' | sort -u >"$TMP/allow.txt" || true
+		sort -u "$pkgs" | comm -23 - "$TMP/allow.txt" >"$TMP/notallowed.txt"
+		if [ -s "$TMP/notallowed.txt" ]; then
+			fail "28-AC-3 SBOM has packages outside $allow: $(tr '\n' ' ' <"$TMP/notallowed.txt")"
+		else
+			pass "28-AC-3 SBOM is within the allowlist"
+		fi
+	else
+		fail "28-AC-3 $allow does not exist"
+	fi
+	local deny='^(docker|docker\.io|docker-ce.*|docker-cli|docker-compose.*|podman.*|containerd.*|runc|crun|buildah|skopeo|nerdctl|cri-tools|crictl|kubectl|kubernetes-client|awscli|google-cloud-.*|google-cloud-cli|azure-cli|oc)$'
+	if grep -E "$deny" "$pkgs" >"$TMP/denied.txt" && [ -s "$TMP/denied.txt" ]; then
+		fail "28-AC-3 denylisted packages installed: $(tr '\n' ' ' <"$TMP/denied.txt")"
+	else
+		pass "28-AC-3 no Docker/podman/containerd/kubectl/cloud-CLI package"
+	fi
+
+	# denylist and credential look-alikes by file listing (substitute for trivy, see header)
+	listing=$TMP/listing.txt
+	eng export "$ctr" | tar -t >"$listing" 2>/dev/null || true
+	if [ ! -s "$listing" ]; then fail "28-AC-3 could not list the image file system"; fi
+	bad=$(grep -E '(^|/)(docker|podman|containerd|ctr|runc|crun|kubectl|crictl|nerdctl|skopeo|aws|gcloud|az)$' "$listing" |
+		grep -E '(^|/)(usr/(local/)?)?(s?bin|opt/[^/]+/bin)/' || true)
+	if [ -z "$bad" ]; then pass "28-AC-3 no container client, kubectl or cloud CLI binary in a bin directory"; else fail "28-AC-3 denylisted binaries: $(echo "$bad" | tr '\n' ' ')"; fi
+	bad=$(grep -E '(docker|containerd|podman|crio)\.sock$|(^|/)(\.docker/config\.json|\.kube/config|\.aws/credentials|\.ssh/id_[a-z0-9]+|id_(rsa|ed25519|ecdsa)|[^/]*\.pem|[^/]*\.key)$' "$listing" |
+		grep -v -e '^etc/ssl/' -e '^usr/share/ca-certificates' -e '^etc/ca-certificates' -e '^usr/lib/ssl' -e '^usr/share/doc' || true)
+	if [ -z "$bad" ]; then pass "28-AC-3 no socket or credential-looking file in the image"; else fail "28-AC-3 credential look-alikes: $(echo "$bad" | tr '\n' ' ')"; fi
+	bad=$(grep -E '^(var/run/sc|var/sc|workspace|home/worker)/.' "$listing" || true)
+	if [ -z "$bad" ]; then pass "28-AC-3 the image ships nothing below /var/run/sc, /var/sc, /workspace, /home/worker"; else fail "28-AC-3 unexpected content: $(echo "$bad" | tr '\n' ' ')"; fi
+	summary "harness-image-test $ref"
+}
+
+# ---------------------------------------------------------------------------------------------------------------
+# mode component
+
+offline_go_tests() { # 27-AC-1 and the helper binary
+	mkdir -p "$OUTDIR"
+	echo "== 27-AC-1: go test in the ci image with --network none"
+	local envs="export GOFLAGS=-mod=readonly GOPROXY=off GOTOOLCHAIN=local GOCACHE=$REPO/.cache/go/build GOMODCACHE=$REPO/.cache/go/mod"
+	if [ "${SC_L2_SKIP_GOTEST:-}" = 1 ]; then
+		gap "27-AC-1 go test skipped (SC_L2_SKIP_GOTEST=1, local debugging only)"
+	elif (cd "$REPO" && ./bootstrap --engine "$ENGINE" exec --image ci --network none -- sh -c \
+		"$envs; cd src && go test -count=1 -timeout 20m ./internal/worker/... ./internal/scrub/... ./cmd/sc-worker/... ./cmd/sc-fake-harness/..."); then
+		pass "27-AC-1 go test of the worker, scrub, sc-worker and sc-fake-harness packages passes with --network none"
+	else
+		fail "27-AC-1 go test with --network none failed"
+	fi
+	if (cd "$REPO" && ./bootstrap --engine "$ENGINE" exec --image ci --network none -- sh -c \
+		"$envs; cd src && CGO_ENABLED=0 go test -c -o $OUTDIR/worker.test ./internal/worker"); then
+		pass "the Layer-1 helper binary compiled offline ($OUTDIR/worker.test)"
+	else
+		die "cannot compile the helper binary"
+	fi
+}
+
+start_infra() {
+	NETWORKS+=("$NET")
+	eng network create "$NET" >/dev/null || die "cannot create the network"
+	build_tools_image
+	TASK_TOKEN=$(random_token tt)
+	GW_TOKEN=$(random_token gw)
+	EG_TOKEN=$(random_token eg)
+	track_c "$INFRA"
+	eng run -d --name "$INFRA" --network "$NET" \
+		--network-alias forgejo-ssh.forgejo.svc.cluster.local \
+		--network-alias agent-runner.strange-company.svc.cluster.local \
+		--network-alias model-gateway.strange-company.svc.cluster.local \
+		--security-opt label=disable \
+		-e "SC_L2_TASK_TOKEN=$TASK_TOKEN" \
+		-v "$REPO:/repo:ro" -v "$HERE/tools:/opt/l2:ro" -v "$OUTDIR/worker.test:/opt/l2-bin/worker.test:ro" \
+		--entrypoint sh "$TOOLS_IMG" /opt/l2/entry.sh >/dev/null || die "cannot start the infra container"
+	local i
+	for ((i = 0; i < 150; i++)); do
+		if infra test -e /state/ready 2>/dev/null && infra ssh-keyscan -T 2 127.0.0.1 2>/dev/null | grep -q ssh-ed25519; then break; fi
+		sleep 0.4
+	done
+	if ! infra test -e /state/ready 2>/dev/null; then
+		eng logs "$INFRA" 2>&1 | tail -n 20
+		die "the infra container did not become ready"
+	fi
+	pass "infra container ready: sshd serving sc-e2e/fake-target.git on forgejo-ssh.forgejo.svc.cluster.local:22, stub Runner :8082, stub Gateway :8080"
+	BASE_COMMIT=$(infra cat /state/base-commit.txt | tr -d '\n')
+
+	# secrets of the sc-worker container (27 section 3) and of the harness container (27-R-2)
+	SEC=$TMP/secrets
+	HSEC=$TMP/harness-secrets
+	mkdir -p "$SEC" "$HSEC"
+	printf '%s' "$TASK_TOKEN" >"$SEC/task-token"
+	printf '%s' "$GW_TOKEN" >"$SEC/gateway-token"
+	printf '%s' "$EG_TOKEN" >"$SEC/egress-token"
+	infra cat /state/deploy-key >"$SEC/deploy-key"
+	infra cat /state/known_hosts >"$SEC/known_hosts"
+	printf '%s' "$GW_TOKEN" >"$HSEC/gateway-token"
+	printf '%s' "$EG_TOKEN" >"$HSEC/egress-token"
+	# 0444: the uid 65532 in the container must read host-owned bind mounts (a kubelet projects 0440 plus fsGroup)
+	chmod 0755 "$SEC" "$HSEC"
+	chmod 0444 "$SEC"/* "$HSEC"/*
+}
+
+stub() { infra curl -fsS "$@"; }
+stub_reset() { stub -X POST "http://127.0.0.1:8082/_l2/reset?case=$1" >/dev/null; }
+stub_state() { stub http://127.0.0.1:8082/_l2/state; }
+jqs() { infra jq "$@"; } # reads stdin
+reset_fixture() { infra sh -c 'rm -rf /sc-e2e && mkdir -p /sc-e2e && cp -a /state/fixture/sc-e2e/. /sc-e2e/ && chown -R git:git /sc-e2e'; }
+gitr() { infra git -c safe.directory='*' -C /sc-e2e/fake-target.git "$@"; }
+refs_digest() { gitr for-each-ref --format='%(refname) %(objectname)' | sha256sum | cut -d' ' -f1; }
+
+# true when two containers of this engine get different /proc/self/cgroup paths with --cgroupns host
+cgroups_distinguish() {
+	local a b
+	a=$(eng run --rm --cgroupns host --security-opt label=disable --entrypoint cat "$TOOLS_IMG" /proc/self/cgroup 2>/dev/null || true)
+	b=$(eng run --rm --cgroupns host --security-opt label=disable --entrypoint cat "$TOOLS_IMG" /proc/self/cgroup 2>/dev/null || true)
+	[ -n "$a" ] && [ "$a" != "$b" ]
+}
+
+# a throwaway container of the tools image with the case's workspace volume mounted read-only
+ws_cat() { eng run --rm --security-opt label=disable --user 65532:65532 -v "$WS:/workspace:ro" --entrypoint cat "$TOOLS_IMG" "/workspace/$1"; }
+ws_sh() { eng run --rm --security-opt label=disable --user 65532:65532 -v "$WS:/workspace:ro" --entrypoint sh "$TOOLS_IMG" -c "$1"; }
+
+# run_case NAME CASE PLANT TRACE: leaves $WS, $CASE_RC, $TMP/NAME.stdout and the stub state ready for assertions.
+run_case() {
+	local name=$1 case=$2 plant=$3 trace=$4
+	local cn=$PREFIX-$name
+	H=$cn-harness
+	W=$cn-worker
+	T=$cn-tracer
+	WS=$cn-ws
+	CASE_NAME=$name
+	echo
+	echo "== case $name (scenario packet '$case', plant '$plant', strace '$trace')"
+	reset_fixture
+	stub_reset "$case"
+	REFS_BEFORE=$(refs_digest)
+	eng volume create "$WS" >/dev/null
+	track_v "$WS"
+	eng run --rm --security-opt label=disable --user 0:0 -v "$WS:/w" --entrypoint chown "$TOOLS_IMG" 65532:65532 /w >/dev/null
+
+	local -a flags hmounts
+	mapfile -t flags < <(image_flags)
+	hmounts=()
+	if [ "$plant" != none ]; then
+		local pdir=$TMP/plant-$name
+		mkdir -p "$pdir"
+		sed "s/@MODE@/$plant/" "$HERE/tools/plant-harness.sh" >"$pdir/sc-fake-harness"
+		chmod 0755 "$pdir" "$pdir/sc-fake-harness"
+		local real=$TMP/sc-fake-harness-real
+		if [ ! -f "$real" ]; then
+			local c=$PREFIX-cp
+			eng create --name "$c" "$IMG" /bin/true >/dev/null
+			eng cp "$c:/usr/local/bin/sc-fake-harness" "$real" >/dev/null
+			eng rm -f "$c" >/dev/null
+			chmod 0755 "$real"
+		fi
+		hmounts=(-v "$pdir/sc-fake-harness:/usr/local/bin/sc-fake-harness:ro" -v "$real:/opt/l2/sc-fake-harness-real:ro")
+	fi
+	local -a podenv=(-e HOME=/home/worker -e TMPDIR=/tmp -e SC_WORKSPACE=/workspace
+		-e SC_RUNNER_URL=http://agent-runner.strange-company.svc.cluster.local:8082 -e SC_TASK_ID=sc-1 -e SC_EXECUTION_ID=sc-1-x1
+		-e KUBERNETES_SERVICE_HOST=10.96.0.1 -e KUBERNETES_SERVICE_PORT=443)
+
+	track_c "$H"
+	eng run -d --name "$H" --network "$NET" --cgroupns host "${flags[@]}" "${podenv[@]}" \
+		-v "$WS:/workspace" -v "$HSEC:/var/run/sc/harness-secrets:ro" "${hmounts[@]}" \
+		--entrypoint /usr/local/bin/sc-worker "$IMG" shim >/dev/null || die "cannot start the harness container"
+
+	local gate=
+	[ "$trace" = 1 ] && gate=/workspace/.l2-go
+	local boot='printf "cgroup=%s\nhost=%s\nmntns=%s\nrunsc=%s\n" "$(tr "\n" " " </proc/self/cgroup)" "$(cat /etc/hostname)" "$(readlink /proc/self/ns/mnt)" "$(ls /var/run/sc | tr "\n" ",")" > /workspace/.worker-id; if [ -n "$L2_GATE" ]; then while [ ! -e "$L2_GATE" ]; do sleep 0.05; done; fi; exec /usr/local/bin/sc-worker run'
+	track_c "$W"
+	eng run -d --name "$W" --network "$NET" --cgroupns host "${flags[@]}" "${podenv[@]}" \
+		--tmpfs /var/sc/private:rw,nosuid,nodev,$TMPFS_OWN,mode=0700,size=64m \
+		-e SC_SECRETS_DIR=/var/run/sc/secrets -e "L2_GATE=$gate" \
+		-v "$WS:/workspace" -v "$SEC:/var/run/sc/secrets:ro" \
+		--entrypoint sh "$IMG" -c "$boot" >/dev/null || die "cannot start the sc-worker container"
+
+	TRACE_OK=0
+	if [ "$trace" = 1 ]; then
+		track_c "$T"
+		eng run -d --name "$T" --pid "container:$W" --network none --cap-add SYS_PTRACE --security-opt label=disable \
+			-v "$WS:/workspace" --entrypoint sh "$TOOLS_IMG" -c '
+set -eu
+strace -f -qq -y -s 400 -e trace=%file,openat2 -o /tmp/trace.log -p 1 &
+sp=$!
+i=0
+while ! grep -q "^TracerPid:[[:space:]]*[1-9]" /proc/1/status; do
+	i=$((i + 1)); [ "$i" -lt 100 ] || { echo "attach-failed" >&2; kill $sp 2>/dev/null; exit 3; }
+	sleep 0.1
+done
+touch /workspace/.l2-go
+wait $sp' >/dev/null || die "cannot start the strace sidecar"
+	fi
+
+	CASE_RC=$(timeout 400 "$ENGINE" "${ENG_ARGS[@]}" wait "$W" 2>/dev/null || echo timeout)
+	eng logs "$W" >"$TMP/$name.stdout" 2>"$TMP/$name.stderr" || true
+	if [ "$trace" = 1 ]; then
+		timeout 60 "$ENGINE" "${ENG_ARGS[@]}" wait "$T" >"$TMP/$name.tracer.rc" 2>/dev/null || true
+		eng logs "$T" >"$TMP/$name.tracer.log" 2>&1 || true
+		if eng cp "$T:/tmp/trace.log" "$TMP/$name.trace" >/dev/null 2>&1 && [ -s "$TMP/$name.trace" ]; then TRACE_OK=1; fi
+	fi
+	STATE=$(stub_state)
+}
+
+end_case() {
+	eng rm -f -v "$H" "$W" "$T" >/dev/null 2>&1 || true
+	eng volume rm -f "$WS" >/dev/null 2>&1 || true
+}
+
+result_field() { printf '%s' "$STATE" | jqs -r "$1"; }
+
+# 27-AC-24 strace rule over $TMP/NAME.trace; arguments: NAME PLANT-REGEX (matched against the absolute path).
+# For every file system call whose path (absolute, or relative to the dirfd that -y prints as FD<path>) is below /workspace
+# and names the planted path: the call is "seen"; an open-family call that succeeded must resolve (the -y path of the
+# returned fd) to a path below /workspace, otherwise it followed the symlink out of the workspace.
+check_trace() {
+	local name=$1 plant=$2 tr=$TMP/$1.trace
+	if [ "$STRACE_MODE" = skip ]; then
+		gap "27-AC-24 strace check skipped (SC_L2_STRACE=skip): only the effect assertions below evidence '$name'"
+		return
+	fi
+	if [ "$TRACE_OK" != 1 ]; then
+		fail "27-AC-24 [$name] the strace sidecar produced no trace (tracer: $(tr '\n' ' ' <"$TMP/$name.tracer.log" 2>/dev/null | cut -c1-200)); ptrace across containers is not permitted here. Re-run with SC_L2_STRACE=skip to accept this gap."
+		return
+	fi
+	PLANT=$plant awk '
+function after(str, re,   t) { t = str; sub(re, "", t); return t }
+$0 !~ /^[0-9]+ +[a-z0-9_]+\(/ { next }
+{
+	sys = $0; sub(/^[0-9]+ +/, "", sys); sub(/\(.*/, "", sys)
+	dir = ""
+	if (match($0, /\([A-Z_0-9]+<[^>]*>/)) { d = substr($0, RSTART, RLENGTH); sub(/^\([A-Z_0-9]+</, "", d); sub(/>$/, "", d); dir = d }
+	path = ""
+	if (match($0, /"[^"]*"/)) path = substr($0, RSTART + 1, RLENGTH - 2)
+	if (path == "") next
+	full = (substr(path, 1, 1) == "/") ? path : dir "/" path
+	if (full !~ /^\/workspace\// || full !~ ENVIRON["PLANT"]) next
+	seen++
+	if (sys ~ /^(open|openat|openat2|creat)$/ && match($0, / = [0-9]+<[^>]*>$/)) {
+		r = substr($0, RSTART, RLENGTH); sub(/^ = [0-9]+</, "", r); sub(/>$/, "", r)
+		if (r !~ /^\/workspace(\/|$)/) print "VIOLATION " $0
+	}
+}
+END { print "SEEN " seen + 0 }' "$tr" >"$TMP/$name.trace.verdict"
+	local viol seen
+	viol=$(grep '^VIOLATION' "$TMP/$name.trace.verdict" || true)
+	seen=$(sed -n 's/^SEEN //p' "$TMP/$name.trace.verdict")
+	if [ -n "$viol" ]; then
+		fail "27-AC-24 [$name] an open resolved a planted symlink: $(echo "$viol" | head -n 3 | cut -c1-260)"
+	else
+		pass "27-AC-24 [$name] no open of the planted path resolved outside /workspace (strace -f -y: $seen calls examine it)"
+	fi
+	if [ "${seen:-0}" -lt 1 ]; then
+		fail "27-AC-24 [$name] the trace never shows a call on the planted path (vacuous): $plant"
+	fi
+}
+
+event_seen() { grep -F '"event":"'"$1"'"' "$TMP/$CASE_NAME.stdout" | grep -F -- "$2" >/dev/null; }
+
+case_success() {
+	run_case success success none 0
+		expect_eq "sc-worker exits 0 (result accepted) [success]" 0 "$CASE_RC"
+	expect_eq "stub Runner: exactly one result POST, no unauthorised call [success]" "1/0" "$(result_field '"\(.result_posts)/\(.bad_auth)"')"
+	expect_eq "stub Runner: result state completed [success]" completed "$(result_field '.result.state')"
+	expect_eq "27-R-2 the packet was fetched once with the Runner token [success]" 1 "$(result_field '.packet_gets')"
+	if [ "$(result_field '.gateway_requests')" -ge 1 ] 2>/dev/null; then pass "28-AC-7 the harness sent $(result_field '.gateway_requests') request(s) to SC_FAKE_GATEWAY_URL [success]"; else fail "28-AC-7 no request reached the stub Gateway [success]"; fi
+
+	# 27-AC-5 environment and mount isolation (real /var/run, /var/sc in the harness container)
+	local env files
+	env=$(ws_cat out/env.txt) && files=$(ws_cat out/files.txt) || { fail "27-AC-5 the fake harness wrote no out/env.txt or out/files.txt"; env=; files=; }
+	expect_eq "27-AC-5 SC_FAKE_GATEWAY_TOKEN carries the gateway token" "SC_FAKE_GATEWAY_TOKEN=$GW_TOKEN" "$(printf '%s\n' "$env" | grep '^SC_FAKE_GATEWAY_TOKEN=' || true)"
+	expect_eq "27-AC-5 HTTPS_PROXY carries the egress token" "HTTPS_PROXY=http://sc:$EG_TOKEN@egress-proxy.strange-company.svc.cluster.local:3128" "$(printf '%s\n' "$env" | grep '^HTTPS_PROXY=' || true)"
+	local v
+	for v in SC_RUNNER_URL SC_TASK_ID KUBERNETES_SERVICE_HOST; do
+		if printf '%s\n' "$env" | grep -q "^$v="; then fail "27-AC-5 the harness environment has $v (set in the harness container, must not be forwarded)"; else pass "27-AC-5 the harness environment has no $v"; fi
+	done
+	local keyline
+	keyline=$(sed -n 2p "$SEC/deploy-key")
+	if printf '%s\n%s\n' "$env" "$files" | grep -F -e "$TASK_TOKEN" -e "$keyline" >/dev/null; then fail "27-AC-5 the dump contains the Runner task-token or the deploy-key content"; else pass "27-AC-5 the dump contains neither the Runner task-token nor the deploy-key content"; fi
+	expect_eq "27-AC-5 find /var/run /var/sc -type f lists exactly the two harness-secret files (flat layout, see header; podman's own /run/.containerenv marker is ignored, anything else the image leaves below /run, such as /run/adduser of a Debian base, fails)" \
+		"/var/run/sc/harness-secrets/egress-token /var/run/sc/harness-secrets/gateway-token" "$(printf '%s\n' "$files" | grep -v -e '^$' -e '^/var/run/.containerenv$' | sort | tr '\n' ' ' | sed 's/ $//')"
+
+	# mount split 27-R-2, from the engine's view of the two containers
+	local hm wm
+	hm=$(eng inspect --format '{{range .Mounts}}{{.Destination}} {{end}}' "$H")
+	wm=$(eng inspect --format '{{range .Mounts}}{{.Destination}} {{end}}' "$W")
+	if [[ " $hm" == *" /var/run/sc/secrets "* || " $hm" == *" /var/sc/private "* ]]; then fail "27-R-2 the harness container mounts /var/run/sc/secrets or /var/sc/private ($hm)"; else pass "27-R-2 the harness container mounts neither /var/run/sc/secrets nor /var/sc/private"; fi
+	if [[ " $wm" == *" /var/run/sc/harness-secrets "* ]]; then fail "27-R-2 the sc-worker container mounts the harness secrets ($wm)"; else pass "27-R-2 the sc-worker container does not mount /var/run/sc/harness-secrets"; fi
+
+	# 27-AC-16 the validation command ran in the harness container, not in sc-worker's
+	local wid vid wg vg
+	wid=$(ws_cat .worker-id 2>/dev/null || true)
+	vid=$(ws_cat out/validation-id.txt 2>/dev/null || true)
+	if [ -z "$wid" ] || [ -z "$vid" ]; then fail "27-AC-16 no identity record (sc-worker '$wid', validation command '$vid')"; else
+		wg=$(printf '%s\n' "$wid" | sed -n 's/^cgroup=//p')
+		vg=$(printf '%s\n' "$vid" | sed -n 's/^cgroup=//p')
+		if [ "$wg" != "$vg" ]; then pass "27-AC-16 the validation command's /proc/self/cgroup differs from sc-worker's ($vg vs $wg)"
+		elif cgroups_distinguish; then fail "27-AC-16 the validation command has the same /proc/self/cgroup as sc-worker ($vg) although this engine gives containers distinct cgroups"
+		else gap "27-AC-16 cgroup: this engine gives every container the same cgroup path ($vg; rootless without cgroup delegation), so /proc/self/cgroup cannot differ here; the container identity checks below stand in for it"; fi
+		expect_eq "27-AC-16 the validation command's hostname differs from sc-worker's" differ "$([ "$(printf '%s\n' "$wid" | sed -n 's/^host=//p')" != "$(printf '%s\n' "$vid" | sed -n 's/^host=//p')" ] && echo differ || echo same)"
+		expect_eq "27-AC-16 the validation command's mount namespace differs from sc-worker's" differ "$([ "$(printf '%s\n' "$wid" | sed -n 's/^mntns=//p')" != "$(printf '%s\n' "$vid" | sed -n 's/^mntns=//p')" ] && echo differ || echo same)"
+		expect_eq "27-AC-16 the validation command sees only harness-secrets below /var/run/sc (sc-worker only secrets)" "harness-secrets,|secrets," "$(printf '%s\n' "$vid" | sed -n 's/^runsc=//p')|$(printf '%s\n' "$wid" | sed -n 's/^runsc=//p')"
+	fi
+	expect_eq "27-AC-16 the validation command succeeded in the result" "0" "$(result_field '.result.validation[0].exit_code')"
+
+	# 27-AC-8 commit checks over real ssh
+	local br=refs/heads/agent/sc-1 sha
+	sha=$(gitr rev-parse --verify -q "$br" || true)
+	if [ -z "$sha" ]; then fail "27-AC-8 branch agent/sc-1 was not pushed over ssh"; else
+		pass "27-AC-8 branch agent/sc-1 was pushed over real ssh (known_hosts, deploy key)"
+		expect_eq "27-AC-8 parent equals start_commit" "$BASE_COMMIT" "$(gitr rev-parse "$sha^")"
+		expect_eq "27-AC-8 author email equals git.commit.author_email" "sc-1-x1@agents.strange-company.invalid" "$(gitr log -1 --format=%ae "$sha")"
+		local subj
+		subj=$(gitr log -1 --format=%s "$sha")
+		if [[ $subj =~ ^test\(sc-1\):\ .{1,63}$ ]]; then pass "27-AC-8 subject matches ^test\\(sc-1\\): .{1,63}\$ ($subj)"; else fail "27-AC-8 subject '$subj'"; fi
+		expect_eq "27-AC-8 trailers are exactly SC-Task, SC-Execution, SC-Role, SC-Base with the packet values" \
+			"SC-Base: $BASE_COMMIT|SC-Execution: sc-1-x1|SC-Role: tester|SC-Task: sc-1" \
+			"$(gitr log -1 --format=%B "$sha" | infra git interpret-trailers --parse | sort | tr '\n' '|' | sed 's/|$//')"
+		local names
+		names=$(gitr show --name-only --format= "$sha")
+		if printf '%s\n' "$names" | grep -E '^context/|(^|/)INDEX\.md$|(^|/)task\.json$' >/dev/null; then fail "27-AC-6 the pushed commit lists context files: $names"; else pass "27-AC-6 the pushed commit lists no path under context/ and no INDEX.md or task.json"; fi
+	fi
+	local nonro
+	nonro=$(ws_sh 'n=0; for f in $(find /workspace/context -type f); do n=$((n+1)); [ "$(stat -c %a "$f")" = 444 ] || echo "$f"; done; [ "$n" -gt 0 ] || echo "no-context-files"' 2>&1 || true)
+	if [ -z "$nonro" ]; then pass "27-AC-6 every /workspace/context file has mode 0444"; else fail "27-AC-6 context files not 0444 (or none): $nonro"; fi
+
+	# plan 27 section 25 Q3 / section 10: OpenSSH rejects the group/world-readable key, the 0600 copy works
+	local ctl ctl6
+	local sshopts="-o IdentitiesOnly=yes -o UserKnownHostsFile=/var/run/sc/secrets/known_hosts -o StrictHostKeyChecking=yes -o BatchMode=yes"
+	# a key file owned by the current user with group read (0440) is rejected, its 0600 copy is accepted
+	ctl=$(eng run --rm --network "$NET" "${CTL_FLAGS[@]}" -v "$SEC:/var/run/sc/secrets:ro" --entrypoint sh "$IMG" -c \
+		"cp /var/run/sc/secrets/deploy-key /tmp/k && chmod 0440 /tmp/k && ssh -i /tmp/k $sshopts git@forgejo-ssh.forgejo.svc.cluster.local true" 2>&1 || true)
+	if printf '%s' "$ctl" | grep -q 'UNPROTECTED PRIVATE KEY FILE'; then pass "plan 27 Q3 control: ssh rejects a 0440 deploy key owned by the current user (UNPROTECTED PRIVATE KEY FILE)"; else fail "plan 27 Q3 control: ssh did not reject the 0440 key: $(echo "$ctl" | head -n 2 | tr '\n' ' ')"; fi
+	if eng run --rm --network "$NET" "${CTL_FLAGS[@]}" -v "$SEC:/var/run/sc/secrets:ro" --entrypoint sh "$IMG" -c \
+		"cp /var/run/sc/secrets/deploy-key /tmp/k && chmod 0600 /tmp/k && ssh -i /tmp/k $sshopts git@forgejo-ssh.forgejo.svc.cluster.local true" >/dev/null 2>&1; then ctl6=ok; else ctl6=rejected; fi
+	expect_eq "plan 27 Q3 control: ssh accepts the 0600 copy of the same key" ok "$ctl6"
+	if [ -n "$sha" ]; then pass "plan 27 Q3: sc-worker pushed with the 0600 copy of the same key (real ssh)"; else fail "plan 27 Q3: no push with the copied key"; fi
+	end_case
+}
+
+case_plant() { # NAME PLANT
+	local name=plant-$1 plant=$1 pat
+	case $plant in
+	claim) pat='/claim\.json$' ;;
+	hooks) pat='/\.git/hooks(/|$)' ;;
+	notes) pat='/notes/x\.md$' ;;
+	esac
+	run_case "$name" success "$plant" 1
+	local reason detail state
+	state=$(result_field '.result.state')
+	reason=$(result_field '.result.failure.reason // ""')
+	detail=$(result_field '.result.failure.detail // ""')
+	check_trace "$name" "$pat"
+	case $plant in
+	claim)
+		expect_eq "27-AC-24 [claim] a claim.json symlink is a missing claim: failed/malformed_harness_output" "failed/malformed_harness_output" "$state/$reason"
+		[[ $detail == claim:* ]] && pass "27-AC-24 [claim] detail starts with claim: ($detail)" || fail "27-AC-24 [claim] detail '$detail'"
+		expect_eq "27-AC-24 [claim] remote refs unchanged" "$REFS_BEFORE" "$(refs_digest)"
+		event_seen symlink_refused claim.json && pass "27-AC-24 [claim] event symlink_refused names claim.json" || fail "27-AC-24 [claim] no symlink_refused event for claim.json"
+		;;
+	hooks)
+		expect_eq "27-AC-24 [hooks] a .git/hooks symlink is failed/internal" "failed/internal" "$state/$reason"
+		expect_eq "27-AC-24 [hooks] detail workspace_tampered" workspace_tampered "$detail"
+		expect_eq "27-AC-24 [hooks] nothing pushed (remote refs unchanged)" "$REFS_BEFORE" "$(refs_digest)"
+		event_seen symlink_refused .git/hooks && pass "27-AC-24 [hooks] event symlink_refused names .git/hooks" || fail "27-AC-24 [hooks] no symlink_refused event for .git/hooks"
+		;;
+	notes)
+		expect_eq "27-AC-24 [notes] the run completes and pushes" completed "$state"
+		event_seen symlink_refused notes/x.md && pass "27-AC-24 [notes] event symlink_refused names notes/x.md" || fail "27-AC-24 [notes] no symlink_refused event for notes/x.md"
+		;;
+	esac
+	# nothing behind a link reached any output (the text of the private gitconfig, the task token)
+	local leak
+	leak=$(cat "$TMP/$name.stdout" "$TMP/$name.stderr"; printf '%s' "$STATE")
+	if printf '%s' "$leak" | grep -F -e "$TASK_TOKEN" -e pushUpdateRejected -e graftFileDeprecated >/dev/null; then fail "27-AC-24 [$plant] content behind a planted link reached stdout/stderr or the result"; else pass "27-AC-24 [$plant] nothing behind the planted link reached stdout, stderr or the posted result"; fi
+	end_case
+}
+
+# 27-AC-16: a harness that ignores SIGTERM is killed within term_grace_seconds + 2 s (grace 5 in the packet)
+run_case_async_ignore_cancel() {
+	local name=ignore-cancel cn=$PREFIX-ignore-cancel
+	H=$cn-harness
+	W=$cn-worker
+	T=$cn-none
+	WS=$cn-ws
+	CASE_NAME=$name
+	echo
+	echo "== case $name (SIGTERM to sc-worker, harness ignores SIGTERM, term_grace_seconds 5)"
+	reset_fixture
+	stub_reset ignore-cancel
+	eng volume create "$WS" >/dev/null
+	track_v "$WS"
+	eng run --rm --security-opt label=disable --user 0:0 -v "$WS:/w" --entrypoint chown "$TOOLS_IMG" 65532:65532 /w >/dev/null
+	local -a flags
+	mapfile -t flags < <(image_flags)
+	local -a podenv=(-e HOME=/home/worker -e TMPDIR=/tmp -e SC_WORKSPACE=/workspace
+		-e SC_RUNNER_URL=http://agent-runner.strange-company.svc.cluster.local:8082 -e SC_TASK_ID=sc-1 -e SC_EXECUTION_ID=sc-1-x1)
+	track_c "$H"
+	eng run -d --name "$H" --network "$NET" --cgroupns host "${flags[@]}" "${podenv[@]}" \
+		-v "$WS:/workspace" -v "$HSEC:/var/run/sc/harness-secrets:ro" --entrypoint /usr/local/bin/sc-worker "$IMG" shim >/dev/null
+	track_c "$W"
+	eng run -d --name "$W" --network "$NET" --cgroupns host "${flags[@]}" "${podenv[@]}" \
+		--tmpfs /var/sc/private:rw,nosuid,nodev,$TMPFS_OWN,mode=0700,size=64m -e SC_SECRETS_DIR=/var/run/sc/secrets \
+		-v "$WS:/workspace" -v "$SEC:/var/run/sc/secrets:ro" --entrypoint /usr/local/bin/sc-worker "$IMG" run >/dev/null
+
+	local i alive=0
+	for ((i = 0; i < 150; i++)); do # the harness runs once it has called the Gateway
+		if [ "$(stub_state | jqs -r '.gateway_requests')" -ge 1 ] 2>/dev/null &&
+			eng exec "$H" sh -c 'grep -l "sc-fake-[h]arness" /proc/[0-9]*/cmdline' >/dev/null 2>&1; then alive=1; break; fi
+		sleep 0.4
+	done
+	if [ "$alive" != 1 ]; then
+		fail "27-AC-16 the sleeping fake harness never started"
+		end_case
+		return
+	fi
+	local t0 t1 gone=0
+	t0=$(date +%s.%N)
+	eng kill -s TERM "$W" >/dev/null
+	for ((i = 0; i < 400; i++)); do
+		if ! eng exec "$H" sh -c 'grep -l "sc-fake-[h]arness" /proc/[0-9]*/cmdline' >/dev/null 2>&1; then gone=1; break; fi
+		sleep 0.1
+	done
+	t1=$(date +%s.%N)
+	local took
+	took=$(awk -v a="$t0" -v b="$t1" 'BEGIN{printf "%.1f", b-a}')
+	if [ "$gone" = 1 ] && awk -v t="$took" 'BEGIN{exit !(t <= 7.8)}'; then pass "27-AC-16 the SIGTERM-ignoring harness was gone ${took}s after SIGTERM (term_grace_seconds 5 + 2 s, plus 0.8 s of polling slack)"; else fail "27-AC-16 the harness survived ${took}s after SIGTERM (limit 5 + 2 s)"; fi
+	CASE_RC=$(timeout 60 "$ENGINE" "${ENG_ARGS[@]}" wait "$W" 2>/dev/null || echo timeout)
+	eng logs "$W" >"$TMP/$name.stdout" 2>"$TMP/$name.stderr" || true
+	STATE=$(stub_state)
+	expect_eq "27-AC-16 sc-worker exits 143 after SIGTERM" 143 "$CASE_RC"
+	expect_eq "27-AC-16 one failed result was posted" "1/failed" "$(result_field '"\(.result_posts)/\(.result.state)"')"
+	expect_eq "27-AC-16 sc-worker's stdout has exactly one harness BEGIN and one END line" "1/1" "$(grep -c '^::STRANGE-COMPANY-STREAM-BEGIN::' "$TMP/$name.stdout" || true)/$(grep -c '^::STRANGE-COMPANY-STREAM-END::' "$TMP/$name.stdout" || true)" || true
+	end_case
+}
+
+component() {
+	echo "== test-worker-component"
+	check_pins
+	offline_go_tests
+	resolve_image "${SC_HARNESS_IMAGE:-harness-fake}"
+	start_infra
+	local -a f
+	mapfile -t f < <(image_flags)
+	CTL_FLAGS=("${f[@]}")
+	case_success
+	case_plant claim
+	case_plant hooks
+	case_plant notes
+	run_case_async_ignore_cancel
+	summary "test-worker-component"
+}
+
+# ---------------------------------------------------------------------------------------------------------------
+
+main() {
+	[ "${SC_IN_CONTAINER:-}" != 1 ] || die "run on the host: this script drives the container engine and cannot run inside the ci image (SC_IN_CONTAINER=1)"
+	command -v "$ENGINE" >/dev/null 2>&1 || die "container engine '$ENGINE' not found (SC_ENGINE=docker|podman)"
+	case $ENGINE in docker | podman) ;; *) die "SC_ENGINE must be docker or podman" ;; esac
+	TMP=$(mktemp -d)
+	mkdir -p "$OUTDIR"
+	case ${1:-} in
+	image-test)
+		[ $# -eq 2 ] || die "usage: run image-test <image>"
+		image_test "$2"
+		;;
+	component)
+		[ $# -eq 1 ] || die "usage: run component"
+		component
+		;;
+	*) die "usage: run image-test <image> | run component" ;;
+	esac
+}
+
+main "$@"

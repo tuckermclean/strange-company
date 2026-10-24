@@ -1,0 +1,30 @@
+# Test infrastructure image of the container-level worker suite (test/e2e/worker/run, F07 Layer 2). NOT a product image.
+# One image, three roles: the infra container (sshd serving the bare fixture + the stub Runner/Gateway), the strace
+# sidecar of the symlink-safety check (27-AC-24) and a utility container. The base is the debian digest of
+# toolbox/tools.lock.yaml (a Go test in src/internal/worker pins the equality); packages come from the lock's snapshot.
+FROM docker.io/library/debian@sha256:918311b7b6c4c6f68b232ba516584925f6c78ad82b6fd534b98979df6438e483
+ARG DEBIAN_SNAPSHOT
+RUN set -eu; \
+    test -n "$DEBIAN_SNAPSHOT"; \
+    printf '%s\n' \
+      'Types: deb' \
+      "URIs: http://snapshot.debian.org/archive/debian/$DEBIAN_SNAPSHOT/" \
+      'Suites: trixie trixie-updates' \
+      'Components: main' \
+      'Check-Valid-Until: no' \
+      'Signed-By: /usr/share/keyrings/debian-archive-keyring.pgp' \
+      '' \
+      'Types: deb' \
+      "URIs: http://snapshot.debian.org/archive/debian-security/$DEBIAN_SNAPSHOT/" \
+      'Suites: trixie-security' \
+      'Components: main' \
+      'Check-Valid-Until: no' \
+      'Signed-By: /usr/share/keyrings/debian-archive-keyring.pgp' \
+      >/etc/apt/sources.list.d/debian.sources; \
+    apt-get -o Acquire::Retries=5 update; \
+    DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
+      git openssh-server openssh-client strace jq curl ca-certificates procps; \
+    rm -rf /var/lib/apt/lists/*; \
+    useradd --create-home --shell /bin/sh git; \
+    usermod -p '*' git; \
+    mkdir -p /run/sshd /state
