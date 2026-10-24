@@ -26,9 +26,11 @@
 #   <image> is either a bare image name `harness-<name>` (the mk target passes IMAGE=harness-fake) or a full image
 #   reference (contains one of / : @), which is used as is (pulled when it is not local).
 #   * A bare name makes THIS script build the image: `$ENGINE build -f harnesses/<name>/Containerfile
-#     --build-arg SC_INPUTS_ID=<HEAD sha> -t localhost/strange-company-harness-<name>:l2 <repository root>`, so
+#     --build-arg SC_INPUTS_ID=<HEAD sha> --build-arg SC_INPUTS_ID12=<first 12 characters of that same sha> -t localhost/strange-company-harness-<name>:l2 <repository root>`, so
 #     harnesses/fake/Containerfile must build with the repository root as context (no other argument needed). An
-#     ARG SC_INPUTS_ID with a default is allowed and may feed the revision label.
+#     ARG SC_INPUTS_ID with a default is allowed and may feed the revision label. An ARG SC_INPUTS_ID12 with a
+#     default (e.g. `unknown`) is allowed too: the sc-worker-version label may be `in-${SC_INPUTS_ID12}` (OD-S6d-1;
+#     buildah 1.33.2 rejects the %/# substitutions, so the builder passes the 12-character prefix).
 #   * The image has USER 65532:65532 and contains: /usr/local/bin/sc-worker, /usr/local/bin/sc-fake-harness, git,
 #     ssh, /bin/sh, make, find, tar-free runtime utilities of a Debian base (sh, cat, grep, sleep, ln, rm, id), and
 #     /workspace, /home/worker, /tmp (the script mounts tmpfs/volumes owned by 65532 there). Entrypoint and CMD are
@@ -186,7 +188,7 @@ build_tools_image() {
 
 # resolve_image ARG: sets IMG (and builds or pulls it).
 resolve_image() {
-	local arg=$1 name dir
+	local arg=$1 name dir sha
 	case $arg in
 	*/* | *:* | *@*)
 		IMG=$arg
@@ -198,7 +200,9 @@ resolve_image() {
 		[ -f "$dir/Containerfile" ] || die "harnesses/$name/Containerfile does not exist"
 		IMG=localhost/strange-company-harness-$name:l2
 		echo "building $IMG from harnesses/$name/Containerfile"
-		eng build -f "$dir/Containerfile" --build-arg "SC_INPUTS_ID=$(git -C "$REPO" rev-parse HEAD)" -t "$IMG" "$REPO" ||
+		sha=$(git -C "$REPO" rev-parse HEAD)
+		eng build -f "$dir/Containerfile" --build-arg "SC_INPUTS_ID=$sha" --build-arg "SC_INPUTS_ID12=${sha:0:12}" \
+			-t "$IMG" "$REPO" ||
 			die "the image did not build"
 		;;
 	*) die "image '$arg' is neither harness-<name> nor an image reference" ;;

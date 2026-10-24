@@ -86,7 +86,7 @@ func checkGoToolchain(text string) []string {
 
 // workerVersionLabel evaluates the sc-worker-version LABEL of the final stage the way a Dockerfile expands it (POSIX
 // parameter expansion over the stage's ARG defaults, SC_INPUTS_ID replaced by id) and returns the value.
-func workerVersionLabel(text, id string) (string, error) {
+func workerVersionLabel(text, id string, withID12 bool) (string, error) {
 	stages := parseContainerfile(text)
 	if len(stages) == 0 {
 		return "", fmt.Errorf("no FROM")
@@ -110,9 +110,12 @@ func workerVersionLabel(text, id string) (string, error) {
 	}
 	var script strings.Builder
 	script.WriteString("SC_INPUTS_ID=" + id + "\n")
+	if withID12 {
+		script.WriteString("SC_INPUTS_ID12=" + id[:12] + "\n")
+	}
 	for _, l := range final.lines {
 		f := strings.Fields(l)
-		if len(f) < 2 || !strings.EqualFold(f[0], "ARG") || !strings.Contains(f[1], "=") || strings.HasPrefix(f[1], "SC_INPUTS_ID=") {
+		if len(f) < 2 || !strings.EqualFold(f[0], "ARG") || !strings.Contains(f[1], "=") || strings.HasPrefix(f[1], "SC_INPUTS_ID=") || strings.HasPrefix(f[1], "SC_INPUTS_ID12=") {
 			continue
 		}
 		if strings.ContainsAny(l, "`;|&<>") || strings.Contains(l, "$(") {
@@ -132,14 +135,42 @@ func workerVersionLabel(text, id string) (string, error) {
 }
 
 // checkWorkerVersionLabel: the sc-worker-version label is the version stamped into the binary (plan 01 section 6.2 flags,
-// CD-66(4): Version=in-<first 12 characters of the inputs id>), not a literal.
-func checkWorkerVersionLabel(text string) []string {
-	got, err := workerVersionLabel(text, testInputsID)
-	if err != nil {
-		return []string{"sc-worker-version label: " + err.Error()}
+// CD-66(4): Version=in-<first 12 characters of the inputs id>), not a literal. Two forms are accepted (OD-S6d-1):
+// (a) the label expands to in-<first 12 of SC_INPUTS_ID> given only SC_INPUTS_ID; (b) the label expands to
+// in-<SC_INPUTS_ID12> where the final stage declares ARG SC_INPUTS_ID12 and the Layer-2 script (script) passes it as the
+// first 12 characters of the very id it passes as SC_INPUTS_ID (buildah 1.33.2 rejects the %/# substitutions of (a)).
+func checkWorkerVersionLabel(text, script string) []string {
+	want := "in-" + testInputsID[:12]
+	gotA, errA := workerVersionLabel(text, testInputsID, false)
+	if errA == nil && gotA == want {
+		return nil
 	}
-	if want := "in-" + testInputsID[:12]; got != want {
-		return []string{fmt.Sprintf("LABEL strange.company/sc-worker-version evaluates to %q for SC_INPUTS_ID=%s, want %q (the binary's stamped Version, CD-66(4))", got, testInputsID, want)}
+	gotB, errB := workerVersionLabel(text, testInputsID, true)
+	if errB != nil || gotB != want {
+		if errA != nil {
+			return []string{"sc-worker-version label: " + errA.Error()}
+		}
+		return []string{fmt.Sprintf("LABEL strange.company/sc-worker-version evaluates to %q for SC_INPUTS_ID=%s, want %q (the binary's stamped Version, CD-66(4))", gotA, testInputsID, want)}
+	}
+	// form (b): the label evaluates right only if SC_INPUTS_ID12 is supplied, so it must be declared and supplied.
+	stages := parseContainerfile(text)
+	declared := false
+	for _, l := range stages[len(stages)-1].lines {
+		f := strings.Fields(l)
+		if len(f) > 1 && strings.EqualFold(f[0], "ARG") && (f[1] == "SC_INPUTS_ID12" || strings.HasPrefix(f[1], "SC_INPUTS_ID12=")) {
+			declared = true
+		}
+	}
+	if !declared {
+		return []string{"the sc-worker-version label uses SC_INPUTS_ID12 but the final stage does not declare ARG SC_INPUTS_ID12"}
+	}
+	id := regexp.MustCompile(`--build-arg\s+"?SC_INPUTS_ID=\$\{?(\w+)\}?"?`).FindStringSubmatch(script)
+	id12 := regexp.MustCompile(`--build-arg\s+"?SC_INPUTS_ID12=\$\{(\w+):0:12\}"?`).FindStringSubmatch(script)
+	if id == nil || id12 == nil || id[1] != id12[1] {
+		return []string{scriptPath + " does not pass --build-arg SC_INPUTS_ID12=${v:0:12} derived from the same variable v as --build-arg SC_INPUTS_ID=$v"}
+	}
+	if !regexp.MustCompile(`(?m)^\s*` + id[1] + `=\$\(git .*rev-parse HEAD\)`).MatchString(script) {
+		return []string{scriptPath + ": the build id variable " + id[1] + " is not assigned from git rev-parse HEAD"}
 	}
 	return nil
 }
@@ -161,7 +192,11 @@ func TestHarnessFakeImage_WorkerVersionLabel_28AC3(t *testing.T) {
 	if !ok {
 		return
 	}
-	for _, msg := range checkWorkerVersionLabel(text) {
+	script, ok := readRepoFile(t, scriptPath)
+	if !ok {
+		return
+	}
+	for _, msg := range checkWorkerVersionLabel(text, script) {
 		t.Error(msg)
 	}
 }
@@ -182,14 +217,36 @@ LABEL strange.company/harness="fake" \
       strange.company/sc-worker-version="in-${SC_INPUTS_ID%${SC_INPUTS_ID#????????????}}"
 USER 65532:65532
 `
-	if bad := append(checkGoToolchain(model), checkWorkerVersionLabel(model)...); len(bad) != 0 {
+	goodScript := "sha=$(git -C \"$REPO\" rev-parse HEAD)\neng build --build-arg \"SC_INPUTS_ID=$sha\" --build-arg \"SC_INPUTS_ID12=${sha:0:12}\" -t x .\n"
+	checkLabel := func(s string) []string { return checkWorkerVersionLabel(s, goodScript) }
+	if bad := append(checkGoToolchain(model), checkLabel(model)...); len(bad) != 0 {
 		t.Fatalf("the model definition is rejected: %v", bad)
 	}
 	argForm := strings.Replace(model, `LABEL strange.company/harness="fake" \
       strange.company/sc-worker-version="in-${SC_INPUTS_ID%${SC_INPUTS_ID#????????????}}"`,
 		"ARG V=in-${SC_INPUTS_ID%${SC_INPUTS_ID#????????????}}\nLABEL strange.company/sc-worker-version=\"${V}\"", 1)
-	if bad := append(checkGoToolchain(argForm), checkWorkerVersionLabel(argForm)...); len(bad) != 0 {
+	if bad := append(checkGoToolchain(argForm), checkLabel(argForm)...); len(bad) != 0 {
 		t.Errorf("the ARG form of the label is rejected: %v", bad)
+	}
+	// form (b), OD-S6d-1: in-${SC_INPUTS_ID12} with the build arg supplied by the script
+	formB := strings.Replace(model, `"in-${SC_INPUTS_ID%${SC_INPUTS_ID#????????????}}"`, `"in-${SC_INPUTS_ID12}"`, 1)
+	formB = strings.Replace(formB, "ENV GOTOOLCHAIN", "ARG SC_INPUTS_ID12=unknown\nENV GOTOOLCHAIN", 1)
+	if bad := checkLabel(formB); len(bad) != 0 {
+		t.Errorf("the SC_INPUTS_ID12 form of the label is rejected: %v", bad)
+	}
+	for name, c := range map[string]struct{ text, script string }{
+		"ID12 not declared":      {strings.Replace(formB, "ARG SC_INPUTS_ID12=unknown\n", "", 1), goodScript},
+		"ID12 not passed":        {formB, strings.Replace(goodScript, ` --build-arg "SC_INPUTS_ID12=${sha:0:12}"`, "", 1)},
+		"ID12 from another id":   {formB, strings.Replace(goodScript, "SC_INPUTS_ID12=${sha:0:12}", "SC_INPUTS_ID12=${other:0:12}", 1)},
+		"ID12 wrong length":      {formB, strings.Replace(goodScript, "${sha:0:12}", "${sha:0:8}", 1)},
+		"id not from git HEAD":   {formB, strings.Replace(goodScript, "rev-parse HEAD", "rev-parse main", 1)},
+		"ID12 literal in script": {formB, strings.Replace(goodScript, "${sha:0:12}", "abcdef", 1)},
+		"ID12 label literal":     {strings.Replace(formB, "in-${SC_INPUTS_ID12}", "0.1.0", 1), goodScript},
+		"ID12 label no prefix":   {strings.Replace(formB, "in-${SC_INPUTS_ID12}", "${SC_INPUTS_ID12}", 1), goodScript},
+	} {
+		if len(checkWorkerVersionLabel(c.text, c.script)) == 0 {
+			t.Errorf("SC_INPUTS_ID12 mutation %q is not caught", name)
+		}
 	}
 	for name, c := range map[string]struct {
 		check  func(string) []string
@@ -205,13 +262,13 @@ USER 65532:65532
 		"no GOTOOLCHAIN":        {checkGoToolchain, func(s string) string { return strings.Replace(s, "GOTOOLCHAIN=local ", "", 1) }},
 		"GOTOOLCHAIN auto":      {checkGoToolchain, func(s string) string { return strings.Replace(s, "GOTOOLCHAIN=local", "GOTOOLCHAIN=auto", 1) }},
 		"go not on PATH":        {checkGoToolchain, func(s string) string { return strings.Replace(s, "/usr/local/go/bin:", "", 1) }},
-		"literal label": {checkWorkerVersionLabel, func(s string) string {
+		"literal label": {checkLabel, func(s string) string {
 			return strings.Replace(s, `"in-${SC_INPUTS_ID%${SC_INPUTS_ID#????????????}}"`, `"0.1.0"`, 1)
 		}},
-		"untruncated label": {checkWorkerVersionLabel, func(s string) string {
+		"untruncated label": {checkLabel, func(s string) string {
 			return strings.Replace(s, `"in-${SC_INPUTS_ID%${SC_INPUTS_ID#????????????}}"`, `"in-${SC_INPUTS_ID}"`, 1)
 		}},
-		"no prefix": {checkWorkerVersionLabel, func(s string) string {
+		"no prefix": {checkLabel, func(s string) string {
 			return strings.Replace(s, `"in-${SC_INPUTS_ID%`, `"${SC_INPUTS_ID%`, 1)
 		}},
 	} {
