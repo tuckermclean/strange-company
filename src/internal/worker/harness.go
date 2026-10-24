@@ -329,7 +329,10 @@ func (pl *pipeline) recheckResults() {
 	if len(pl.consumed) == 0 {
 		return
 	}
-	_ = pl.w.clk.Sleep(nilCtx, settleBound)
+	_ = pl.w.clk.Sleep(pl.w.sig, settleBound)
+	if pl.w.sig.Err() != nil {
+		return
+	}
 	pl.checkShimDir()
 	for _, c := range pl.consumed {
 		b, err := readRegularFile(pl.w.cfg.WorkspaceDir, ".sc-shim/"+c.name, 1<<20)
