@@ -99,6 +99,7 @@ type pipeline struct {
 
 	restored, doneWritten, harnessRan bool
 	reqN                              int
+	consumed                          []consumedRes
 	contextNames                      []string
 	env                               map[string]string
 	hs                                harnessState
@@ -216,6 +217,10 @@ func (pl *pipeline) run() int {
 	if !g.PushAllowed {
 		return pl.finishClaim("", false)
 	}
+	pl.recheckResults()
+	if pl.tampered {
+		return pl.finishFail(&stageFail{reason: "internal", detail: "workspace_tampered"})
+	}
 	commit, f := pl.commitAndPush()
 	if f != nil {
 		return pl.finishFail(f)
@@ -238,7 +243,15 @@ func (pl *pipeline) commitAndPush() (string, *stageFail) {
 		count := pl.gitPost(30*time.Second, nil, "rev-list", "--count", g.StartCommit+".."+head).text()
 		var n int
 		fmt.Sscanf(count, "%d", &n)
-		w.log("info", "harness_commits_folded", map[string]any{"count": n})
+		if !w.knobs.SkipFold {
+			w.log("info", "harness_commits_folded", map[string]any{"count": n})
+		}
+	}
+	if w.knobs.SkipFold {
+		// Fake knob skip_fold (multi-commit, plan 28 section 14.4): the harness's own commits are sent unfolded.
+		if head := pl.harnessHead(); head != "" && head != g.StartCommit {
+			return pl.publish(head)
+		}
 	}
 	if r := pl.gitPost(120*time.Second, nil, "add", "-A", "--", ":/"); r.err != nil {
 		if f := pl.verifyRepo(); f != nil {
@@ -292,26 +305,53 @@ func (pl *pipeline) commitAndPush() (string, *stageFail) {
 		"GIT_AUTHOR_NAME=" + c.AuthorName, "GIT_AUTHOR_EMAIL=" + c.AuthorEmail, "GIT_AUTHOR_DATE=" + when,
 		"GIT_COMMITTER_NAME=" + c.AuthorName, "GIT_COMMITTER_EMAIL=" + c.AuthorEmail, "GIT_COMMITTER_DATE=" + when,
 	}
+	if w.knobs.ParentOverride == "base" {
+		// Fake knob parent_override (not-descendant): the commit goes on top of base_commit instead of start_commit.
+		if r := pl.gitPost(30*time.Second, nil, "reset", "-q", "--soft", g.BaseCommit); r.err != nil {
+			return "", &stageFail{reason: "commit_failed", detail: "git reset: " + tail(r.stderr, 500)}
+		}
+	}
 	if r := pl.gitPost(120*time.Second, ident, "commit", "-q", "--no-verify", "--cleanup=verbatim", "-F", msgPath); r.err != nil {
 		return "", &stageFail{reason: "commit_failed", detail: "git commit: " + tail(r.stderr, 500)}
 	}
-	if n := pl.gitPost(30*time.Second, nil, "rev-list", "--count", g.StartCommit+"..HEAD").text(); n != "1" {
-		return "", &stageFail{reason: "commit_failed", detail: "expected one commit on top of start_commit, found " + n}
-	}
-	if p := pl.gitPost(30*time.Second, nil, "rev-parse", "HEAD^").text(); p != g.StartCommit {
-		return "", &stageFail{reason: "commit_failed", detail: "the commit's parent is not start_commit"}
+	if w.knobs.ParentOverride == "" {
+		if n := pl.gitPost(30*time.Second, nil, "rev-list", "--count", g.StartCommit+"..HEAD").text(); n != "1" {
+			return "", &stageFail{reason: "commit_failed", detail: "expected one commit on top of start_commit, found " + n}
+		}
+		if p := pl.gitPost(30*time.Second, nil, "rev-parse", "HEAD^").text(); p != g.StartCommit {
+			return "", &stageFail{reason: "commit_failed", detail: "the commit's parent is not start_commit"}
+		}
 	}
 	sha := pl.gitPost(30*time.Second, nil, "rev-parse", "HEAD").text()
+	return pl.publish(sha)
+}
 
+// publish verifies the repository and sends sha to the task branch with the lease (plan 27 section 14.11). With the
+// fake knob push_extra_refs it first tries main (expected to be rejected), then a scratch branch and a tag.
+func (pl *pipeline) publish(sha string) (string, *stageFail) {
+	w := pl.w
+	g := pl.p.Git
 	if f := pl.verifyRepo(); f != nil {
 		return "", f
 	}
-	// Push.
 	w.setPhase("pushing")
+	if w.knobs.PushExtraRefs {
+		r := pl.gitPost(120*time.Second, nil, "push", "--porcelain", "--no-verify", "origin", sha+":refs/heads/main")
+		ev := "fake_push_main_rejected"
+		if r.err == nil {
+			ev = "fake_push_main_accepted"
+		}
+		w.log("info", ev, map[string]any{"detail": clip(tail(string(r.stdout)+r.stderr, 300), 300)})
+		for _, dst := range []string{"refs/heads/scratch/sc-fake", "refs/tags/sc-fake-tag"} {
+			if r := pl.gitPost(120*time.Second, nil, "push", "--porcelain", "--no-verify", "origin", sha+":"+dst); r.err != nil {
+				w.log("warn", "fake_extra_ref_failed", map[string]any{"ref": dst, "detail": clip(tail(r.stderr, 300), 300)})
+			}
+		}
+	}
 	ref := "refs/heads/" + g.Branch
 	var last gitOut
 	for attempt := 0; ; attempt++ {
-		last = pl.gitPost(120*time.Second, nil, "push", "--porcelain", "--no-verify", "origin", pl.lease, "HEAD:"+ref)
+		last = pl.gitPost(120*time.Second, nil, "push", "--porcelain", "--no-verify", "origin", pl.lease, sha+":"+ref)
 		if last.err == nil {
 			break
 		}
@@ -548,6 +588,9 @@ func (pl *pipeline) finishClaim(commit string, pushed bool) int {
 		doc["conflict"] = cf
 	}
 	if pushed {
+		if w.knobs.ClaimCommitOverride == "start" {
+			commit = pl.p.Git.StartCommit // fake knob claim_commit_override (wrong-commit-claim)
+		}
 		doc["commit"], doc["pushed"] = commit, true
 	}
 	if !pl.p.Git.PushAllowed {

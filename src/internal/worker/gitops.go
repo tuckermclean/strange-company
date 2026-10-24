@@ -245,7 +245,7 @@ func (pl *pipeline) rMkdir(rel string, mode uint32) error {
 	return mkdirRel(pl.w.cfg.WorkspaceDir, "repo/"+rel, mode)
 }
 
-func (pl *pipeline) rWriteNew(rel string, data []byte, mode uint32) error {
+func (pl *pipeline) rWriteReplace(rel string, data []byte, mode uint32) error {
 	return writeRelReplace(pl.w.cfg.WorkspaceDir, "repo/"+rel, data, mode)
 }
 
@@ -754,7 +754,7 @@ func (pl *pipeline) restoreInternals() *stageFail {
 					return &stageFail{reason: "internal", detail: "restore " + f.rel + ": " + err.Error()}
 				}
 			}
-			if err := pl.rWriteNew(rel, want, 0o644); err != nil {
+			if err := pl.rWriteReplace(rel, want, 0o644); err != nil {
 				return &stageFail{reason: "internal", detail: "restore " + f.rel + ": " + err.Error()}
 			}
 			differed = append(differed, f.rel)

@@ -240,7 +240,8 @@ var shimReqName = regexp.MustCompile(`^req-([0-9]+)\.json$`)
 func (s *shimState) absorbForeign() bool {
 	ents, err := os.ReadDir(s.dir)
 	if err != nil {
-		return false
+		// The shim cannot tell what was planted (the harness may have made the directory unreadable): foreign.
+		return true
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -446,8 +447,19 @@ func lookPath(prog string, env []string) string {
 func (s *shimState) writeResult(n string, res shimResult) {
 	b, _ := json.Marshal(res)
 	tmp := filepath.Join(s.dir, "res-"+n+".json.tmp")
-	if err := os.WriteFile(tmp, b, shimFileMode); err != nil {
+	// A name planted by the harness is unlinked (never followed) and the file is created exclusively without following
+	// a link, so the result is never written through a link.
+	_ = os.Remove(tmp)
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, shimFileMode)
+	if err == nil {
+		_, err = f.Write(b)
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+	}
+	if err != nil {
 		fmt.Fprintf(s.errw, "sc-worker shim: result %s: %v\n", n, err)
+		_ = os.Remove(tmp)
 		return
 	}
 	if err := os.Rename(tmp, filepath.Join(s.dir, "res-"+n+".json")); err != nil {

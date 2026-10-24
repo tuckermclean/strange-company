@@ -291,21 +291,6 @@ func mkdirRel(base, rel string, mode uint32) error {
 	return nil
 }
 
-// writeRelNew creates the file rel below base (it must not exist) with exactly mode.
-func writeRelNew(base, rel string, data []byte, mode uint32) error {
-	fd, err := openBeneath(base, rel, syscall.O_WRONLY|syscall.O_CREAT|syscall.O_EXCL|syscall.O_NONBLOCK, mode)
-	if err != nil {
-		return err
-	}
-	f := os.NewFile(uintptr(fd), filepath.Join(base, rel))
-	defer f.Close()
-	if err := syscall.Fchmod(fd, mode); err != nil {
-		return err
-	}
-	_, err = f.Write(data)
-	return err
-}
-
 // writeRelReplace puts the file rel below base in place atomically (a temporary name in the same directory, then
 // renameat over the target), so that a concurrent re-creator of the target cannot make it fail with EEXIST. Every
 // directory component is opened without following links; a link at the target is replaced, never followed.
