@@ -67,3 +67,16 @@ func TestPrecheck_MaxDiffBytesNamedBeyondOutputCap_S6cR1N3(t *testing.T) {
 		t.Errorf("detail %q does not name the rule max_diff_bytes", detail)
 	}
 }
+
+// 27-AC-12 / N4, skip_fold: a commit message beyond the output cap cannot be examined: fail closed.
+func TestKnob_SkipFoldFailsClosedOnCommitObjectBeyondOutputCap_S6cR1N4(t *testing.T) {
+	t.Parallel()
+	ops := []harnessOp{
+		opWrite("calc/ok.go", "package calc\n"),
+		{Op: "commit-fill", Content: strings.Repeat("m", 1023) + "\n", N: 17 * 1024},
+		opWrite("calc/ok2.go", "package calc\n"), {Op: "commit", Msg: "second"},
+	}
+	gr, _ := skipFoldRun(t, ops)
+	res := gr.finishWithin(t, 150*time.Second, "start (a >16 MiB commit object is read)")
+	wantFailedResult(t, res, "diff_precheck_failed")
+}
