@@ -9,8 +9,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // runSpec selects one red-target run: a Make target with optional package patterns and -run filter.
@@ -130,44 +132,91 @@ func (c *checker) parseRedTarget(ci commitInfo) (spec runSpec, problem string) {
 	return spec, ""
 }
 
-// evaluateRed runs T3 (stubs), T4, T5 and T6 for one RED commit and queues the T7 check.
-func (c *checker) evaluateRed(ci commitInfo) error {
-	var bad []string
+// runReds executes T5 (batched baselines at B) and T6 (one run per RED commit) for the runnable jobs, the
+// independent runs concurrently. A RED run whose baseline turns out to fail is wasted, never judged.
+func (c *checker) runReds(jobs []*redJob) error {
+	var specs []runSpec
+	for _, j := range jobs {
+		if j.runnable {
+			specs = append(specs, j.spec)
+		}
+	}
+	b := newBatch(c, c.baseSHA, true, specs)
+	tasks := b.first()
+	for _, j := range jobs {
+		if j.runnable {
+			tasks = append(tasks, func() (err error) {
+				j.rr, err = c.execute(j.ci.sha, j.spec, false)
+				return err
+			})
+		}
+	}
+	if err := c.parallel(tasks); err != nil {
+		return err
+	}
+	if err := c.parallel(b.second()); err != nil {
+		return err
+	}
+	for _, j := range jobs {
+		if j.runnable {
+			j.base = b.result(j.spec)
+		}
+	}
+	return nil
+}
+
+// redJob is one RED commit on its way through T3 to T6: prepared (T3, T4), run (T5, T6), then judged.
+type redJob struct {
+	ci       commitInfo
+	spec     runSpec
+	bad      []string // T3 violations
+	problem  string   // T4 problem
+	runnable bool
+	base     runResult // T5 baseline at B
+	rr       runResult // T6 run at the RED commit
+}
+
+// prepareRed runs the checks of T3 and T4 that need no target execution. It records no finding.
+func (c *checker) prepareRed(ci commitInfo) *redJob {
+	j := &redJob{ci: ci}
 	for _, f := range ci.files {
 		switch {
 		case matchAny(c.tests, f.path):
 		case matchAny(c.behav, f.path):
-			bad = append(bad, c.stubViolations(ci.sha, f)...)
+			j.bad = append(j.bad, c.stubViolations(ci.sha, f)...)
 		default: // T3: a RED commit holds test files and declared stubs only
-			bad = append(bad, fmt.Sprintf("%s: a RED commit may change test files and declared stubs only", f.path))
+			j.bad = append(j.bad, fmt.Sprintf("%s: a RED commit may change test files and declared stubs only", f.path))
 		}
 	}
-	for _, b := range bad {
+	if len(j.bad) > 0 {
+		return j
+	}
+	j.spec, j.problem = c.parseRedTarget(ci)
+	j.runnable = j.problem == ""
+	return j
+}
+
+// evaluateRed records the findings of T3 to T6 for one prepared and executed RED commit and queues its T7 check.
+func (c *checker) evaluateRed(j *redJob) {
+	ci, spec := j.ci, j.spec
+	for _, b := range j.bad {
 		c.fail(CodeStubInvalid, ci.sha, "RED commit %s: %s", short(ci.sha), b)
 	}
-	if len(bad) > 0 {
-		return nil
+	if len(j.bad) > 0 {
+		return
 	}
-	spec, problem := c.parseRedTarget(ci)
-	if problem != "" {
-		c.fail(CodeRedTargetInvalid, ci.sha, "RED commit %s: %s", short(ci.sha), problem)
-		return nil
+	if j.problem != "" {
+		c.fail(CodeRedTargetInvalid, ci.sha, "RED commit %s: %s", short(ci.sha), j.problem)
+		return
 	}
 
 	// T5: baseline at B.
-	base, ok := c.baselines[spec.key()]
-	if !ok {
-		var err error
-		if base, err = c.execute(c.baseSHA, spec, true); err != nil {
-			return err
-		}
-		c.baselines[spec.key()] = base
-	}
+	base := j.base
 	baseline := map[string]bool{}
 	if !base.skipped && !base.missing && !(base.fallback && base.exit != 0 && len(base.failed) == 0) {
 		if base.exit != 0 {
 			c.fail(CodeBaselineFailed, ci.sha, "the red target %s fails at the merge base %s (main is broken): %s", spec.target, short(c.baseSHA), tail(base.output))
-			return nil
+			return
 		}
 		for _, tc := range base.cases {
 			baseline[tc.id] = true
@@ -175,10 +224,7 @@ func (c *checker) evaluateRed(ci commitInfo) error {
 	}
 
 	// T6: RED run.
-	rr, err := c.execute(ci.sha, spec, false)
-	if err != nil {
-		return err
-	}
+	rr := j.rr
 	run := RedRun{Commit: ci.sha, Target: spec.target, Packages: append([]string{}, spec.pkgs...), Failed: []string{}, BuildOK: true, FallbackUsed: rr.fallback}
 	defer func() {
 		c.rep.Red.Commits = append(c.rep.Red.Commits, run)
@@ -200,18 +246,18 @@ func (c *checker) evaluateRed(ci commitInfo) error {
 	case rr.missing:
 		run.BuildOK = false
 		c.fail(CodeRedBuildFailure, ci.sha, "RED commit %s: the red target %s does not exist and has no fallback", short(ci.sha), spec.target)
-		return nil
+		return
 	case rr.skipped:
 		run.BuildOK = false
 		c.fail(CodeRedBuildFailure, ci.sha, "RED commit %s: none of the packages %v exists", short(ci.sha), spec.pkgs)
-		return nil
+		return
 	case rr.exit == 0:
 		c.fail(CodeRedPassed, ci.sha, "RED commit %s: the red target %s passes, so the behavior already exists", short(ci.sha), spec.target)
-		return nil
+		return
 	case rr.build:
 		run.BuildOK = false
 		c.fail(CodeRedBuildFailure, ci.sha, "RED commit %s: the red target %s did not build or crashed (exit %d): %s", short(ci.sha), spec.target, rr.exit, tail(rr.output))
-		return nil
+		return
 	}
 	run.Failed = rr.failed
 	changedBodies := c.changedTestBodies(ci.sha, ci.files)
@@ -226,10 +272,10 @@ func (c *checker) evaluateRed(ci commitInfo) error {
 	}
 	if len(pre) > 0 {
 		c.fail(CodeRedPreexisting, ci.sha, "RED commit %s: failing tests that exist at the merge base and whose body RED did not change: %s", short(ci.sha), strings.Join(pre, ", "))
-		return nil
+		return
 	}
 	c.pending = append(c.pending, headCheck{commit: ci.sha, spec: spec, failed: rr.failed})
-	return nil
+	return
 }
 
 // bodyChanged reports whether id names a test, or a subtest of a test, whose body RED changed.
@@ -250,16 +296,19 @@ func (c *checker) checkHead() error {
 		return err
 	}
 	used := make([]bool, len(lines))
-	results := map[string]runResult{}
+	var specs []runSpec
 	for _, p := range c.pending {
-		hr, ok := results[p.spec.key()]
-		if !ok {
-			var err error
-			if hr, err = c.execute(c.headSHA, p.spec, false); err != nil {
-				return err
-			}
-			results[p.spec.key()] = hr
-		}
+		specs = append(specs, p.spec)
+	}
+	b := newBatch(c, c.headSHA, false, specs)
+	if err := c.parallel(b.first()); err != nil {
+		return err
+	}
+	if err := c.parallel(b.second()); err != nil {
+		return err
+	}
+	for _, p := range c.pending {
+		hr := b.result(p.spec)
 		switch {
 		case hr.missing:
 			c.fail(CodeRedNotGreen, p.commit, "RED commit %s: the red target %s does not exist at HEAD", short(p.commit), p.spec.target)
@@ -404,21 +453,32 @@ func tail(s string) string {
 	return strings.ReplaceAll(s, "\n", " | ")
 }
 
-// worktree checks sha out into a fresh directory and returns it with its cleanup.
-func (c *checker) worktree(sha string) (string, func(), error) {
+// nextRunID returns a unique number for the worktree and junit file of one run, creating the temp dir on first use.
+func (c *checker) nextRunID() (int, error) {
+	c.idMu.Lock()
+	defer c.idMu.Unlock()
 	if c.tmp == "" {
 		d, err := os.MkdirTemp("", "tdd-discipline-")
 		if err != nil {
-			return "", nil, err
+			return 0, err
 		}
 		c.tmp = d
 	}
 	c.nwt++
-	dir := filepath.Join(c.tmp, fmt.Sprintf("wt%d", c.nwt))
+	return c.nwt, nil
+}
+
+// worktree checks sha out into a fresh directory and returns it with its cleanup.
+func (c *checker) worktree(sha string, n int) (string, func(), error) {
+	dir := filepath.Join(c.tmp, fmt.Sprintf("wt%d", n))
+	c.wtMu.Lock()
+	defer c.wtMu.Unlock()
 	if _, err := c.git("worktree", "add", "--detach", "--quiet", "--force", dir, sha); err != nil {
 		return "", nil, err
 	}
 	cleanup := func() {
+		c.wtMu.Lock()
+		defer c.wtMu.Unlock()
 		_, _ = c.git("worktree", "remove", "--force", dir)
 		_ = os.RemoveAll(dir)
 	}
@@ -439,7 +499,11 @@ func dirExists(p string) bool {
 // execute runs the spec's target at commit sha in a clean worktree. With baseline set, package patterns
 // that do not exist at sha are dropped (a package absent at B contributes nothing).
 func (c *checker) execute(sha string, spec runSpec, baseline bool) (runResult, error) {
-	dir, cleanup, err := c.worktree(sha)
+	n, err := c.nextRunID()
+	if err != nil {
+		return runResult{}, err
+	}
+	dir, cleanup, err := c.worktree(sha, n)
 	if err != nil {
 		return runResult{}, err
 	}
@@ -477,7 +541,7 @@ func (c *checker) execute(sha string, spec runSpec, baseline bool) (runResult, e
 		res.fallback = true
 		cmd = exec.Command("sh", "-c", fb)
 	} else {
-		junit = filepath.Join(c.tmp, fmt.Sprintf("junit%d.xml", c.nwt))
+		junit = filepath.Join(c.tmp, fmt.Sprintf("junit%d.xml", n))
 		// JUNIT travels in the environment, not as a command-line override: overrides reach every nested make
 		// through MAKEFLAGS and would change what the tests of a target observe (a ?= assignment honors both).
 		env = append(env, "JUNIT="+junit)
@@ -629,4 +693,160 @@ func hasCase(r runResult, id string) bool {
 		}
 	}
 	return false
+}
+
+// jobs is the number of runs that may be in flight: Options.Jobs, or min(NumCPU, 4) when it is not positive.
+func (c *checker) jobs() int {
+	if c.opts.Jobs > 0 {
+		return c.opts.Jobs
+	}
+	return min(runtime.NumCPU(), 4)
+}
+
+// parallel runs the tasks in up to jobs() workers and returns the error of the lowest-numbered failed task.
+// Every task writes only its own result slot, so no further locking is needed.
+func (c *checker) parallel(tasks []func() error) error {
+	errs := make([]error, len(tasks))
+	next := make(chan int)
+	var wg sync.WaitGroup
+	for w := 0; w < min(c.jobs(), len(tasks)); w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range next {
+				errs[i] = tasks[i]()
+			}
+		}()
+	}
+	for i := range tasks {
+		next <- i
+	}
+	close(next)
+	wg.Wait()
+	for _, err := range errs {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// batchGroup holds the distinct specs of one target and their results (plan 52 section 8.3, gh-159).
+type batchGroup struct {
+	specs    []runSpec
+	union    runSpec
+	unionRes runResult
+	batched  bool // the union run was usable and serves every spec
+	per      []runResult
+}
+
+// batch runs the specs of one phase (T5 at B, or T7 at HEAD) with one run per target when a target has
+// several distinct specs. A union run that is not clean is discarded and each spec runs on its own, so the
+// verdicts are those of the unbatched algorithm.
+type batch struct {
+	c        *checker
+	sha      string
+	baseline bool
+	groups   []*batchGroup
+	index    map[string][2]int // spec key -> group, position
+}
+
+func newBatch(c *checker, sha string, baseline bool, specs []runSpec) *batch {
+	b := &batch{c: c, sha: sha, baseline: baseline, index: map[string][2]int{}}
+	byTarget := map[string]int{}
+	for _, s := range specs {
+		if _, ok := b.index[s.key()]; ok {
+			continue
+		}
+		gi, ok := byTarget[s.target]
+		if !ok {
+			gi = len(b.groups)
+			byTarget[s.target] = gi
+			b.groups = append(b.groups, &batchGroup{})
+		}
+		g := b.groups[gi]
+		b.index[s.key()] = [2]int{gi, len(g.specs)}
+		g.specs = append(g.specs, s)
+	}
+	for _, g := range b.groups {
+		g.per = make([]runResult, len(g.specs))
+		if len(g.specs) > 1 {
+			g.union = unionSpec(g.specs)
+		}
+	}
+	return b
+}
+
+// unionSpec is the target with the sorted, de-duplicated union of the package patterns and no -run filter;
+// a spec without packages makes the union run without packages.
+func unionSpec(specs []runSpec) runSpec {
+	u := runSpec{target: specs[0].target}
+	seen := map[string]bool{}
+	for _, s := range specs {
+		if len(s.pkgs) == 0 {
+			u.pkgs = nil
+			return u
+		}
+		for _, p := range s.pkgs {
+			if !seen[p] {
+				seen[p] = true
+				u.pkgs = append(u.pkgs, p)
+			}
+		}
+	}
+	sort.Strings(u.pkgs)
+	return u
+}
+
+// clean reports whether a union run may stand in for the runs of the individual specs.
+func clean(r runResult) bool {
+	return r.exit == 0 && !r.missing && !r.skipped && !r.fallback && !r.build
+}
+
+// first returns the first wave of runs: the single spec of a one-spec target, the union of the others.
+func (b *batch) first() []func() error {
+	var tasks []func() error
+	for _, g := range b.groups {
+		if len(g.specs) == 1 {
+			tasks = append(tasks, func() (err error) {
+				g.per[0], err = b.c.execute(b.sha, g.specs[0], b.baseline)
+				return err
+			})
+			continue
+		}
+		tasks = append(tasks, func() (err error) {
+			g.unionRes, err = b.c.execute(b.sha, g.union, b.baseline)
+			g.batched = err == nil && clean(g.unionRes)
+			return err
+		})
+	}
+	return tasks
+}
+
+// second returns the fallback runs, one per spec of every target whose union run was not usable. It must be
+// called after the tasks of first have finished.
+func (b *batch) second() []func() error {
+	var tasks []func() error
+	for _, g := range b.groups {
+		if len(g.specs) == 1 || g.batched {
+			continue
+		}
+		for i := range g.specs {
+			tasks = append(tasks, func() (err error) {
+				g.per[i], err = b.c.execute(b.sha, g.specs[i], b.baseline)
+				return err
+			})
+		}
+	}
+	return tasks
+}
+
+// result is the run result that stands for spec once both waves have finished.
+func (b *batch) result(s runSpec) runResult {
+	ix := b.index[s.key()]
+	g := b.groups[ix[0]]
+	if g.batched {
+		return g.unionRes
+	}
+	return g.per[ix[1]]
 }

@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"strange.company/sc/internal/lint/tdd"
 )
@@ -26,7 +27,12 @@ func tddMain(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	rep, err := tdd.Check(tdd.Options{Root: *root, Base: *base, Head: *head, Branch: *branch, Author: *author, ProvenanceBound: *bound})
+	jobs, err := tddJobs(os.Getenv("TDD_JOBS"))
+	if err != nil {
+		fmt.Fprintf(stderr, "sc-lint tdd-discipline: %v\n", err)
+		return 2
+	}
+	rep, err := tdd.Check(tdd.Options{Root: *root, Base: *base, Head: *head, Branch: *branch, Author: *author, ProvenanceBound: *bound, Jobs: jobs})
 	if err != nil {
 		fmt.Fprintf(stderr, "sc-lint tdd-discipline: %v\n", err)
 		return 2
@@ -56,4 +62,21 @@ func tddMain(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+// tddJobs parses TDD_JOBS: empty means the default (0), otherwise a positive decimal integer.
+func tddJobs(v string) (int, error) {
+	if v == "" {
+		return 0, nil
+	}
+	for _, r := range v {
+		if r < '0' || r > '9' {
+			return 0, fmt.Errorf("TDD_JOBS=%q: must be a positive decimal integer", v)
+		}
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 1 {
+		return 0, fmt.Errorf("TDD_JOBS=%q: must be a positive decimal integer", v)
+	}
+	return n, nil
 }
