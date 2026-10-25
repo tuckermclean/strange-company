@@ -44,6 +44,8 @@ type Options struct {
 	Env    []string
 	// ProvenanceBound says the Runner binds agent/* branches to a task (CD-58b); only then are they excluded.
 	ProvenanceBound bool
+	// SC-STUB(gh-159 159-AC-4)
+	Jobs int
 }
 
 // Finding is one failure or warning: a code such as TDD_NO_RED_COMMIT, the commit it concerns (may be
