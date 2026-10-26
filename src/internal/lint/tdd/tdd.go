@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // Policy is `spec.tddDiscipline` of policy/ci.yaml (plan 52 section 8.3).
@@ -44,6 +45,10 @@ type Options struct {
 	Env    []string
 	// ProvenanceBound says the Runner binds agent/* branches to a task (CD-58b); only then are they excluded.
 	ProvenanceBound bool
+	// Jobs is the number of target runs that may be in flight at once (plan 52 section 8.3, gh-159). A value
+	// <= 0 means the default, min(runtime.NumCPU(), 4); 1 runs sequentially. Findings and the report do not
+	// depend on it.
+	Jobs int
 }
 
 // Finding is one failure or warning: a code such as TDD_NO_RED_COMMIT, the commit it concerns (may be
@@ -141,14 +146,14 @@ type checker struct {
 	rep     *Report
 	tmp     string
 	nwt     int
+	idMu    sync.Mutex // guards tmp and nwt
+	wtMu    sync.Mutex // serializes git worktree add and remove
 	behav   []*regexp.Regexp
 	tests   []*regexp.Regexp
 	baseSHA string // B, the merge base
 	headSHA string
-	// baselines caches the baseline result by run key.
-	baselines map[string]runResult
-	pending   []headCheck
-	commits   []commitInfo
+	pending []headCheck
+	commits []commitInfo
 }
 
 // headCheck is a RED commit whose failed tests T7 verifies at HEAD.
@@ -195,7 +200,7 @@ func Check(opts Options) (Report, error) {
 	if opts.Base == "" {
 		return Report{}, errors.New("tdd: no base ref")
 	}
-	c := &checker{opts: opts, root: root, baselines: map[string]runResult{}}
+	c := &checker{opts: opts, root: root}
 	c.rep = &Report{
 		Branch:     opts.Branch,
 		Superseded: []string{},
@@ -477,13 +482,17 @@ func (c *checker) redGreen(commits []commitInfo, all []change) error {
 			}
 		}
 	}
+	var jobs []*redJob
 	for _, ci := range commits {
-		if !c.isRed(ci) {
-			continue
+		if c.isRed(ci) {
+			jobs = append(jobs, c.prepareRed(ci))
 		}
-		if err := c.evaluateRed(ci); err != nil {
-			return err
-		}
+	}
+	if err := c.runReds(jobs); err != nil {
+		return err
+	}
+	for _, j := range jobs {
+		c.evaluateRed(j)
 	}
 	c.testModified(commits)
 	if err := c.checkHead(); err != nil {
