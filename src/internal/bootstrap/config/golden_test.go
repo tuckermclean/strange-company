@@ -43,6 +43,17 @@ var emailSet = m{
 	"NOTIFY_SMTP_USERNAME": "fixture-secret-u", "NOTIFY_SMTP_PASSWORD": "fixture-secret-p",
 }
 
+// emailSetWithoutPort is emailSet minus NOTIFY_SMTP_PORT, so the 587 default applies.
+func emailSetWithoutPort() m {
+	out := m{}
+	for k, v := range emailSet {
+		if k != "NOTIFY_SMTP_PORT" {
+			out[k] = v
+		}
+	}
+	return out
+}
+
 var stateSet = m{
 	"S3_CREDENTIAL_MODE": "shared", "S3_STATE_ENDPOINT": "https://state.example.net",
 	"S3_STATE_ACCESS_KEY_ID": "fixture-secret-s1", "S3_STATE_SECRET_ACCESS_KEY": "fixture-secret-s2",
@@ -184,7 +195,7 @@ var defaults = map[string]goldenCase{
 	"S3_ALLOW_UNPROTECTED_STATE":    {base: "existing", want: m{"/spec/objectStorage/allowUnprotectedState": "false"}},
 	"GITHUB_MIRROR_ALLOW_PUBLIC":    {base: "existing", want: m{"/spec/githubMirror/allowPublic": "false"}},
 	"GITHUB_MIRROR_PROTECTION_TIER": {base: "existing", want: m{"/spec/githubMirror/protectionTier": "rulesets"}},
-	"NOTIFY_SMTP_PORT": {base: "existing", set: emailSet, drop: []string{"NOTIFY_WEBHOOK_URL", "NOTIFY_SMTP_PORT"},
+	"NOTIFY_SMTP_PORT": {base: "existing", set: emailSetWithoutPort(), drop: []string{"NOTIFY_WEBHOOK_URL", "NOTIFY_SMTP_PORT"},
 		want: m{"/spec/notifications/email/smtpPort": "587"}},
 	"HEARTBEAT_URL": {base: "existing", want: m{"/spec/notifications/heartbeatUrl": "<nil>"}},
 }
