@@ -2,6 +2,7 @@
 # `e2e-gate` always runs and succeeds iff every selected job succeeded (no required check stuck in "expected").
 # F03 jobs: `toolbox` (images and wrapper on Docker rootful), the engine matrix `toolbox-podman` and `toolbox-selinux`,
 # `toolbox-pull-equivalence` (02-AC-4) and `e2e-k3d` (02-AC-12); `verify-e2e` runs make verify offline twice.
+# F07 job: `worker-component` (the harness-fake image rules and the container-level worker suite, Docker and Podman).
 # Scheduled runs skip a commit that already passed a scheduled run, using a cache marker keyed by the
 # commit SHA rather than a query of earlier runs, so no permission beyond `contents: read` is needed (CD-52).
 name: e2e
@@ -32,6 +33,7 @@ jobs:
       toolbox: ${{ steps.select.outputs.toolbox }}
       verify-e2e: ${{ steps.select.outputs.verify_e2e }}
       cluster: ${{ steps.select.outputs.e2e_k3d }}
+      worker: ${{ steps.select.outputs.worker }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -61,11 +63,13 @@ jobs:
           toolbox=true
           verify_e2e=true
           e2e_k3d=true
+          worker=true
           if [ "$EVENT" = pull_request ]; then
             changed=$(git diff --name-only "$BASE_SHA" HEAD)
             toolbox=false
             verify_e2e=false
             e2e_k3d=false
+            worker=false
             # toolbox also selects the engine matrix (toolbox-podman, toolbox-selinux) and toolbox-pull-equivalence.
             if grep -q -e '^toolbox/' -e '^bootstrap$' -e '^test/e2e/wrapper/' -e '^\.github/workflows/e2e\.yaml$' \
               -e '^test/e2e/selinux/' \
@@ -82,16 +86,24 @@ jobs:
               -e '^test/e2e/k3d/' <<<"$changed"; then
               e2e_k3d=true
             fi
+            # F07 Layer 2: the harness images, the worker and fake-harness code, the suite and the ci image it uses.
+            if grep -q -e '^harnesses/' -e '^src/' -e '^test/e2e/worker/' -e '^test/e2e/fake-target/' -e '^toolbox/' \
+              -e '^bootstrap$' -e '^Makefile$' -e '^mk/worker\.mk$' -e '^\.dockerignore$' \
+              -e '^\.github/workflows/e2e\.yaml$' <<<"$changed"; then
+              worker=true
+            fi
           elif [ "$EVENT" = schedule ] && [ "$UNCHANGED" = true ]; then
             toolbox=false
             verify_e2e=false
             e2e_k3d=false
+            worker=false
             echo "skipped: unchanged" >> "$GITHUB_STEP_SUMMARY"
           fi
           {
             echo "toolbox=$toolbox"
             echo "verify_e2e=$verify_e2e"
             echo "e2e_k3d=$e2e_k3d"
+            echo "worker=$worker"
           } >> "$GITHUB_OUTPUT"
 
   toolbox:
@@ -290,8 +302,55 @@ jobs:
       - name: Toolbox image in a restricted Pod
         run: test/e2e/k3d/run
 
+  # 28-AC-3 and the container-level worker evidence (27-AC-1, 27-AC-5, 27-AC-16, 27-AC-24, real ssh), F07 brief D3/D4.
+  worker-component:
+    needs: changes
+    if: needs.changes.outputs.worker == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [docker, podman]
+    env:
+      SC_ENGINE: ${{ matrix.engine }}
+      SC_CONTAINER_ENGINE: ${{ matrix.engine }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # The hosted image ships unused SDKs; the ci and harness-fake images need about 10 GB with their build cache.
+      - name: Free runner disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          docker image prune -af
+          df -h /
+
+      # Ubuntu 24.04 restricts unprivileged user namespaces through AppArmor; rootless Podman needs them and a
+      # subordinate id range for the runner user.
+      - name: Enable rootless Podman
+        if: matrix.engine == 'podman'
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          grep -q "^$(id -un):" /etc/subuid || echo "$(id -un):100000:65536" | sudo tee -a /etc/subuid
+          grep -q "^$(id -un):" /etc/subgid || echo "$(id -un):100000:65536" | sudo tee -a /etc/subgid
+          podman system migrate
+          podman info --format '{{.Host.Security.Rootless}}'
+
+      - name: harness-fake image rules (28-AC-3)
+        run: make harness-image-test IMAGE=harness-fake
+
+      - name: Container-level worker suite
+        run: make test-worker-component
+
   e2e-gate:
-    needs: [changes, toolbox, verify-e2e, toolbox-podman, toolbox-selinux, toolbox-pull-equivalence, e2e-k3d]
+    needs: [changes, toolbox, verify-e2e, toolbox-podman, toolbox-selinux, toolbox-pull-equivalence, e2e-k3d,
+      worker-component]
     if: always()
     runs-on: ubuntu-24.04
     permissions:
@@ -307,11 +366,13 @@ jobs:
           TOOLBOX_SELINUX: ${{ needs.toolbox-selinux.result }}
           PULL_EQUIVALENCE: ${{ needs.toolbox-pull-equivalence.result }}
           E2E_K3D: ${{ needs.e2e-k3d.result }}
+          WORKER: ${{ needs.worker-component.result }}
         run: |
           echo "changes=$CHANGES toolbox=$TOOLBOX verify-e2e=$VERIFY_E2E toolbox-podman=$TOOLBOX_PODMAN"
           echo "toolbox-selinux=$TOOLBOX_SELINUX toolbox-pull-equivalence=$PULL_EQUIVALENCE e2e-k3d=$E2E_K3D"
+          echo "worker-component=$WORKER"
           [ "$CHANGES" = success ] || exit 1
-          for r in "$TOOLBOX" "$VERIFY_E2E" "$TOOLBOX_PODMAN" "$TOOLBOX_SELINUX" "$PULL_EQUIVALENCE" "$E2E_K3D"; do
+          for r in "$TOOLBOX" "$VERIFY_E2E" "$TOOLBOX_PODMAN" "$TOOLBOX_SELINUX" "$PULL_EQUIVALENCE" "$E2E_K3D" "$WORKER"; do
             case $r in
               success | skipped) ;;
               *) exit 1 ;;

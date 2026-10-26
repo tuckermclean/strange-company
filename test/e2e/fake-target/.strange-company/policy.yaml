@@ -1,0 +1,11 @@
+# Repository policy of the fake-target fixture (plan 28 section 14.5).
+apiVersion: strange.company/v1alpha1
+kind: RepositoryPolicy
+metadata:
+  name: fake-target
+spec:
+  testPaths: ["**/*_test.go", "testdata/**"]
+  protectedPaths:
+    - "AGENTS.md"
+    - ".strange-company/**"
+    - ".woodpecker/**"

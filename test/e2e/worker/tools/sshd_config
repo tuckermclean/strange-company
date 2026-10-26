@@ -1,0 +1,12 @@
+# sshd of the infra container: key-only access for the user git, nothing else.
+Port 22
+HostKey /state/ssh_host_ed25519_key
+AuthorizedKeysFile /state/authorized_keys
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+UsePAM no
+StrictModes no
+AllowUsers git
+PidFile none
+LogLevel VERBOSE

@@ -1,0 +1,18 @@
+# Validation commands of the fake-target fixture (plan 28 section 14.5): offline Go tests only.
+apiVersion: strange.company/v1alpha1
+kind: RepositoryValidation
+metadata:
+  name: fake-target
+spec:
+  verification:
+    image: "docker.io/library/golang@sha256:2d658507a011f1eadc0114d7a421b312b2e77d9042a24036a26e267cc9231677"
+    suites:
+      - name: unit
+        adapter: junit-xml
+        language: go
+        argv: [go, test, "./..."]
+        report: {path: out/sc-verify/unit.xml}
+        timeoutSeconds: 300
+        phases: [red, green]
+  local:
+    - {name: unit, argv: [go, test, "./..."], timeoutSeconds: 300}

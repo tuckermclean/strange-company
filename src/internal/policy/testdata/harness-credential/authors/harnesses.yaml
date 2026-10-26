@@ -1,0 +1,33 @@
+# S1-F2 fixture: non-credential extra property authors
+"apiVersion": "strange.company/v1alpha1"
+"kind": "HarnessRegistry"
+"metadata":
+  "name": "default"
+"spec":
+  "harnesses":
+    "claude":
+      "displayName": "Claude Code"
+      "adapter": "claude-code"
+      "image": "git.example.org/strange-company/harness-claude-code@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      "cliVersion": "2.1.290"
+      "authors": "someone"
+      "apiFamilies":
+      - "anthropic-messages"
+      "supportedRoles":
+      - "implementer"
+      "gateway":
+        "baseUrlEnv":
+          "anthropic-messages": "ANTHROPIC_BASE_URL"
+        "tokenDelivery":
+          "mode": "env"
+          "envVar": "ANTHROPIC_API_KEY"
+      "capabilities":
+        "terminalResultEvent": true
+        "permissionDenialReport": true
+        "toolAllowlist": true
+        "ignoresRepoConfig": true
+      "signature":
+        "keyRef": "cosign:strange-company/release"
+        "required": true
+      "enabled": true
+      "stage": "production"

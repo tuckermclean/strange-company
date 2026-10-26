@@ -1,0 +1,800 @@
+# Harness registry (plan 28 section 9.1, section 18; decision D6).
+# The image digests below are placeholders (repeated hex digits) until plan 23's first trusted build
+# replaces them with real, signed digests. `claude` is disabled until R01; every fake-<scenario> entry
+# is test-only and shares one harness-fake image.
+apiVersion: strange.company/v1alpha1
+kind: HarnessRegistry
+metadata: {name: default}
+spec:
+  testRepositories: [sc-e2e/fake-target]
+  harnesses:
+    claude:
+      displayName: Claude Code
+      adapter: claude-code
+      image: git.example.org/strange-company/harness-claude-code@sha256:1111111111111111111111111111111111111111111111111111111111111111
+      cliVersion: 0.0.0-placeholder
+      apiFamilies: [anthropic-messages]
+      supportedRoles: [researcher, planner, tester, implementer, reviewer]
+      gateway:
+        baseUrlEnv: {anthropic-messages: ANTHROPIC_BASE_URL}
+        tokenDelivery: {mode: env, envVar: ANTHROPIC_API_KEY}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: true, toolAllowlist: true, ignoresRepoConfig: true, reportsUsage: true}
+      defaults:
+        permissionMode: dontAsk
+        allowedTools: [Read, Edit, Write, Glob, Grep, "Bash(go test *)", "Bash(go build *)", "Bash(go vet *)", "Bash(make test*)", "Bash(git status)", "Bash(git diff *)", "Bash(git log *)", "Bash(git show *)"]
+        disallowedTools: [WebFetch, WebSearch, Task, NotebookEdit, "mcp__*", "Bash(git push *)", "Bash(git commit *)", "Bash(git fetch *)", "Bash(git pull *)", "Bash(git remote *)", "Bash(git config *)", "Bash(curl *)", "Bash(wget *)", "Bash(ssh *)"]
+        extraArgs: [--bare, --strict-mcp-config, --no-session-persistence]
+        environment:
+          CLAUDE_CODE_ENABLE_TELEMETRY: "0"
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+          DISABLE_AUTOUPDATER: "1"
+          DISABLE_TELEMETRY: "1"
+          DISABLE_ERROR_REPORTING: "1"
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: false
+      stage: production
+    fake-success:
+      displayName: Fake harness, scenario success
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [researcher, planner, tester, implementer, reviewer]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: success}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only
+    fake-failure:
+      displayName: Fake harness, scenario failure
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [researcher, planner, tester, implementer, reviewer]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: failure}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only
+    fake-timeout:
+      displayName: Fake harness, scenario timeout
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [researcher, planner, tester, implementer, reviewer]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: timeout}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only
+    fake-deadline-exceeded:
+      displayName: Fake harness, scenario deadline-exceeded
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [researcher, planner, tester, implementer, reviewer]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: deadline-exceeded, disableWorkerTimeout: true}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only
+    fake-blocked:
+      displayName: Fake harness, scenario blocked
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [researcher, planner, tester, implementer, reviewer]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: blocked}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only
+    fake-push:
+      displayName: Fake harness, scenario push
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [tester, implementer]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: push}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only
+    fake-push-no-result:
+      displayName: Fake harness, scenario push-no-result
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [tester, implementer]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: push-no-result}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only
+    fake-malformed-result:
+      displayName: Fake harness, scenario malformed-result
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [researcher, planner, tester, implementer, reviewer]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: malformed-result}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only
+    fake-malformed-handoff:
+      displayName: Fake harness, scenario malformed-handoff
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [researcher, planner, tester, implementer, reviewer]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: malformed-handoff}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only
+    fake-malformed-stream:
+      displayName: Fake harness, scenario malformed-stream
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [researcher, planner, tester, implementer, reviewer]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: malformed-stream}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only
+    fake-claim-missing:
+      displayName: Fake harness, scenario claim-missing
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [researcher, planner, tester, implementer, reviewer]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: claim-missing}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only
+    fake-red-valid:
+      displayName: Fake harness, scenario red-valid
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [tester]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: red-valid}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only
+    fake-red-broken-test:
+      displayName: Fake harness, scenario red-broken-test
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [tester]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: red-broken-test}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only
+    fake-already-satisfied:
+      displayName: Fake harness, scenario already-satisfied
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [tester]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: already-satisfied}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only
+    fake-test-spec-conflict:
+      displayName: Fake harness, scenario test-spec-conflict
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [implementer]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: test-spec-conflict}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only
+    fake-green-after-retry:
+      displayName: Fake harness, scenario green-after-retry
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [implementer]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: green-after-retry}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only
+    fake-test-tamper:
+      displayName: Fake harness, scenario test-tamper
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [implementer]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: test-tamper}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only
+    fake-test-delete:
+      displayName: Fake harness, scenario test-delete
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [implementer]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: test-delete}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only
+    fake-protected-path-edit:
+      displayName: Fake harness, scenario protected-path-edit
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [implementer]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: protected-path-edit}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only
+    fake-push-other-branch:
+      displayName: Fake harness, scenario push-other-branch
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [tester, implementer]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: push-other-branch}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only
+    fake-secret-in-handoff:
+      displayName: Fake harness, scenario secret-in-handoff
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [tester, implementer]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: secret-in-handoff}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only
+    fake-over-budget:
+      displayName: Fake harness, scenario over-budget
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [researcher, planner, tester, implementer, reviewer]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: over-budget}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only
+    fake-spend-loop:
+      displayName: Fake harness, scenario spend-loop
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [researcher, planner, tester, implementer, reviewer]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: spend-loop}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only
+    fake-model-switch:
+      displayName: Fake harness, scenario model-switch
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [researcher, planner, tester, implementer, reviewer]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: model-switch}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only
+    fake-tester-touches-implementation:
+      displayName: Fake harness, scenario tester-touches-implementation
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [tester]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: tester-touches-implementation}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only
+    fake-ignore-cancel:
+      displayName: Fake harness, scenario ignore-cancel
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [researcher, planner, tester, implementer, reviewer]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: ignore-cancel}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only
+    fake-large-diff:
+      displayName: Fake harness, scenario large-diff
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [implementer]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: large-diff}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only
+    fake-not-descendant:
+      displayName: Fake harness, scenario not-descendant
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [implementer]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: not-descendant}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only
+    fake-wrong-commit-claim:
+      displayName: Fake harness, scenario wrong-commit-claim
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [tester, implementer]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: wrong-commit-claim}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only
+    fake-green:
+      displayName: Fake harness, scenario green
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [implementer]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: green}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only
+    fake-red-compile-error:
+      displayName: Fake harness, scenario red-compile-error
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [tester]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: red-compile-error}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only
+    fake-red-with-stub:
+      displayName: Fake harness, scenario red-with-stub
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [tester]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: red-with-stub}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only
+    fake-red-valid-v2:
+      displayName: Fake harness, scenario red-valid-v2
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [tester]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: red-valid-v2}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only
+    fake-test-skip:
+      displayName: Fake harness, scenario test-skip
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [implementer]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: test-skip}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only
+    fake-discovery-config-edit:
+      displayName: Fake harness, scenario discovery-config-edit
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [implementer]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: discovery-config-edit}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only
+    fake-test-env-detection:
+      displayName: Fake harness, scenario test-env-detection
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [implementer]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: test-env-detection}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only
+    fake-review-approve:
+      displayName: Fake harness, scenario review-approve
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [reviewer]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: review-approve}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only
+    fake-review-request-changes:
+      displayName: Fake harness, scenario review-request-changes
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [reviewer]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: review-request-changes}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only
+    fake-review-reject:
+      displayName: Fake harness, scenario review-reject
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [reviewer]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: review-reject}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only
+    fake-adjudicate-test-valid:
+      displayName: Fake harness, scenario adjudicate-test-valid
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [reviewer]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: adjudicate-test-valid}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only
+    fake-adjudicate-test-invalid:
+      displayName: Fake harness, scenario adjudicate-test-invalid
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [reviewer]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: adjudicate-test-invalid}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only
+    fake-judge-docs:
+      displayName: Fake harness, scenario judge-docs
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [tester]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: judge-docs}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only
+    fake-produce-docs:
+      displayName: Fake harness, scenario produce-docs
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [implementer]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: produce-docs}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only
+    fake-permission-denial:
+      displayName: Fake harness, scenario permission-denial
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [tester, implementer]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: permission-denial}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only
+    fake-multi-commit:
+      displayName: Fake harness, scenario multi-commit
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [implementer]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: multi-commit}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only
+    fake-forge-then-push:
+      displayName: Fake harness, scenario forge-then-push
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [tester, implementer]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: forge-then-push}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only
+    fake-golden-update:
+      displayName: Fake harness, scenario golden-update
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [implementer]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: golden-update}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only
+    fake-test-helper-weaken:
+      displayName: Fake harness, scenario test-helper-weaken
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [implementer]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: test-helper-weaken}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only
+    fake-new-test-monkeypatch:
+      displayName: Fake harness, scenario new-test-monkeypatch
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [implementer]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: new-test-monkeypatch}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only
+    fake-nested-module-hide:
+      displayName: Fake harness, scenario nested-module-hide
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [implementer]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: nested-module-hide}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only
+    fake-phase-conditional-test:
+      displayName: Fake harness, scenario phase-conditional-test
+      adapter: fake
+      image: git.example.org/strange-company/harness-fake@sha256:3333333333333333333333333333333333333333333333333333333333333333
+      cliVersion: 0.1.0
+      apiFamilies: [fake]
+      supportedRoles: [tester]
+      gateway:
+        baseUrlEnv: {fake: SC_FAKE_GATEWAY_URL}
+        tokenDelivery: {mode: env, envVar: SC_FAKE_GATEWAY_TOKEN}
+      capabilities: {terminalResultEvent: true, permissionDenialReport: false, toolAllowlist: false, ignoresRepoConfig: true}
+      fake: {scenario: phase-conditional-test}
+      signature: {keyRef: cosign:strange-company/release, required: true}
+      enabled: true
+      stage: test-only

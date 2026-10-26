@@ -290,6 +290,11 @@ func check(dir string, opts Options) (string, map[string]Resource, []Issue) {
 			bad = true
 			for _, e := range verr {
 				add(CodeSchemaInvalid, e[0], f.path, e[1])
+				if kind == "HarnessRegistry" {
+					if code := harnessSchemaCode(e[0], e[1]); code != CodeSchemaInvalid {
+						add(code, e[0], f.path, e[1])
+					}
+				}
 			}
 		}
 		meta, _ := m["metadata"].(map[string]any)

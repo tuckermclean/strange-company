@@ -983,3 +983,175 @@ Follow-ups (not blocking GATE-F06):
   - the replay is detectable (design residual of G9);
   - a fake `--- PASS` for a non-existent test is observable (SI-07 reviewer-packet statement).
 - **Test-only:** `TestBuildManifest_CumulativeGeneration_22AC9` aliases a slice (harmless; needs operator approval to fix).
+
+### F07 — worker-sdk-and-fake-harness
+
+Branch `node/F07-worker-sdk-and-fake-harness`, built with `/sc-node F07` from `main` e62ef45 (owning plans `plans/27-worker-contract.md` and `plans/28-harnesses.md`). It adds:
+- `src/internal/worker/**` (bootstrap, Runner client, git operations with a private `GIT_DIR`, context tree, pre-checks and secret scan, shim protocol, framer, result assembly, adapters `claude-code` and `fake`, self-test) and `src/cmd/sc-worker` (`run`, `shim`, `selftest`);
+- `src/internal/scrub/**`, `src/internal/clock` (D5), `src/internal/fakeharness/**` and `src/cmd/sc-fake-harness` (all 51 scenarios of plan 28 §14.4);
+- `policy/harnesses.yaml` (`claude` disabled + one `fake-<scenario>` entry per enum value) and the F04 loader codes for it;
+- the `harness-fake` image (`harnesses/fake/`), the host-run tier-E targets `harness-image-test` and `test-worker-component` (`mk/worker.mk`, Makefile host-only branch), the Layer-2 suite `test/e2e/worker/run`, the fixture `test/e2e/fake-target/`, and the e2e job `worker-component` (Docker and rootless Podman).
+
+Test layers (brief D3): Layer 1 is `make test` (tier V, offline, no engine; every RED target). Layer 2 is `make harness-image-test IMAGE=harness-fake` and `make test-worker-component` (tier E, never a red target).
+
+Slices: S1 registry and embedded schemas; S2 scrub, result, adapters, exit codes; S3 git operations and pre-checks; S4 shim, framer, timeout, stdin; S5a private GIT_DIR; S5b scrubbing in the stream path; S5c symlink safety; S6a scenario table, gateway counts, env isolation, self-test; S6b skip_fold/hostile knobs; S6c secret scan of path names and the 16 MiB cap; S6d Layer 2 (image, targets, suite, CI job); S6e passwd entry. S5 and S6 were re-sliced by the orchestrator as findings arrived; S6e was opened by the operator after S6d spent its four attempts.
+
+**Status: every slice approved by its last review; every GATE-F07 criterion has passing evidence below.**
+
+Decisions (orchestrator under the operator's standing delegation unless marked operator; full text in `out/sc-node/F07/brief.md` and `progress.md`):
+- **D1–D9 (brief):** paths under plan 01 §6.2 (`src/internal/worker/**`; 27-AC-1 reads `./src/internal/worker/... ./src/internal/scrub/... ./src/cmd/sc-worker/... ./src/cmd/sc-fake-harness/...`); fake image in `harnesses/fake/` (D2; plan 28 §4 says `images/harness-fake/`); two test layers with injectable path roots and a fake-ssh seam (D3); `test-worker-component` is tier E (D4; plan 01 §8 lists no tier); `clock.Clock` everywhere (D5); digest-pinned registry placeholders until plan 23 (D6); fixture files matching protected globs are written at build time from Go constants (D7); hostile knobs implemented, Runner-side effects are C02 (D8); 27-AC-13's literal 400 KiB only at unit level because HarnessClaim `maxLength` is 65536 (D9).
+- **OD1, OD2:** own S1 RED corrected (own `HARNESS_*` code required, generic `POLICY_SCHEMA_INVALID` may accompany); `sk-` needs a non-alphanumeric left boundary (report to plan 34).
+- **Operator (2026-10-23): private GIT_DIR.** All post-harness git runs against config/HEAD/refs/index in `/var/sc/private`, objects through alternates to the workspace store; restore and `git_internals_restored` stay as defence in depth. Deviation from plan 27 §13.3/§11 (amendment proposed in the PR).
+- **OD-S5a:** an unreadable or corrupt workspace branch ref means "no harness commits"; `head_not_descendant` only for a readable non-descendant sha.
+- **OD-S5b:** known_hosts content is in the exact-match scrub set (27-AC-4; plan 27 §13.4 omits it).
+- **OD-S6a:** the 27-AC-5 dump is unconditional (`out/env.txt`, `out/files.txt`); `selftest` takes an injectable `SelfTestEnv` (read-only dirs `/ /etc /var /opt /bin /home /usr`); `disable_cancel` ignores a heartbeat cancel while SIGTERM still exits 143; `malformed-result`/`malformed-handoff` → 422 → exit 4; `push-no-result` → exit 0 and no POST; the shim's descendant sweep runs before `res-<n>` is published. OD-S6a-2/-3: two own-RED corrections (a36273a: the brief miscounted 52 scenarios, the enum has 51; 87f3577: a round-1 test superseded by serialised shim jobs).
+- **OD-S6b-1:** `settleBound` 3.1 s is a heuristic; a D-state leader or WaitDelay residual can exceed it, which can only misreport advisory validation.
+- **OD-S6d-1:** the Layer-2 build passes `--build-arg SC_INPUTS_ID12=<first 12>`; the Containerfile stamps both the binary and the `strange.company/sc-worker-version` label from it, because buildah 1.33.2 (ubuntu-24.04) rejects every `%`/`#` substitution. The own static test was corrected to accept that form (da9ad7a); the runtime label check stays authoritative.
+- **Operator (2026-10-23): the e2e job is added in this PR.** The orchestrator wrote it (09db760; role agents may not edit `.github/**`).
+- **Operator (2026-10-24): S6e** opened with a fresh budget after S6d's four implementer attempts.
+- **Implementer decisions accepted by review:** any 4xx except 429 on the result POST → exit 4; packet backoff of 8 delays; exact-match scrub ignores secrets under 8 characters; a real-time git transport watchdog (`clock.Real{}`, 10 s without a live child) plus `WaitDelay` 3 s; a 50 ms forged-result poll; serialised shim jobs (lowest-numbered request first, foreign requests absorbed and flagged); `permission_denials` caps 100/120/300; `over-budget` cap 10000; fake scenario file contents; test seams `SC_FAKE_FORGE_RESULT_URL` and `SC_FAKE_FORGE_PUSH_REMOTE`; pre-planted res/stream/cancel/tmp checks; `ProcPids` excludes pids ≤ 1; `writeRelReplace` (tmp + renameat, ≤ 8 EEXIST retries); `.sc-shim` mode 0770 check; `push_extra_refs` pushes `main` first and logs `fake_push_main_accepted`; `parent_override` via `reset --soft` in the private GIT_DIR with post-commit checks against `base_commit`; `skip_fold` scans every published commit and fails closed on merges or more than 100 commits; path names are scanned from the `diff --git`, `rename to`, `copy to` and `+++` headers.
+
+#### S1 — registry and embedded schemas (28-AC-1, 28-AC-2, 27-AC-14)
+
+| Commit | Role |
+|---|---|
+| dd8bfd9, 21ee990 → fe437c3 | RED (20 fail) + RED correction (OD1) → attempt 1 test_spec_conflict, attempt 2. CI [39888497514](https://github.com/tuckermclean/strange-company/actions/runs/39888497514) success |
+| — | review 1 request_changes (fake-deadline-exceeded lacks `disableWorkerTimeout`; credential heuristic) → folded into S2 |
+
+#### S2 — scrub, result, adapters, exit codes (27-AC-13, 28-AC-5, 28-AC-6, 27-AC-2, 27-AC-17)
+
+| Commit | Role |
+|---|---|
+| bc43532 → af45d59, 013167d | RED (incl. S1 findings) → attempt 1. CI [39893946147](https://github.com/tuckermclean/strange-company/actions/runs/39893946147) success |
+| 5315d96 → eb89131, 37edf66 | review 1 request_changes (PEM armor lines; `sk-` boundary, OD2) → RED → attempt 2 + own-test chore (`time.After` → context). CI [39898934252](https://github.com/tuckermclean/strange-company/actions/runs/39898934252) success |
+| 0c29847 → 4fdbe4a, 1f99e07 | review 2 request_changes (JSON-escaped `sk-`) → RED → attempt 3 (+ gofmt chore; CI [39900583356](https://github.com/tuckermclean/strange-company/actions/runs/39900583356) failed on fmt). CI [39901155129](https://github.com/tuckermclean/strange-company/actions/runs/39901155129) success |
+| — | review 3 **approve** at 4fdbe4a |
+
+#### S3 — git operations and pre-checks (27-AC-6..10, 27-AC-12)
+
+| Commit | Role |
+|---|---|
+| 91c5fe6 → da7c47b | RED (19 fail) → attempt 1. CI [39906216377](https://github.com/tuckermclean/strange-company/actions/runs/39906216377) success |
+| ed5f6ea → a43c203 | review 1 request_changes (`.git/commondir` bypass; missing HEAD walks to parent repo; `++ ` line evades the scan) → RED → attempt 2. CI [39909079390](https://github.com/tuckermclean/strange-company/actions/runs/39909079390) success |
+| — | review 2 **approve** at a43c203 |
+
+#### S4 — shim, framer, timeout, stdin (27-AC-3, 27-AC-11, 27-AC-15, 27-AC-16)
+
+| Commit | Role |
+|---|---|
+| b960402 → 884501d | RED → attempt 1. CI [39915880741](https://github.com/tuckermclean/strange-company/actions/runs/39915880741) success |
+| 8512bb4 → 0155724 | review 1 request_changes (pod-deletion SIGTERM: shim kept the full grace, END lost); operator decision private GIT_DIR (S5a) → RED → attempt 2. CI [39968687741](https://github.com/tuckermclean/strange-company/actions/runs/39968687741) success |
+| — | review 2 **approve** at 0155724 |
+
+#### S5a — private GIT_DIR (operator decision; 27-AC-9, 27-AC-10, 27-AC-12)
+
+| Commit | Role |
+|---|---|
+| de2e5fd → fb644e4 | RED (forged-result race, corrupt workspace state, lying commit-graph; OD-S5a) → attempt 1. CI [39974762819](https://github.com/tuckermclean/strange-company/actions/runs/39974762819) success |
+| ba4297e → 61138f3 | review 1 request_changes (`--text` on the partial diff broke §14.13 binary-free) → RED → attempt 2. CI [39982271176](https://github.com/tuckermclean/strange-company/actions/runs/39982271176) success |
+| — | review 2 **approve** at 61138f3 |
+
+#### S5b — scrubbing in the stream path (27-AC-4)
+
+| Commit | Role |
+|---|---|
+| fcf73d3 → cf7ca12 | RED (8 fail; OD-S5b) → attempt 1. CI [39988616765](https://github.com/tuckermclean/strange-company/actions/runs/39988616765) failure |
+| bc492ef → 6984a9f | review 1 request_changes (unbounded drain stalls sc-worker) → RED → attempt 2. CI [39997005268](https://github.com/tuckermclean/strange-company/actions/runs/39997005268) success |
+| — | review 2 **approve** at 6984a9f |
+
+#### S5c — symlink safety (27-AC-24)
+
+| Commit | Role |
+|---|---|
+| e42f05c → c75e21e | RED (18 fail; forged loose start commit found) → attempt 1. CI [40006344088](https://github.com/tuckermclean/strange-company/actions/runs/40006344088) success |
+| b673a0a → a69c01b | review 1 request_changes (flaky own test; `/workspace/repo` path-based) → RED → attempt 2. CI [40015860397](https://github.com/tuckermclean/strange-company/actions/runs/40015860397) success |
+| dff50d1 → 35ab25a | review 2 request_changes (own-test no-op op; arm64 build broken by `SYS_NEWFSTATAT`) → RED → attempt 3. CI [40021646527](https://github.com/tuckermclean/strange-company/actions/runs/40021646527) success |
+| — | review 3 **approve** at 35ab25a |
+
+#### S6a — scenario table, gateway counts, env isolation, self-test (28-AC-4, 28-AC-7, 27-AC-5 Layer 1, 28-AC-3 self-test)
+
+| Commit | Role |
+|---|---|
+| 8872d1f, a36273a → dd5db51 | RED (63 fail; OD-S6a) + RED correction (51 scenarios) → attempt 1 (test_spec_conflict, re-applied after the correction). CI [40043554068](https://github.com/tuckermclean/strange-company/actions/runs/40043554068) success |
+| 362408c → 243d606 | review 1 request_changes (forged concurrent shim job survives the sweep) → RED → attempt 2. CI [40051183071](https://github.com/tuckermclean/strange-company/actions/runs/40051183071) failure (`restore config: file exists`) |
+| 4cb1b7f, 87f3577 → edc82de | review 2 request_changes (request planted at harness exit runs after the sweep) + the CI EEXIST race → RED + own-test supersession (OD-S6a-3) → attempt 3. CI [40060552533](https://github.com/tuckermclean/strange-company/actions/runs/40060552533) success |
+| — | review 3 **approve** at edc82de |
+
+#### S6b — hostile knobs and live-forged results (28 §14.4 knobs, S6a-r3 F1–F3)
+
+| Commit | Role |
+|---|---|
+| fd6bf99 → aea8454 | RED (8 fail) → attempt 1. CI [40068641162](https://github.com/tuckermclean/strange-company/actions/runs/40068641162) success |
+| 7dd1ba1 → 61da515 | review 1 request_changes (`skip_fold` skipped secret scan and pre-checks) → RED → attempt 2. CI [40076180942](https://github.com/tuckermclean/strange-company/actions/runs/40076180942) success |
+| 5150c5c → 9a92b15 | review 2 request_changes (`skip_fold` published unscanned intermediate commits, merges, messages) → RED → attempt 3. CI [40083710635](https://github.com/tuckermclean/strange-company/actions/runs/40083710635) success |
+| — | review 3 **approve** at 9a92b15 |
+
+#### S6c — secret in path names, 16 MiB git output cap (27-AC-12)
+
+| Commit | Role |
+|---|---|
+| 2800f37 → 16f7566 | RED (5 fail) → attempt 1 (after the Galaxy outage). CI [40101852411](https://github.com/tuckermclean/strange-company/actions/runs/40101852411) success |
+| 3867610, c255c09 → 6faa528 | review 1 request_changes (path line after a header-only entry skipped) → RED + passing chore (commit-object cap) → attempt 2. CI [40108009654](https://github.com/tuckermclean/strange-company/actions/runs/40108009654) success |
+| — | review 2 **approve** at 6faa528 |
+
+#### S6d — Layer 2: harness-fake image, host-run targets, suite, e2e job (28-AC-3, 27-AC-1, 27-AC-5, 27-AC-16, 27-AC-24, 27-AC-8 over real ssh, plan 27 Q3)
+
+| Commit | Role |
+|---|---|
+| 113bc62 → 57d432f, 09db760 | RED (static image/target rules; suite) → attempt 1 + orchestrator e2e job. verify CI [40113994996](https://github.com/tuckermclean/strange-company/actions/runs/40113994996) success; e2e CI [40113996806](https://github.com/tuckermclean/strange-company/actions/runs/40113996806) failure (cold module cache) |
+| 5f0a297 → 36751d2 | review 1 request_changes (cold module cache; strace split lines fail open) → RED (suite fixes + Go toolchain, run-alone, version label) → attempt 2. verify CI [40117413053](https://github.com/tuckermclean/strange-company/actions/runs/40117413053) success; e2e CI [40117414905](https://github.com/tuckermclean/strange-company/actions/runs/40117414905) failure (Docker tmpfs `noexec`; old buildah rejects the label expansion) |
+| 05b4648, da9ad7a → c2acfd5 | test-infra chores (tmpfs `exec`; OD-S6d-1 label form) → attempt 3 blocked (buildah 1.33.2) → attempt 4 (Opus). verify CI [40120385325](https://github.com/tuckermclean/strange-company/actions/runs/40120385325) success; e2e CI [40120387289](https://github.com/tuckermclean/strange-company/actions/runs/40120387289) failure (Docker: `No user exists for uid 65532`) |
+| — | budget spent (4 attempts) → operator opened S6e |
+
+#### S6e — passwd/group entry for uid 65532 (28-AC-3; Docker, containerd, kubelet)
+
+| Commit | Role |
+|---|---|
+| 6efbb43 → 73c50b4 | RED (static entry check; podman `--passwd=false`; getpwuid/ssh image check) → attempt 1. verify [40128142876](https://github.com/tuckermclean/strange-company/actions/runs/40128142876) success; e2e [40128144364](https://github.com/tuckermclean/strange-company/actions/runs/40128144364) success (one transient k3d image-import failure, re-run); `worker-component` Docker and Podman: image-test 22/0, component 64/0, no GAP |
+| — | review **approve** (S6d round 2 + S6e) at 73c50b4 |
+
+#### F07 — gate evidence
+
+| Criterion | Test(s) / evidence | Status |
+|---|---|---|
+| 27-AC-1 | `test/e2e/worker/run component`: `go test` with `--network none` in the ci image over `./src/internal/worker/... ./src/internal/scrub/... ./src/cmd/sc-worker/... ./src/cmd/sc-fake-harness/...` after a networked `go mod download` (cold cache verified); CI `worker-component` Docker and Podman | pass |
+| 27-AC-2 | `TestWorkerRun_ExitCodes_27AC2` (7 cases incl. 70 via injected panic), `TestWorkerRun_Exit143_OnSIGTERM_27AC2`, `TestWorkerRun_SIGTERMInResultRetryWindowPostsOnce_27AC2_N5` | pass |
+| 27-AC-3 | `TestShim_TimeoutScenario_27AC11_27AC3`, `TestFramer_LogBudget_27AC3`, `TestFramer_LongLineTruncatedAt64KiB_27AC3`, `TestDrain_HarnessCannotStallSCWorker_27AC3`, `TestDrain_SIGTERMWhileStreamIsHuge_27AC3` and the 12 `_27AC3` tests (BEGIN/END per scenario, SIGKILL mid-harness) | pass |
+| 27-AC-4 | `TestScrub_CanariesNeverReachStdoutOrResult_27AC4` (four secret files, PEM block, `sk-ant-`; `redactions` ≥ 6) + S2/S5b scrub suites | pass |
+| 27-AC-5 | Layer 1: `TestEnvIsolation_HarnessEnvironmentDump_27AC5`, `TestRun_DumpsEnvironmentAndFileList_27AC5`; Layer 2: real `/var/run`, `/var/sc` dump in the harness container (exactly the two harness-secret files, gateway token, `HTTPS_PROXY` with the egress token, none of the forbidden values); CI both engines | pass (flat mounts, see disclosures) |
+| 27-AC-6 | `TestPipeline_TesterSuccess_ContextOutsideTree_27AC6`; Layer 2 real-ssh success run (`git show --name-only agent/sc-1`, context mode 0444) | pass |
+| 27-AC-7 | `TestTopology_27AC7` (`branch_exists`, `branch_moved`, readonly ref digest), `TestImplementerContinue_PushesOnTopOfRed_27AC7_27AC8` | pass |
+| 27-AC-8 | `TestCommitFormat_27AC8`, `TestImplementerContinue_PushesOnTopOfRed_27AC7_27AC8`; Layer 2 real-ssh push (subject, trailers, author, parent); plan 27 Q3: a 0440 key owned by 65532 is rejected (`UNPROTECTED PRIVATE KEY FILE`), the 0600 copy is accepted | pass |
+| 27-AC-9 | `TestFold_ThreeHarnessCommits_27AC9`, `TestHarnessHead_PackedRefsFolded_27AC9`, `TestPrivateGitDir_FoldCountSurvivesWorkspaceDamage_27AC9` | pass |
+| 27-AC-10 | `TestHardening_HostileFixture_27AC10`, `TestHardening_CommondirRedirect_27AC10`, `TestHardening_BrokenGitDirFallsBackToParent_27AC10`, `TestPrivateGitDir_*_27AC10` (incl. the forged-result race and the config-rewriter stress) | pass |
+| 27-AC-11 | `TestShim_TimeoutScenario_27AC11_27AC3` (result within 60 + grace + 15 s, `/proc` scan finds no survivor) | pass |
+| 27-AC-12 | `TestPrechecks_OneFixturePerRule_27AC12`, `TestPartialDiff_BinaryFree_27AC12`, `TestPrechecks_LyingCommitGraphCannotHideChange_27AC12`, `TestHarnessHead_NotDescendant_27AC12`, S6b/S6c tests (`skip_fold` per-commit scan, secret in path names incl. after header-only entries, 16 MiB cap fails closed, `max_diff_bytes` named ahead of the cap) | pass |
+| 27-AC-13 | `TestFit_OversizedReportIsTruncated_27AC13`, `TestFit_ResultThatFitsIsNotTruncated_27AC13`, `TestResultFit_OversizedReportEndToEnd_27AC13` (D9) | pass |
+| 27-AC-14 | `TestEmbeddedSchemas_MatchContracts_27AC14` | pass |
+| 27-AC-15 | `TestShim_StdinIsClosed_27AC15` | pass |
+| 27-AC-16 | `TestShim_IgnoresSIGTERM_KilledWithinGrace_27AC16`, `TestShim_ValidationCommandRunsInShim_27AC16`, `TestShim_HarnessOutputOnlyThroughFramer_27AC16`, `TestShimSubcommand_ExitsZeroOnDone_27AC16`; Layer 2: `/proc/self/cgroup` of the validation command differs from sc-worker's (CI both engines; rootless local run prints a GAP and checks hostname and mount namespace), SIGTERM-ignoring harness gone in 5.2 s (< 7 s) | pass |
+| 27-AC-17 | `checkFramed`/`checkFramedResult` in every result-posting component test (`TestWorkerRun_ExitCodes_27AC2`, `TestScenarioTable_PostedResults_28AC4`, git and shim component tests): exactly one block, sha256 equals the posted body | pass |
+| 27-AC-24 | `TestSymlinkSafety_ClaimJSONSymlinkIsClaimAbsent_27AC24`, `TestSymlinkSafety_GitHooksSymlink_WorkspaceTampered_27AC24`, `TestSymlinkSafety_NotesSymlinks_27AC24` + S5c suites; Layer 2: strace of sc-worker (split-line join, 7-case self-test) shows no open resolving a planted link and one `openat2(RESOLVE_NO_SYMLINKS|RESOLVE_BENEATH) = -1 ELOOP` per plant; `/var/sc/private` hash unchanged; CI both engines | pass |
+| 28-AC-1 | `TestHarnessRegistry_CommittedRegistryAccepted_28AC1`, `TestHarnessRegistry_FixturesRejectedWithDistinctCodes_28AC1`, `TestCheck_CommittedHarnessRegistryAccepted_28AC1`, `TestCheck_HarnessRegistryFixtures_28AC1` (7 fixtures, 7 codes) | pass |
+| 28-AC-2 | `TestHarnessRegistry_FakeEntriesMatchScenarioEnum_28AC2` (51 scenarios, one digest, `stage: test-only`) | pass |
+| 28-AC-3 | static: `TestHarnessFakeImage_ContainerfileRules_28AC3`, `_AllowedPackages_28AC3`, `_HasGoToolchain_28AC3`, `_WorkerVersionLabel_28AC3`, `_UserHasPasswdAndGroupEntry_28AC3`, `TestMakeTargets_WorkerLayer2_*_28AC3`, checker guards; `make harness-image-test IMAGE=harness-fake`: uid 65532, `--read-only`, no setuid/setgid (find as root), packages within `harnesses/fake/allowed-packages.txt`, no package manager, `sc-worker selftest` ok, Go toolchain, labels, passwd entry; CI both engines 22/0 | pass (credential scan by listing only) |
+| 28-AC-4 | `TestScenarioTable_PostedResults_28AC4`, `TestScenarioTable_CoversEverySpecifiedScenario_28AC4`, `TestScenarioTable_IgnoreCancel_28AC4`, `TestScenarioTable_IgnoreCancelKnobIgnoresHeartbeatCancel_28AC4` | pass |
+| 28-AC-5 | `TestPrepare_ClaudeCodeGoldens_28AC5`, `TestPrepare_ClaudeCodeExtraArgsNotDuplicated_28AC5_N4` | pass |
+| 28-AC-6 | `TestFakeKnobs_InertForRealAdapters_28AC6` | pass |
+| 28-AC-7 | `TestRun_EveryScenarioCallsTheGateway_28AC7` (51 scenarios; `over-budget` until 403); Layer 2 gateway count | pass |
+| TDD discipline | local `make tdd-discipline-check TDD_BASE=b7a7afc` on the rebased evidence head (checker and policy from base b7a7afc, the gh-159 batched/parallel checker): `tdd-discipline: pass`, 29 RED commits, 37 TDD_RED_TEST_MODIFIED warnings, all for this node's own RED tests and disclosed below, 73 min. The old checker earlier gave the same result and the same warning lines on pre-rebase e6b1aad (base e62ef45, about 5 h) | pass |
+
+Deviations and disclosures:
+- **Plan departures:** private GIT_DIR (operator; plan 27 §13.3/§11); `harnesses/fake/` instead of `images/harness-fake/` (D2); `harness-image-test` and `test-worker-component` run on the host like `make toolbox` (plan 01 §8.1 and CD-64 name only `toolbox`; amendment needed); the secret scan also covers path names (plan 27 line 385 says "added lines"); binary files count toward `max_diff_bytes` and a fold without `reset --soft` drops force-added ignored files (§14.10); known_hosts in the exact-match set; N9: the fake hard-codes `fake-model` (§9.2 has no model channel); `symlink_refused` events carry a `kind` field; the base directory is opened per call, not once at start-up (§13.3).
+- **27-AC-5 file list** holds for flat secret mounts; a kubelet secret volume also exposes `..data` and `..<timestamp>/` entries, so plan 26's Job builder needs `subPath` mounts or the AC wording an amendment.
+- **28-AC-3** checks credentials by file listing only (`trivy`, `skopeo`, `cosign` are not in the ci image). The image deletes the Go standard library's test `*.pem`/`*.key` fixtures to pass the credential look-alike check. Label values `cli-version=fake-0.1.0` and `source=https://strange.company/sc` are placeholders. Image size 465 MB uncompressed (plan 28 §12: ≤ 600 MiB).
+- **27-AC-16** on rootless Podman without cgroup delegation prints a GAP and falls back to hostname and mount-namespace checks; on the GitHub runners (both engines) the real cgroup check ran. The "no bypass line" part is BEGIN/END counts at Layer 2; Layer 1 covers it fully.
+- **Changes to this node's own RED tests after their RED:** 21ee990, 37edf66, bc492ef (runtime-built PEM), b673a0a, dff50d1, a36273a, 87f3577, da9ad7a; additive helper edits in `component_git_support_test.go` and `component_shim_test.go`; Layer-2 test-infrastructure fixes 5f0a297, 05b4648, 6efbb43.
+- **Attempt counts:** S6d used all four implementer attempts (attempt 3 blocked by the buildah limitation, attempt 4 on Opus); the remaining Docker defect became S6e (operator). S2, S5c, S6a and S6b each used three. S1 attempt 1 and S6a attempt 1 stopped on test_spec_conflict.
+- **External outage:** S6c GREEN waited about 100 minutes for galaxy.ansible.com (HTTP 500 on a locked tarball needed by every ci-image rebuild); no workaround was used.
+- **History rewrite:** the first `tdd-discipline-check` on the final head failed with TDD_RED_TARGET_INVALID because two RED trailers quoted their package list (`GO_TEST_PKGS="…"`). The orchestrator reworded only those two lines (no file changed; every commit keeps its tree, author and dates) and force-pushed; the CI runs ran on the pre-rewrite commits with identical trees (old head 7036eb6, local tag `F07-pre-reword`). After #160 (gh-159, the faster checker) merged, the branch was rebased onto `main` b7a7afc without conflicts (local tag `F07-pre-rebase`). Every SHA in this section is post-rebase. The rebased tree differs from the pre-rebase one only by #160's files.
+- **Incident:** the S3 reviewer wrapped `git` in a shell function after the role guard blocked it, to run probes in its scratchpad (repository untouched). Reported to the operator; every later prompt forbids working around a guard block.
+- **Protected and elevated paths changed (human review):** `policy/harnesses.yaml` (+ F04 loader codes), `harnesses/fake/**`, `mk/worker.mk`, `Makefile`, `.github/workflows/e2e.yaml`, `test/e2e/**`. Elevated: `src/internal/worker/**`, `src/cmd/sc-worker/**`, `src/internal/scrub/**`, `src/internal/policy/**`.
+- **Residual risks (threat notes):** a forged result while the harness is alive (shared uid 65532); glued `sk-` keys (`Bearersk-…`); re-added alternates are data only; a PEM armor line with an invalid byte is dropped and the unknown key body survives; TOCTOU on git's own path use; ctime granularity before kernel 6.13; a `skip_fold` intermediate AGENTS.md rewrite (Runner `MULTIPLE_COMMITS` covers it); UTF-16 secrets evade the byte scrubber; drain-skipped data is lost silently; END bytes semantics changed; quoted path names (`core.quotePath`) can hide a secret in a path from the scan; podman without `--passwd` would mask a missing passwd entry again.
+
+Follow-ups (not blocking GATE-F07): S2-FU3 (`\\[A-Za-z]` boundary over-redacts); S4 N6 (res.ID / stale files), N7 (T<30→30, UTF-8 cut, lookPath fallback), NB-c; S5a N3 (64 Mi private dir ENOSPC; plan §11 row), N8 (SHA-1 vs 64-hex); S5b N4, N6, N-b; S5c N4, N5, N6, r3 F5; S6a-r3 F4; S6c N2 (`-z` name-status path scan); unused `forge-job` op and a near-duplicate test; 28-R-5 pipeline-level inertness untested at Layer 1; the empty `oom` file some worker test leaves in the repository root; S6d/S6e review: `test/e2e/worker/run` label regex accepts `in-unknown` for external images, nothing checks that `SC_INPUTS_ID12` is a prefix of `SC_INPUTS_ID` (plan 23 builder), `/usr/local/go` is outside the dpkg SBOM allowlist, and the `IMAGE=%` filter-out in `Makefile` is a no-op.

@@ -15,6 +15,16 @@ ifeq ($(SC_IN_CONTAINER),1)
 $(error make toolbox must be run alone on the host, not inside the container: it drives the container engine, which is never mounted into the images)
 endif
 include mk/toolbox.mk
+else ifneq ($(filter harness-image-test test-worker-component,$(MAKECMDGOALS)),)
+# The tier-E container suite (mk/worker.mk) also runs on the host: test/e2e/worker/run drives the container engine and
+# starts the ci image through ./bootstrap itself. Like make toolbox it is not re-executed in the ci image.
+ifneq ($(filter-out harness-image-test test-worker-component IMAGE=%,$(MAKECMDGOALS)),)
+$(error make harness-image-test and test-worker-component must be run alone (or together): they drive the container engine on the host, so they cannot share a command line with other goals)
+endif
+ifeq ($(SC_IN_CONTAINER),1)
+$(error make $(MAKECMDGOALS) must run on the host, not inside the container: it drives the container engine, which is never mounted into the images)
+endif
+include mk/worker.mk
 else ifneq ($(SC_IN_CONTAINER),1)
 # Container re-exec: every target runs as `make <goals>` in the ci image. The recipe uses a literal
 # `make`, not $(MAKE), so `make -n` prints it instead of recursing.
