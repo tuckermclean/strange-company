@@ -370,3 +370,26 @@ func RenderClusterVars(in ClusterVarsInput) ([]byte, error) {
 	}}
 	return marshal(root)
 }
+
+// Deferred is a generated secret that RenderSOPS did not render, with the reason.
+// SC-STUB(F08 50-AC-10)
+type Deferred struct {
+	Class    string
+	Instance string
+	Path     string
+	Reason   string
+}
+
+// RenderReport is RenderSOPS's files plus every register secret it left out.
+// SC-STUB(F08 50-AC-10)
+type RenderReport struct {
+	Files    []File
+	Deferred []Deferred
+}
+
+// RenderSOPSReport renders like RenderSOPS and also reports every secret with a sops-git or offcluster-sops row
+// that it did not render.
+// SC-STUB(F08 50-AC-10)
+func RenderSOPSReport(cluster string, set *Set, rcp Recipients, enc Encryptor) (*RenderReport, error) {
+	return nil, nil
+}

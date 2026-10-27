@@ -27,6 +27,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"strange.company/sc/internal/bootstrap/redact"
+	"strange.company/sc/internal/clock"
 )
 
 // Error is a refusal with a stable code.
@@ -432,4 +433,11 @@ func RegisterSecrets(red *redact.Redactor, set *Set, passphrase string) {
 			}
 		}
 	}
+}
+
+// GenerateInternalCA returns the internal CA certificate and key as PEM (certificate first) for the cluster and CA
+// generation, valid from the clock's now for ten years.
+// SC-STUB(F08 50-AC-10)
+func GenerateInternalCA(clk clock.Clock, cluster string, generation int) ([]byte, error) {
+	return nil, nil
 }
