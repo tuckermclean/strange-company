@@ -2,7 +2,8 @@
 # `e2e-gate` always runs and succeeds iff every selected job succeeded (no required check stuck in "expected").
 # F03 jobs: `toolbox` (images and wrapper on Docker rootful), the engine matrix `toolbox-podman` and `toolbox-selinux`,
 # `toolbox-pull-equivalence` (02-AC-4) and `e2e-k3d` (02-AC-12); `verify-e2e` runs make verify offline twice.
-# F07 job: `worker-component` (the harness-fake image rules and the container-level worker suite, Docker and Podman).
+# F07 job: `worker-component` (the harness-fake image rules and the container-level worker suite, Docker and Podman);
+# F08 adds `make test-integration` (06-AC-1, the S3 emulator and real tofu legs) to the same job.
 # Scheduled runs skip a commit that already passed a scheduled run, using a cache marker keyed by the
 # commit SHA rather than a query of earlier runs, so no permission beyond `contents: read` is needed (CD-52).
 name: e2e
@@ -88,7 +89,7 @@ jobs:
             fi
             # F07 Layer 2: the harness images, the worker and fake-harness code, the suite and the ci image it uses.
             if grep -q -e '^harnesses/' -e '^src/' -e '^test/e2e/worker/' -e '^test/e2e/fake-target/' -e '^toolbox/' \
-              -e '^bootstrap$' -e '^Makefile$' -e '^mk/worker\.mk$' -e '^\.dockerignore$' \
+              -e '^bootstrap$' -e '^Makefile$' -e '^mk/worker\.mk$' -e '^mk/tofu\.mk$' -e '^infra/tofu/' -e '^\.dockerignore$' \
               -e '^\.github/workflows/e2e\.yaml$' <<<"$changed"; then
               worker=true
             fi
@@ -347,6 +348,11 @@ jobs:
 
       - name: Container-level worker suite
         run: make test-worker-component
+
+      # 06-AC-1 (and the library legs of 06-AC-2/-3/-4/-8): the conformance suite C1-C8 and the encrypted-state checks
+      # against the SeaweedFS emulator and the real tofu, both inside the ci image.
+      - name: State library against the S3 emulator
+        run: make test-integration
 
   e2e-gate:
     needs: [changes, toolbox, verify-e2e, toolbox-podman, toolbox-selinux, toolbox-pull-equivalence, e2e-k3d,
