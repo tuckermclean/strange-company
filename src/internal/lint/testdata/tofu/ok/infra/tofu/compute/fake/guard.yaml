@@ -1,0 +1,13 @@
+apiVersion: strange.company/v1alpha1
+kind: TofuPlanGuard
+metadata:
+  name: compute-fake-destroy
+spec:
+  rootModule: infra/tofu/compute/fake
+  allowedProviders:
+    - registry.opentofu.org/hashicorp/aws
+  resources:
+    - type: terraform_data
+      paid: false
+      allowedActions: [no-op, create, update, delete]
+      maxCount: 3
