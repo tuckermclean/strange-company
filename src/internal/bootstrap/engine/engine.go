@@ -164,6 +164,12 @@ type Engine struct {
 	curStep               string
 
 	crashed bool
+
+	// saveFailed latches the first JOURNAL_CONFLICT / JOURNAL_REMOTE_WRITE_FAILED of the run (plan 50 section 17.3).
+	saveFailed *Result
+	// prevCode is the error code each unit record carried before its current attempt began.
+	prevCode  map[*unitJ]string
+	unitStart time.Time
 }
 
 // New returns an engine for one run.
@@ -310,12 +316,15 @@ func digestOf(ctx context.Context, u Unit) (string, error) {
 // Execute loads the journal (exit 7 on conflict), takes the run lock, runs the pipeline and releases the lock.
 func (e *Engine) Execute(ctx context.Context, p Pipeline, o Options) Result {
 	if res := e.Acquire(ctx); res.Exit != 0 {
+		res.Message = e.red.String(res.Message)
 		return res
 	}
 	res := e.executeLocked(ctx, p, o)
+	res.Message = e.red.String(res.Message)
 	e.uploadLog(ctx)
 	if rel := e.Release(ctx); rel.Exit != 0 && res.Exit == 0 {
 		res = rel
+		res.Message = e.red.String(res.Message)
 	}
 	return res
 }
@@ -726,6 +735,12 @@ func (e *Engine) leaf(ctx context.Context, u Unit, r *unitJ, phaseName string, o
 	if r.InputDigest != nil {
 		lastDigest = *r.InputDigest
 	}
+	if r.Error != nil && r.Error.Code != "" {
+		if e.prevCode == nil {
+			e.prevCode = map[*unitJ]string{}
+		}
+		e.prevCode[r] = r.Error.Code
+	}
 	if r.Status == stFailed && r.Error != nil && r.Attempt >= retryCeiling && lastDigest == d && o.RetryPhase != phaseName {
 		msg := fmt.Sprintf("%s failed %d times with %s and its inputs did not change; change the cause or pass --retry-phase %s",
 			u.Name(), r.Attempt, r.Error.Code, phaseName)
@@ -745,6 +760,7 @@ func (e *Engine) leaf(ctx context.Context, u Unit, r *unitJ, phaseName string, o
 	if res := e.save(ctx); res != nil {
 		return false, res
 	}
+	e.unitStart = e.clk.Now()
 	e.Log("info", "unit-start", u.Name(), map[string]any{"attempt": r.Attempt})
 
 	rctx, cancel := ctx, context.CancelFunc(func() {})
@@ -786,7 +802,7 @@ func (e *Engine) leaf(ctx context.Context, u Unit, r *unitJ, phaseName string, o
 	if onSuccess != nil {
 		onSuccess()
 	}
-	e.Log("info", "unit-done", u.Name(), nil)
+	e.Log("info", "unit-done", u.Name(), map[string]any{"attempt": r.Attempt, "duration_ms": e.sinceUnitStart()})
 	if res := e.save(ctx); res != nil {
 		return true, res
 	}
@@ -815,10 +831,21 @@ func (e *Engine) failUnit(ctx context.Context, u Unit, r *unitJ, onStart func(),
 	}
 	msg = e.red.String(msg)
 	r.Status, r.FinishedAt = stFailed, ptr(e.stamp())
+	if prev := e.prevCode[r]; prev != "" && prev != code {
+		r.Attempt = 1
+	}
 	r.Error = &errJ{Code: code, Message: truncateMessage(msg), Retryable: u.Retryable(err), Procedure: procedure}
-	e.Log("error", "unit-failed", msg, map[string]any{"error_code": code})
+	e.Log("error", "unit-failed", msg, map[string]any{"attempt": r.Attempt, "error_code": code, "duration_ms": e.sinceUnitStart()})
 	if res := e.save(ctx); res != nil {
 		return res
 	}
 	return &Result{Exit: exit, Code: code, Message: msg}
+}
+
+// sinceUnitStart is the injected-clock milliseconds since the current unit attempt began.
+func (e *Engine) sinceUnitStart() int64 {
+	if e.unitStart.IsZero() {
+		return 0
+	}
+	return e.clk.Now().Sub(e.unitStart).Milliseconds()
 }

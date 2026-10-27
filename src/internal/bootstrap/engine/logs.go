@@ -43,6 +43,20 @@ func (e *Engine) Log(level, event, msg string, fields map[string]any) {
 	if e.curStep != "" {
 		rec["step"] = e.curStep
 	}
+	for _, k := range []string{"attempt", "error_code", "duration_ms"} {
+		if v, ok := fields[k]; ok {
+			rec[k] = v
+		}
+	}
+	if len(fields) > 0 {
+		rest := make(map[string]any, len(fields))
+		for k, v := range fields {
+			if k != "attempt" && k != "error_code" && k != "duration_ms" {
+				rest[k] = v
+			}
+		}
+		fields = rest
+	}
 	if len(fields) > 0 {
 		if b, err := json.Marshal(fields); err == nil {
 			dec := json.NewDecoder(bytes.NewReader(b))

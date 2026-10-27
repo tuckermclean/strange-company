@@ -340,7 +340,19 @@ func (e *Engine) flushPending() {
 
 // save writes the journal: local atomic write first, then the S3 PUT with retries (plan 50 section 17.3).
 func (e *Engine) save(ctx context.Context) *Result {
-	ctx = context.WithoutCancel(ctx)
+	if e.saveFailed != nil {
+		r := *e.saveFailed
+		return &r
+	}
+	res := e.doSave(context.WithoutCancel(ctx))
+	if res != nil && (res.Code == "JOURNAL_CONFLICT" || res.Code == "JOURNAL_REMOTE_WRITE_FAILED") {
+		r := *res
+		e.saveFailed = &r
+	}
+	return res
+}
+
+func (e *Engine) doSave(ctx context.Context) *Result {
 	e.flushPending()
 	j := e.jr
 	j.JournalSeq++
