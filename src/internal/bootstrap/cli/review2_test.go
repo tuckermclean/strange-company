@@ -284,4 +284,3 @@ func TestPreflight_PrivateCIDRMustContainEndpoint_50AC35(t *testing.T) {
 	}
 	matches(t, out, `(?m)^PF-28 S3_ENDPOINT_PLACEMENT_UNSUPPORTED \(fail\)`)
 }
-

@@ -13,7 +13,7 @@ words_after_image() { run_line | sed -E "s#^.* $IMG_RE( |\$)##"; }
 # An engine front that records one "A:<arg>" line per argument; an argument with an embedded newline leaves
 # continuation lines that do not start with "A:". It then runs the normal stub engine.
 ARGLOG=$TMP/argv.log
-cp "$HERE/engine-stub.sh" "$TMP/engine-real.sh"
+cp "$HERE/engine-stub-pull.sh" "$TMP/engine-real.sh"
 for e in docker podman; do
 	cat >"$STUBBIN/$e" <<EOT
 #!/bin/sh
