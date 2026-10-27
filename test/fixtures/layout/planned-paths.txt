@@ -93,7 +93,6 @@ make test-certificate-policy
 make test-egress-proxy
 make test-estimator-replay
 make test-firewall-render
-make test-integration
 make test-ledger-queries
 make test-netpol-static
 make test-no-tls-skip
@@ -104,7 +103,6 @@ make test-tdd-library
 make test-worker-component
 make tofu-fixtures
 make tofu-lock
-make tofu-validate
 make toolbox
 make toolbox-pydeps
 make vuln-waivers-check
