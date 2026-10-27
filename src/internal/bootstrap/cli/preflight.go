@@ -99,19 +99,44 @@ func runPreflight(inv Invocation, env map[string]string, stdout, stderr io.Write
 		}
 		envFile = filepath.Join(in, "bootstrap.env")
 	}
+	// PF-01 (the toolbox self-check) comes first and is always printed; PF-06 needs the parsed variables.
 	data, rerr := os.ReadFile(envFile)
+	var vars map[string]string
+	var perr error
+	if rerr == nil {
+		vars, perr = config.ParseEnv(data)
+	}
+	tb := toolbox.ToolboxRows(env, envFile, vars)
+	pf01 := row{PFRow: tb[0]}
+	if pf01.Status == "fail" {
+		pf01.exit = exitPreflight
+	}
+	pf06 := row{PFRow: tb[1]}
+	if pf06.Status == "fail" {
+		pf06.exit = exitPreflight
+	}
+	// stop prints PF-01, the failing PF-02 row and, when more is evaluated, the extra rows. The PF-02 exit code
+	// stands unless another check also failed (any other fail exits 3, plan 50 section 14.2).
+	stop := func(code string, exit int, extra []row, format string, a ...any) int {
+		rows := append([]row{pf01, failRow("PF-02", code, exit, format, a...)}, extra...)
+		out := exit
+		for _, r := range rows {
+			p.row(r.PFRow)
+			if r.ID != "PF-02" && r.Status == "fail" {
+				out = exitPreflight
+			}
+		}
+		return out
+	}
 	if rerr != nil {
 		var pe *os.PathError
 		if errors.As(rerr, &pe) {
 			rerr = pe.Err
 		}
-		p.row(failRow("PF-02", "ENV_FILE_UNREADABLE", exitUsage, "%s: %v", envFile, rerr).PFRow)
-		return exitUsage
+		return stop("ENV_FILE_UNREADABLE", exitUsage, nil, "%s: %v", envFile, rerr)
 	}
-	vars, perr := config.ParseEnv(data)
 	if perr != nil {
-		p.row(failRow("PF-02", "ENV_FILE_UNREADABLE", exitUsage, "%s: %v", envFile, perr).PFRow)
-		return exitUsage
+		return stop("ENV_FILE_UNREADABLE", exitUsage, nil, "%s: %v", envFile, perr)
 	}
 	var secrets []string
 	for k, v := range vars {
@@ -121,8 +146,7 @@ func runPreflight(inv Invocation, env map[string]string, stdout, stderr io.Write
 	}
 	p.sc = scrub.New(secrets...)
 	if unknown := unknownKeys(vars); len(unknown) > 0 {
-		p.row(failRow("PF-02", "UNKNOWN_KEY", exitUsage, "%s", strings.Join(unknown, "; ")).PFRow)
-		return exitUsage
+		return stop("UNKNOWN_KEY", exitUsage, nil, "%s", strings.Join(unknown, "; "))
 	}
 	// The test-mode variables come from the process environment, never from the file (plan 50 section 9.2).
 	merged := map[string]string{}
@@ -142,26 +166,21 @@ func runPreflight(inv Invocation, env map[string]string, stdout, stderr io.Write
 			code, exit = ce.Code, ce.ExitCode
 			nerr = errors.New(ce.Message)
 		}
-		p.row(failRow("PF-02", code, exit, "%v", nerr).PFRow)
-		return exit
+		var extra []row
+		if code == "CONFIG_REQUIRED_MISSING" {
+			extra = []row{pf06} // PF-06 only needs the parsed variables
+		}
+		return stop(code, exit, extra, "%v", nerr)
 	}
 	doc, derr := contracts.ParseYAML(res.YAML)
 	if derr == nil {
 		derr = validateConfig(doc)
 	}
 	if derr != nil {
-		p.row(failRow("PF-02", "CONFIG_SCHEMA_INVALID", exitUsage, "the normalized configuration violates bootstrap-config.schema.yaml: %s", schemaErrText(derr)).PFRow)
-		return exitUsage
+		return stop("CONFIG_SCHEMA_INVALID", exitUsage, nil, "the normalized configuration violates bootstrap-config.schema.yaml: %s", schemaErrText(derr))
 	}
 
-	tb := toolbox.ToolboxRows(env, envFile, vars)
-	rows := []row{{PFRow: tb[0]}, pass("PF-02", "bootstrap.env parses and validates"), {PFRow: tb[1]}}
-	if tb[0].Status == "fail" {
-		rows[0].exit = exitPreflight
-	}
-	if tb[1].Status == "fail" {
-		rows[2].exit = exitPreflight
-	}
+	rows := []row{pf01, pass("PF-02", "bootstrap.env parses and validates"), pf06}
 	if deps.ProbeModelKey == nil {
 		deps.ProbeModelKey = policyProbe(env, filepath.Join(repoRoot(env), "policy", "model-routing.yaml"))
 	}

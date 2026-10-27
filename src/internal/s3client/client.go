@@ -610,10 +610,21 @@ func (b *Bucket) CopyVersion(ctx context.Context, key, versionID string) (PutRes
 	if err != nil {
 		return PutResult{}, err
 	}
+	// S3 may answer a failed server-side copy with 200 and an <Error> root element.
 	var doc struct {
-		ETag string `xml:"ETag"`
+		XMLName xml.Name
+		ETag    string `xml:"ETag"`
+		Code    string `xml:"Code"`
+		Message string `xml:"Message"`
 	}
 	_ = xml.Unmarshal(data, &doc)
+	if doc.XMLName.Local == "Error" {
+		code := doc.Code
+		if code == "" {
+			code = "InternalError"
+		}
+		return PutResult{}, &Error{Status: http.StatusOK, Code: code, Message: doc.Message, Kind: store.Unavailable}
+	}
 	etag := trimETag(doc.ETag)
 	if etag == "" {
 		etag = trimETag(h.Get("ETag"))

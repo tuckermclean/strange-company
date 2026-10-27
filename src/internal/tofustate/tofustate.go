@@ -400,7 +400,7 @@ type ConformanceParams struct {
 	Accept409 bool
 	// Cleanup is the store that deletes the conformance object versions afterwards (plan 06 section 14.3: the
 	// admin credential; the tofu-state credential holds no DeleteObjectVersion).
-	// SC-STUB(F08 06-AC-1)
+	// It falls back to Store when nil.
 	Cleanup Store
 }
 
@@ -444,7 +444,6 @@ type Report struct {
 	Tests  []TestResult `json:"tests"`
 	Flags  Flags        `json:"flags"`
 	// CleanupFailures lists the objects or listings the cleanup could not delete; it does not change Fatal.
-	// SC-STUB(F08 06-AC-1)
 	CleanupFailures []string `json:"cleanup_failures,omitempty"`
 }
 
@@ -455,6 +454,7 @@ const (
 	codeChecksum       = "S3_CHECKSUM_INCOMPATIBLE"
 	codeLockfile       = "TOFU_LOCKFILE_NOT_HONORED"
 	codeSkew           = "S3_CLOCK_SKEW"
+	codeRequestFailed  = "S3_REQUEST_FAILED"
 	maxSkew            = 60 * time.Second
 	c3Writers          = 8
 )
@@ -499,8 +499,28 @@ func (s *suite) refused(err error) bool {
 	return true
 }
 
+// accessFailure reports whether err says nothing about conditional-header support: a transport error, an
+// authentication or authorization refusal, throttling or a server-side failure. Such failures must not be
+// reported as S3_CONDITIONAL_PUT_UNSUPPORTED or PF_S3_LOCK_UNSUPPORTED.
+func accessFailure(err error) bool {
+	if err == nil || store.Is(err, store.Unsupported) {
+		return false
+	}
+	var se *s3client.Error
+	if !errors.As(err, &se) {
+		return true
+	}
+	switch {
+	case se.Status == 401 || se.Status == 403 || se.Status == 408 || se.Status == 429:
+		return true
+	case se.Status >= 500 && se.Status != 501:
+		return true
+	}
+	return se.Kind == store.Unavailable && se.Status != 501
+}
+
 // Conformance runs C1-C8 under <cluster>/conformance/<run-id>/ and deletes every version it wrote.
-func Conformance(ctx context.Context, p ConformanceParams) (Report, error) {
+func Conformance(ctx context.Context, p ConformanceParams) (out Report, _ error) {
 	if p.Store == nil {
 		return Report{}, errors.New("tofustate: Conformance needs a Store")
 	}
@@ -514,12 +534,18 @@ func Conformance(ctx context.Context, p ConformanceParams) (Report, error) {
 	prefix := p.Cluster + "/conformance/" + p.RunID + "/"
 	rep := Report{RunID: p.RunID, Prefix: prefix, Fatal: []string{}, Tests: []TestResult{}}
 	s := &suite{ctx: ctx, p: p, clk: clk, prefix: prefix, rep: &rep}
-	defer func() { s.cleanup() }()
+	defer func() {
+		s.cleanup()
+		out = rep
+	}()
 
 	k1, k2, k3, k4, k5 := prefix+"k1", prefix+"k2", prefix+"k3", prefix+"k4", prefix+"k5"
 
 	c1 := s.row("C1", "conditional create (If-None-Match: *) of an absent key", func() (string, string) {
 		if _, err := p.Store.PutIfAbsent(ctx, k1, []byte("one")); err != nil {
+			if accessFailure(err) {
+				return "fail", codeRequestFailed
+			}
 			return "fail", codeConditionalPut
 		}
 		return "pass", ""
@@ -531,9 +557,15 @@ func Conformance(ctx context.Context, p ConformanceParams) (Report, error) {
 		s.row("C2", "second conditional create is refused with 412", func() (string, string) {
 			_, err := p.Store.PutIfAbsent(ctx, k1, []byte("two"))
 			if !s.refused(err) {
+				if accessFailure(err) {
+					return "fail", codeRequestFailed
+				}
 				return "fail", codeLock
 			}
 			if o, err := p.Store.Get(ctx, k1); err != nil || string(o.Data) != "one" {
+				if accessFailure(err) {
+					return "fail", codeRequestFailed
+				}
 				return "fail", codeLock
 			}
 			return "pass", ""
@@ -550,6 +582,11 @@ func Conformance(ctx context.Context, p ConformanceParams) (Report, error) {
 			}
 			wg.Wait()
 			wins := 0
+			for _, err := range errs {
+				if accessFailure(err) {
+					return "fail", codeRequestFailed
+				}
+			}
 			for _, err := range errs {
 				switch {
 				case err == nil:
@@ -669,19 +706,29 @@ func (s *suite) lockfile() (string, string) {
 	return "pass", ""
 }
 
-// cleanup deletes every object version under the conformance prefix, whatever happened.
+// cleanup deletes every object version under the conformance prefix, whatever happened. It uses the Cleanup store
+// (the admin credential) and falls back to Store; failures are recorded and never change the verdict.
 func (s *suite) cleanup() {
 	ctx := context.WithoutCancel(s.ctx)
-	vs, err := s.p.Store.ListVersions(ctx, s.prefix)
+	st := s.p.Cleanup
+	if st == nil {
+		st = s.p.Store
+	}
+	vs, err := st.ListVersions(ctx, s.prefix)
 	if err != nil {
+		s.rep.CleanupFailures = append(s.rep.CleanupFailures, fmt.Sprintf("list %s: %v", s.prefix, err))
 		return
 	}
 	for _, v := range vs {
 		if v.VersionID == "" {
-			_ = s.p.Store.Delete(ctx, v.Key, "")
+			if err := st.Delete(ctx, v.Key, ""); err != nil {
+				s.rep.CleanupFailures = append(s.rep.CleanupFailures, fmt.Sprintf("delete %s: %v", v.Key, err))
+			}
 			continue
 		}
-		_ = s.p.Store.DeleteVersion(ctx, v.Key, v.VersionID)
+		if err := st.DeleteVersion(ctx, v.Key, v.VersionID); err != nil {
+			s.rep.CleanupFailures = append(s.rep.CleanupFailures, fmt.Sprintf("delete %s version %s: %v", v.Key, v.VersionID, err))
+		}
 	}
 }
 

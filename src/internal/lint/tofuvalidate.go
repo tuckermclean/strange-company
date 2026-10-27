@@ -1,6 +1,7 @@
 package lint
 
 import (
+	"encoding/json"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -36,10 +37,10 @@ func TofuValidate(root string) (Result, error) {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() && (d.Name() == ".terraform" || d.Name() == "out") {
+		if d.IsDir() && d.Name() == ".terraform" {
 			return filepath.SkipDir
 		}
-		if !d.IsDir() && strings.HasSuffix(d.Name(), ".tf") {
+		if !d.IsDir() && isTofuConfigFile(d.Name()) {
 			files = append(files, path)
 		}
 		return nil
@@ -66,6 +67,10 @@ func TofuValidate(root string) (Result, error) {
 // checkBuckets reports each aws_s3_bucket resource whose lifecycle block does not set prevent_destroy to the
 // literal true. Parsing the HCL (not matching text) keeps comments, strings and variables from counting.
 func checkBuckets(res *Result, rel string, src []byte) {
+	if isTofuJSON(rel) {
+		checkBucketsJSON(res, rel, src)
+		return
+	}
 	file, diags := hclsyntax.ParseConfig(src, rel, hcl.InitialPos)
 	if diags.HasErrors() {
 		res.add(ruleTofuPreventDestroy, rel, "cannot parse HCL: %s", diags.Error())
@@ -82,6 +87,105 @@ func checkBuckets(res *Result, rel string, src []byte) {
 		addr := blk.Labels[0] + "." + blk.Labels[1]
 		if !preventDestroy(blk.Body) {
 			res.add(ruleTofuPreventDestroy, rel, "%s must have lifecycle { prevent_destroy = true } (a literal true)", addr)
+		}
+	}
+}
+
+// isTofuConfigFile reports whether OpenTofu 1.13.1 loads the file name as module configuration.
+func isTofuConfigFile(name string) bool {
+	for _, suf := range []string{".tf", ".tofu", ".tf.json", ".tofu.json"} {
+		if strings.HasSuffix(name, suf) {
+			return true
+		}
+	}
+	return false
+}
+
+func isTofuJSON(name string) bool {
+	return strings.HasSuffix(name, ".tf.json") || strings.HasSuffix(name, ".tofu.json")
+}
+
+// jsonObjects reads a JSON-syntax block value: one object, or an array of objects (OpenTofu accepts both).
+func jsonObjects(v any) ([]map[string]any, bool) {
+	switch x := v.(type) {
+	case map[string]any:
+		return []map[string]any{x}, true
+	case []any:
+		var out []map[string]any
+		for _, e := range x {
+			m, ok := e.(map[string]any)
+			if !ok {
+				return nil, false
+			}
+			out = append(out, m)
+		}
+		return out, true
+	}
+	return nil, false
+}
+
+// checkBucketsJSON is checkBuckets for the JSON configuration syntax (*.tf.json, *.tofu.json). It reads the
+// document with encoding/json (hcl/v2/json would link a module whose licence the policy does not allow); anything
+// it cannot read fails closed.
+func checkBucketsJSON(res *Result, rel string, src []byte) {
+	var doc map[string]any
+	if err := json.Unmarshal(src, &doc); err != nil {
+		res.add(ruleTofuPreventDestroy, rel, "cannot parse JSON configuration: %v", err)
+		return
+	}
+	rawRes, found := doc["resource"]
+	if !found {
+		return
+	}
+	unreadable := func(what string) {
+		res.add(ruleTofuPreventDestroy, rel, "cannot read the JSON configuration: %s", what)
+	}
+	types, ok := jsonObjects(rawRes)
+	if !ok {
+		unreadable("\"resource\" is not an object")
+		return
+	}
+	for _, byType := range types {
+		bucketsRaw, has := byType["aws_s3_bucket"]
+		if !has {
+			continue
+		}
+		groups, ok := jsonObjects(bucketsRaw)
+		if !ok {
+			unreadable("\"aws_s3_bucket\" is not an object")
+			continue
+		}
+		for _, group := range groups {
+			names := make([]string, 0, len(group))
+			for n := range group {
+				names = append(names, n)
+			}
+			sort.Strings(names)
+			for _, name := range names {
+				addr := "aws_s3_bucket." + name
+				bodies, ok := jsonObjects(group[name])
+				if !ok {
+					res.add(ruleTofuPreventDestroy, rel, "%s: cannot read the resource body", addr)
+					continue
+				}
+				protected := false
+				for _, body := range bodies {
+					lcs, ok := jsonObjects(body["lifecycle"])
+					if !ok {
+						continue
+					}
+					for _, lc := range lcs {
+						if v, has := lc["prevent_destroy"]; has {
+							b, isBool := v.(bool)
+							protected = isBool && b
+							break
+						}
+					}
+				}
+				if !protected {
+					res.add(ruleTofuPreventDestroy, rel, "%s must have lifecycle { prevent_destroy = true } (a literal true)", addr)
+				}
+			}
 		}
 	}
 }
