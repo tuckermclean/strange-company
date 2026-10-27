@@ -5,7 +5,9 @@ import (
 	"encoding/pem"
 	"fmt"
 	"net/netip"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"go.yaml.in/yaml/v3"
@@ -50,24 +52,53 @@ func nsFor(class, instance string) string {
 	return ""
 }
 
-// resolvePath fills the placeholders of a register path; ok is false when one stays open or the path is outside the
-// two directories a render may write.
-func resolvePath(cluster string, s Secret, p string) (string, bool) {
+// resolvePath fills the placeholders of a register path. When the path cannot be rendered, reason says why.
+func resolvePath(cluster string, s Secret, p string) (resolved, reason string) {
 	p = strings.ReplaceAll(p, "{cluster}", cluster)
 	p = strings.ReplaceAll(p, "<instance>", s.Instance)
 	if strings.Contains(p, "<ns>") {
-		p = strings.ReplaceAll(p, "<ns>", nsFor(s.Class, s.Instance))
+		if ns := nsFor(s.Class, s.Instance); ns != "" {
+			p = strings.ReplaceAll(p, "<ns>", ns)
+		}
 	}
-	if strings.Contains(p, "<cluster>") {
+	if strings.Contains(p, "<cluster>") && s.Instance != "" {
 		p = strings.ReplaceAll(p, "<cluster>", s.Instance)
 	}
-	if strings.ContainsAny(p, "<>") || strings.Contains(p, "//") || !strings.HasSuffix(p, ".sops.yaml") {
-		return "", false
+	if strings.ContainsAny(p, "<>") {
+		return "", "the storage path has an open placeholder (its namespace or instance is not known before provision)"
+	}
+	if strings.Contains(p, "//") {
+		return "", "the storage path has an empty segment"
+	}
+	for _, seg := range strings.Split(p, "/") {
+		if strings.HasPrefix(seg, "-") || seg == "" {
+			return "", "the storage path has a segment that is empty or starts with a hyphen (an instance name is missing)"
+		}
+	}
+	if !strings.HasSuffix(p, ".sops.yaml") {
+		return "", "the storage path is not a .sops.yaml file"
 	}
 	if !strings.HasPrefix(p, "gitops/clusters/"+cluster+"/") && !strings.HasPrefix(p, "secrets/offcluster/"+cluster+"/") {
-		return "", false
+		return "", "the storage path is outside gitops/clusters/" + cluster + " and secrets/offcluster/" + cluster + ", the directories install-identity may write"
 	}
-	return p, true
+	return p, ""
+}
+
+var dns1123 = regexp.MustCompile(`^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$`)
+
+func validName(n string) bool { return len(n) <= 253 && dns1123.MatchString(n) }
+
+// pathNamespace returns <ns> of gitops/clusters/<cluster>/secrets/<ns>/<file>.
+func pathNamespace(cluster, p string) string {
+	rest, ok := strings.CutPrefix(p, "gitops/clusters/"+cluster+"/secrets/")
+	if !ok {
+		return ""
+	}
+	ns, _, ok := strings.Cut(rest, "/")
+	if !ok {
+		return ""
+	}
+	return ns
 }
 
 type kv struct{ key, val string }
@@ -126,6 +157,30 @@ type fileDoc struct {
 // secrets/offcluster/<cluster>/ (a plain YAML map, encrypted to the recovery recipient only). Several secrets that
 // plan 35 stores in one file share it. The files are returned in path order; the plaintext exists only inside enc.
 func RenderSOPS(cluster string, set *Set, rcp Recipients, enc Encryptor) ([]File, error) {
+	rep, err := RenderSOPSReport(cluster, set, rcp, enc)
+	if err != nil {
+		return nil, err
+	}
+	return rep.Files, nil
+}
+
+// Deferred is a generated secret that RenderSOPS did not render, with the reason.
+type Deferred struct {
+	Class    string
+	Instance string
+	Path     string
+	Reason   string
+}
+
+// RenderReport is RenderSOPS's files plus every register secret it left out.
+type RenderReport struct {
+	Files    []File
+	Deferred []Deferred
+}
+
+// RenderSOPSReport renders like RenderSOPS and also reports every secret with a sops-git or offcluster-sops row
+// that it did not render, so nothing is skipped silently.
+func RenderSOPSReport(cluster string, set *Set, rcp Recipients, enc Encryptor) (*RenderReport, error) {
 	if set == nil || set.Register == nil {
 		return nil, fail("RENDER_INPUT_INVALID", "RenderSOPS needs a set generated from a register")
 	}
@@ -141,12 +196,20 @@ func RenderSOPS(cluster string, set *Set, rcp Recipients, enc Encryptor) ([]File
 		return secrets[i].Instance < secrets[j].Instance
 	})
 	docs := map[string]*fileDoc{}
+	rep := &RenderReport{}
 	for _, s := range secrets {
 		c := classes[s.Class]
 		var k8sName, k8sNS string
 		for _, st := range c.Storage {
 			if st.Kind == "k8s-secret" && st.Name != "" {
-				k8sName = strings.ReplaceAll(st.Name, "<cluster>", s.Instance)
+				k8sName = st.Name
+				if strings.Contains(k8sName, "<cluster>") {
+					if s.Instance == "" {
+						k8sName = ""
+					} else {
+						k8sName = strings.ReplaceAll(k8sName, "<cluster>", s.Instance)
+					}
+				}
 				k8sNS = st.Namespace
 				if k8sNS == "" {
 					k8sNS = nsFor(s.Class, s.Instance)
@@ -158,8 +221,22 @@ func RenderSOPS(cluster string, set *Set, rcp Recipients, enc Encryptor) ([]File
 			if st.Kind != "sops-git" && st.Kind != "offcluster-sops" {
 				continue
 			}
-			p, ok := resolvePath(cluster, s, st.Path)
-			if !ok {
+			p, reason := resolvePath(cluster, s, st.Path)
+			if reason == "" && !strings.HasPrefix(p, "secrets/offcluster/") {
+				name := k8sName
+				if name == "" {
+					name = strings.TrimSuffix(p[strings.LastIndex(p, "/")+1:], ".sops.yaml")
+				}
+				if !validName(name) {
+					reason = "the Secret name " + strconv.Quote(name) + " is not a DNS-1123 subdomain"
+				}
+			}
+			if reason != "" {
+				path := p
+				if path == "" {
+					path = st.Path
+				}
+				rep.Deferred = append(rep.Deferred, Deferred{Class: s.Class, Instance: s.Instance, Path: path, Reason: reason})
 				continue
 			}
 			d := docs[p]
@@ -169,6 +246,9 @@ func RenderSOPS(cluster string, set *Set, rcp Recipients, enc Encryptor) ([]File
 			}
 			if d.name == "" {
 				d.name, d.ns = k8sName, k8sNS
+				if ns := pathNamespace(cluster, p); ns != "" {
+					d.ns = ns
+				}
 			}
 			for _, e := range keysFor(s) {
 				key := e.key
@@ -190,7 +270,6 @@ func RenderSOPS(cluster string, set *Set, rcp Recipients, enc Encryptor) ([]File
 		paths = append(paths, p)
 	}
 	sort.Strings(paths)
-	var files []File
 	for _, p := range paths {
 		d := docs[p]
 		plain, err := d.plaintext()
@@ -213,9 +292,9 @@ func RenderSOPS(cluster string, set *Set, rcp Recipients, enc Encryptor) ([]File
 				return nil, fail("SOPS_PLAINTEXT_OUTPUT", "the encryptor output for %s holds a plaintext secret value", p)
 			}
 		}
-		files = append(files, File{Path: p, Data: out})
+		rep.Files = append(rep.Files, File{Path: p, Data: out})
 	}
-	return files, nil
+	return rep, nil
 }
 
 func (d *fileDoc) plaintext() ([]byte, error) {
@@ -287,9 +366,11 @@ func SOPSRules(cluster string, rcp Recipients, existing []byte) ([]byte, error) 
 		return nil, fail("SOPS_CONFIG_INVALID", ".sops.yaml creation_rules is not a list")
 	}
 	want := []map[string]any{
-		{"path_regex": `gitops/clusters/` + cluster + `/.*\.sops\.yaml$`, "age": rcp.Cluster + "," + rcp.Recovery},
-		{"path_regex": `secrets/offcluster/` + cluster + `/.*\.sops\.yaml$`, "age": rcp.Recovery},
+		{"path_regex": `gitops/clusters/` + cluster + `/.*\.sops\.yaml$`, "encrypted_regex": `^(data|stringData)$`, "age": rcp.Cluster + "," + rcp.Recovery},
+		{"path_regex": `^secrets/offcluster/` + cluster + `/[a-z0-9.-]+\.sops\.yaml$`, "age": rcp.Recovery},
 	}
+	// The first matching rule wins, so a rule that is new goes before the first catch-all rule (one that matches any
+	// .sops.yaml) or, without one, at the end.
 	for _, w := range want {
 		replaced := false
 		for i, r := range rules {
@@ -297,12 +378,35 @@ func SOPSRules(cluster string, rcp Recipients, existing []byte) ([]byte, error) 
 				rules[i], replaced = w, true
 			}
 		}
-		if !replaced {
-			rules = append(rules, w)
+		if replaced {
+			continue
 		}
+		at := len(rules)
+		for i, r := range rules {
+			if m, ok := r.(map[string]any); ok && isCatchAll(m) {
+				at = i
+				break
+			}
+		}
+		rules = append(rules, nil)
+		copy(rules[at+1:], rules[at:])
+		rules[at] = w
 	}
 	doc["creation_rules"] = rules
 	return marshal(doc)
+}
+
+// isCatchAll reports whether a creation rule has no path_regex or one that matches every .sops.yaml file.
+func isCatchAll(m map[string]any) bool {
+	p, ok := m["path_regex"].(string)
+	if !ok || p == "" {
+		return true
+	}
+	switch p {
+	case `.*\.sops\.yaml$`, `\.sops\.yaml$`, `^.*\.sops\.yaml$`, `.*`, `.*\.yaml$`, `\.yaml$`:
+		return true
+	}
+	return false
 }
 
 // ClusterVarsInput is what the cluster-vars render needs.
@@ -369,27 +473,4 @@ func RenderClusterVars(in ClusterVarsInput) ([]byte, error) {
 		scalar("data"), dn,
 	}}
 	return marshal(root)
-}
-
-// Deferred is a generated secret that RenderSOPS did not render, with the reason.
-// SC-STUB(F08 50-AC-10)
-type Deferred struct {
-	Class    string
-	Instance string
-	Path     string
-	Reason   string
-}
-
-// RenderReport is RenderSOPS's files plus every register secret it left out.
-// SC-STUB(F08 50-AC-10)
-type RenderReport struct {
-	Files    []File
-	Deferred []Deferred
-}
-
-// RenderSOPSReport renders like RenderSOPS and also reports every secret with a sops-git or offcluster-sops row
-// that it did not render.
-// SC-STUB(F08 50-AC-10)
-func RenderSOPSReport(cluster string, set *Set, rcp Recipients, enc Encryptor) (*RenderReport, error) {
-	return nil, nil
 }

@@ -4,7 +4,9 @@ package commit
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path"
@@ -95,26 +97,57 @@ func CheckScope(cluster string, kind Kind, drill bool, changes []Change) error {
 	return &Error{Code: "COMMIT_SCOPE_VIOLATION", Message: "the commit changes paths outside its scope", Paths: bad}
 }
 
-// budgetsOK compares the parsed YAML of both versions: only spec.emergencyStop may differ, and its new level must be
+// budgetsOK parses every YAML document of both versions (exactly one each is required): only spec.emergencyStop may
+// differ, only its level and reason keys may exist (contracts/budget-policy.schema.yaml), and the new level must be
 // workers (all with drill).
 func budgetsOK(c Change, drill bool) bool {
 	if c.Before == nil || c.After == nil {
 		return false
 	}
-	var before, after map[string]any
-	if yaml.Unmarshal(c.Before, &before) != nil || yaml.Unmarshal(c.After, &after) != nil {
+	before, ok := singleDoc(c.Before)
+	if !ok {
+		return false
+	}
+	after, ok := singleDoc(c.After)
+	if !ok {
 		return false
 	}
 	stop, ok := popEmergencyStop(after)
 	if !ok {
 		return false
 	}
-	popEmergencyStop(before)
-	if !reflect.DeepEqual(before, after) {
+	if old, present := popEmergencyStop(before); present && !stopKeysOK(old) {
+		return false
+	}
+	if !stopKeysOK(stop) || !reflect.DeepEqual(before, after) {
 		return false
 	}
 	level, _ := stop["level"].(string)
 	return level == "workers" || (drill && level == "all")
+}
+
+// stopKeysOK reports whether stop holds only the schema's level and reason keys.
+func stopKeysOK(stop map[string]any) bool {
+	for k := range stop {
+		if k != "level" && k != "reason" {
+			return false
+		}
+	}
+	return true
+}
+
+// singleDoc decodes data, which must hold exactly one YAML document with a mapping at the top.
+func singleDoc(data []byte) (map[string]any, bool) {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	var doc map[string]any
+	if err := dec.Decode(&doc); err != nil || doc == nil {
+		return nil, false
+	}
+	var extra any
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		return nil, false
+	}
+	return doc, true
 }
 
 // popEmergencyStop removes spec.emergencyStop from doc and returns it.
@@ -202,7 +235,10 @@ func Create(ctx context.Context, req Request) (sha string, err error) {
 		return "", &Error{Code: "COMMIT_NO_PATHS", Message: "no paths to commit"}
 	}
 	unstage := func() {
-		_, _ = git(context.WithoutCancel(ctx), req.Repo, nil, nil, append([]string{"restore", "--staged", "--"}, req.Paths...)...)
+		// One reset per path: a pathspec that matches nothing must not keep the others staged.
+		for _, p := range req.Paths {
+			_, _ = git(context.WithoutCancel(ctx), req.Repo, nil, nil, "reset", "-q", "--", p)
+		}
 	}
 	for _, p := range req.Paths {
 		// A path that exists neither on disk nor in the index is nothing to stage.

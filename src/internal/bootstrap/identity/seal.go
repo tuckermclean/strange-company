@@ -278,9 +278,12 @@ func Open(data []byte, passphrase string) (*Opened, error) {
 		}
 		return nil, fail("BUNDLE_CORRUPT", "the recovery bundle is not an age file this tool can open")
 	}
-	plain, err := io.ReadAll(io.LimitReader(r, maxBundleBytes))
+	plain, err := io.ReadAll(io.LimitReader(r, maxBundleBytes+1))
 	if err != nil {
 		return nil, fail("BUNDLE_CORRUPT", "the recovery bundle payload is damaged")
+	}
+	if int64(len(plain)) > maxBundleBytes {
+		return nil, fail("BUNDLE_CORRUPT", "the recovery bundle payload exceeds the size limit")
 	}
 	tr := tar.NewReader(bytes.NewReader(plain))
 	o := &Opened{}

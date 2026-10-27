@@ -73,12 +73,16 @@ func (u *bundleConfirm) Run(ctx context.Context) ([]engine.OutputRef, error) {
 	if st.Status != "uploaded" {
 		return nil, bundleErr("BUNDLE_NOT_UPLOADED", "the recovery bundle is not uploaded (status "+st.Status+"); run plan.bundle-upload first")
 	}
+	want := strings.TrimPrefix(st.Sha256, "sha256:")
+	if want == "" {
+		return nil, bundleErr("BUNDLE_SHA_MISSING", "the journal holds no sha256 for the uploaded recovery bundle, so the S3 copy cannot be verified")
+	}
 	data, err := u.cfg.Download(ctx)
 	if err != nil {
 		return nil, bundleErr("BUNDLE_MISSING", "the S3 copy of the recovery bundle cannot be downloaded: "+err.Error())
 	}
 	sum := sha256.Sum256(data)
-	if want := strings.TrimPrefix(st.Sha256, "sha256:"); want != "" && want != hex.EncodeToString(sum[:]) {
+	if want != hex.EncodeToString(sum[:]) {
 		return nil, bundleErr("BUNDLE_SHA_MISMATCH", "the S3 copy of the recovery bundle differs from the uploaded digest")
 	}
 	for attempt := 1; attempt <= u.cfg.Attempts; attempt++ {

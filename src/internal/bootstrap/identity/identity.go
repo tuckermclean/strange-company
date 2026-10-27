@@ -12,13 +12,13 @@ import (
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"math/big"
 	"os"
 	"sort"
 	"strings"
-	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -196,9 +196,21 @@ func bundleFormat(registerFormat string) string {
 	}
 }
 
-// Generate creates the install UUID and every secret plan 35 marks as created by plan.install-identity. It reads no
-// clock: the internal CA is valid from a fixed epoch for a century, so no wall time enters the tested code.
-func Generate(reg *Register, cluster string) (*Set, error) {
+// Option configures Generate.
+type Option func(*genOptions)
+
+type genOptions struct{ clk clock.Clock }
+
+// WithClock sets the clock the internal CA's validity starts from (default: the real clock).
+func WithClock(clk clock.Clock) Option { return func(o *genOptions) { o.clk = clk } }
+
+// Generate creates the install UUID and every secret plan 35 marks as created by plan.install-identity. The internal
+// CA (generation 1) is valid from the injected clock's now (WithClock) for ten years.
+func Generate(reg *Register, cluster string, opts ...Option) (*Set, error) {
+	o := genOptions{clk: clock.Real{}}
+	for _, f := range opts {
+		f(&o)
+	}
 	if reg == nil {
 		return nil, fail("REGISTER_INVALID", "no secret-class register")
 	}
@@ -229,7 +241,7 @@ func Generate(reg *Register, cluster string) (*Set, error) {
 			}
 		}
 		for _, t := range targets {
-			v, err := generateValue(c)
+			v, err := generateValue(c, o.clk, cluster)
 			if err != nil {
 				return nil, err
 			}
@@ -258,7 +270,7 @@ func publicKeyOf(file []byte) string {
 	return ""
 }
 
-func generateValue(c Class) ([]byte, error) {
+func generateValue(c Class, clk clock.Clock, cluster string) ([]byte, error) {
 	switch {
 	case c.ID == "SC-K3S-TOKEN":
 		b, err := randBytes(32)
@@ -279,7 +291,7 @@ func generateValue(c Class) ([]byte, error) {
 	case c.Format == "age-identity":
 		return generateAge()
 	case c.Format == "x509-ca":
-		return generateCA(c.ID)
+		return GenerateInternalCA(clk, cluster, 1)
 	case c.Format == "ssh-keypair":
 		return generateSSH()
 	default:
@@ -312,37 +324,6 @@ func generateAge() ([]byte, error) {
 		return nil, fail("AGE_KEYGEN_FAILED", "age key generation failed: %v", err)
 	}
 	return []byte("# public key: " + id.Recipient().String() + "\n" + id.String() + "\n"), nil
-}
-
-// generateCA returns an ECDSA P-256 root certificate and its key as PEM (certificate first).
-func generateCA(class string) ([]byte, error) {
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return nil, fail("CA_KEYGEN_FAILED", "CA key generation failed: %v", err)
-	}
-	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 120))
-	if err != nil {
-		return nil, fail("RANDOM_FAILED", "the system random source failed: %v", err)
-	}
-	tpl := &x509.Certificate{
-		SerialNumber:          serial,
-		Subject:               pkix.Name{CommonName: "Strange Company internal CA", Organization: []string{"Strange Company"}},
-		NotBefore:             time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC),
-		NotAfter:              time.Date(2120, 1, 1, 0, 0, 0, 0, time.UTC),
-		IsCA:                  true,
-		BasicConstraintsValid: true,
-		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tpl, tpl, &key.PublicKey, key)
-	if err != nil {
-		return nil, fail("CA_KEYGEN_FAILED", "%s certificate creation failed: %v", class, err)
-	}
-	kb, err := x509.MarshalECPrivateKey(key)
-	if err != nil {
-		return nil, fail("CA_KEYGEN_FAILED", "CA key encoding failed: %v", err)
-	}
-	return append(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
-		pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: kb})...), nil
 }
 
 // generateSSH returns an ed25519 private key in OpenSSH format.
@@ -432,12 +413,49 @@ func RegisterSecrets(red *redact.Redactor, set *Set, passphrase string) {
 				red.Register(s.Class, l)
 			}
 		}
+		var obj map[string]any
+		if json.Unmarshal(s.Value, &obj) == nil {
+			for _, jv := range obj {
+				if str, ok := jv.(string); ok && str != "" {
+					red.Register(s.Class, str)
+				}
+			}
+		}
 	}
 }
 
 // GenerateInternalCA returns the internal CA certificate and key as PEM (certificate first) for the cluster and CA
-// generation, valid from the clock's now for ten years.
-// SC-STUB(F08 50-AC-10)
+// generation (plan 10 section 8.2): ECDSA P-384, CA:TRUE pathlen:0, key usage CertSign and CRLSign, valid from the
+// clock's now for ten years.
 func GenerateInternalCA(clk clock.Clock, cluster string, generation int) ([]byte, error) {
-	return nil, nil
+	key, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	if err != nil {
+		return nil, fail("CA_KEYGEN_FAILED", "CA key generation failed: %v", err)
+	}
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 120))
+	if err != nil {
+		return nil, fail("RANDOM_FAILED", "the system random source failed: %v", err)
+	}
+	now := clk.Now().UTC()
+	tpl := &x509.Certificate{
+		SerialNumber:          serial,
+		Subject:               pkix.Name{CommonName: fmt.Sprintf("Strange Company internal CA %s g%d", cluster, generation), Organization: []string{"Strange Company"}},
+		NotBefore:             now,
+		NotAfter:              now.AddDate(10, 0, 0),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		MaxPathLen:            0,
+		MaxPathLenZero:        true,
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tpl, tpl, &key.PublicKey, key)
+	if err != nil {
+		return nil, fail("CA_KEYGEN_FAILED", "internal CA certificate creation failed: %v", err)
+	}
+	kb, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return nil, fail("CA_KEYGEN_FAILED", "CA key encoding failed: %v", err)
+	}
+	return append(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
+		pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: kb})...), nil
 }
