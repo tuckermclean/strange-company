@@ -66,6 +66,9 @@ func Parse(args []string) (inv Invocation, err error) {
 						return inv, fmt.Errorf("--%s needs a value, not the flag %q", name, val)
 					}
 				}
+				if hasVal && strings.HasPrefix(val, "-") {
+					return inv, fmt.Errorf("--%s needs a value, not the flag %q", name, val)
+				}
 				if err := inv.setGlobal(name, val); err != nil {
 					return inv, err
 				}
@@ -125,6 +128,9 @@ func Parse(args []string) (inv Invocation, err error) {
 	}
 	for _, p := range pending {
 		name, val, hasVal := strings.Cut(strings.TrimLeft(p, "-"), "=")
+		if _, dup := inv.Flags[name]; dup && (name == "from-phase" || name == "retry-phase") {
+			return inv, fmt.Errorf("--%s is given before and after the command; give it once", name)
+		}
 		if err := inv.setFlag(cur, name, val, hasVal, func() (string, bool) { return "", false }); err != nil {
 			return inv, err
 		}
@@ -173,6 +179,9 @@ func (inv *Invocation) setFlag(c *cmd, name, val string, hasVal bool, next func(
 	if !known && !c.lenient {
 		return fmt.Errorf("unknown flag --%s", name)
 	}
+	if known && takesVal && hasVal && strings.HasPrefix(val, "-") {
+		return fmt.Errorf("--%s needs a value, not the flag %q", name, val)
+	}
 	switch {
 	case known && takesVal && !hasVal:
 		v, ok := next()
@@ -182,6 +191,9 @@ func (inv *Invocation) setFlag(c *cmd, name, val string, hasVal bool, next func(
 		val = v
 	case !hasVal:
 		val = "true"
+	}
+	if (name == "from-phase" || name == "retry-phase") && val == "" {
+		return fmt.Errorf("--%s needs a phase name, not an empty value", name)
 	}
 	inv.Flags[name] = val
 	return nil

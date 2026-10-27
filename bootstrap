@@ -480,7 +480,7 @@ if [ -t 0 ] && [ -t 1 ]; then tty=-t; fi
 case $command in
 exec)
 	case $1 in
-	exec | shell | run | plan | preflight | status | verify | expand | destroy | recover | report | rotate | state | unlock | version) set -- exec -- "$@" ;;
+	exec | shell | run | plan | preflight | status | verify | expand | destroy | recover | report | rotate | state | unlock | version | -*) set -- exec -- "$@" ;;
 	esac
 	;;
 *)

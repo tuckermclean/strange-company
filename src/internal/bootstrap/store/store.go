@@ -3,16 +3,15 @@
 // arrives with plan 06 (F08 S4).
 package store
 
-import "context"
+import (
+	"context"
+	"errors"
+)
 
 // Kind classifies a store error.
-//
-// SC-STUB(F08 50-AC-5 50-AC-6 50-AC-17)
 type Kind int
 
 // The error kinds a store returns.
-//
-// SC-STUB(F08 50-AC-5 50-AC-6 50-AC-17)
 const (
 	NotFound Kind = iota + 1
 	Exists
@@ -22,26 +21,43 @@ const (
 )
 
 // Error is a store failure of one Kind.
-//
-// SC-STUB(F08 50-AC-5 50-AC-6 50-AC-17)
 type Error struct {
 	Kind Kind
 	Msg  string
 }
 
 // Error returns the message.
-//
-// SC-STUB(F08 50-AC-5 50-AC-6 50-AC-17)
-func (e *Error) Error() string { return "" }
+func (e *Error) Error() string {
+	if e.Msg == "" {
+		return e.Kind.String()
+	}
+	return e.Kind.String() + ": " + e.Msg
+}
+
+// String names the kind.
+func (k Kind) String() string {
+	switch k {
+	case NotFound:
+		return "not found"
+	case Exists:
+		return "already exists"
+	case PreconditionFailed:
+		return "precondition failed"
+	case Unsupported:
+		return "unsupported"
+	case Unavailable:
+		return "unavailable"
+	}
+	return "store error"
+}
 
 // Is reports whether err is a store Error of kind k.
-//
-// SC-STUB(F08 50-AC-5 50-AC-6 50-AC-17)
-func Is(err error, k Kind) (ok bool) { return }
+func Is(err error, k Kind) bool {
+	var e *Error
+	return errors.As(err, &e) && e.Kind == k
+}
 
 // Object is one stored object.
-//
-// SC-STUB(F08 50-AC-5 50-AC-6 50-AC-17)
 type Object struct {
 	Data []byte
 	ETag string
@@ -49,8 +65,6 @@ type Object struct {
 
 // S3 is the subset of S3 the engine needs. PutIfAbsent is the conditional create (If-None-Match: *); a non-empty
 // ifMatch on Put or Delete is a conditional write (If-Match) and must only be sent to a store that supports it.
-//
-// SC-STUB(F08 50-AC-5 50-AC-6 50-AC-17)
 type S3 interface {
 	Get(ctx context.Context, key string) (Object, error)
 	PutIfAbsent(ctx context.Context, key string, data []byte) (etag string, err error)

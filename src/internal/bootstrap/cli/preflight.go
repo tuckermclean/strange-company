@@ -297,12 +297,13 @@ func (c *pfCtx) loadPolicy(name string) (doc any, digest string, err *preflight.
 
 // keyVarFor is the bootstrap.env variable that holds a provider's API key (D8): the policy's credential.secretKey,
 // upper-cased with "-" turned into "_", plus "_API_KEY". Plans 50 and 53 do not name the variable; a follow-up owns it.
-func keyVarFor(routing any, provider string) string {
+// A provider without a secretKey has no variable (ok false): the caller fails closed, the id is never guessed.
+func keyVarFor(routing any, provider string) (name string, ok bool) {
 	sk := str(dig(routing, "spec", "providers", provider, "credential", "secretKey"))
 	if sk == "" {
-		sk = provider
+		return "", false
 	}
-	return strings.ToUpper(strings.ReplaceAll(sk, "-", "_")) + "_API_KEY"
+	return strings.ToUpper(strings.ReplaceAll(sk, "-", "_")) + "_API_KEY", true
 }
 
 // enabledProviders are the enabled production providers of policy/model-routing.yaml, sorted by id.
@@ -326,12 +327,17 @@ func (c *pfCtx) pf19() row {
 	}
 	var providers []string // enabled production providers that have a key in the env
 	for _, name := range enabledProviders(routing) {
-		if c.vars[keyVarFor(routing, name)] != "" {
+		kv, ok := keyVarFor(routing, name)
+		if !ok {
+			return failRow("PF-19", "POLICY_FILE_INVALID", exitPreflight,
+				"policy/model-routing.yaml: provider %q is enabled but names no credential.secretKey (fail closed)", name)
+		}
+		if c.vars[kv] != "" {
 			providers = append(providers, name)
 		}
 	}
 	for _, name := range providers {
-		kv := keyVarFor(routing, name)
+		kv, _ := keyVarFor(routing, name)
 		key := c.vars[kv]
 		if prefixes, ok := dig(routing, "spec", "providers", name, "credential", "forbiddenKeyPrefixes").([]any); ok {
 			for _, pf := range prefixes {
@@ -343,7 +349,8 @@ func (c *pfCtx) pf19() row {
 		}
 	}
 	for _, name := range providers {
-		if perr := c.deps.ProbeModelKey(name, c.vars[keyVarFor(routing, name)]); perr != nil {
+		kv, _ := keyVarFor(routing, name)
+		if perr := c.deps.ProbeModelKey(name, c.vars[kv]); perr != nil {
 			return failRow("PF-19", "MODEL_KEY_REJECTED", exitPreflight, "%s: the authenticated probe failed: %v", name, perr)
 		}
 	}
