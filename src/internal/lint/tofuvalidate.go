@@ -1,6 +1,7 @@
 package lint
 
 import (
+	"bytes"
 	"encoding/json"
 	"io/fs"
 	"os"
@@ -128,6 +129,13 @@ func jsonObjects(v any) ([]map[string]any, bool) {
 // document with encoding/json (hcl/v2/json would link a module whose licence the policy does not allow); anything
 // it cannot read fails closed.
 func checkBucketsJSON(res *Result, rel string, src []byte) {
+	if key, err := repeatedJSONKey(src); err != nil {
+		res.add(ruleTofuPreventDestroy, rel, "cannot parse JSON configuration: %v", err)
+		return
+	} else if key != "" {
+		res.add(ruleTofuPreventDestroy, rel, "repeated key %q in a JSON object: OpenTofu loads every repeated block while a reader keeps one, so the file cannot be checked (fail closed)", key)
+		return
+	}
 	var doc map[string]any
 	if err := json.Unmarshal(src, &doc); err != nil {
 		res.add(ruleTofuPreventDestroy, rel, "cannot parse JSON configuration: %v", err)
@@ -235,4 +243,48 @@ func checkStorageGuard(res *Result, root string) {
 			}
 		}
 	}
+}
+
+// repeatedJSONKey scans every object of the document token by token and returns the first key that appears twice
+// in the same object ("" when none does). encoding/json alone keeps only the last value.
+func repeatedJSONKey(src []byte) (string, error) {
+	dec := json.NewDecoder(bytes.NewReader(src))
+	var walk func() (string, error)
+	walk = func() (string, error) {
+		tok, err := dec.Token()
+		if err != nil {
+			return "", err
+		}
+		d, ok := tok.(json.Delim)
+		if !ok {
+			return "", nil
+		}
+		switch d {
+		case '[':
+			for dec.More() {
+				if k, err := walk(); err != nil || k != "" {
+					return k, err
+				}
+			}
+		case '{':
+			seen := map[string]bool{}
+			for dec.More() {
+				kt, err := dec.Token()
+				if err != nil {
+					return "", err
+				}
+				key, _ := kt.(string)
+				if seen[key] {
+					return key, nil
+				}
+				seen[key] = true
+				if k, err := walk(); err != nil || k != "" {
+					return k, err
+				}
+			}
+		}
+		_, err = dec.Token() // the closing delimiter
+		return "", err
+	}
+	return walk()
 }

@@ -115,14 +115,17 @@ func runPreflight(inv Invocation, env map[string]string, stdout, stderr io.Write
 	if pf06.Status == "fail" {
 		pf06.exit = exitPreflight
 	}
-	// stop prints PF-01, the failing PF-02 row and, when more is evaluated, the extra rows. The PF-02 exit code
-	// stands unless another check also failed (any other fail exits 3, plan 50 section 14.2).
+	// stop prints PF-01, the failing PF-02 row and, when more is evaluated, the extra rows. An invalid
+	// configuration (unknown key, unparseable file, schema-invalid value, test mode with a paid provider) is a
+	// usage error and exits 2 even when another check fails. A missing configuration (unreadable file, required
+	// variables absent) exits 2 alone and 3 when another check also fails (plan 50 section 14.2, D10).
 	stop := func(code string, exit int, extra []row, format string, a ...any) int {
 		rows := append([]row{pf01, failRow("PF-02", code, exit, format, a...)}, extra...)
 		out := exit
+		missing := code == "ENV_FILE_UNREADABLE" || code == "CONFIG_REQUIRED_MISSING"
 		for _, r := range rows {
 			p.row(r.PFRow)
-			if r.ID != "PF-02" && r.Status == "fail" {
+			if r.ID != "PF-02" && r.Status == "fail" && (missing || exit != exitUsage) {
 				out = exitPreflight
 			}
 		}
@@ -136,7 +139,7 @@ func runPreflight(inv Invocation, env map[string]string, stdout, stderr io.Write
 		return stop("ENV_FILE_UNREADABLE", exitUsage, nil, "%s: %v", envFile, rerr)
 	}
 	if perr != nil {
-		return stop("ENV_FILE_UNREADABLE", exitUsage, nil, "%s: %v", envFile, perr)
+		return stop("ENV_FILE_UNPARSEABLE", exitUsage, nil, "%s: %v", envFile, perr)
 	}
 	var secrets []string
 	for k, v := range vars {

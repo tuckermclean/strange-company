@@ -52,11 +52,11 @@ func (c *cmdCtx) pf01() pfRow {
 	var bad []string
 	for _, t := range rep.Tools {
 		if !t.OK {
-			bad = append(bad, t.Tool)
+			bad = append(bad, fmt.Sprintf("%s (locked %s, observed %q)", t.Tool, t.Expected, strings.Join(strings.Fields(t.Actual), " ")))
 		}
 	}
 	if len(bad) > 0 {
-		return pfRow{"PF-01", "fail", "TOOLBOX_TOOL_MISMATCH", "tools not at their locked version: " + strings.Join(bad, ", ")}
+		return pfRow{"PF-01", "fail", "TOOLBOX_TOOL_MISMATCH", "tools not at their locked version: " + strings.Join(bad, "; ")}
 	}
 	msg := fmt.Sprintf("%d tools match tools.lock.yaml", len(rep.Tools))
 	if ref := c.env["SC_TOOLBOX_IMAGE_REF"]; ref != "" {

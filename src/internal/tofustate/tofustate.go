@@ -499,24 +499,38 @@ func (s *suite) refused(err error) bool {
 	return true
 }
 
-// accessFailure reports whether err says nothing about conditional-header support: a transport error, an
-// authentication or authorization refusal, throttling or a server-side failure. Such failures must not be
-// reported as S3_CONDITIONAL_PUT_UNSUPPORTED or PF_S3_LOCK_UNSUPPORTED.
+// accessFailure reports whether err is a failure that says nothing about conditional-header support. Only an
+// explicit "not supported" answer (a 501, or a 400 with the S3 code NotImplemented, InvalidArgument or
+// InvalidRequest) counts as unsupported; a store refusal (412/409, the expected answer to a second conditional
+// create) is not a failure here. Everything else (404 NoSuchBucket, 400 AuthorizationHeaderMalformed, 401, 403,
+// 5xx, throttling, a transport error) is fatal as S3_REQUEST_FAILED and never as S3_CONDITIONAL_PUT_UNSUPPORTED
+// or PF_S3_LOCK_UNSUPPORTED.
 func accessFailure(err error) bool {
-	if err == nil || store.Is(err, store.Unsupported) {
+	if err == nil || store.Is(err, store.Exists) {
 		return false
+	}
+	return !unsupportedAnswer(err)
+}
+
+// unsupportedAnswer reports whether err is the store saying it does not implement the conditional header.
+func unsupportedAnswer(err error) bool {
+	if store.Is(err, store.Unsupported) {
+		return true
 	}
 	var se *s3client.Error
 	if !errors.As(err, &se) {
-		return true
+		return false
 	}
 	switch {
-	case se.Status == 401 || se.Status == 403 || se.Status == 408 || se.Status == 429:
+	case se.Status == 501:
 		return true
-	case se.Status >= 500 && se.Status != 501:
-		return true
+	case se.Status == 400:
+		switch se.Code {
+		case "NotImplemented", "InvalidArgument", "InvalidRequest":
+			return true
+		}
 	}
-	return se.Kind == store.Unavailable && se.Status != 501
+	return false
 }
 
 // Conformance runs C1-C8 under <cluster>/conformance/<run-id>/ and deletes every version it wrote.
