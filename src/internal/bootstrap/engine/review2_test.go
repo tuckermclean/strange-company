@@ -39,7 +39,6 @@ func TestJournal_ConflictOnPutDoesNotResaveLocal_50AC6(t *testing.T) {
 	var other []byte
 	before := 0
 	u.runFn = func(*unit) ([]engine.OutputRef, error) {
-		before = len(seenSeqs)
 		j := v.remote()
 		j["journal_seq"] = float64(seqOf(j) + 1)
 		j["facts"] = map[string]any{"other_writer": "wins"}
@@ -47,6 +46,7 @@ func TestJournal_ConflictOnPutDoesNotResaveLocal_50AC6(t *testing.T) {
 		if _, err := v.st.Put(context.Background(), journalKey, other, ""); err != nil {
 			t.Fatal(err)
 		}
+		before = len(seenSeqs)
 		return nil, nil
 	}
 	res := v.exec(pipe(u), engine.Options{})
