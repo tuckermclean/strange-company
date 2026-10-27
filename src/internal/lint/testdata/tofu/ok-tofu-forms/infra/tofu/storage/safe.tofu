@@ -1,0 +1,7 @@
+resource "aws_s3_bucket" "safe" {
+  bucket = "safe"
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}

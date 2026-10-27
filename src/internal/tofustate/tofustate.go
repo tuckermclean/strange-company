@@ -398,6 +398,10 @@ type ConformanceParams struct {
 	Clock     clock.Clock
 	Probe     LockProbe
 	Accept409 bool
+	// Cleanup is the store that deletes the conformance object versions afterwards (plan 06 section 14.3: the
+	// admin credential; the tofu-state credential holds no DeleteObjectVersion).
+	// SC-STUB(F08 06-AC-1)
+	Cleanup Store
 }
 
 // LockProbe runs C7: OpenTofu against a hand-written lock object.
@@ -439,6 +443,9 @@ type Report struct {
 	Fatal  []string     `json:"fatal"`
 	Tests  []TestResult `json:"tests"`
 	Flags  Flags        `json:"flags"`
+	// CleanupFailures lists the objects or listings the cleanup could not delete; it does not change Fatal.
+	// SC-STUB(F08 06-AC-1)
+	CleanupFailures []string `json:"cleanup_failures,omitempty"`
 }
 
 const (

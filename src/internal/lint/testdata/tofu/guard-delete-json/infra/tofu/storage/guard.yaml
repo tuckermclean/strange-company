@@ -1,0 +1,1 @@
+{"apiVersion":"strange.company/v1alpha1","kind":"TofuPlanGuard","metadata":{"name":"storage"},"spec":{"rootModule":"infra/tofu/storage","resources":[{"type":"aws_s3_bucket","allowedActions":["no-op","Delete"]}]}}
