@@ -62,10 +62,24 @@ func Parse(args []string) (inv Invocation, err error) {
 					}
 					i++
 					val = args[i]
+					if strings.HasPrefix(val, "-") {
+						return inv, fmt.Errorf("--%s needs a value, not the flag %q", name, val)
+					}
 				}
 				if err := inv.setGlobal(name, val); err != nil {
 					return inv, err
 				}
+				continue
+			case cur == nil && (name == "from-phase" || name == "retry-phase"):
+				// pipeline flags before the command mean run (plan 50 section 7.1)
+				if !hasVal {
+					if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
+						return inv, fmt.Errorf("--%s needs a value", name)
+					}
+					i++
+					val = args[i]
+				}
+				pending = append(pending, "--"+name+"="+val)
 				continue
 			case cur == nil:
 				pending = append(pending, a)
@@ -73,6 +87,9 @@ func Parse(args []string) (inv Invocation, err error) {
 			}
 			next := func() (string, bool) {
 				if i+1 >= len(args) {
+					return "", false
+				}
+				if strings.HasPrefix(args[i+1], "-") {
 					return "", false
 				}
 				i++

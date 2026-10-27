@@ -20,7 +20,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/santhosh-tekuri/jsonschema/v6"
 	"go.yaml.in/yaml/v3"
+	"golang.org/x/text/language"
+	"golang.org/x/text/message"
 
 	"strange.company/sc/internal/bootstrap/config"
 	"strange.company/sc/internal/bootstrap/preflight"
@@ -83,9 +86,6 @@ func runPreflight(inv Invocation, env map[string]string, stdout, stderr io.Write
 	if deps.Clock == nil {
 		deps.Clock = clock.Real{}
 	}
-	if deps.ProbeModelKey == nil {
-		deps.ProbeModelKey = httpProbe
-	}
 	if deps.Resolve == nil {
 		deps.Resolve = lookupHost
 	}
@@ -113,11 +113,13 @@ func runPreflight(inv Invocation, env map[string]string, stdout, stderr io.Write
 		p.row(failRow("PF-02", "ENV_FILE_UNREADABLE", exitUsage, "%s: %v", envFile, perr).PFRow)
 		return exitUsage
 	}
+	var secrets []string
 	for k, v := range vars {
-		if config.IsSecretKey(k) {
-			p.sc.AddSecret(v)
+		if config.IsSecretKey(k) && v != "" {
+			secrets = append(secrets, v)
 		}
 	}
+	p.sc = scrub.New(secrets...)
 	if unknown := unknownKeys(vars); len(unknown) > 0 {
 		p.row(failRow("PF-02", "UNKNOWN_KEY", exitUsage, "%s", strings.Join(unknown, "; ")).PFRow)
 		return exitUsage
@@ -148,7 +150,7 @@ func runPreflight(inv Invocation, env map[string]string, stdout, stderr io.Write
 		derr = validateConfig(doc)
 	}
 	if derr != nil {
-		p.row(failRow("PF-02", "CONFIG_SCHEMA_INVALID", exitUsage, "the normalized configuration violates bootstrap-config.schema.yaml: %v", derr).PFRow)
+		p.row(failRow("PF-02", "CONFIG_SCHEMA_INVALID", exitUsage, "the normalized configuration violates bootstrap-config.schema.yaml: %s", schemaErrText(derr)).PFRow)
 		return exitUsage
 	}
 
@@ -159,6 +161,9 @@ func runPreflight(inv Invocation, env map[string]string, stdout, stderr io.Write
 	}
 	if tb[1].Status == "fail" {
 		rows[2].exit = exitPreflight
+	}
+	if deps.ProbeModelKey == nil {
+		deps.ProbeModelKey = policyProbe(env, filepath.Join(repoRoot(env), "policy", "model-routing.yaml"))
 	}
 	pc := &pfCtx{inv: inv, env: env, vars: vars, doc: doc, deps: deps, repo: repoRoot(env), cluster: str(dig(doc, "spec", "cluster", "name"))}
 	rows = append(rows, pc.pf19(), pc.pf26(), pc.pf28(), pc.pf29(), pc.pf30())
@@ -290,23 +295,27 @@ func (c *pfCtx) loadPolicy(name string) (doc any, digest string, err *preflight.
 	return d, "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
-// modelKeyVars maps a policy provider id to the bootstrap.env variable that holds its key.
-var modelKeyVars = [][2]string{{"anthropic", "ANTHROPIC_API_KEY"}, {"openai", "OPENAI_API_KEY"}, {"deepseek", "DEEPSEEK_API_KEY"},
-	{"zai", "ZAI_API_KEY"}, {"google", "GOOGLE_API_KEY"}}
-
-// enabledProviders are the production providers of policy/model-routing.yaml that are enabled and have a key.
-func (c *pfCtx) enabledProviders(routing any) []string {
-	var out []string
-	for _, p := range modelKeyVars {
-		if c.vars[p[1]] == "" {
-			continue
-		}
-		pol := dig(routing, "spec", "providers", p[0])
-		if pol == nil || dig(pol, "enabled") != true || str(dig(pol, "stage")) == "test-only" {
-			continue
-		}
-		out = append(out, p[0])
+// keyVarFor is the bootstrap.env variable that holds a provider's API key (D8): the policy's credential.secretKey,
+// upper-cased with "-" turned into "_", plus "_API_KEY". Plans 50 and 53 do not name the variable; a follow-up owns it.
+func keyVarFor(routing any, provider string) string {
+	sk := str(dig(routing, "spec", "providers", provider, "credential", "secretKey"))
+	if sk == "" {
+		sk = provider
 	}
+	return strings.ToUpper(strings.ReplaceAll(sk, "-", "_")) + "_API_KEY"
+}
+
+// enabledProviders are the enabled production providers of policy/model-routing.yaml, sorted by id.
+func enabledProviders(routing any) []string {
+	pm, _ := dig(routing, "spec", "providers").(map[string]any)
+	var out []string
+	for name, pol := range pm {
+		if dig(pol, "enabled") != true || str(dig(pol, "stage")) == "test-only" {
+			continue
+		}
+		out = append(out, name)
+	}
+	sort.Strings(out)
 	return out
 }
 
@@ -315,20 +324,26 @@ func (c *pfCtx) pf19() row {
 	if err != nil {
 		return failRow("PF-19", err.Code, exitPreflight, "%s", err.Message)
 	}
-	providers := c.enabledProviders(routing)
+	var providers []string // enabled production providers that have a key in the env
+	for _, name := range enabledProviders(routing) {
+		if c.vars[keyVarFor(routing, name)] != "" {
+			providers = append(providers, name)
+		}
+	}
 	for _, name := range providers {
-		key := c.vars[keyVar(name)]
+		kv := keyVarFor(routing, name)
+		key := c.vars[kv]
 		if prefixes, ok := dig(routing, "spec", "providers", name, "credential", "forbiddenKeyPrefixes").([]any); ok {
 			for _, pf := range prefixes {
 				if s := str(pf); s != "" && strings.HasPrefix(key, s) {
 					return failRow("PF-19", "MODEL_KEY_FORBIDDEN_PREFIX", exitPreflight,
-						"%s: the key starts with the forbidden prefix %q (subscription or OAuth tokens are not API keys)", keyVar(name), s)
+						"%s: the key starts with the forbidden prefix %q (subscription or OAuth tokens are not API keys)", kv, s)
 				}
 			}
 		}
 	}
 	for _, name := range providers {
-		if perr := c.deps.ProbeModelKey(name, c.vars[keyVar(name)]); perr != nil {
+		if perr := c.deps.ProbeModelKey(name, c.vars[keyVarFor(routing, name)]); perr != nil {
 			return failRow("PF-19", "MODEL_KEY_REJECTED", exitPreflight, "%s: the authenticated probe failed: %v", name, perr)
 		}
 	}
@@ -336,15 +351,6 @@ func (c *pfCtx) pf19() row {
 		return pass("PF-19", "no enabled production model provider has a key to probe")
 	}
 	return pass("PF-19", "%d model key(s) accepted: %s", len(providers), strings.Join(providers, ", "))
-}
-
-func keyVar(provider string) string {
-	for _, p := range modelKeyVars {
-		if p[0] == provider {
-			return p[1]
-		}
-	}
-	return ""
 }
 
 func amount(v any) (float64, bool) {
@@ -446,7 +452,7 @@ func (c *pfCtx) pf29() row {
 	if err != nil {
 		return failRow("PF-29", err.Code, exitPreflight, "%s", err.Message)
 	}
-	required := c.enabledProviders(routing)
+	required := enabledProviders(routing)
 	if len(required) == 0 {
 		return pass("PF-29", "no enabled production model provider needs a backstop")
 	}
@@ -488,7 +494,10 @@ func (c *pfCtx) pf29() row {
 		if !a.MFA {
 			return failRow("PF-29", "BACKSTOP_MFA_ATTESTATION_MISSING", exitConfirm, "%s: the attestation lacks consoleMfaEnabled: true (MFA must be enabled on the provider console account)", name)
 		}
-		if a.Limit <= 0 || a.Limit > 1.25*monthly+1e-9 {
+		if a.Limit <= 0 {
+			return failRow("PF-29", "BACKSTOP_LIMIT_INVALID", exitConfirm, "%s: limit %s USD must be greater than zero", name, strconv.FormatFloat(a.Limit, 'f', -1, 64))
+		}
+		if a.Limit > 1.25*monthly+1e-9 {
 			return failRow("PF-29", "BACKSTOP_LIMIT_TOO_HIGH", exitConfirm, "%s: limit %s USD exceeds 1.25 x monthlyUsd (%s USD)", name,
 				strconv.FormatFloat(a.Limit, 'f', -1, 64), strconv.FormatFloat(1.25*monthly, 'f', -1, 64))
 		}
@@ -498,7 +507,7 @@ func (c *pfCtx) pf29() row {
 	}
 	if len(missing) > 0 {
 		return failRow("PF-29", "BACKSTOP_MISSING", exitConfirm,
-			"no spend backstop attested for %s; run backstop <provider> <limit-usd> or pass --confirm-backstops <file> (the limit may be at most 1.25 x monthlyUsd and the provider console needs MFA)",
+			"no spend backstop attested for %s; pass --confirm-backstops <file> or set SC_CONFIRM_BACKSTOPS to a file that lists providers.<id>.limitUsd and providers.<id>.consoleMfaEnabled: true (the limit may be at most 1.25 x monthlyUsd and the provider console needs MFA)",
 			strings.Join(missing, ", "))
 	}
 	if len(fresh) > 0 {
@@ -573,36 +582,46 @@ func lookupHost(host string) ([]netip.Addr, error) {
 	return net.DefaultResolver.LookupNetIP(context.Background(), "ip", host)
 }
 
-// probeTargets are the non-billable authenticated list-models calls of PF-19 (plan 53 owns the endpoints; (verify)).
-var probeTargets = map[string]struct{ url, header, prefix string }{
-	"anthropic": {"https://api.anthropic.com/v1/models", "x-api-key", ""},
-	"openai":    {"https://api.openai.com/v1/models", "Authorization", "Bearer "},
-	"deepseek":  {"https://api.deepseek.com/models", "Authorization", "Bearer "},
-	"zai":       {"https://api.z.ai/api/paas/v4/models", "Authorization", "Bearer "},
-	"google":    {"https://generativelanguage.googleapis.com/v1beta/models", "x-goog-api-key", ""},
+// policyProbe builds the production PF-19 probe from policy/model-routing.yaml when the probe runs (D7). The
+// endpoint (baseUrl + /models) is not defined by plan 53: (verify).
+func policyProbe(_ map[string]string, path string) func(provider, key string) error {
+	return func(provider, key string) error {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return errors.New("policy/model-routing.yaml cannot be read")
+		}
+		doc, err := contracts.ParseYAML(b)
+		if err != nil {
+			return errors.New("policy/model-routing.yaml is not valid YAML")
+		}
+		targets := map[string]ProbeTarget{}
+		pm, _ := dig(doc, "spec", "providers").(map[string]any)
+		for name, pol := range pm {
+			targets[name] = ProbeTarget{BaseURL: str(dig(pol, "upstream", "baseUrl")), AuthScheme: str(dig(pol, "credential", "authScheme"))}
+		}
+		return NewModelKeyProbe(&http.Client{Timeout: 20 * time.Second}, targets)(provider, key)
+	}
 }
 
-// httpProbe is the production PF-19 probe. The key travels in a header only and never appears in an error.
-func httpProbe(provider, key string) error {
-	t, ok := probeTargets[provider]
-	if !ok {
-		return fmt.Errorf("no probe endpoint known for provider %s", provider)
+// schemaErrText names the failing field of a schema validation error instead of the bare document root.
+func schemaErrText(err error) string {
+	var ve *jsonschema.ValidationError
+	if errors.As(err, &ve) {
+		var leaves []string
+		var walk func(e *jsonschema.ValidationError)
+		walk = func(e *jsonschema.ValidationError) {
+			if len(e.Causes) == 0 {
+				leaves = append(leaves, "/"+strings.Join(e.InstanceLocation, "/")+": "+e.ErrorKind.LocalizedString(message.NewPrinter(language.English)))
+				return
+			}
+			for _, c := range e.Causes {
+				walk(c)
+			}
+		}
+		walk(ve)
+		if len(leaves) > 0 {
+			return strings.Join(leaves, "; ")
+		}
 	}
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, t.url, nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set(t.header, t.prefix+key)
-	if provider == "anthropic" {
-		req.Header.Set("anthropic-version", "2023-06-01")
-	}
-	resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
-	if err != nil {
-		return errors.New("request failed: " + strings.ReplaceAll(err.Error(), key, "[redacted]"))
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return fmt.Errorf("HTTP %d", resp.StatusCode)
-	}
-	return nil
+	return err.Error()
 }

@@ -120,5 +120,10 @@ func EgressVars(endpoint, privateCIDR string, resolve func(host string) ([]netip
 	if perr != nil {
 		return nil, fail("S3_PRIVATE_CIDR_INVALID", "S3_PRIVATE_CIDR %q is not a CIDR", privateCIDR)
 	}
-	return map[string]string{"SC_S3_CIDR": p.String(), "SC_S3_PORT": strconv.Itoa(port)}, nil
+	for _, a := range addrs {
+		if !p.Contains(a.Unmap()) {
+			return nil, fail("S3_ENDPOINT_PLACEMENT_UNSUPPORTED", "S3_ENDPOINT %s resolves to %s, which S3_PRIVATE_CIDR %s does not contain", host, a, p.Masked())
+		}
+	}
+	return map[string]string{"SC_S3_CIDR": p.Masked().String(), "SC_S3_PORT": strconv.Itoa(port)}, nil
 }
