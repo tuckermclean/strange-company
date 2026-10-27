@@ -66,13 +66,12 @@ func Rows() []Row {
 
 var envLine = regexp.MustCompile(`^[A-Z][A-Z0-9_]*=`)
 
-// ParseEnv reads the plan 50 section 9.1 grammar with the same semantics as the toolbox parser (CD-67): KEY=VALUE
+// ParseEnv reads the plan 50 section 9.1 grammar with the same semantics and the same scanner limits (default 64 KiB line) as the toolbox parser (CD-67): KEY=VALUE
 // lines matching ^[A-Z][A-Z0-9_]*=, one pair of single or double quotes stripped, no expansion, other lines assign
 // nothing, the last assignment wins and an empty value counts as unset.
 func ParseEnv(data []byte) (map[string]string, error) {
 	out := map[string]string{}
 	sc := bufio.NewScanner(bytes.NewReader(data))
-	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
 	for sc.Scan() {
 		line := sc.Text()
 		if !envLine.MatchString(line) {
@@ -682,7 +681,7 @@ func knownKeys() map[string]bool {
 // variable, so copying it unchanged configures nothing (an empty value counts as unset).
 func ExampleEnv() []byte {
 	var b strings.Builder
-	b.WriteString("# bootstrap.env.example - generated from plan 50 section 9.2 by `sc-bootstrap config-docs-generate`.\n")
+	b.WriteString("# bootstrap.env.example - generated from plan 50 section 9.2 by `sc-lint config-docs --write`.\n")
 	b.WriteString("# Do not edit by hand: `make config-docs-check` fails when this file drifts from the table.\n")
 	b.WriteString("# Copy to bootstrap.env and fill in values. An empty value counts as unset. Never commit bootstrap.env.\n")
 	for _, r := range rows {
