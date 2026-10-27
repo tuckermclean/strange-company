@@ -58,6 +58,8 @@ type Class struct {
 type Instance struct {
 	Name             string
 	InRecoveryBundle bool
+	// Storage holds the instance's own storage rows; when there are any, they replace the class rows for it.
+	Storage []Storage
 }
 
 // Storage is one storage row of a class (the kinds this package renders: sops-git, offcluster-sops, k8s-secret).
@@ -88,6 +90,13 @@ func LoadRegister(data []byte) (*Register, error) {
 				Instances []struct {
 					Name             string `yaml:"name"`
 					InRecoveryBundle *bool  `yaml:"inRecoveryBundle"`
+					Storage          []struct {
+						Kind      string   `yaml:"kind"`
+						Path      string   `yaml:"path"`
+						Namespace string   `yaml:"namespace"`
+						Name      string   `yaml:"name"`
+						Keys      []string `yaml:"keys"`
+					} `yaml:"storage"`
 				} `yaml:"instances"`
 				Storage []struct {
 					Kind      string   `yaml:"kind"`
@@ -112,6 +121,9 @@ func LoadRegister(data []byte) (*Register, error) {
 			in := Instance{Name: i.Name, InRecoveryBundle: c.InRecoveryBundle}
 			if i.InRecoveryBundle != nil {
 				in.InRecoveryBundle = *i.InRecoveryBundle
+			}
+			for _, st := range i.Storage {
+				in.Storage = append(in.Storage, Storage{Kind: st.Kind, Path: st.Path, Namespace: st.Namespace, Name: st.Name, Keys: st.Keys})
 			}
 			cl.Instances = append(cl.Instances, in)
 		}

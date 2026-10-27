@@ -200,7 +200,15 @@ func RenderSOPSReport(cluster string, set *Set, rcp Recipients, enc Encryptor) (
 	for _, s := range secrets {
 		c := classes[s.Class]
 		var k8sName, k8sNS string
-		for _, st := range c.Storage {
+		// An instance's own storage rows replace the class rows for that instance.
+		rows := c.Storage
+		instRows := false
+		for _, in := range c.Instances {
+			if in.Name == s.Instance && len(in.Storage) > 0 {
+				rows, instRows = in.Storage, true
+			}
+		}
+		for _, st := range rows {
 			if st.Kind == "k8s-secret" && st.Name != "" {
 				k8sName = st.Name
 				if strings.Contains(k8sName, "<cluster>") {
@@ -217,7 +225,7 @@ func RenderSOPSReport(cluster string, set *Set, rcp Recipients, enc Encryptor) (
 				break
 			}
 		}
-		for _, st := range c.Storage {
+		for _, st := range rows {
 			if st.Kind != "sops-git" && st.Kind != "offcluster-sops" {
 				continue
 			}
@@ -246,6 +254,9 @@ func RenderSOPSReport(cluster string, set *Set, rcp Recipients, enc Encryptor) (
 			}
 			if d.name == "" {
 				d.name, d.ns = k8sName, k8sNS
+				if instRows && k8sName == "" {
+					d.name = strings.TrimSuffix(p[strings.LastIndex(p, "/")+1:], ".sops.yaml")
+				}
 				if ns := pathNamespace(cluster, p); ns != "" {
 					d.ns = ns
 				}
@@ -381,13 +392,7 @@ func SOPSRules(cluster string, rcp Recipients, existing []byte) ([]byte, error) 
 		if replaced {
 			continue
 		}
-		at := len(rules)
-		for i, r := range rules {
-			if m, ok := r.(map[string]any); ok && isCatchAll(m) {
-				at = i
-				break
-			}
-		}
+		at := firstMatching(rules, cluster)
 		rules = append(rules, nil)
 		copy(rules[at+1:], rules[at:])
 		rules[at] = w
@@ -396,17 +401,36 @@ func SOPSRules(cluster string, rcp Recipients, existing []byte) ([]byte, error) 
 	return marshal(doc)
 }
 
-// isCatchAll reports whether a creation rule has no path_regex or one that matches every .sops.yaml file.
-func isCatchAll(m map[string]any) bool {
-	p, ok := m["path_regex"].(string)
-	if !ok || p == "" {
-		return true
+// firstMatching returns the index of the first existing rule that SOPS would pick for a path of the cluster: a
+// rule without path_regex, or one whose path_regex (Go regexp, as SOPS uses) matches a sample path. A rule whose
+// regex does not compile is treated conservatively as matching, so the cluster rules go before it. Without such a
+// rule it returns len(rules).
+func firstMatching(rules []any, cluster string) int {
+	samples := []string{
+		"gitops/clusters/" + cluster + "/secrets/ns/x.sops.yaml",
+		"gitops/clusters/" + cluster + "/x.sops.yaml",
+		"secrets/offcluster/" + cluster + "/x.sops.yaml",
 	}
-	switch p {
-	case `.*\.sops\.yaml$`, `\.sops\.yaml$`, `^.*\.sops\.yaml$`, `.*`, `.*\.yaml$`, `\.yaml$`:
-		return true
+	for i, r := range rules {
+		m, ok := r.(map[string]any)
+		if !ok {
+			continue
+		}
+		p, _ := m["path_regex"].(string)
+		if p == "" {
+			return i
+		}
+		re, err := regexp.Compile(p)
+		if err != nil {
+			return i
+		}
+		for _, s := range samples {
+			if re.MatchString(s) {
+				return i
+			}
+		}
 	}
-	return false
+	return len(rules)
 }
 
 // ClusterVarsInput is what the cluster-vars render needs.
