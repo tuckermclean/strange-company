@@ -131,3 +131,29 @@ func TestEgressVars_PlacementUnsupportedWithoutCIDR_50AC35(t *testing.T) {
 		}
 	}
 }
+
+// 50-AC-35 (PF-28): S3_PRIVATE_CIDR must contain the endpoint address, else the placement is unsupported.
+func TestEgressVars_CIDRMustContainEndpoint_50AC35(t *testing.T) {
+	res := resolver(map[string]string{"s3.internal.example.net": "10.20.0.5", "s3.example.net": "203.0.113.9"})
+	for _, tc := range []struct{ ep, cidr string }{
+		{"https://10.20.0.5:9000", "10.99.0.0/24"},
+		{"https://s3.internal.example.net", "10.30.0.0/16"},
+		{"https://s3.example.net:9000", "10.20.0.0/24"},
+	} {
+		vars, err := preflight.EgressVars(tc.ep, tc.cidr, res)
+		if code(err) != "S3_ENDPOINT_PLACEMENT_UNSUPPORTED" {
+			t.Errorf("%s with %s: error = %v (vars %v), want code S3_ENDPOINT_PLACEMENT_UNSUPPORTED", tc.ep, tc.cidr, err, vars)
+		}
+	}
+}
+
+// 50-AC-35 (PF-28): SC_S3_CIDR is the canonical network, never the host address as written.
+func TestEgressVars_CIDRIsCanonical_50AC35(t *testing.T) {
+	vars, err := preflight.EgressVars("https://10.20.0.5:9000", "10.20.0.5/24", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vars["SC_S3_CIDR"] != "10.20.0.0/24" {
+		t.Errorf("SC_S3_CIDR = %q, want 10.20.0.0/24", vars["SC_S3_CIDR"])
+	}
+}
