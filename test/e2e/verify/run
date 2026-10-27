@@ -89,7 +89,7 @@ pycheck() { ./bootstrap exec --image ci --network none -- python3 -I -c "$PY" "$
 mkdir -p "$snap"
 
 # (a) warm with network
-if ./bootstrap exec --image ci -- make gitops-cache && ./bootstrap exec --image ci -- sh -c 'cd src && go mod download'; then
+if ./bootstrap exec --image ci -- make gitops-cache && ./bootstrap exec --image ci -- sh -c 'cd src && go mod download && go mod tidy -diff >/dev/null'; then
 	pass "(a) caches warmed with network"
 else
 	bad "(a) cache warm-up failed"
