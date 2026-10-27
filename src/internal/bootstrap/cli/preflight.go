@@ -1,0 +1,608 @@
+package cli
+
+import (
+	"context"
+	"crypto/sha256"
+	_ "embed"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"math"
+	"net"
+	"net/http"
+	"net/netip"
+	"os"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	"go.yaml.in/yaml/v3"
+
+	"strange.company/sc/internal/bootstrap/config"
+	"strange.company/sc/internal/bootstrap/preflight"
+	"strange.company/sc/internal/clock"
+	"strange.company/sc/internal/contracts"
+	"strange.company/sc/internal/scrub"
+	"strange.company/sc/internal/toolbox"
+	"strange.company/sc/internal/version"
+)
+
+// The embedded file is a byte-identical copy of contracts/bootstrap-config.schema.yaml
+// (TestEmbeddedSchema_MatchesContract compares them; refresh with `cp contracts/bootstrap-config.schema.yaml src/internal/bootstrap/cli/schemas/`).
+//
+//go:embed schemas/bootstrap-config.schema.yaml
+var configSchemaYAML []byte
+
+// placeholderUID stands in for the install identity, which plan.install-identity generates later; preflight only
+// validates the shape of the normalized document.
+const placeholderUID = "00000000-0000-4000-8000-000000000000"
+
+// Exit codes of plan 50 section 7.2 used by the preflight driver.
+const (
+	exitUsage     = 2
+	exitPreflight = 3
+	exitConfirm   = 5
+)
+
+// row is a preflight result row with the exit code its failure maps to.
+type row struct {
+	toolbox.PFRow
+	exit int
+}
+
+func pass(id, format string, a ...any) row {
+	return row{PFRow: toolbox.PFRow{ID: id, Status: "pass", Msg: fmt.Sprintf(format, a...)}}
+}
+
+func failRow(id, code string, exit int, format string, a ...any) row {
+	return row{PFRow: toolbox.PFRow{ID: id, Status: "fail", Code: code, Msg: fmt.Sprintf(format, a...)}, exit: exit}
+}
+
+// printer writes rows through a scrubber so no secret value can reach the output.
+type printer struct {
+	out  io.Writer
+	json bool
+	sc   *scrub.Scrubber
+}
+
+func (p *printer) row(r toolbox.PFRow) {
+	if p.json {
+		b, _ := json.Marshal(map[string]string{"id": r.ID, "status": r.Status, "code": r.Code, "message": p.sc.String(r.Msg)})
+		fmt.Fprintln(p.out, string(b))
+		return
+	}
+	r.Msg = p.sc.String(r.Msg)
+	fmt.Fprintln(p.out, toolbox.FormatRow(r))
+}
+
+func runPreflight(inv Invocation, env map[string]string, stdout, stderr io.Writer, deps Deps) int {
+	if deps.Clock == nil {
+		deps.Clock = clock.Real{}
+	}
+	if deps.ProbeModelKey == nil {
+		deps.ProbeModelKey = httpProbe
+	}
+	if deps.Resolve == nil {
+		deps.Resolve = lookupHost
+	}
+	p := &printer{out: stdout, json: inv.LogFormat == "json", sc: scrub.New()}
+
+	envFile := inv.EnvFile
+	if envFile == "" {
+		in := env["SC_INPUT_DIR"]
+		if in == "" {
+			in = "/run/sc-input"
+		}
+		envFile = filepath.Join(in, "bootstrap.env")
+	}
+	data, rerr := os.ReadFile(envFile)
+	if rerr != nil {
+		var pe *os.PathError
+		if errors.As(rerr, &pe) {
+			rerr = pe.Err
+		}
+		p.row(failRow("PF-02", "ENV_FILE_UNREADABLE", exitUsage, "%s: %v", envFile, rerr).PFRow)
+		return exitUsage
+	}
+	vars, perr := config.ParseEnv(data)
+	if perr != nil {
+		p.row(failRow("PF-02", "ENV_FILE_UNREADABLE", exitUsage, "%s: %v", envFile, perr).PFRow)
+		return exitUsage
+	}
+	for k, v := range vars {
+		if config.IsSecretKey(k) {
+			p.sc.AddSecret(v)
+		}
+	}
+	if unknown := unknownKeys(vars); len(unknown) > 0 {
+		p.row(failRow("PF-02", "UNKNOWN_KEY", exitUsage, "%s", strings.Join(unknown, "; ")).PFRow)
+		return exitUsage
+	}
+	// The test-mode variables come from the process environment, never from the file (plan 50 section 9.2).
+	merged := map[string]string{}
+	for k, v := range vars {
+		merged[k] = v
+	}
+	for k, v := range env {
+		if v != "" && (strings.HasPrefix(k, "SC_TEST_") || strings.HasPrefix(k, "SC_LAB_S3_")) {
+			merged[k] = v
+		}
+	}
+	res, nerr := config.Normalize(merged, config.Options{Clock: deps.Clock, InstallUID: placeholderUID, Version: version.Version, Profile: inv.Profile})
+	if nerr != nil {
+		code, exit := "CONFIG_INVALID", exitUsage
+		var ce *config.Error
+		if errors.As(nerr, &ce) {
+			code, exit = ce.Code, ce.ExitCode
+			nerr = errors.New(ce.Message)
+		}
+		p.row(failRow("PF-02", code, exit, "%v", nerr).PFRow)
+		return exit
+	}
+	doc, derr := contracts.ParseYAML(res.YAML)
+	if derr == nil {
+		derr = validateConfig(doc)
+	}
+	if derr != nil {
+		p.row(failRow("PF-02", "CONFIG_SCHEMA_INVALID", exitUsage, "the normalized configuration violates bootstrap-config.schema.yaml: %v", derr).PFRow)
+		return exitUsage
+	}
+
+	tb := toolbox.ToolboxRows(env, envFile, vars)
+	rows := []row{{PFRow: tb[0]}, pass("PF-02", "bootstrap.env parses and validates"), {PFRow: tb[1]}}
+	if tb[0].Status == "fail" {
+		rows[0].exit = exitPreflight
+	}
+	if tb[1].Status == "fail" {
+		rows[2].exit = exitPreflight
+	}
+	pc := &pfCtx{inv: inv, env: env, vars: vars, doc: doc, deps: deps, repo: repoRoot(env), cluster: str(dig(doc, "spec", "cluster", "name"))}
+	rows = append(rows, pc.pf19(), pc.pf26(), pc.pf28(), pc.pf29(), pc.pf30())
+
+	exit := 0
+	for _, r := range rows {
+		p.row(r.PFRow)
+		if r.Status == "fail" {
+			switch {
+			case r.exit == exitPreflight && exit != exitPreflight:
+				exit = exitPreflight
+			case r.exit == exitConfirm && exit == 0:
+				exit = exitConfirm
+			case exit == 0:
+				exit = exitPreflight
+			}
+		}
+	}
+	_ = stderr
+	return exit
+}
+
+func validateConfig(doc any) error {
+	schemas, err := contracts.CompileSchemaBytes(map[string][]byte{"bootstrap-config.schema.yaml": configSchemaYAML})
+	if err != nil {
+		return err
+	}
+	s := schemas["bootstrap-config"]
+	if s == nil {
+		return errors.New("bootstrap-config schema not compiled")
+	}
+	return s.Validate(doc)
+}
+
+func repoRoot(env map[string]string) string {
+	if r := env["SC_REPO_ROOT"]; r != "" {
+		return r
+	}
+	return "."
+}
+
+// unknownKeys reports every variable that is not in the plan 50 section 9.2 table, with the nearest known name.
+func unknownKeys(vars map[string]string) []string {
+	known := config.KnownKeys()
+	var names []string
+	for k := range vars {
+		if !config.IsKnownKey(k) {
+			names = append(names, k)
+		}
+	}
+	sort.Strings(names)
+	var out []string
+	for _, k := range names {
+		msg := "unknown key " + k
+		best, bd := "", 1<<30
+		for _, c := range known {
+			if d := levenshtein(k, c); d < bd {
+				best, bd = c, d
+			}
+		}
+		if bd <= 3 && bd*2 < len(k) {
+			msg += " (did you mean " + best + "?)"
+		}
+		out = append(out, msg)
+	}
+	return out
+}
+
+func levenshtein(a, b string) int {
+	prev := make([]int, len(b)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		cur := make([]int, len(b)+1)
+		cur[0] = i
+		for j := 1; j <= len(b); j++ {
+			c := 1
+			if a[i-1] == b[j-1] {
+				c = 0
+			}
+			cur[j] = min(prev[j]+1, cur[j-1]+1, prev[j-1]+c)
+		}
+		prev = cur
+	}
+	return prev[len(b)]
+}
+
+// pfCtx carries what the section 14.2 checks of this slice read.
+type pfCtx struct {
+	inv     Invocation
+	env     map[string]string
+	vars    map[string]string
+	doc     any
+	deps    Deps
+	repo    string
+	cluster string
+}
+
+func dig(v any, path ...string) any {
+	for _, p := range path {
+		m, ok := v.(map[string]any)
+		if !ok {
+			return nil
+		}
+		v = m[p]
+	}
+	return v
+}
+
+func str(v any) string {
+	if v == nil {
+		return ""
+	}
+	return fmt.Sprint(v)
+}
+
+// loadPolicy reads policy/<name> as a document and its sha256 digest; a missing file is POLICY_FILE_MISSING (D4).
+func (c *pfCtx) loadPolicy(name string) (doc any, digest string, err *preflight.Error) {
+	b, rerr := os.ReadFile(filepath.Join(c.repo, "policy", name))
+	if rerr != nil {
+		return nil, "", &preflight.Error{Code: "POLICY_FILE_MISSING", Message: fmt.Sprintf("policy/%s cannot be read: it must exist in the repository (fail closed)", name)}
+	}
+	d, perr := contracts.ParseYAML(b)
+	if perr != nil {
+		return nil, "", &preflight.Error{Code: "POLICY_FILE_INVALID", Message: fmt.Sprintf("policy/%s is not valid YAML: %v", name, perr)}
+	}
+	sum := sha256.Sum256(b)
+	return d, "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+// modelKeyVars maps a policy provider id to the bootstrap.env variable that holds its key.
+var modelKeyVars = [][2]string{{"anthropic", "ANTHROPIC_API_KEY"}, {"openai", "OPENAI_API_KEY"}, {"deepseek", "DEEPSEEK_API_KEY"},
+	{"zai", "ZAI_API_KEY"}, {"google", "GOOGLE_API_KEY"}}
+
+// enabledProviders are the production providers of policy/model-routing.yaml that are enabled and have a key.
+func (c *pfCtx) enabledProviders(routing any) []string {
+	var out []string
+	for _, p := range modelKeyVars {
+		if c.vars[p[1]] == "" {
+			continue
+		}
+		pol := dig(routing, "spec", "providers", p[0])
+		if pol == nil || dig(pol, "enabled") != true || str(dig(pol, "stage")) == "test-only" {
+			continue
+		}
+		out = append(out, p[0])
+	}
+	return out
+}
+
+func (c *pfCtx) pf19() row {
+	routing, _, err := c.loadPolicy("model-routing.yaml")
+	if err != nil {
+		return failRow("PF-19", err.Code, exitPreflight, "%s", err.Message)
+	}
+	providers := c.enabledProviders(routing)
+	for _, name := range providers {
+		key := c.vars[keyVar(name)]
+		if prefixes, ok := dig(routing, "spec", "providers", name, "credential", "forbiddenKeyPrefixes").([]any); ok {
+			for _, pf := range prefixes {
+				if s := str(pf); s != "" && strings.HasPrefix(key, s) {
+					return failRow("PF-19", "MODEL_KEY_FORBIDDEN_PREFIX", exitPreflight,
+						"%s: the key starts with the forbidden prefix %q (subscription or OAuth tokens are not API keys)", keyVar(name), s)
+				}
+			}
+		}
+	}
+	for _, name := range providers {
+		if perr := c.deps.ProbeModelKey(name, c.vars[keyVar(name)]); perr != nil {
+			return failRow("PF-19", "MODEL_KEY_REJECTED", exitPreflight, "%s: the authenticated probe failed: %v", name, perr)
+		}
+	}
+	if len(providers) == 0 {
+		return pass("PF-19", "no enabled production model provider has a key to probe")
+	}
+	return pass("PF-19", "%d model key(s) accepted: %s", len(providers), strings.Join(providers, ", "))
+}
+
+func keyVar(provider string) string {
+	for _, p := range modelKeyVars {
+		if p[0] == provider {
+			return p[1]
+		}
+	}
+	return ""
+}
+
+func amount(v any) (float64, bool) {
+	f, err := strconv.ParseFloat(strings.TrimSpace(str(v)), 64)
+	return f, err == nil && !math.IsNaN(f) && !math.IsInf(f, 0)
+}
+
+func (c *pfCtx) pf26() row {
+	budgets, digest, err := c.loadPolicy("budgets.yaml")
+	if err != nil {
+		return failRow("PF-26", err.Code, exitPreflight, "%s", err.Message)
+	}
+	monthly, ok1 := amount(dig(budgets, "spec", "global", "monthlyUsd"))
+	_, ok2 := amount(dig(budgets, "spec", "global", "dailyUsd"))
+	if !ok1 || !ok2 {
+		return failRow("PF-26", "BUDGET_POLICY_INVALID", exitPreflight, "policy/budgets.yaml lacks spec.global.monthlyUsd or dailyUsd")
+	}
+	summary := fmt.Sprintf("model budget: global monthly %s USD, daily %s USD", str(dig(budgets, "spec", "global", "monthlyUsd")), str(dig(budgets, "spec", "global", "dailyUsd")))
+	if pm, ok := dig(budgets, "spec", "providers").(map[string]any); ok {
+		var names []string
+		for n := range pm {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		for _, n := range names {
+			if m := str(dig(pm[n], "monthlyUsd")); m != "" {
+				summary += fmt.Sprintf("; %s monthly %s", n, m)
+			}
+		}
+	}
+	given := c.inv.Confirm["budget"]
+	if given == "" {
+		given = c.env["SC_CONFIRM_BUDGET"]
+	}
+	if given == "" {
+		return failRow("PF-26", "BUDGET_CONFIRMATION_MISSING", exitConfirm,
+			"%s; confirm it with --confirm-budget %s or SC_CONFIRM_BUDGET (typed confirmation: budget %s %s)", summary, str(dig(budgets, "spec", "global", "monthlyUsd")), c.cluster, str(dig(budgets, "spec", "global", "monthlyUsd")))
+	}
+	g, ok := amount(given)
+	if !ok || math.Abs(g-monthly) > 1e-9 {
+		return failRow("PF-26", "BUDGET_CONFIRMATION_MISMATCH", exitConfirm, "%s; the confirmed amount %q does not equal global.monthlyUsd", summary, given)
+	}
+	if c.deps.Record != nil {
+		c.deps.Record(Confirmation{Kind: "model-budget", SubjectDigest: digest, Method: "flag"})
+	}
+	return pass("PF-26", "%s; confirmed", summary)
+}
+
+func (c *pfCtx) pf28() row {
+	vars, err := preflight.EgressVars(c.vars["S3_ENDPOINT"], c.vars["S3_PRIVATE_CIDR"], c.deps.Resolve)
+	if err != nil {
+		code := "S3_ENDPOINT_INVALID"
+		var pe *preflight.Error
+		if errors.As(err, &pe) {
+			code = pe.Code
+		}
+		return failRow("PF-28", code, exitPreflight, "%v", err)
+	}
+	if len(vars) == 0 {
+		return pass("PF-28", "S3 endpoint is public on 443: no SC_S3_CIDR or SC_S3_PORT")
+	}
+	return pass("PF-28", "SC_S3_CIDR=%s SC_S3_PORT=%s", vars["SC_S3_CIDR"], vars["SC_S3_PORT"])
+}
+
+func (c *pfCtx) pf30() row {
+	cidr := str(dig(c.doc, "spec", "network", "serviceCidr"))
+	dns := c.deps.ClusterDNSIP
+	if !dns.IsValid() {
+		dns, _ = preflight.ClusterDNSIP(cidr) // a CIDR error resurfaces from CheckPinnedIPs
+	}
+	var pinned []netip.Addr
+	if dns.IsValid() {
+		pinned = append(pinned, dns)
+	}
+	ip, err := preflight.CheckPinnedIPs(cidr, pinned)
+	if err != nil {
+		code := "SERVICE_CIDR_INVALID"
+		var pe *preflight.Error
+		if errors.As(err, &pe) {
+			code = pe.Code
+		}
+		return failRow("PF-30", code, exitPreflight, "%v", err)
+	}
+	return pass("PF-30", "SC_TRAEFIK_CLUSTER_IP=%s (SERVICE_CIDR %s)", ip, cidr)
+}
+
+type attestation struct {
+	Limit float64
+	MFA   bool
+}
+
+// pf29 is the provider spend backstop check (BUD-B6, plan 33 section 9.2a).
+func (c *pfCtx) pf29() row {
+	routing, _, err := c.loadPolicy("model-routing.yaml")
+	if err != nil {
+		return failRow("PF-29", err.Code, exitPreflight, "%s", err.Message)
+	}
+	budgets, _, err := c.loadPolicy("budgets.yaml")
+	if err != nil {
+		return failRow("PF-29", err.Code, exitPreflight, "%s", err.Message)
+	}
+	required := c.enabledProviders(routing)
+	if len(required) == 0 {
+		return pass("PF-29", "no enabled production model provider needs a backstop")
+	}
+	recordPath := filepath.Join(c.repo, "gitops", "clusters", c.cluster, "config", "provider-backstops.yaml")
+	existing, _ := readAttestations(recordPath)
+	fileArg := c.inv.Confirm["backstops"]
+	if fileArg == "" {
+		fileArg = c.env["SC_CONFIRM_BACKSTOPS"]
+	}
+	var given map[string]attestation
+	var fileDigest string
+	if fileArg != "" {
+		b, rerr := os.ReadFile(fileArg)
+		if rerr != nil {
+			return failRow("PF-29", "BACKSTOP_FILE_UNREADABLE", exitConfirm, "--confirm-backstops %s cannot be read", fileArg)
+		}
+		var perr error
+		if given, perr = parseAttestations(b); perr != nil {
+			return failRow("PF-29", "BACKSTOP_FILE_INVALID", exitConfirm, "%s: %v", fileArg, perr)
+		}
+		sum := sha256.Sum256(b)
+		fileDigest = "sha256:" + hex.EncodeToString(sum[:])
+	}
+	var missing []string
+	fresh := map[string]attestation{}
+	for _, name := range required {
+		monthly, ok := amount(dig(budgets, "spec", "providers", name, "monthlyUsd"))
+		if !ok {
+			return failRow("PF-29", "BUDGET_POLICY_INVALID", exitPreflight, "policy/budgets.yaml has no spec.providers.%s.monthlyUsd", name)
+		}
+		a, fromFile := given[name]
+		if !fromFile {
+			a, ok = existing[name]
+			if !ok {
+				missing = append(missing, name)
+				continue
+			}
+		}
+		if !a.MFA {
+			return failRow("PF-29", "BACKSTOP_MFA_ATTESTATION_MISSING", exitConfirm, "%s: the attestation lacks consoleMfaEnabled: true (MFA must be enabled on the provider console account)", name)
+		}
+		if a.Limit <= 0 || a.Limit > 1.25*monthly+1e-9 {
+			return failRow("PF-29", "BACKSTOP_LIMIT_TOO_HIGH", exitConfirm, "%s: limit %s USD exceeds 1.25 x monthlyUsd (%s USD)", name,
+				strconv.FormatFloat(a.Limit, 'f', -1, 64), strconv.FormatFloat(1.25*monthly, 'f', -1, 64))
+		}
+		if fromFile {
+			fresh[name] = a
+		}
+	}
+	if len(missing) > 0 {
+		return failRow("PF-29", "BACKSTOP_MISSING", exitConfirm,
+			"no spend backstop attested for %s; run backstop <provider> <limit-usd> or pass --confirm-backstops <file> (the limit may be at most 1.25 x monthlyUsd and the provider console needs MFA)",
+			strings.Join(missing, ", "))
+	}
+	if len(fresh) > 0 {
+		merged := map[string]attestation{}
+		for k, v := range existing {
+			merged[k] = v
+		}
+		for k, v := range fresh {
+			merged[k] = v
+		}
+		if werr := writeAttestations(recordPath, merged, c.deps.Clock.Now()); werr != nil {
+			return failRow("PF-29", "BACKSTOP_RECORD_UNWRITABLE", exitPreflight, "%v", werr)
+		}
+		if c.deps.Record != nil {
+			c.deps.Record(Confirmation{Kind: "provider-backstop", SubjectDigest: fileDigest, Method: "flag"})
+		}
+	}
+	return pass("PF-29", "spend backstop attested for %s", strings.Join(required, ", "))
+}
+
+func parseAttestations(b []byte) (map[string]attestation, error) {
+	var doc struct {
+		Providers map[string]struct {
+			Limit any  `yaml:"limitUsd"`
+			MFA   bool `yaml:"consoleMfaEnabled"`
+		} `yaml:"providers"`
+	}
+	if err := yaml.Unmarshal(b, &doc); err != nil {
+		return nil, err
+	}
+	out := map[string]attestation{}
+	for k, v := range doc.Providers {
+		l, ok := amount(v.Limit)
+		if !ok {
+			return nil, fmt.Errorf("providers.%s.limitUsd is not a number", k)
+		}
+		out[k] = attestation{Limit: l, MFA: v.MFA}
+	}
+	return out, nil
+}
+
+func readAttestations(path string) (map[string]attestation, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return parseAttestations(b)
+}
+
+func writeAttestations(path string, m map[string]attestation, now time.Time) error {
+	providers := map[string]any{}
+	for k, v := range m {
+		providers[k] = map[string]any{"limitUsd": v.Limit, "consoleMfaEnabled": v.MFA, "attestedAt": now.UTC().Format(time.RFC3339)}
+	}
+	b, err := yaml.Marshal(map[string]any{"providers": providers})
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// --- production defaults
+
+func lookupHost(host string) ([]netip.Addr, error) {
+	return net.DefaultResolver.LookupNetIP(context.Background(), "ip", host)
+}
+
+// probeTargets are the non-billable authenticated list-models calls of PF-19 (plan 53 owns the endpoints; (verify)).
+var probeTargets = map[string]struct{ url, header, prefix string }{
+	"anthropic": {"https://api.anthropic.com/v1/models", "x-api-key", ""},
+	"openai":    {"https://api.openai.com/v1/models", "Authorization", "Bearer "},
+	"deepseek":  {"https://api.deepseek.com/models", "Authorization", "Bearer "},
+	"zai":       {"https://api.z.ai/api/paas/v4/models", "Authorization", "Bearer "},
+	"google":    {"https://generativelanguage.googleapis.com/v1beta/models", "x-goog-api-key", ""},
+}
+
+// httpProbe is the production PF-19 probe. The key travels in a header only and never appears in an error.
+func httpProbe(provider, key string) error {
+	t, ok := probeTargets[provider]
+	if !ok {
+		return fmt.Errorf("no probe endpoint known for provider %s", provider)
+	}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, t.url, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set(t.header, t.prefix+key)
+	if provider == "anthropic" {
+		req.Header.Set("anthropic-version", "2023-06-01")
+	}
+	resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+	if err != nil {
+		return errors.New("request failed: " + strings.ReplaceAll(err.Error(), key, "[redacted]"))
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	return nil
+}

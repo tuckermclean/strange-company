@@ -733,3 +733,20 @@ func CheckExample(example []byte) []string {
 	sort.Strings(problems)
 	return problems
 }
+
+// KnownKeys lists every variable name of the section 9.2 table and the runtime-only variables, sorted. The
+// S3_CRED_<INSTANCE>_* pattern is not enumerable; IsKnownKey covers it.
+func KnownKeys() []string {
+	var out []string
+	for k := range knownKeys() {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// IsKnownKey reports whether k is a bootstrap.env variable of plan 50 section 9.2 (PF-02).
+func IsKnownKey(k string) bool { return knownKeys()[k] || reCred.MatchString(k) }
+
+// IsSecretKey reports whether the variable carries a secret value (its value must never be printed).
+func IsSecretKey(k string) bool { return secretVar(k) }

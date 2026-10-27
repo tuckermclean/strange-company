@@ -2,7 +2,7 @@
 # Container entrypoint (plan 02 section 14.5). Without SC_REPO_ROOT (in-cluster, plan 15) it just execs its arguments.
 # With the wrapper: `sc-bootstrap toolbox init` (work dirs, nss_wrapper files, SSH key copy), the agent socket, the
 # environment of plan 02 section 9.4 and 14.4, then the dispatch:
-#   run|plan|preflight|status|verify|expand|destroy|recover|report|rotate|state|unlock|version ... -> sc-bootstrap
+#   [global flags] run|plan|preflight|status|verify|expand|destroy|recover|report|rotate|state|unlock|version ... -> sc-bootstrap
 #   shell -> bash with the shell rc file;  exec -- CMD ... or any other command -> CMD
 # SC_RUN_DIR (default /run/sc) and SC_INPUT_DIR (default /run/sc-input) move the two directories (plan 02 section 14.4).
 set -eu
@@ -52,7 +52,8 @@ s3_scope() {
 
 [ $# -gt 0 ] || set -- shell
 case $1 in
-run | plan | preflight | status | verify | expand | destroy | recover | report | rotate | state | unlock | version)
+run | plan | preflight | status | verify | expand | destroy | recover | report | rotate | state | unlock | version | -*)
+	# -*: sc-bootstrap global flags before the verb (plan 50 section 7.1); no verb means run
 	exec sc-bootstrap --env-file "$in/bootstrap.env" "$@"
 	;;
 shell)
