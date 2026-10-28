@@ -100,7 +100,7 @@ func Run(args []string, env map[string]string, stdout, stderr io.Writer, deps De
 		deps.CLI.Clock = deps.Clock
 	}
 	if deps.CLI.Sleep == nil {
-		deps.CLI.Sleep = time.Sleep
+		deps.CLI.Sleep = func(d time.Duration) { _ = clock.Real{}.Sleep(context.Background(), d) }
 	}
 	inv, err := cli.Parse(args)
 	if err != nil {
