@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -228,4 +229,78 @@ func TestEngine_PhaseTimeoutRunsOnTheInjectedClock_Plan50S16_S3N3(t *testing.T) 
 			t.Errorf("exit %d code %q (%s), want 1 PHASE_FAILED", res.Exit, res.Code, res.Message)
 		}
 	})
+}
+
+// --- S8a review-1
+
+// probedUnit wraps a fake unit whose Check or Inputs can be made to fail between runs.
+type probedUnit struct {
+	*unit
+	mu       sync.Mutex
+	checkErr error
+}
+
+func (p *probedUnit) setCheckErr(err error) { p.mu.Lock(); p.checkErr = err; p.mu.Unlock() }
+func (p *probedUnit) Check(ctx context.Context) (engine.Check, error) {
+	p.mu.Lock()
+	err := p.checkErr
+	p.mu.Unlock()
+	if err != nil {
+		return engine.Check{}, err
+	}
+	return p.unit.Check(ctx)
+}
+
+// S8a review-1 B1, plan 50 section 16: the ceiling is five failures "with the same error code" and the same input
+// digest. A failed Check is a different code (CHECK_FAILED) and ends the PROVIDER_DELIVERY_TIMEOUT series: the run
+// after it is not refused, it runs the phase again. (The section is silent on a series of CHECK_FAILED probe failures,
+// so none is pinned.)
+func TestEngine_FailedCheckEndsTheSeriesOfAnotherCode_Plan50S16_S8aR1B1(t *testing.T) {
+	t.Parallel()
+	v := newEnv(t)
+	u := newUnit("provision")
+	p := &probedUnit{unit: u}
+	pl := engine.Pipeline{Kind: "install", Phases: []engine.Phase{p}}
+	u.runFn = fail("PROVIDER_DELIVERY_TIMEOUT", false)
+	for k := 1; k <= 4; k++ {
+		if res := v.exec(pl, engine.Options{}); res.Exit != 1 || res.Code != "PROVIDER_DELIVERY_TIMEOUT" {
+			t.Fatalf("run %d: exit %d code %q, want 1 PROVIDER_DELIVERY_TIMEOUT", k, res.Exit, res.Code)
+		}
+	}
+	p.setCheckErr(errors.New("the world cannot be read"))
+	if res := v.exec(pl, engine.Options{}); res.Exit != 1 || res.Code != "CHECK_FAILED" {
+		t.Fatalf("run 5: exit %d code %q, want 1 CHECK_FAILED", res.Exit, res.Code)
+	}
+	p.setCheckErr(nil)
+	res := v.exec(pl, engine.Options{})
+	if res.Code == "RETRY_CEILING" {
+		t.Errorf("run 6 was refused with RETRY_CEILING (%s): a failed probe must not count toward the series of PROVIDER_DELIVERY_TIMEOUT", res.Message)
+	}
+	if res.Exit != 1 || res.Code != "PROVIDER_DELIVERY_TIMEOUT" {
+		t.Errorf("run 6: exit %d code %q, want the phase to run again and fail with 1 PROVIDER_DELIVERY_TIMEOUT", res.Exit, res.Code)
+	}
+	if _, runs := u.counts(); runs != 5 {
+		t.Errorf("Run called %d times, want 5 (four failures, none for the failed probe, one after it)", runs)
+	}
+}
+
+// S8a review-1 N3, plan 50 section 16: in-run retries are "always within the phase timeout". Each Run takes 20 s of
+// injected time and fails with a transient error; the timeout is 30 s. After the second Run (45 s elapsed) the loop
+// stops and the phase fails with PHASE_TIMEOUT instead of retrying up to five times.
+func TestEngine_InRunRetriesStopAtThePhaseTimeout_Plan50S16_S8aR1N3(t *testing.T) {
+	t.Parallel()
+	v := newEnv(t)
+	u := newUnit("provision")
+	u.timeout = 30 * time.Second
+	u.runFn = func(*unit) ([]engine.OutputRef, error) {
+		v.clk.Advance(20 * time.Second)
+		return nil, &engine.Error{Code: "S3_UNAVAILABLE", Message: "503 SlowDown", Retryable: true}
+	}
+	res := v.exec(pipe(u), engine.Options{})
+	if res.Exit != 1 || res.Code != "PHASE_TIMEOUT" {
+		t.Errorf("exit %d code %q (%s), want 1 PHASE_TIMEOUT", res.Exit, res.Code, res.Message)
+	}
+	if _, runs := u.counts(); runs != 2 {
+		t.Errorf("Run called %d times, want 2 (the retry loop stops once the 30 s timeout has elapsed)", runs)
+	}
 }
