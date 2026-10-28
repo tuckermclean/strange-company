@@ -167,6 +167,7 @@ func expectedChecks(t *testing.T, path string) int {
 // 01-AC-20: `make contracts` exits 0 on the real contracts; report.json has a pass row for every schema
 // and for each of its examples, invalid examples and x-defs-examples entries, and no fail row.
 func TestMakeContracts_ReportHasRowPerCheck_01AC20(t *testing.T) {
+	t.Parallel()
 	dir := treeCopy(t)
 	code, out := makeContracts(t, dir)
 	if code != 0 {
@@ -195,6 +196,7 @@ func TestMakeContracts_ReportHasRowPerCheck_01AC20(t *testing.T) {
 
 // 52-AC-10 (and 01-AC-20): junit.xml has one testcase per report row.
 func TestMakeContracts_JUnitMatchesReport_52AC10(t *testing.T) {
+	t.Parallel()
 	dir := treeCopy(t)
 	if code, out := makeContracts(t, dir); code != 0 {
 		t.Fatalf("`make contracts` exited %d, want 0:\n%s", code, out)
@@ -225,6 +227,7 @@ func TestMakeContracts_JUnitMatchesReport_52AC10(t *testing.T) {
 
 // 01-AC-21: each negative fixture fails `make contracts` with its check ID on a line naming the file.
 func TestMakeContracts_NegativeFixtures_01AC21(t *testing.T) {
+	t.Parallel()
 	cases := []struct{ dir, file, id string }{
 		{"wrong-id", "fx-wrong-id.schema.yaml", "CONTRACT_ID_INVALID"},
 		{"examples-missing", "fx-examples-missing.schema.yaml", "CONTRACT_EXAMPLES_MISSING"},
@@ -236,6 +239,7 @@ func TestMakeContracts_NegativeFixtures_01AC21(t *testing.T) {
 	for _, c := range cases {
 		c := c
 		t.Run(c.dir, func(t *testing.T) {
+			t.Parallel()
 			dir := treeCopy(t)
 			copyFile(t, filepath.Join("testdata", c.dir, c.file), filepath.Join(dir, "contracts", c.file))
 			code, out := makeContracts(t, dir)
@@ -258,6 +262,7 @@ func TestMakeContracts_NegativeFixtures_01AC21(t *testing.T) {
 // 01-AC-21 control: a well-formed fixture of the same shape passes and gets pass rows, so the
 // negative results above are attributable to the single defect.
 func TestMakeContracts_ValidFixturePasses_01AC21(t *testing.T) {
+	t.Parallel()
 	dir := treeCopy(t)
 	copyFile(t, filepath.Join("testdata", "valid", "fx-valid.schema.yaml"), filepath.Join(dir, "contracts", "fx-valid.schema.yaml"))
 	if code, out := makeContracts(t, dir); code != 0 {
@@ -271,6 +276,7 @@ func TestMakeContracts_ValidFixturePasses_01AC21(t *testing.T) {
 // 01-AC-24: version-locks.schema.yaml passes the schema checks, and the one §6.3 lock file present
 // today (toolbox/tools.lock.yaml) validates against its kind (a pass row naming it).
 func TestMakeContracts_VersionLocks_01AC24(t *testing.T) {
+	t.Parallel()
 	dir := treeCopy(t)
 	if code, out := makeContracts(t, dir); code != 0 {
 		t.Fatalf("`make contracts` exited %d, want 0:\n%s", code, out)
