@@ -66,6 +66,10 @@ type Backend struct {
 // Encryption is the state-encryption passphrase. The rotation fallback (section 20.3, 06-AC-6) is S7.
 type Encryption struct {
 	Current string
+	// SC-STUB(F08 06-AC-6)
+	Generation int
+	// SC-STUB(F08 06-AC-6)
+	Previous string
 }
 
 // Envelope is the plaintext header of an encrypted OpenTofu state object.

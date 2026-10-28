@@ -88,6 +88,8 @@ type Deps struct {
 	Encrypt identity.Encryptor
 	// WorkFactor is the age scrypt work factor of the recovery bundle (zero: 20).
 	WorkFactor int
+	// SC-STUB(F08 06-AC-6 06-AC-8)
+	State StateTofu
 }
 
 // Run executes one sc-bootstrap command line of the install pipeline (plan, run, status) and returns the plan 50

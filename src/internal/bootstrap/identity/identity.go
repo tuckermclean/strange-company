@@ -149,6 +149,8 @@ type Secret struct {
 	Format   string
 	Value    []byte
 	InBundle bool
+	// SC-STUB(F08 06-AC-6)
+	Generation int
 }
 
 // Set is everything plan.install-identity generates.
