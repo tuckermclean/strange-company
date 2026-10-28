@@ -82,6 +82,30 @@ else:
         print("summaries differ after deleting duration_ms and started_at"); rc = 1
 sys.exit(rc)
 '
+# Lists failing tests/packages of a `go test -json` file with the last 20 output lines of each (diagnostics only).
+FAILPY='
+import json, sys
+out, fails = {}, []
+for line in open(sys.argv[1], errors="replace"):
+    try:
+        e = json.loads(line)
+    except ValueError:
+        continue
+    k = (e.get("Package", ""), e.get("Test", ""))
+    if e.get("Action") == "output":
+        out.setdefault(k, []).append(e.get("Output", "").rstrip("\n"))
+    elif e.get("Action") == "fail":
+        fails.append(k)
+for k in fails:
+    print("  FAILED %s %s" % k)
+    for o in out.get(k, [])[-20:]:
+        print("    | " + o)
+'
+failreport() {
+	[ -f "$1" ] || return 0
+	echo "go test failures in run $2:"
+	./bootstrap exec --image ci --network none -- python3 -I -c "$FAILPY" "$1" || true
+}
 pycheck() { ./bootstrap exec --image ci --network none -- python3 -I -c "$PY" "$@"; }
 
 # (0) clean-checkout property (01-AC-6, 52-AC-5): the clone has no cache or output, so steps (a)-(b)
@@ -101,7 +125,12 @@ for i in 1 2; do
 		pass "(b) run $i: make verify exit 0 (--network none, SC_FORBID_PAID=1)"
 	else
 		bad "(b) run $i: make verify exited non-zero"
+		failreport out/test/test.json "$i" || true
 	fi
+	for f in test.json junit.xml; do
+		rm -f "$snap/${f%%.*}$i.${f#*.}"
+		[ ! -f "out/test/$f" ] || cp "out/test/$f" "$snap/${f%%.*}$i.${f#*.}" 2>/dev/null || true
+	done
 	if [ -f out/verify/summary.json ]; then
 		cp out/verify/summary.json "$snap/summary$i.json"
 	else
@@ -129,6 +158,9 @@ mkdir -p "$orig/$snap"
 for i in 1 2; do
 	rm -f "$orig/$snap/summary$i.json" # a stale summary must not survive a failed run
 	[ ! -f "$snap/summary$i.json" ] || cp "$snap/summary$i.json" "$orig/$snap/summary$i.json"
+	rm -f "$orig/$snap/test$i.json" "$orig/$snap/junit$i.xml"
+	[ ! -f "$snap/test$i.json" ] || cp "$snap/test$i.json" "$orig/$snap/test$i.json" || true
+	[ ! -f "$snap/junit$i.xml" ] || cp "$snap/junit$i.xml" "$orig/$snap/junit$i.xml" || true
 done
 
 if [ "$fail" -eq 0 ]; then
