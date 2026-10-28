@@ -156,7 +156,8 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
-    timeout-minutes: 60
+    # Two full offline `make verify` runs at about 30 minutes each (F08 added the install and identity tests).
+    timeout-minutes: 90
     env:
       SC_CONTAINER_ENGINE: docker
     steps:
