@@ -149,7 +149,8 @@ type Secret struct {
 	Format   string
 	Value    []byte
 	InBundle bool
-	// SC-STUB(F08 06-AC-6)
+	// Generation is the secret's generation in the bundle manifest (zero means 1). The OpenTofu state passphrase
+	// rotation (plan 06 section 20.3) keeps the previous generation next to the current one.
 	Generation int
 }
 

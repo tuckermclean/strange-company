@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -63,13 +64,13 @@ type Backend struct {
 	SkipS3Checksum bool
 }
 
-// Encryption is the state-encryption passphrase. The rotation fallback (section 20.3, 06-AC-6) is S7.
+// Encryption is the state-encryption passphrase (plan 06 sections 7.3 and 20.3). Generation N >= 1 names the key
+// provider and method p<N>; Generation 0 keeps the single-passphrase name `current`. During a rotation Previous is the
+// passphrase of generation N-1 (name p<N-1>), the fallback that still reads the old state versions.
 type Encryption struct {
-	Current string
-	// SC-STUB(F08 06-AC-6)
+	Current    string
 	Generation int
-	// SC-STUB(F08 06-AC-6)
-	Previous string
+	Previous   string
 }
 
 // Envelope is the plaintext header of an encrypted OpenTofu state object.
@@ -181,32 +182,56 @@ func RenderBackendLocal(path string) (string, error) {
 
 const minPassphrase = 16
 
+func checkPassphrase(field, v string) error {
+	if len(v) < minPassphrase {
+		return renderErr(field, fmt.Sprintf("shorter than %d characters", minPassphrase))
+	}
+	if why := hclSafe(v); why != "" {
+		return renderErr(field, why)
+	}
+	return nil
+}
+
 // RenderEncryption renders the TF_ENCRYPTION HCL.
 func RenderEncryption(e Encryption) (string, error) {
-	if len(e.Current) < minPassphrase {
-		return "", renderErr("passphrase", fmt.Sprintf("shorter than %d characters", minPassphrase))
+	if e.Generation < 0 {
+		return "", renderErr("generation", "negative")
 	}
-	if why := hclSafe(e.Current); why != "" {
-		return "", renderErr("passphrase", why)
+	if err := checkPassphrase("passphrase", e.Current); err != nil {
+		return "", err
 	}
-	return fmt.Sprintf(`key_provider "pbkdf2" "current" {
-  passphrase = %q
-}
-
-method "aes_gcm" "current" {
-  keys = key_provider.pbkdf2.current
-}
-
-state {
-  method   = method.aes_gcm.current
-  enforced = true
-}
-
-plan {
-  method   = method.aes_gcm.current
-  enforced = true
-}
-`, e.Current), nil
+	name := "current"
+	if e.Generation > 0 {
+		name = "p" + strconv.Itoa(e.Generation)
+	}
+	var b strings.Builder
+	prev := ""
+	if e.Previous != "" {
+		if e.Generation < 2 {
+			return "", renderErr("previous", "a previous passphrase needs generation 2 or more")
+		}
+		if err := checkPassphrase("previous passphrase", e.Previous); err != nil {
+			return "", err
+		}
+		if e.Previous == e.Current {
+			return "", renderErr("previous passphrase", "equal to the current passphrase")
+		}
+		prev = "p" + strconv.Itoa(e.Generation-1)
+		fmt.Fprintf(&b, "key_provider \"pbkdf2\" %q {\n  passphrase = %q\n}\n\n", prev, e.Previous)
+	}
+	fmt.Fprintf(&b, "key_provider \"pbkdf2\" %q {\n  passphrase = %q\n}\n\n", name, e.Current)
+	if prev != "" {
+		fmt.Fprintf(&b, "method \"aes_gcm\" %q {\n  keys = key_provider.pbkdf2.%s\n}\n\n", prev, prev)
+	}
+	fmt.Fprintf(&b, "method \"aes_gcm\" %q {\n  keys = key_provider.pbkdf2.%s\n}\n", name, name)
+	for _, blk := range []string{"state", "plan"} {
+		fmt.Fprintf(&b, "\n%s {\n  method   = method.aes_gcm.%s\n  enforced = true\n", blk, name)
+		if prev != "" {
+			fmt.Fprintf(&b, "\n  fallback {\n    method = method.aes_gcm.%s\n  }\n", prev)
+		}
+		b.WriteString("}\n")
+	}
+	return b.String(), nil
 }
 
 // EncryptionEnv renders the TF_ENCRYPTION=<hcl> environment entry.

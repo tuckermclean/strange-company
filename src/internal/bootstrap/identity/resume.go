@@ -2,6 +2,7 @@ package identity
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"sort"
 	"strings"
@@ -24,13 +25,16 @@ func SetFromBundle(reg *Register, uid string, o *Opened) (*Set, error) {
 	for _, f := range o.Files {
 		files[f.Path] = f.Data
 	}
+	if uid == "" {
+		uid = m.InstallUID
+	}
 	set := &Set{InstallUID: uid, Register: reg, ClusterRecipient: m.AgeRecipients.Cluster, RecoveryRecipient: m.AgeRecipients.Recovery}
 	for _, e := range m.Entries {
 		data, ok := files[e.Path]
 		if !ok {
 			return nil, fail("BUNDLE_CORRUPT", "the bundle manifest lists %s but the archive lacks it", e.Path)
 		}
-		set.Secrets = append(set.Secrets, Secret{Class: e.Class, Instance: e.Instance, Format: e.Format, Value: data, InBundle: true})
+		set.Secrets = append(set.Secrets, Secret{Class: e.Class, Instance: e.Instance, Format: e.Format, Value: data, InBundle: true, Generation: e.Generation})
 	}
 	return set, nil
 }
@@ -43,6 +47,11 @@ func (s *Set) CompleteGenerated(cluster string, clk clock.Clock) error {
 		return err
 	}
 	for _, f := range fresh.Secrets {
+		// A rotated OpenTofu passphrase lives in the instances current and previous (plan 06 section 20.3): the
+		// class counts as present whichever instance holds it.
+		if f.Class == "SC-TOFU-ENCRYPTION" && s.hasClass(f.Class) {
+			continue
+		}
 		if s.Find(f.Class, f.Instance) == nil {
 			s.Secrets = append(s.Secrets, f)
 		}
@@ -115,4 +124,23 @@ func objectStorageKeys(v string) []kv {
 		}
 	}
 	return out
+}
+
+func (s *Set) hasClass(class string) bool {
+	for _, x := range s.Secrets {
+		if x.Class == class {
+			return true
+		}
+	}
+	return false
+}
+
+// NewTofuPassphrase generates an SC-TOFU-ENCRYPTION value (32 random bytes, base64url) for the rotation of plan 06
+// section 20.3.
+func NewTofuPassphrase() (string, error) {
+	b, err := randBytes(32)
+	if err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
 }

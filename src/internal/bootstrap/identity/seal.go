@@ -79,6 +79,7 @@ type manifestJSON struct {
 	Kind          string `json:"kind"`
 	BundleVersion int    `json:"bundle_version"`
 	InstallID     string `json:"install_id"`
+	InstallUID    string `json:"install_uid,omitempty"`
 	CreatedAt     string `json:"created_at"`
 	CreatedBy     struct {
 		Tool         string `json:"tool"`
@@ -185,11 +186,15 @@ func Seal(in SealInput) (*Sealed, error) {
 			haveCluster = true
 		}
 		sum := sha256.Sum256(s.Value)
+		gen := s.Generation
+		if gen == 0 {
+			gen = 1
+		}
 		p := entryPath(s)
 		files = append(files, ArchiveFile{Path: p, Data: s.Value, Mode: 0o600})
 		entries = append(entries, entryJSON{
 			Class: s.Class, Instance: s.Instance, Path: p, Format: s.Format, Sha256: hex.EncodeToString(sum[:]),
-			SizeBytes: len(s.Value), Generation: 1, RotatedAt: created,
+			SizeBytes: len(s.Value), Generation: gen, RotatedAt: created,
 		})
 	}
 	if !haveCluster {
@@ -200,6 +205,7 @@ func Seal(in SealInput) (*Sealed, error) {
 
 	var m manifestJSON
 	m.SchemaVersion, m.Kind, m.BundleVersion, m.InstallID, m.CreatedAt = "v1alpha1", "RecoveryBundleManifest", in.Version, in.Cluster, created
+	m.InstallUID = in.Set.InstallUID
 	m.CreatedBy.Tool, m.CreatedBy.ToolVersion, m.CreatedBy.ToolboxImage = "sc-bootstrap", in.ToolVersion, in.ToolboxImage
 	m.SourceCommit = in.SourceCommit
 	if in.PreviousSHA256 != "" {
