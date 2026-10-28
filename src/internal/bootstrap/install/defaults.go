@@ -440,6 +440,10 @@ func (t *ExecTofu) Changes(ctx context.Context, spec StorageSpec, remote *Remote
 
 // startFakeProvider binds the fake provider to .bootstrap/fake-provider; it is refused outside SC_TEST_MODE=1.
 func (s *sess) startFakeProvider() error {
-	_, err := fake.New(s.env, filepath.Join(s.boot, "fake-provider"))
-	return err
+	p, err := fake.New(s.env, filepath.Join(s.boot, "fake-provider"))
+	if err != nil {
+		return err
+	}
+	s.prov = p
+	return nil
 }

@@ -1,6 +1,6 @@
-// Package install is the install pipeline of sc-bootstrap up to the end of the plan phase (plan 50 sections 14.1 and
-// 14.3, BOOT-10): `plan`, `run` and `status` over the phase engine, the S3 side, the OpenTofu storage module and the
-// recovery bundle.
+// Package install is the install pipeline of sc-bootstrap through provision (plan 50 sections 14.1, 14.3 and 14.4,
+// BOOT-10): `plan`, `run` and `status` over the phase engine, the S3 side, the OpenTofu storage module, the recovery
+// bundle and the compute provider. The phases after provision are placeholders in test mode.
 package install
 
 import (

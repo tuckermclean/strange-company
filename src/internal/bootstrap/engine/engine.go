@@ -53,6 +53,9 @@ type Config struct {
 	// SourceSwitched probes reality: the root Kustomization's sourceRef.kind is GitRepository (plan 50 section 17.1
 	// rule 5). nil means not switched.
 	SourceSwitched func(ctx context.Context) (bool, error)
+	// AtEnd, when set, runs once after the pipeline ended and before the run log is uploaded: the place for a record
+	// that summarizes the run (the prompt counter of plan 50 section 22, 50-AC-31).
+	AtEnd func()
 }
 
 // CheckState is the outcome of a Check.
@@ -321,6 +324,9 @@ func (e *Engine) Execute(ctx context.Context, p Pipeline, o Options) Result {
 	}
 	res := e.executeLocked(ctx, p, o)
 	res.Message = e.red.String(res.Message)
+	if e.cfg.AtEnd != nil {
+		e.cfg.AtEnd()
+	}
 	e.uploadLog(ctx)
 	if rel := e.Release(ctx); rel.Exit != 0 && res.Exit == 0 {
 		res = rel

@@ -133,7 +133,11 @@ func (s *sess) cmdRun(ctx context.Context) int {
 		}
 	}
 	s.tryAttach(ctx)
-	eng, err := engine.New(s.engineConfig("run"))
+	cfg := s.engineConfig("run")
+	cfg.AtEnd = func() {
+		s.eng.Log("info", "prompts", "prompts answered in this run", map[string]any{"count": s.prompts})
+	}
+	eng, err := engine.New(cfg)
 	if err != nil {
 		s.errorf("sc-bootstrap: %v\n", err)
 		return 1
@@ -148,6 +152,6 @@ func (s *sess) cmdRun(ctx context.Context) int {
 	for _, d := range res.Drift {
 		s.errorf("warning: phase %s drifted from the configuration its output was made for\n", d)
 	}
-	s.printf("Install pipeline finished through the plan phase (installation state %s).\n", eng.InstallationState())
+	s.printf("Install pipeline finished (installation state %s).\n", eng.InstallationState())
 	return 0
 }

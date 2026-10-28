@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 
+	"go.yaml.in/yaml/v3"
+
 	"strange.company/sc/internal/provider"
 )
 
@@ -128,4 +130,35 @@ func (p *Provider) Expand(ctx context.Context, target int) (*provider.ProviderPl
 // DestroyCompute is a plan-only operation; the fake plans an empty node list.
 func (p *Provider) DestroyCompute(ctx context.Context) (*provider.ProviderPlan, error) {
 	return p.Plan(ctx, provider.Desired{NodeCount: 0})
+}
+
+// DefaultResolver is the resolver the fake node reports when no scenario names one.
+const DefaultResolver = "10.99.0.1"
+
+const scenarioFile = "scenario.yaml"
+
+var _ provider.Discoverer = (*Provider)(nil)
+
+// Discover reports the resolvers of the fake node: discovery.resolvers of <dir>/scenario.yaml (plan 03 section 22,
+// scenarios from fixtures), else DefaultResolver.
+func (p *Provider) Discover(context.Context) (*provider.Discovery, error) {
+	b, err := os.ReadFile(filepath.Join(p.dir, scenarioFile))
+	if errors.Is(err, os.ErrNotExist) {
+		return &provider.Discovery{Resolvers: []string{DefaultResolver}}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var sc struct {
+		Discovery struct {
+			Resolvers []string `yaml:"resolvers"`
+		} `yaml:"discovery"`
+	}
+	if err := yaml.Unmarshal(b, &sc); err != nil {
+		return nil, provider.NewError("SCENARIO_INVALID", fmt.Sprintf("%s is not a fake provider scenario: %v", filepath.Join(p.dir, scenarioFile), err), false)
+	}
+	if len(sc.Discovery.Resolvers) == 0 {
+		return &provider.Discovery{Resolvers: []string{DefaultResolver}}, nil
+	}
+	return &provider.Discovery{Resolvers: sc.Discovery.Resolvers}, nil
 }

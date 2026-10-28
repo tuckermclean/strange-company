@@ -58,6 +58,17 @@ type ProviderOutput struct {
 	Nodes   []Node
 }
 
+// Discovery is what a provider learned about its nodes by looking at them (plan 05 section 14, plan 18 section 9.2):
+// the DNS resolvers a node uses, which provision writes into cluster-vars (SC_DNS_UPSTREAM_1..3, PF-28).
+type Discovery struct {
+	Resolvers []string
+}
+
+// Discoverer is implemented by providers that can report a Discovery after Apply.
+type Discoverer interface {
+	Discover(ctx context.Context) (*Discovery, error)
+}
+
 // Error is a provider failure with a stable code.
 type Error struct {
 	Code      string

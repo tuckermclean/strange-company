@@ -29,6 +29,7 @@ import (
 	"strange.company/sc/internal/bootstrap/identity"
 	"strange.company/sc/internal/bootstrap/redact"
 	"strange.company/sc/internal/clock"
+	"strange.company/sc/internal/provider"
 	"strange.company/sc/internal/s3client"
 	"strange.company/sc/internal/version"
 )
@@ -90,6 +91,12 @@ type sess struct {
 	reg  *identity.Register
 	set  *identity.Set
 	pass string
+
+	// prov is the compute provider of the install (the fake provider in this build) and plan its latest plan.
+	prov provider.Provider
+	plan *provider.ProviderPlan
+	// prompts counts the answers read from the operator in this run (50-AC-31).
+	prompts int
 
 	accts map[string]Account
 }
@@ -347,8 +354,9 @@ func (s *sess) engineConfig(command string) engine.Config {
 	if digest != "" && !strings.HasPrefix(digest, "sha256:") {
 		digest = "sha256:" + digest
 	}
+	m, markerOK := s.readMarker()
 	return engine.Config{
-		Dir: s.boot, Store: s.lazy, Clock: s.clk, Cluster: s.cluster, InstallUID: s.localJournalUID(),
+		Dir: s.boot, Store: s.lazy, IfMatch: markerOK && m.IfMatchSupported, Clock: s.clk, Cluster: s.cluster, InstallUID: s.localJournalUID(),
 		Provider: str(dig(s.doc, "spec", "provider", "name")), Profile: str(dig(s.doc, "spec", "cluster", "profile")),
 		ConfigDigest: digest, Command: command, User: user, Version: version.Version, GitHead: s.gitHead(context.Background()),
 		ToolboxDigest: s.toolboxDigest(), Env: s.env, Redactor: s.red,

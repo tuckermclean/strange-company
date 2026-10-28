@@ -486,6 +486,11 @@ func RenderClusterVars(in ClusterVarsInput) ([]byte, error) {
 		}
 		data[fmt.Sprintf("SC_DNS_UPSTREAM_%d", i+1)] = r
 	}
+	return clusterVarsDocument(data)
+}
+
+// clusterVarsDocument marshals the ConfigMap flux-system/cluster-vars with the keys sorted.
+func clusterVarsDocument(data map[string]string) ([]byte, error) {
 	keys := make([]string, 0, len(data))
 	for k := range data {
 		keys = append(keys, k)
@@ -501,4 +506,31 @@ func RenderClusterVars(in ClusterVarsInput) ([]byte, error) {
 		scalar("data"), dn,
 	}}
 	return marshal(root)
+}
+
+// ClusterVarsData reads the data keys of a rendered vars/cluster-vars.yaml.
+func ClusterVarsData(doc []byte) (map[string]string, error) {
+	var in struct {
+		Data map[string]string `yaml:"data"`
+	}
+	if err := yaml.Unmarshal(doc, &in); err != nil {
+		return nil, fail("CLUSTER_VARS_INVALID", "cluster-vars.yaml is not a ConfigMap: %v", err)
+	}
+	if in.Data == nil {
+		in.Data = map[string]string{}
+	}
+	return in.Data, nil
+}
+
+// SetClusterVars returns the document with the given data keys set and every other key kept: the way provision writes
+// the keys it owns (SC_NODE_IP_1..5, SC_DNS_UPSTREAM_1..3) without re-rendering the rest (plan 50 section 14.3, BOOT-9).
+func SetClusterVars(existing []byte, set map[string]string) ([]byte, error) {
+	data, err := ClusterVarsData(existing)
+	if err != nil {
+		return nil, err
+	}
+	for k, v := range set {
+		data[k] = v
+	}
+	return clusterVarsDocument(data)
 }

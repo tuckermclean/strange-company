@@ -18,16 +18,23 @@ type unit struct {
 	name    string
 	timeout time.Duration
 	inputs  any
-	check   func(ctx context.Context) (engine.Check, error)
-	run     func(ctx context.Context) ([]engine.OutputRef, error)
+	// inputsFn, when set, computes the inputs when the engine asks (they depend on an earlier step's result).
+	inputsFn func() any
+	check    func(ctx context.Context) (engine.Check, error)
+	run      func(ctx context.Context) ([]engine.OutputRef, error)
 }
 
 var _ engine.Unit = (*unit)(nil)
 
-func (u *unit) Name() string                        { return u.name }
-func (u *unit) Inputs(context.Context) (any, error) { return u.inputs, nil }
-func (u *unit) Timeout() time.Duration              { return u.timeout }
-func (u *unit) Retryable(error) bool                { return false }
+func (u *unit) Name() string { return u.name }
+func (u *unit) Inputs(context.Context) (any, error) {
+	if u.inputsFn != nil {
+		return u.inputsFn(), nil
+	}
+	return u.inputs, nil
+}
+func (u *unit) Timeout() time.Duration { return u.timeout }
+func (u *unit) Retryable(error) bool   { return false }
 func (u *unit) Check(ctx context.Context) (engine.Check, error) {
 	if u.check == nil {
 		return engine.Check{State: engine.NotDone}, nil

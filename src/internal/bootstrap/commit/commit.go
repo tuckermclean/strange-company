@@ -286,21 +286,26 @@ func Create(ctx context.Context, req Request) (sha string, err error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// FindInstall returns the commit in HEAD's history that carries the trailer SC-Install-Uid: uid.
+// installSubjectSuffix ends the subject of the commit plan.install-identity creates.
+const installSubjectSuffix = "): installation config"
+
+// FindInstall returns the installation config commit in HEAD's history: the commit with the subject
+// `bootstrap(<cluster>): installation config` that carries the trailer SC-Install-Uid: uid. Later generated commits of
+// the installation carry the trailer too (plan 50 section 14.3 done check), but they are not the install commit.
 func FindInstall(ctx context.Context, repo, uid string) (sha string, found bool, err error) {
 	if _, herr := git(ctx, repo, nil, nil, "rev-parse", "--verify", "-q", "HEAD"); herr != nil {
 		return "", false, nil
 	}
-	out, err := git(ctx, repo, nil, nil, "log", "--format=%H%x1f%(trailers:key=SC-Install-Uid,valueonly,separator=%x1f)%x1e")
+	out, err := git(ctx, repo, nil, nil, "log", "--format=%H%x1f%s%x1f%(trailers:key=SC-Install-Uid,valueonly,separator=%x1f)%x1e")
 	if err != nil {
 		return "", false, err
 	}
 	for _, rec := range strings.Split(string(out), "\x1e") {
 		fields := strings.Split(strings.TrimSpace(rec), "\x1f")
-		if len(fields) < 2 {
+		if len(fields) < 3 || !strings.HasPrefix(fields[1], "bootstrap(") || !strings.HasSuffix(fields[1], installSubjectSuffix) {
 			continue
 		}
-		for _, v := range fields[1:] {
+		for _, v := range fields[2:] {
 			if strings.TrimSpace(v) == uid {
 				return strings.TrimSpace(fields[0]), true, nil
 			}

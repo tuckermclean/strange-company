@@ -36,13 +36,13 @@ const (
 	stepBundleVerify = "plan.bundle-confirm"
 )
 
-// pipeline builds the install pipeline as far as this slice implements it: preflight and the plan phase through
-// plan.bundle-confirm. SC_TEST_STOP_AFTER (test mode only) ends it after the named step or phase.
+// pipeline builds the install pipeline: preflight, the plan phase, provision and, in test mode, the stubbed phases of
+// plan 50 sections 14.5 and 14.6. SC_TEST_STOP_AFTER (test mode only) ends it after the named phase or plan step.
 func (s *sess) pipeline() engine.Pipeline {
 	pre := &phase{unit: unit{name: "preflight", timeout: 10 * time.Minute, inputs: map[string]string{"step": "preflight"}, run: s.runPreflight}}
 	steps := []engine.Unit{
 		s.stepIdentity(), s.stepStorageConfirm(), s.stepStorageApply(), s.stepBundleUpload(), s.stepStorageCredentials(),
-		s.stepStateConformance(), s.stepStateMigrate(), s.stepBundleConfirm(),
+		s.stepStateConformance(), s.stepStateMigrate(), s.stepBundleConfirm(), s.stepComputePlan(), s.stepPlanConfirm(),
 	}
 	stop := ""
 	if s.env["SC_TEST_MODE"] == "1" {
@@ -51,6 +51,7 @@ func (s *sess) pipeline() engine.Pipeline {
 	if stop == "preflight" {
 		return engine.Pipeline{Kind: "install", Phases: []engine.Phase{pre}}
 	}
+	allSteps := len(steps)
 	for i, st := range steps {
 		if st.Name() == stop {
 			steps = steps[:i+1]
@@ -59,12 +60,34 @@ func (s *sess) pipeline() engine.Pipeline {
 	}
 	pl := &phase{unit: unit{name: "plan", timeout: 6 * time.Hour,
 		inputs: map[string]any{"cluster": s.cluster, "prefix": s.oc.prefix, "bucketMode": s.oc.bucketMode}}, steps: steps}
-	return engine.Pipeline{Kind: "install", Phases: []engine.Phase{pre, pl}}
+	phases := []engine.Phase{pre, pl}
+	if len(steps) < allSteps {
+		// SC_TEST_STOP_AFTER named a plan step: the phases after plan are not part of this run.
+		return engine.Pipeline{Kind: "install", Phases: phases}
+	}
+	phases = append(phases, s.stepProvision())
+	if s.env["SC_TEST_MODE"] == "1" {
+		for _, n := range stubPhases {
+			phases = append(phases, s.stubPhase(n))
+		}
+	}
+	for i, ph := range phases {
+		if ph.Name() == stop {
+			phases = phases[:i+1]
+			break
+		}
+	}
+	return engine.Pipeline{Kind: "install", Phases: phases}
 }
 
 func (s *sess) runPreflight(context.Context) ([]engine.OutputRef, error) {
 	deps := s.deps.CLI
-	deps.Record = s.eng.RecordConfirmation
+	// A confirmation of the same subject is recorded once: preflight runs on every invocation (plan 50 section 17.1 rule 3).
+	deps.Record = func(c cli.Confirmation) {
+		if !s.eng.Confirmed(c.Kind, c.SubjectDigest) {
+			s.eng.RecordConfirmation(c)
+		}
+	}
 	if code := cli.RunPreflight(s.inv, s.env, s.out, s.errw, deps); code != 0 {
 		return nil, fail("PREFLIGHT_FAILED", code, procPreflight, "preflight failed (exit %d); the rows above name each failing check", code)
 	}
@@ -132,6 +155,7 @@ func (s *sess) stepIdentity() engine.Unit {
 			if !found {
 				return notDone("no commit carries SC-Install-Uid: " + uid), nil
 			}
+			s.reportInstallDrift()
 			return done("the bundle opens by digest and HEAD holds the installation commit"), nil
 		},
 		run: s.runIdentity}
@@ -372,11 +396,7 @@ func (s *sess) renderAndCommitInstall(ctx context.Context, set *identity.Set) (s
 	if err := s.writeRepoFile(base+"bootstrap-config.yaml", res); err != nil {
 		return "", err
 	}
-	vars, err := identity.RenderClusterVars(identity.ClusterVarsInput{
-		ServiceCIDR: str(dig(s.doc, "spec", "network", "serviceCidr")), PodCIDR: str(dig(s.doc, "spec", "network", "podCidr")),
-		S3Endpoint: s.oc.endpoint, S3PrivateCIDR: str(dig(s.doc, "spec", "objectStorage", "privateCidr")),
-		Resolve: s.resolve, DNSUpstreams: []string{s.dnsUpstream()}, PinnedIPs: s.clusterDNSPins(str(dig(s.doc, "spec", "network", "serviceCidr"))),
-	})
+	vars, err := identity.RenderClusterVars(s.clusterVarsInput())
 	if err != nil {
 		return "", err
 	}
@@ -408,6 +428,55 @@ func (s *sess) renderAndCommitInstall(ctx context.Context, set *identity.Set) (s
 		return "", err
 	}
 	return sha, nil
+}
+
+func (s *sess) clusterVarsInput() identity.ClusterVarsInput {
+	return identity.ClusterVarsInput{
+		ServiceCIDR: str(dig(s.doc, "spec", "network", "serviceCidr")), PodCIDR: str(dig(s.doc, "spec", "network", "podCidr")),
+		S3Endpoint: s.oc.endpoint, S3PrivateCIDR: str(dig(s.doc, "spec", "objectStorage", "privateCidr")),
+		Resolve: s.resolve, DNSUpstreams: []string{s.dnsUpstream()}, PinnedIPs: s.clusterDNSPins(str(dig(s.doc, "spec", "network", "serviceCidr"))),
+	}
+}
+
+// provisionOwned reports the cluster-vars keys provision owns; install-identity neither renders nor compares them
+// once it has run (plan 50 section 14.3, ownership BOOT-9).
+func provisionOwned(key string) bool {
+	return strings.HasPrefix(key, "SC_NODE_IP_") || strings.HasPrefix(key, "SC_DNS_UPSTREAM_")
+}
+
+// reportInstallDrift compares the cluster-vars keys install-identity owns with a fresh render and logs a difference.
+// The keys provision owns (SC_NODE_IP_*, SC_DNS_UPSTREAM_*) are not compared, and nothing is re-rendered: from state
+// planned on the drift is reported, never repaired. A render that cannot be made is not a difference.
+func (s *sess) reportInstallDrift() {
+	path := filepath.Join(s.repo, "gitops", "clusters", s.cluster, "vars", "cluster-vars.yaml")
+	cur, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	fresh, err := identity.RenderClusterVars(s.clusterVarsInput())
+	if err != nil {
+		return
+	}
+	have, err1 := identity.ClusterVarsData(cur)
+	want, err2 := identity.ClusterVarsData(fresh)
+	if err1 != nil || err2 != nil {
+		return
+	}
+	var diff []string
+	for k, v := range want {
+		if !provisionOwned(k) && have[k] != v {
+			diff = append(diff, k)
+		}
+	}
+	for k := range have {
+		if _, ok := want[k]; !ok && !provisionOwned(k) {
+			diff = append(diff, k)
+		}
+	}
+	if len(diff) > 0 {
+		sort.Strings(diff)
+		s.eng.Log("warn", "install-identity-drift", "cluster-vars.yaml differs from a fresh render in "+strings.Join(diff, ", "), nil)
+	}
 }
 
 // renderSOPS writes the SOPS files of a set and logs every secret the render deferred.

@@ -33,6 +33,7 @@ func (s *sess) readLine(ctx context.Context, prompt string, secret bool) (string
 		}
 		return "", err
 	}
+	s.prompts++
 	return strings.TrimRight(line, "\r\n"), nil
 }
 
