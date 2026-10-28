@@ -355,6 +355,12 @@ type verifyFailure struct{ Code, Message string }
 func (s *sess) stateVerify(ctx context.Context) int {
 	started := s.clk.Now().UTC()
 	modules := s.stateModules()
+	// The run lock keeps a rotation or restore in flight from making this look like a failure (plan 50 section 7.1).
+	if r := s.eng.Acquire(ctx); r.Exit != 0 {
+		s.errorf("%s: %s\n", r.Code, r.Message)
+		return r.Exit
+	}
+	defer s.eng.Release(ctx)
 	if r := s.eng.LoadJournal(ctx); r.Exit != 0 {
 		s.errorf("%s: %s\n", r.Code, r.Message)
 		return r.Exit
@@ -596,14 +602,20 @@ func (s *sess) rotateTofuPassphrase(ctx context.Context) error {
 		o, err := st.Get(ctx, tofustate.StateKey(s.cluster, module))
 		return o.Data, err
 	}
+	// A rotation that died after sealing its bundle is finished first: the bundle is in the recovery bucket and the journal
+	// before any state is rewritten with the passphrase it carries.
+	settled, enc1, err := s.settleRotationBundle(ctx, enc1)
+	if err != nil {
+		return wrapErr(err)
+	}
 	alone := func(e tofustate.Encryption) tofustate.Encryption {
 		return tofustate.Encryption{Current: e.Current, Generation: e.Generation}
 	}
 	rot := enc1
 	// A bundle that already lists current and previous may come from a rotation that stopped before every module was
 	// rewritten: finish that one instead of starting another.
-	resume := false
-	if enc1.Previous != "" {
+	resume := settled
+	if enc1.Previous != "" && !resume {
 		for _, m := range modules {
 			raw, err := rawOf(m)
 			if err != nil {
@@ -651,6 +663,68 @@ func (s *sess) rotateTofuPassphrase(ctx context.Context) error {
 	s.printf("OpenTofu state passphrase rotated to generation %d for %s; recovery bundle version %d lists the previous passphrase as SC-TOFU-ENCRYPTION/previous.\n",
 		rot.Generation, moduleList(modules), s.eng.RecoveryBundle().Generation)
 	return nil
+}
+
+// settleRotationBundle handles the two crash windows of a rotation (plan 06 section 20.3, plan 50 section 17). It reports
+// whether it found a sealed rotation bundle and made sure it is uploaded and recorded.
+//   - The journal says the bundle (already holding the rotation pair) is not uploaded: upload it and checkpoint.
+//   - A local bundle v+1 exists that the journal does not know: adopt it when it lists (new, old current) at generations
+//     N+1 and N, else fail with TOFU_ROTATION_BUNDLE_CONFLICT without touching anything.
+func (s *sess) settleRotationBundle(ctx context.Context, enc tofustate.Encryption) (bool, tofustate.Encryption, error) {
+	rb := s.eng.RecoveryBundle()
+	if enc.Previous != "" && rb.Status != "uploaded" && rb.Status != "confirmed" && rb.LocalPath != "" {
+		if _, err := s.uploadBundle(ctx); err != nil {
+			return false, enc, err
+		}
+		return true, enc, s.eng.Checkpoint(ctx)
+	}
+	if rb.LocalPath == "" {
+		return false, enc, nil
+	}
+	next := filepath.Join(filepath.Dir(rb.LocalPath), fmt.Sprintf("sc-recovery-%s-v%d.tar.age", s.cluster, rb.Generation+1))
+	data, err := os.ReadFile(next)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, enc, nil
+		}
+		return false, enc, err
+	}
+	conflict := func(why string) error {
+		return fail("TOFU_ROTATION_BUNDLE_CONFLICT", 1, procState,
+			"%s exists but is not the sealed rotation of this install (%s); inspect it, and move it away only if it is not needed", next, why)
+	}
+	reg, err := s.register()
+	if err != nil {
+		return false, enc, err
+	}
+	pass, err := s.existingPassphrase(ctx)
+	if err != nil {
+		return false, enc, err
+	}
+	o, err := identity.Open(data, pass)
+	if err != nil {
+		return false, enc, conflict("it does not open with the install's recovery passphrase")
+	}
+	set, err := identity.SetFromBundle(reg, s.eng.InstallUID(), o)
+	if err != nil {
+		return false, enc, conflict("it is not a recovery bundle of this install")
+	}
+	ne, err := tofuEncryptionOf(set)
+	if err != nil || ne.Previous != enc.Current || ne.Generation != enc.Generation+1 || ne.Current == enc.Current {
+		return false, enc, conflict("its SC-TOFU-ENCRYPTION current/previous are not the new and the old passphrase at the next generations")
+	}
+	identity.RegisterSecrets(s.red, set, pass)
+	s.set = set
+	s.tofuGen, s.tofuPrev = ne.Generation, ne.Previous
+	s.eng.SetRecoveryBundle(engine.RecoveryBundleState{Status: "created", Generation: rb.Generation + 1, Sha256: sha256Digest(data),
+		LocalPath: next, CreatedAt: s.clk.Now().UTC().Format(time.RFC3339)})
+	if err := s.eng.Checkpoint(ctx); err != nil {
+		return false, enc, err
+	}
+	if _, err := s.uploadBundle(ctx); err != nil {
+		return false, enc, err
+	}
+	return true, ne, s.eng.Checkpoint(ctx)
 }
 
 func (s *sess) remoteStateOf(module string) RemoteState {
