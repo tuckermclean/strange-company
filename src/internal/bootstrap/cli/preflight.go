@@ -422,7 +422,7 @@ func (c *pfCtx) pf26() row {
 	if !ok || math.Abs(g-monthly) > 1e-9 {
 		return failRow("PF-26", "BUDGET_CONFIRMATION_MISMATCH", exitConfirm, "%s; the confirmed amount %q does not equal global.monthlyUsd", summary, given)
 	}
-	if c.deps.Record != nil {
+	if c.deps.Record != nil && !c.deps.ReadOnly {
 		c.deps.Record(Confirmation{Kind: "model-budget", SubjectDigest: digest, Method: "flag"})
 	}
 	return pass("PF-26", "%s; confirmed", summary)
@@ -539,7 +539,7 @@ func (c *pfCtx) pf29() row {
 			"no spend backstop attested for %s; pass --confirm-backstops <file> or set SC_CONFIRM_BACKSTOPS to a file that lists providers.<id>.limitUsd and providers.<id>.consoleMfaEnabled: true (the limit may be at most 1.25 x monthlyUsd and the provider console needs MFA)",
 			strings.Join(missing, ", "))
 	}
-	if len(fresh) > 0 {
+	if len(fresh) > 0 && !c.deps.ReadOnly {
 		merged := map[string]attestation{}
 		for k, v := range existing {
 			merged[k] = v

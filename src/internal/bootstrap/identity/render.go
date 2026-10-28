@@ -121,6 +121,10 @@ func keysFor(s Secret) []kv {
 		return []kv{{"identity", v}}
 	case "SC-FORGEJO-SSH-HOST-KEY":
 		return []kv{{"ssh_host_ed25519_key", v}}
+	case "SC-OBJECT-STORAGE":
+		if out := objectStorageKeys(v); len(out) > 0 {
+			return out
+		}
 	case "SC-INTERNAL-CA":
 		var out []kv
 		rest := []byte(v)

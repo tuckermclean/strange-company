@@ -1,6 +1,10 @@
 package engine
 
-import "encoding/json"
+import (
+	"context"
+	"encoding/json"
+	"errors"
+)
 
 // RecoveryBundleState is the journal's recovery_bundle object (contracts/bootstrap-journal.schema.yaml).
 type RecoveryBundleState struct {
@@ -72,4 +76,62 @@ func (e *Engine) RecoveryBundle() (s RecoveryBundleState) {
 		Status: b.Status, Generation: b.Generation, Sha256: b.Sha256, LocalPath: b.LocalPath, S3URI: b.S3URI,
 		S3VersionID: b.S3VersionID, CreatedAt: deref(b.CreatedAt), ConfirmedAt: deref(b.ConfirmedAt),
 	}
+}
+
+// InstallUID returns the journal's install_uid, or "" while the journal still carries the placeholder of an
+// installation whose plan.install-identity has not run.
+func (e *Engine) InstallUID() string {
+	if e.jr == nil || e.jr.InstallUID == "" || e.jr.InstallUID == zeroUID {
+		return ""
+	}
+	return e.jr.InstallUID
+}
+
+// SetInstallUID records the install_uid plan.install-identity generated; the next journal save persists it, and
+// the run lock written afterwards names it.
+func (e *Engine) SetInstallUID(uid string) {
+	e.cfg.InstallUID = uid
+	if e.jr != nil {
+		e.jr.InstallUID = uid
+	}
+}
+
+// Confirmed reports whether the journal (or this run) holds a confirmation of the kind for the subject digest.
+func (e *Engine) Confirmed(kind, subjectDigest string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, c := range e.pending {
+		if c.Kind == kind && c.SubjectDigest == subjectDigest {
+			return true
+		}
+	}
+	if e.jr == nil {
+		return false
+	}
+	for _, c := range e.jr.Confirmations {
+		if c.Kind == kind && c.SubjectDigest == subjectDigest {
+			return true
+		}
+	}
+	return false
+}
+
+// InstallationState returns installation.state of the loaded journal ("new" before one is loaded).
+func (e *Engine) InstallationState() string {
+	if e.jr == nil {
+		return "new"
+	}
+	return e.jr.Installation.State
+}
+
+// Checkpoint writes the journal now (local copy first, then S3 when a store is attached), so a step that does
+// several things can make the first of them durable before the next one starts.
+func (e *Engine) Checkpoint(ctx context.Context) error {
+	if e.jr == nil {
+		return errors.New("engine: no journal is loaded")
+	}
+	if res := e.save(ctx); res != nil {
+		return &Error{Code: res.Code, Message: res.Message, Exit: res.Exit}
+	}
+	return nil
 }

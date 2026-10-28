@@ -406,6 +406,21 @@ func (c *Client) SetVersioning(ctx context.Context, name string, enabled bool) e
 	return err
 }
 
+// Versioning reports whether versioning is Enabled on a bucket (GetBucketVersioning).
+func (c *Client) Versioning(ctx context.Context, name string) (bool, error) {
+	data, _, err := c.doRead(ctx, req{method: http.MethodGet, bucket: name, query: url.Values{"versioning": {""}}})
+	if err != nil {
+		return false, err
+	}
+	var doc struct {
+		Status string `xml:"Status"`
+	}
+	if err := xml.Unmarshal(data, &doc); err != nil {
+		return false, fmt.Errorf("s3client: GetBucketVersioning response: %v", err)
+	}
+	return doc.Status == "Enabled", nil
+}
+
 // HeadBucket returns a NotFound error when the bucket does not exist.
 func (c *Client) HeadBucket(ctx context.Context, name string) error {
 	_, _, err := c.doRead(ctx, req{method: http.MethodHead, bucket: name})

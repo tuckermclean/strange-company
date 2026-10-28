@@ -6,6 +6,8 @@ package install
 import (
 	"context"
 	"io"
+	"os"
+	"time"
 
 	"strange.company/sc/internal/bootstrap/cli"
 	"strange.company/sc/internal/bootstrap/identity"
@@ -88,8 +90,38 @@ type Deps struct {
 	WorkFactor int
 }
 
-// SC-STUB(F08 50-AC-10 50-AC-11 50-AC-30 50-AC-32 06-AC-2 06-AC-5 06-AC-13) Run executes one sc-bootstrap command line of
-// the install pipeline (plan, run, status) and returns the plan 50 section 7.2 exit code.
+// Run executes one sc-bootstrap command line of the install pipeline (plan, run, status) and returns the plan 50
+// section 7.2 exit code. Every other command is handed to the command tree of package cli.
 func Run(args []string, env map[string]string, stdout, stderr io.Writer, deps Deps) int {
-	return 0
+	if deps.Clock == nil {
+		deps.Clock = clock.Real{}
+	}
+	if deps.CLI.Clock == nil {
+		deps.CLI.Clock = deps.Clock
+	}
+	if deps.CLI.Sleep == nil {
+		deps.CLI.Sleep = time.Sleep
+	}
+	inv, err := cli.Parse(args)
+	if err != nil {
+		return cli.Run(args, env, stdout, stderr, deps.CLI)
+	}
+	switch inv.Command[0] {
+	case "plan", "run", "status":
+	default:
+		return cli.Run(args, env, stdout, stderr, deps.CLI)
+	}
+	if deps.Stdin == nil {
+		deps.Stdin = os.Stdin
+	}
+	s := newSession(inv, env, stdout, stderr, deps)
+	ctx, stop := s.signalContext()
+	defer stop()
+	switch inv.Command[0] {
+	case "plan":
+		return s.cmdPlan(ctx)
+	case "status":
+		return s.cmdStatus(ctx)
+	}
+	return s.cmdRun(ctx)
 }

@@ -221,6 +221,9 @@ type Deps struct {
 	Record func(Confirmation)
 	// Sleep waits between toolbox download retries (production: time.Sleep).
 	Sleep func(time.Duration)
+	// ReadOnly makes the preflight write nothing to the work tree: the provider-backstop record is not persisted
+	// and no confirmation is handed to Record (`plan` never changes the repository).
+	ReadOnly bool
 }
 
 const usageText = "usage: sc-bootstrap [global flags] [<command> [args]]  (global flags: --env-file F --profile P --non-interactive " +
@@ -242,6 +245,12 @@ func Run(args []string, env map[string]string, stdout, stderr io.Writer, deps De
 	fmt.Fprintf(stderr, "sc-bootstrap: COMMAND_NOT_IMPLEMENTED: %q is part of the command tree but is not built yet\n",
 		strings.Join(inv.Command, " "))
 	return 2
+}
+
+// RunPreflight runs the preflight checks for an invocation that Parse already accepted; the install pipeline runs it
+// as its first phase.
+func RunPreflight(inv Invocation, env map[string]string, stdout, stderr io.Writer, deps Deps) int {
+	return runPreflight(inv, env, stdout, stderr, deps)
 }
 
 // toolboxArgs rebuilds the argument vector of the toolbox dispatcher.

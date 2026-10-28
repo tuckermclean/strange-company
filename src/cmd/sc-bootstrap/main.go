@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"strange.company/sc/internal/bootstrap/cli"
+	"strange.company/sc/internal/bootstrap/install"
 	"strange.company/sc/internal/toolbox"
 )
 
@@ -17,5 +18,6 @@ func main() {
 			env[k] = v
 		}
 	}
-	os.Exit(cli.Run(os.Args[1:], toolbox.ProductionEnv(env), os.Stdout, os.Stderr, cli.Deps{Sleep: time.Sleep}))
+	// plan, run and status are the install pipeline; install.Run hands every other command to the command tree.
+	os.Exit(install.Run(os.Args[1:], toolbox.ProductionEnv(env), os.Stdout, os.Stderr, install.Deps{CLI: cli.Deps{Sleep: time.Sleep}}))
 }
