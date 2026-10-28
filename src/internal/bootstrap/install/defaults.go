@@ -91,7 +91,7 @@ func (t *ExecTofu) bin() string {
 }
 
 // tofuEnv builds the environment of a tofu subprocess.
-func tofuEnv(env map[string]string, s3 TofuS3, passphrase string) []string {
+func tofuEnv(env map[string]string, s3 TofuS3, enc tofustate.Encryption) []string {
 	out := []string{"TF_IN_AUTOMATION=1", "TF_INPUT=0", "CHECKPOINT_DISABLE=1"}
 	for _, k := range []string{"PATH", "HOME", "TMPDIR", "TF_PLUGIN_CACHE_DIR", "SSL_CERT_FILE", "SSL_CERT_DIR", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY"} {
 		if v := env[k]; v != "" {
@@ -103,12 +103,25 @@ func tofuEnv(env map[string]string, s3 TofuS3, passphrase string) []string {
 	if s3.AccessKey != "" {
 		out = append(out, "AWS_ACCESS_KEY_ID="+s3.AccessKey, "AWS_SECRET_ACCESS_KEY="+s3.SecretKey)
 	}
-	if passphrase != "" {
-		if e, err := tofustate.EncryptionEnv(tofustate.Encryption{Current: passphrase}); err == nil {
+	if enc.Current != "" {
+		if e, err := tofustate.EncryptionEnv(enc); err == nil {
 			out = append(out, e)
 		}
 	}
 	return out
+}
+
+// specEncryption is the state encryption a storage spec asks for. The key provider is named after the passphrase's
+// generation from the first run on (plan 06 section 7.3), so a later rotation can fall back to it.
+func specEncryption(s StorageSpec) tofustate.Encryption {
+	gen := s.Generation
+	if gen < 1 {
+		gen = 1
+	}
+	if s.Passphrase == "" {
+		return tofustate.Encryption{}
+	}
+	return tofustate.Encryption{Current: s.Passphrase, Generation: gen, Previous: s.Previous}
 }
 
 func varsEnv(s StorageSpec) []string {
@@ -171,7 +184,7 @@ func remoteBackend(remote RemoteState) (string, error) {
 }
 
 func (t *ExecTofu) env(spec StorageSpec, s3 TofuS3) []string {
-	return append(tofuEnv(t.Env, s3, spec.Passphrase), varsEnv(spec)...)
+	return append(tofuEnv(t.Env, s3, specEncryption(spec)), varsEnv(spec)...)
 }
 
 func (t *ExecTofu) init(ctx context.Context, spec StorageSpec, env []string, extra ...string) error {

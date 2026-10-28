@@ -198,13 +198,17 @@ func writeAtomic(path string, data []byte) error {
 }
 
 func (s *sess) seal(set *identity.Set, version int, previous string) (*identity.Sealed, error) {
+	return s.sealAs(set, version, previous, "initial-bootstrap")
+}
+
+func (s *sess) sealAs(set *identity.Set, version int, previous, trigger string) (*identity.Sealed, error) {
 	tb := s.toolboxDigest()
 	if tb == "" {
 		tb = "sha256:" + strings.Repeat("0", 64)
 	}
 	return identity.Seal(identity.SealInput{
 		Cluster: s.cluster, Version: version, Passphrase: s.pass, Set: set, Clock: s.clk, ToolVersion: versionString(),
-		ToolboxImage: tb, SourceCommit: s.gitHead(context.Background()), PreviousSHA256: previous, Trigger: "initial-bootstrap",
+		ToolboxImage: tb, SourceCommit: s.gitHead(context.Background()), PreviousSHA256: previous, Trigger: trigger,
 		WorkFactor: s.deps.WorkFactor,
 	})
 }
@@ -237,7 +241,6 @@ func (s *sess) runIdentity(ctx context.Context) ([]engine.OutputRef, error) {
 		if err != nil {
 			return nil, err
 		}
-		set.InstallUID = deriveInstallUID(set)
 		s.addOperatorSecrets(set)
 		s.set = set
 		identity.RegisterSecrets(s.red, set, pass)
@@ -287,8 +290,8 @@ func (s *sess) runIdentity(ctx context.Context) ([]engine.OutputRef, error) {
 	}, nil
 }
 
-// deriveInstallUID derives the install UUID from the cluster age identity, which the recovery bundle carries, so a
-// bundle alone recovers the identity of its installation (the manifest schema has no field for it).
+// deriveInstallUID derives the install UUID from the cluster age identity. It is only the fallback for a bundle whose
+// manifest carries no install_uid; Seal writes the uid into the manifest.
 func deriveInstallUID(set *identity.Set) string {
 	sec := set.Find("SC-AGE-CLUSTER", "")
 	h := sha256.Sum256(append([]byte("sc-install-uid\x00"), sec.Value...))
@@ -330,7 +333,10 @@ func (s *sess) adoptBundle(ctx context.Context, reg *identity.Register, matches 
 	if set.Find("SC-AGE-CLUSTER", "") == nil {
 		return fail("BUNDLE_CORRUPT", 8, procResume, "the recovery bundle lacks the SC-AGE-CLUSTER identity")
 	}
-	set.InstallUID = deriveInstallUID(set)
+	if set.InstallUID == "" {
+		// A bundle written before the manifest carried install_uid: the key-derived uid is the fallback.
+		set.InstallUID = deriveInstallUID(set)
+	}
 	identity.RegisterSecrets(s.red, set, pass)
 	s.set = set
 	s.eng.SetInstallUID(set.InstallUID)
@@ -580,7 +586,7 @@ func (s *sess) stepStorageConfirm() engine.Unit {
 func (s *sess) storageSpec(pass string) StorageSpec {
 	sp := StorageSpec{
 		WorkDir: filepath.Join(s.boot, "work", "storage"), LocalState: filepath.Join(s.boot, "work", "storage.local.tfstate"),
-		Prefix: s.oc.prefix, Cluster: s.cluster, Buckets: s.bucketSpecs(), Main: s.oc.main.tofu(), Passphrase: pass,
+		Prefix: s.oc.prefix, Cluster: s.cluster, Buckets: s.bucketSpecs(), Main: s.oc.main.tofu(), Passphrase: pass, Generation: s.tofuGen, Previous: s.tofuPrev,
 	}
 	if s.oc.state != nil {
 		t := s.oc.state.tofu()
@@ -589,16 +595,45 @@ func (s *sess) storageSpec(pass string) StorageSpec {
 	return sp
 }
 
-// tofuPassphrase is SC-TOFU-ENCRYPTION of the install.
-func (s *sess) tofuPassphrase(ctx context.Context) (string, error) {
+// tofuEncryption is the OpenTofu state encryption of the install, read from the recovery bundle (plan 06 sections 7.3
+// and 20.3): the SC-TOFU-ENCRYPTION entry of its generation, plus the previous passphrase as the fallback while a
+// rotated bundle still lists one. A bundle that never rotated holds the single instance "" (generation 1).
+func (s *sess) tofuEncryption(ctx context.Context) (tofustate.Encryption, error) {
 	if err := s.requireSet(ctx); err != nil {
+		return tofustate.Encryption{}, err
+	}
+	return tofuEncryptionOf(s.set)
+}
+
+func tofuEncryptionOf(set *identity.Set) (tofustate.Encryption, error) {
+	gen := func(x *identity.Secret) int {
+		if x.Generation < 1 {
+			return 1
+		}
+		return x.Generation
+	}
+	if cur := set.Find("SC-TOFU-ENCRYPTION", "current"); cur != nil {
+		e := tofustate.Encryption{Current: string(cur.Value), Generation: gen(cur)}
+		if prev := set.Find("SC-TOFU-ENCRYPTION", "previous"); prev != nil && gen(prev) == e.Generation-1 {
+			e.Previous = string(prev.Value)
+		}
+		return e, nil
+	}
+	sec := set.Find("SC-TOFU-ENCRYPTION", "")
+	if sec == nil || len(sec.Value) < 16 {
+		return tofustate.Encryption{}, fail("TOFU_PASSPHRASE_MISSING", 1, procState, "the install has no SC-TOFU-ENCRYPTION secret")
+	}
+	return tofustate.Encryption{Current: string(sec.Value), Generation: gen(sec)}, nil
+}
+
+// tofuPassphrase is the current SC-TOFU-ENCRYPTION passphrase of the install.
+func (s *sess) tofuPassphrase(ctx context.Context) (string, error) {
+	e, err := s.tofuEncryption(ctx)
+	if err != nil {
 		return "", err
 	}
-	sec := s.set.Find("SC-TOFU-ENCRYPTION", "")
-	if sec == nil || len(sec.Value) < 16 {
-		return "", fail("TOFU_PASSPHRASE_MISSING", 1, procState, "the install has no SC-TOFU-ENCRYPTION secret")
-	}
-	return string(sec.Value), nil
+	s.tofuGen, s.tofuPrev = e.Generation, e.Previous
+	return e.Current, nil
 }
 
 // verifyBuckets checks that every bucket exists and has versioning Enabled; it returns the first problem.
@@ -970,7 +1005,7 @@ func (s *sess) lockProbe() tofustate.LockProbe {
 	c := s.stateCred()
 	return tofustate.ExecLockProbe{Tofu: "tofu", Dir: filepath.Join(s.boot, "work", "conformance"),
 		Backend: tofustate.Backend{Bucket: s.bucketName("tofu-state"), Region: c.Region, Endpoint: c.Endpoint, PathStyle: c.PathStyle},
-		Env:     tofuEnv(s.env, c.tofu(), "")}
+		Env:     tofuEnv(s.env, c.tofu(), tofustate.Encryption{})}
 }
 
 func (s *sess) stepStateConformance() engine.Unit {
@@ -1053,7 +1088,7 @@ func (s *sess) stepStateMigrate() engine.Unit {
 			if err != nil {
 				return notDone("the local state is left but the passphrase is not available: " + err.Error()), nil
 			}
-			spec.Passphrase = pass
+			spec.Passphrase, spec.Generation, spec.Previous = pass, s.tofuGen, s.tofuPrev
 			a, aerr := s.deps.Tofu.StateList(ctx, spec, nil)
 			b, berr := s.deps.Tofu.StateList(ctx, spec, &remote)
 			if aerr != nil || berr != nil || !sameSet(a, b) {

@@ -91,6 +91,9 @@ type sess struct {
 	reg  *identity.Register
 	set  *identity.Set
 	pass string
+	// tofuGen and tofuPrev are the generation and fallback passphrase of the last tofuPassphrase call.
+	tofuGen  int
+	tofuPrev string
 
 	// prov is the compute provider of the install (the fake provider in this build) and plan its latest plan.
 	prov provider.Provider

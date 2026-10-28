@@ -1,9 +1,11 @@
 package install
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -107,6 +109,9 @@ func (s *sess) ensureDefaults() {
 	if s.deps.Encrypt == nil {
 		s.deps.Encrypt = SopsEncrypt
 	}
+	if s.deps.State == nil {
+		s.deps.State = &ExecStateTofu{Repo: s.repo, Env: s.env, Vars: s.stateVars}
+	}
 }
 
 // cmdStatus prints the journal summary; it neither locks nor writes anything.
@@ -117,7 +122,35 @@ func (s *sess) cmdStatus(ctx context.Context) int {
 		s.tryAttach(ctx)
 		cfg = s.engineConfig("status")
 	}
-	return engine.Status(ctx, cfg, s.inv.Flags["json"] == "true", s.out, s.errw)
+	asJSON := s.inv.Flags["json"] == "true"
+	problems := s.stateProblems(ctx)
+	if len(problems) == 0 {
+		return engine.Status(ctx, cfg, asJSON, s.out, s.errw)
+	}
+	if !asJSON {
+		code := engine.Status(ctx, cfg, false, s.out, s.errw)
+		for _, p := range problems {
+			s.printf("%s: %s: %s\n", p.Code, p.Module, p.Message)
+		}
+		return code
+	}
+	var buf bytes.Buffer
+	code := engine.Status(ctx, cfg, true, &buf, s.errw)
+	if code != 0 {
+		s.printf("%s", buf.String())
+		return code
+	}
+	dec := json.NewDecoder(&buf)
+	dec.UseNumber()
+	var m map[string]any
+	if err := dec.Decode(&m); err != nil {
+		s.printf("%s", buf.String())
+		return code
+	}
+	m["state_problems"] = problems
+	out, _ := json.MarshalIndent(m, "", "  ")
+	s.printf("%s\n", out)
+	return 0
 }
 
 // cmdRun runs the install pipeline.

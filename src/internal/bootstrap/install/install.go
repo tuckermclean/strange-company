@@ -47,6 +47,10 @@ type StorageSpec struct {
 	Main       TofuS3
 	State      *TofuS3
 	Passphrase string
+	// Generation and Previous name the key provider of the passphrase and the fallback passphrase of a rotation (plan 06
+	// section 20.3); a zero Generation is the first passphrase (generation 1).
+	Generation int
+	Previous   string
 }
 
 // RemoteState names the remote backend object of the storage module's state.
@@ -88,7 +92,7 @@ type Deps struct {
 	Encrypt identity.Encryptor
 	// WorkFactor is the age scrypt work factor of the recovery bundle (zero: 20).
 	WorkFactor int
-	// SC-STUB(F08 06-AC-6 06-AC-8)
+	// State runs OpenTofu for the state commands (production: ExecStateTofu).
 	State StateTofu
 }
 
@@ -110,6 +114,14 @@ func Run(args []string, env map[string]string, stdout, stderr io.Writer, deps De
 	}
 	switch inv.Command[0] {
 	case "plan", "run", "status":
+	case "state":
+		if len(inv.Command) < 2 || (inv.Command[1] != "status" && inv.Command[1] != "restore" && inv.Command[1] != "verify") {
+			return cli.Run(args, env, stdout, stderr, deps.CLI)
+		}
+	case "rotate":
+		if len(inv.Command) < 2 || inv.Command[1] != "tofu-passphrase" {
+			return cli.Run(args, env, stdout, stderr, deps.CLI)
+		}
 	default:
 		return cli.Run(args, env, stdout, stderr, deps.CLI)
 	}
@@ -124,6 +136,10 @@ func Run(args []string, env map[string]string, stdout, stderr io.Writer, deps De
 		return s.cmdPlan(ctx)
 	case "status":
 		return s.cmdStatus(ctx)
+	case "state":
+		return s.cmdState(ctx)
+	case "rotate":
+		return s.cmdRotate(ctx)
 	}
 	return s.cmdRun(ctx)
 }
