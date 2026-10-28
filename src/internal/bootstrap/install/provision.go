@@ -34,7 +34,7 @@ const (
 
 // stubPhases are the phases after provision in the order of plan 50 sections 14.5 and 14.6. They are placeholders
 // that exist only in test mode: no provider but the fake one reaches them.
-var stubPhases = []string{"seed", "forge-init", "flux-bootstrap", "sso-init", "ci-init", "verify", "control-transfer"}
+var stubPhases = []string{"seed-prep", "configure", "seed", "forge-init", "flux-bootstrap", "sso-init", "ci-init", "verify", "control-transfer"}
 
 func (s *sess) expectedNodes() int {
 	n, err := strconv.Atoi(str(dig(s.doc, "spec", "provider", "expectedNodeCount")))
@@ -126,7 +126,14 @@ func stateAtLeastProvisioned(state string) bool {
 
 func (s *sess) stepComputePlan() engine.Unit {
 	return &unit{name: stepComputePlan, timeout: 30 * time.Minute, inputs: map[string]any{"step": stepComputePlan},
-		// Never cached: the plan is recomputed on every run (plan 50 section 14.3 step 10).
+		// Recomputed on every run until provision consumed it (plan 50 section 14.3 step 10); from state provisioned on
+		// the recorded confirmation stands for the plan, so a rerun neither recomputes it nor hashes a missing plan.
+		check: func(context.Context) (engine.Check, error) {
+			if stateAtLeastProvisioned(s.eng.InstallationState()) {
+				return done("provision consumed the plan"), nil
+			}
+			return notDone("the plan is computed on every run until provision"), nil
+		},
 		run: func(ctx context.Context) ([]engine.OutputRef, error) {
 			prov, err := s.providerOrFail()
 			if err != nil {
@@ -146,9 +153,11 @@ func (s *sess) stepComputePlan() engine.Unit {
 
 // --- plan.confirm
 
+// planDigest is the digest the plan steps and provision hash: the plan of this run, else (a rerun after provision, which
+// does not compute it again) the digest of the recorded confirmation.
 func (s *sess) planDigest() string {
 	if s.plan == nil {
-		return ""
+		return s.eng.ConfirmedSubject(s.planKind())
 	}
 	return s.plan.Digest
 }
@@ -398,15 +407,96 @@ func (s *sess) clusterConfigWithNodes(names []string) ([]byte, error) {
 
 // --- stubbed phases after provision
 
-// stubPhase is a placeholder for a phase a later node implements. It records success and, for verify, reports the
-// permanent warning of an accepted unprotected state (plan 50 section 14.3 step 5, 50-AC-32).
+// The stub cluster is the state the stubbed phases of a test-mode run keep in <repo>/.bootstrap/stub-cluster/:
+// root-kustomization.yaml holds spec.sourceRef.kind of the root Kustomization (Bucket after seed, GitRepository after
+// flux-bootstrap), which the engine's freeze probe reads (plan 50 section 17.1 rule 5); scenario.yaml, written by the
+// test, lists in failOnce the phases whose first call fails with STUB_FAILED_ONCE; failed-once/<phase> records that
+// the failure happened.
+func (s *sess) stubDir() string { return filepath.Join(s.boot, "stub-cluster") }
+
+func (s *sess) stubRootKind() string {
+	b, err := os.ReadFile(filepath.Join(s.stubDir(), "root-kustomization.yaml"))
+	if err != nil {
+		return ""
+	}
+	var doc struct {
+		Spec struct {
+			SourceRef struct {
+				Kind string `yaml:"kind"`
+			} `yaml:"sourceRef"`
+		} `yaml:"spec"`
+	}
+	if yaml.Unmarshal(b, &doc) != nil {
+		return ""
+	}
+	return doc.Spec.SourceRef.Kind
+}
+
+func (s *sess) writeStubRoot(kind string) error {
+	doc := "apiVersion: kustomize.toolkit.fluxcd.io/v1\nkind: Kustomization\nmetadata:\n  name: root\n  namespace: flux-system\nspec:\n  sourceRef:\n    kind: " + kind + "\n"
+	return writeAtomic(filepath.Join(s.stubDir(), "root-kustomization.yaml"), []byte(doc))
+}
+
+// stubSourceSwitched is the engine's freeze probe in test mode: the stub root Kustomization reads the in-cluster Git source.
+func (s *sess) stubSourceSwitched(context.Context) (bool, error) {
+	return s.stubRootKind() == "GitRepository", nil
+}
+
+// stubFailPending reports whether the scenario makes the first call of the phase fail and that call has not happened.
+func (s *sess) stubFailPending(name string) bool {
+	b, err := os.ReadFile(filepath.Join(s.stubDir(), "scenario.yaml"))
+	if err != nil {
+		return false
+	}
+	var sc struct {
+		FailOnce []string `yaml:"failOnce"`
+	}
+	if yaml.Unmarshal(b, &sc) != nil {
+		return false
+	}
+	for _, n := range sc.FailOnce {
+		if n == name {
+			_, err := os.Stat(filepath.Join(s.stubDir(), "failed-once", name))
+			return err != nil
+		}
+	}
+	return false
+}
+
+// stubPhase is a placeholder for a phase a later node implements. It records success, keeps the stub cluster (seed and
+// flux-bootstrap write the source kind of the root Kustomization), fails once when the scenario says so and, for verify,
+// reports the permanent warning of an accepted unprotected state (plan 50 section 14.3 step 5, 50-AC-32).
 func (s *sess) stubPhase(name string) engine.Phase {
 	u := unit{name: name, timeout: 5 * time.Minute, inputs: map[string]any{"stub": name}}
-	if name == "verify" {
-		u.run = s.runVerifyStub
-	} else {
-		u.check = func(context.Context) (engine.Check, error) { return done("a later node implements this phase"), nil }
-		u.run = func(context.Context) ([]engine.OutputRef, error) { return nil, nil }
+	u.check = func(context.Context) (engine.Check, error) {
+		switch {
+		case name == "verify":
+			return notDone("verify runs on every pass"), nil
+		case s.stubFailPending(name):
+			return notDone("the scenario fails this phase once"), nil
+		case name == "seed" && s.stubRootKind() == "":
+			return notDone("the stub root Kustomization does not exist"), nil
+		case name == "flux-bootstrap" && s.stubRootKind() != "GitRepository":
+			return notDone("the stub root Kustomization does not read the in-cluster Git source"), nil
+		}
+		return done("a later node implements this phase"), nil
+	}
+	u.run = func(ctx context.Context) ([]engine.OutputRef, error) {
+		if s.stubFailPending(name) {
+			if err := writeAtomic(filepath.Join(s.stubDir(), "failed-once", name), []byte("failed\n")); err != nil {
+				return nil, err
+			}
+			return nil, fail("STUB_FAILED_ONCE", 1, procResume, "the stub phase %s fails once, as the scenario says", name)
+		}
+		switch name {
+		case "seed":
+			return nil, s.writeStubRoot("Bucket")
+		case "flux-bootstrap":
+			return nil, s.writeStubRoot("GitRepository")
+		case "verify":
+			return s.runVerifyStub(ctx)
+		}
+		return nil, nil
 	}
 	return &phase{unit: u}
 }

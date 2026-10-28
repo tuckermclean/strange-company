@@ -358,12 +358,16 @@ func (s *sess) engineConfig(command string) engine.Config {
 		digest = "sha256:" + digest
 	}
 	m, markerOK := s.readMarker()
-	return engine.Config{
+	cfg := engine.Config{
 		Dir: s.boot, Store: s.lazy, IfMatch: markerOK && m.IfMatchSupported, Clock: s.clk, Cluster: s.cluster, InstallUID: s.localJournalUID(),
 		Provider: str(dig(s.doc, "spec", "provider", "name")), Profile: str(dig(s.doc, "spec", "cluster", "profile")),
 		ConfigDigest: digest, Command: command, User: user, Version: version.Version, GitHead: s.gitHead(context.Background()),
 		ToolboxDigest: s.toolboxDigest(), Env: s.env, Redactor: s.red,
 	}
+	if s.env["SC_TEST_MODE"] == "1" {
+		cfg.SourceSwitched = s.stubSourceSwitched
+	}
+	return cfg
 }
 
 func (s *sess) toolboxDigest() string {

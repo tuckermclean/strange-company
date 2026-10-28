@@ -96,8 +96,8 @@ type Deps struct {
 	State StateTofu
 }
 
-// Run executes one sc-bootstrap command line of the install pipeline (plan, run, status) and returns the plan 50
-// section 7.2 exit code. Every other command is handed to the command tree of package cli.
+// Run executes one sc-bootstrap command line of the install pipeline (plan, run, status, abandon-identity) and returns
+// the plan 50 section 7.2 exit code. Every other command is handed to the command tree of package cli.
 func Run(args []string, env map[string]string, stdout, stderr io.Writer, deps Deps) int {
 	if deps.Clock == nil {
 		deps.Clock = clock.Real{}
@@ -113,7 +113,7 @@ func Run(args []string, env map[string]string, stdout, stderr io.Writer, deps De
 		return cli.Run(args, env, stdout, stderr, deps.CLI)
 	}
 	switch inv.Command[0] {
-	case "plan", "run", "status":
+	case "plan", "run", "status", "abandon-identity":
 	case "state":
 		if len(inv.Command) < 2 || (inv.Command[1] != "status" && inv.Command[1] != "restore" && inv.Command[1] != "verify") {
 			return cli.Run(args, env, stdout, stderr, deps.CLI)
@@ -140,6 +140,8 @@ func Run(args []string, env map[string]string, stdout, stderr io.Writer, deps De
 		return s.cmdState(ctx)
 	case "rotate":
 		return s.cmdRotate(ctx)
+	case "abandon-identity":
+		return s.cmdAbandon(ctx)
 	}
 	return s.cmdRun(ctx)
 }

@@ -51,17 +51,17 @@ func (s *sess) pipeline() engine.Pipeline {
 	if stop == "preflight" {
 		return engine.Pipeline{Kind: "install", Phases: []engine.Phase{pre}}
 	}
-	allSteps := len(steps)
+	stopAtStep := false
 	for i, st := range steps {
 		if st.Name() == stop {
-			steps = steps[:i+1]
+			steps, stopAtStep = steps[:i+1], true
 			break
 		}
 	}
 	pl := &phase{unit: unit{name: "plan", timeout: 6 * time.Hour,
 		inputs: map[string]any{"cluster": s.cluster, "prefix": s.oc.prefix, "bucketMode": s.oc.bucketMode}}, steps: steps}
 	phases := []engine.Phase{pre, pl}
-	if len(steps) < allSteps {
+	if stopAtStep {
 		// SC_TEST_STOP_AFTER named a plan step: the phases after plan are not part of this run.
 		return engine.Pipeline{Kind: "install", Phases: phases}
 	}
@@ -245,18 +245,19 @@ func (s *sess) runIdentity(ctx context.Context) ([]engine.OutputRef, error) {
 		s.set = set
 		identity.RegisterSecrets(s.red, set, pass)
 		s.eng.SetInstallUID(set.InstallUID)
-		sealed, err := s.seal(set, 1, "")
+		first, previous := s.firstGeneration()
+		sealed, err := s.seal(set, first, previous)
 		if err != nil {
 			return nil, err
 		}
-		path, err := s.writeBundleFiles(set, 1, sealed)
+		path, err := s.writeBundleFiles(set, first, sealed)
 		if err != nil {
 			return nil, err
 		}
 		if _, err := identity.WriteRecoveryIdentity(s.cdir(), set); err != nil {
 			return nil, err
 		}
-		s.eng.SetRecoveryBundle(engine.RecoveryBundleState{Status: "created", Generation: 1, Sha256: "sha256:" + sealed.SHA256,
+		s.eng.SetRecoveryBundle(engine.RecoveryBundleState{Status: "created", Generation: first, Sha256: "sha256:" + sealed.SHA256,
 			LocalPath: path, CreatedAt: s.clk.Now().UTC().Format(time.RFC3339)})
 		if err := s.eng.Checkpoint(ctx); err != nil {
 			return nil, err
@@ -838,7 +839,7 @@ func (s *sess) stepStorageCredentials() engine.Unit {
 				return notDone("shared credential mode needs a state account"), nil
 			}
 			rb := s.eng.RecoveryBundle()
-			if rb.Generation < 2 || (rb.Status != "uploaded" && rb.Status != "confirmed") {
+			if first, _ := s.firstGeneration(); rb.Generation <= first || (rb.Status != "uploaded" && rb.Status != "confirmed") {
 				return notDone("the bundle has not been re-sealed with the credentials"), nil
 			}
 			if err := s.authenticateAll(ctx); err != nil {
@@ -952,7 +953,7 @@ func (s *sess) runCredentials(ctx context.Context) ([]engine.OutputRef, error) {
 	}
 	// Re-seal once with the credentials (generation N+1) and upload it.
 	cur := s.eng.RecoveryBundle()
-	if cur.Generation < 2 {
+	if first, _ := s.firstGeneration(); cur.Generation <= first {
 		sealed, err := s.seal(s.set, cur.Generation+1, strings.TrimPrefix(cur.Sha256, "sha256:"))
 		if err != nil {
 			return nil, err
