@@ -222,11 +222,10 @@ func Seal(in SealInput) (*Sealed, error) {
 	}
 
 	var out bytes.Buffer
-	rcp, err := age.NewScryptRecipient(in.Passphrase)
+	rcp, err := newKDFRecipient(in.Passphrase, wf)
 	if err != nil {
 		return nil, fail("SEAL_FAILED", "the passphrase recipient cannot be created: %v", err)
 	}
-	rcp.SetWorkFactor(wf)
 	aw, err := age.Encrypt(&out, rcp)
 	releaseScryptMemory()
 	if err != nil {
@@ -270,11 +269,10 @@ type Opened struct {
 // Open decrypts a bundle and reads its archive in order. A wrong passphrase is BUNDLE_PASSPHRASE_WRONG; anything
 // else that does not decrypt or parse is BUNDLE_CORRUPT. No error repeats the passphrase.
 func Open(data []byte, passphrase string) (*Opened, error) {
-	id, err := age.NewScryptIdentity(passphrase)
+	id, err := newKDFIdentity(passphrase, maxWorkFactor)
 	if err != nil {
 		return nil, fail("BUNDLE_PASSPHRASE_WRONG", "the passphrase cannot open the recovery bundle")
 	}
-	id.SetMaxWorkFactor(maxWorkFactor)
 	r, err := age.Decrypt(bytes.NewReader(data), id)
 	releaseScryptMemory()
 	if err != nil {
