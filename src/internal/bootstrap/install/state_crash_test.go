@@ -179,6 +179,7 @@ func (f *stFix) checkRotatedWith(fake *stFake, p1, p2 string) {
 // died before uploading it is finished by the rerun, and the rerun uploads and records v+1 before it rewrites any state
 // with the new passphrase.
 func TestRotateTofuPassphrase_RerunAfterCrashBeforeUpload_UploadsBundleFirst_06AC6(t *testing.T) {
+	t.Parallel()
 	f := newStateFix(t)
 	v1 := f.i.journal().RecoveryBundle
 	p1, p2, v2Path := f.crashedRotation(false)
@@ -220,6 +221,7 @@ func TestRotateTofuPassphrase_RerunAfterCrashBeforeUpload_UploadsBundleFirst_06A
 // adopts that bundle (its pair is the new passphrase and the old current at generations N+1 and N) instead of failing for
 // ever with BUNDLE_VERSION_EXISTS, uploads it first and finishes the rotation with that passphrase.
 func TestRotateTofuPassphrase_RerunAfterCrashBeforeCheckpoint_AdoptsLocalBundle_06AC6(t *testing.T) {
+	t.Parallel()
 	f := newStateFix(t)
 	v1 := f.i.journal().RecoveryBundle
 	p1, p2, v2Path := f.crashedRotation(true)
@@ -262,6 +264,7 @@ func TestRotateTofuPassphrase_RerunAfterCrashBeforeCheckpoint_AdoptsLocalBundle_
 // old current) at generations N+1/N is refused with a named code, before any state is rewritten and before anything is
 // uploaded.
 func TestRotateTofuPassphrase_RerunWithForeignLocalBundle_FailsNamed_06AC6(t *testing.T) {
+	t.Parallel()
 	f := newStateFix(t)
 	v1 := f.i.journal().RecoveryBundle
 	// a bundle v+1 that lists no rotation at all: the current bundle's own bytes
@@ -314,6 +317,7 @@ func (f *stFix) holdRunLock() {
 // the run lock, `state verify` exits 6 with RUN_LOCK_HELD, runs no OpenTofu and writes no restore-test result, so a rotation
 // in flight cannot make it report a false failure.
 func TestStateVerify_RunLockHeld_Exits6WritesNoResult_Plan50(t *testing.T) {
+	t.Parallel()
 	f := newStateFix(t)
 	f.holdRunLock()
 	code, out := f.run("", nil, "--non-interactive", "state", "verify")
@@ -331,6 +335,7 @@ func TestStateVerify_RunLockHeld_Exits6WritesNoResult_Plan50(t *testing.T) {
 
 // The same for an install with no OpenTofu module: there is no journal, and the lock still applies.
 func TestStateVerify_NoModuleInstall_RunLockHeld_Exits6_Plan50(t *testing.T) {
+	t.Parallel()
 	i := newInst(t)
 	i.setVars(map[string]string{"PROVIDER": "existing", "S3_BUCKET_MODE": "existing", "EXISTING_NODES": "node-01=ops@192.0.2.10/10.0.0.11"})
 	if err := i.world.createBucket(stateKeyID, bucketName("tofu-state")); err != nil {

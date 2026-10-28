@@ -270,6 +270,7 @@ func pvPromptCount(t testing.TB, i *inst) (int, bool) {
 // the stubbed pipeline runs to its end with exit 0 and the prompt counter in the run log is 0. The fake provider
 // created through the provider interface exactly once (50-AC-4 groundwork).
 func TestUnattended_AllConfirmationsByEnvironment_ZeroPrompts_50AC31(t *testing.T) {
+	t.Parallel()
 	i := newInst(t)
 	code, out := i.run("", i.unattendedEnv(), i.envOnlyArgs())
 	requireExit(t, code, 0, out)
@@ -326,6 +327,7 @@ func TestUnattended_AllConfirmationsByEnvironment_ZeroPrompts_50AC31(t *testing.
 // 50-AC-31: the counter counts prompts. An interactive run that is asked for the passphrase twice and for the typed
 // storage confirmation reports 3.
 func TestPromptCounter_CountsInteractiveAnswers_50AC31(t *testing.T) {
+	t.Parallel()
 	i := newInst(t)
 	stdin := twice(goodPass) + "storage " + clusterName + "\n"
 	code, out := i.run(stdin, stopAfter("plan.storage-apply"), i.args())
@@ -339,6 +341,7 @@ func TestPromptCounter_CountsInteractiveAnswers_50AC31(t *testing.T) {
 // Plan 50 section 14.3 steps 10 and 11, plan 03 section 14.7 and 03-AC-6: without the plan confirmation a
 // non-interactive run exits 5 with the create counter at 0; a wrong D8 also exits 5; the right D8 (flag) creates once.
 func TestPlanConfirm_NonInteractiveNeedsTheRightD8_50AC31(t *testing.T) {
+	t.Parallel()
 	i := newInst(t)
 	_, d8 := pvPlanDigest(t)
 	full, _ := pvPlanDigest(t)
@@ -388,6 +391,7 @@ func TestPlanConfirm_NonInteractiveNeedsTheRightD8_50AC31(t *testing.T) {
 // Plan 50 section 14.3 step order and section 14.4: compute-plan and confirm follow bundle-confirm; provision applies
 // through the fake provider, then commits inventory.yaml and the SC_NODE_IP_* keys as `node inventory`.
 func TestProvision_CommitsNodeInventory_50AC29(t *testing.T) {
+	t.Parallel()
 	i := newInst(t)
 	code, out := i.run("", merge(i.unattendedEnv(), stopAfter("provision")), i.envOnlyArgs("--non-interactive"))
 	requireExit(t, code, 0, out)
@@ -488,6 +492,7 @@ func TestProvision_CommitsNodeInventory_50AC29(t *testing.T) {
 // 192.0.2.53 and 192.0.2.54, cluster-vars has SC_DNS_UPSTREAM_1=192.0.2.53, _2=192.0.2.54, _3=192.0.2.53. The install
 // commit was seeded with the toolbox resolver; provision rewrites the keys from discovery.
 func TestProvision_DiscoveredResolversRewriteDNSUpstream_50AC35(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name      string
 		resolvers []string
@@ -528,6 +533,7 @@ func TestProvision_DiscoveredResolversRewriteDNSUpstream_50AC35(t *testing.T) {
 // resolvers) are unchanged. install-identity owns its files and never re-renders over provision's keys; neither the
 // plain rerun nor `--from-phase plan` (which re-checks install-identity against reality) touches them.
 func TestOwnership_RerunAfterProvisionCreatesNoCommit_50AC29(t *testing.T) {
+	t.Parallel()
 	i := newInst(t)
 	pvScenario(t, i, "192.0.2.53", "192.0.2.54")
 	env := merge(i.unattendedEnv(), stopAfter("provision"))
@@ -598,6 +604,7 @@ func TestOwnership_RerunAfterProvisionCreatesNoCommit_50AC29(t *testing.T) {
 // pipeline lists the real provision phase, still pending with no attempt, the plan was neither computed nor
 // confirmed, the fake provider created nothing and no inventory commit exists.
 func TestBundleConfirmFailure_ProvisionNeverStarts_50AC10(t *testing.T) {
+	t.Parallel()
 	i := newInst(t)
 	_, d8 := pvPlanDigest(t)
 	stdin := twice(goodPass) + "wrong one entry\nwrong two entry\nwrong three entry\n"
@@ -659,6 +666,7 @@ func pvVerifyMentions(t testing.TB, i *inst, needle string) bool {
 // 50-AC-32 (verify leg): with S3_ALLOW_UNPROTECTED_STATE=true the stubbed verify phase reports the warning (the
 // protected case is checked in the unattended test above).
 func TestVerify_ReportsUnprotectedStateWarning_50AC32(t *testing.T) {
+	t.Parallel()
 	i := newInst(t)
 	i.dropStateAccount()
 	i.setVars(map[string]string{"S3_ALLOW_UNPROTECTED_STATE": "true"})

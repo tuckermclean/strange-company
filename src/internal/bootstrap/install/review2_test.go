@@ -35,6 +35,7 @@ func countConfirmations(j journal, kind string) int {
 // that fails for a missing confirmation exits 5 every time and never trips RETRY_CEILING; once the cause is fixed the
 // run succeeds.
 func TestPreflightFailure_NeverTripsRetryCeiling_RerunSucceeds_B1(t *testing.T) {
+	t.Parallel()
 	i := newInst(t)
 	noBudget := []string{"--env-file", i.envFile, "--confirm-backstops", i.backstopFile(), "--non-interactive", "--confirm-storage", clusterName}
 	for n := 1; n <= 7; n++ {
@@ -57,6 +58,7 @@ func TestPreflightFailure_NeverTripsRetryCeiling_RerunSucceeds_B1(t *testing.T) 
 // same --confirm-backstops input leaves the work tree clean, keeps attestedAt, and records no second confirmation. A
 // changed attestation does update the record.
 func TestRerun_SameBackstops_NoChange_B2(t *testing.T) {
+	t.Parallel()
 	i := newInst(t)
 	env := merge(i.passphraseFile(), stopAfter("plan.state-migrate"))
 	args := i.args("--non-interactive", "--confirm-storage", clusterName)
@@ -107,6 +109,7 @@ func TestRerun_SameBackstops_NoChange_B2(t *testing.T) {
 // B3a (plan 50 section 14.3 line 423 "If the journal is missing but the bundle exists, the bundle is the source of truth"):
 // with the local journal deleted after plan.install-identity, a rerun with the passphrase adopts the bundle's identity.
 func TestInstallIdentity_JournalMissingBundleExists_AdoptsBundle_B3(t *testing.T) {
+	t.Parallel()
 	i := newInst(t)
 	env := merge(i.passphraseFile(), stopAfter("plan.install-identity"))
 	args := i.args("--non-interactive")
@@ -136,6 +139,7 @@ func TestInstallIdentity_JournalMissingBundleExists_AdoptsBundle_B3(t *testing.T
 // B3b (same plan text, crash window between writing the bundle files and the journal checkpoint): the journal knows no
 // install_uid and no bundle, the bundle files exist, and HEAD holds no installation commit. The rerun resumes from the bundle.
 func TestInstallIdentity_CrashBeforeCheckpoint_ResumesFromBundle_B3(t *testing.T) {
+	t.Parallel()
 	i := newInst(t)
 	env := merge(i.passphraseFile(), stopAfter("plan.install-identity"))
 	args := i.args("--non-interactive")
@@ -181,6 +185,7 @@ func TestInstallIdentity_CrashBeforeCheckpoint_ResumesFromBundle_B3(t *testing.T
 // N3 (plan 50 section 14.3 done check "trailer SC-Install-Uid: <id>", 50-AC-18 abandon): a credentials commit with the right
 // subject but another installation's SC-Install-Uid does not satisfy plan.storage-credentials.
 func TestStorageCredentials_CommitRecognisedByUidTrailer_N3(t *testing.T) {
+	t.Parallel()
 	i := newInst(t)
 	const stale = "00000000-0000-4000-8000-00000000abcd"
 	subject := "bootstrap(" + clusterName + "): object-storage credentials"

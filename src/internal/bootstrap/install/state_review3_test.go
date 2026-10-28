@@ -93,6 +93,7 @@ func (f *stFix) tofuPair(path string) (cur, prev string) {
 // P2 alone, so there is nothing left to finish; the command must then rotate again (P3 in bundle v3) or fail with a named
 // code, and must not print the rotated message while it generated nothing.
 func TestRotateTofuPassphrase_AfterAdoptingCompletedRotation_DoesNotClaimRotatedWithoutRotating_06AC6(t *testing.T) {
+	t.Parallel()
 	f := newStateFix(t)
 	v1 := f.i.journal().RecoveryBundle
 	before := f.saveJournal()
@@ -213,6 +214,7 @@ func (f *stFix) wantAdoptionConflict(why string, mutate func(m map[string]any)) 
 
 // 06-AC-6 (review 2 N-c): adopting a local v+1 checks bundle_version == v+1.
 func TestRotateTofuPassphrase_AdoptionRefusesWrongBundleVersion_06AC6(t *testing.T) {
+	t.Parallel()
 	f := newStateFix(t)
 	v1 := f.i.journal().RecoveryBundle
 	f.wantAdoptionConflict("claims another bundle_version", func(m map[string]any) { m["bundle_version"] = v1.Generation + 2 })
@@ -220,6 +222,7 @@ func TestRotateTofuPassphrase_AdoptionRefusesWrongBundleVersion_06AC6(t *testing
 
 // 06-AC-6 (review 2 N-c): adopting a local v+1 checks previous_bundle_sha256 == the current bundle's sha256.
 func TestRotateTofuPassphrase_AdoptionRefusesWrongPreviousSha_06AC6(t *testing.T) {
+	t.Parallel()
 	f := newStateFix(t)
 	f.wantAdoptionConflict("does not chain to the current bundle", func(m map[string]any) {
 		m["previous_bundle_sha256"] = strings.Repeat("0", 64)
@@ -228,6 +231,7 @@ func TestRotateTofuPassphrase_AdoptionRefusesWrongPreviousSha_06AC6(t *testing.T
 
 // 06-AC-6 (review 2 N-c): adopting a local v+1 checks trigger == "rotation".
 func TestRotateTofuPassphrase_AdoptionRefusesOtherTrigger_06AC6(t *testing.T) {
+	t.Parallel()
 	f := newStateFix(t)
 	f.wantAdoptionConflict("has another trigger", func(m map[string]any) {
 		m["reason"] = map[string]any{"trigger": "initial-bootstrap"}
@@ -236,6 +240,7 @@ func TestRotateTofuPassphrase_AdoptionRefusesOtherTrigger_06AC6(t *testing.T) {
 
 // 06-AC-6 (review 2 N-c): a stale bundles/LATEST.json (still naming v1) is rewritten to point at the adopted v+1.
 func TestRotateTofuPassphrase_AdoptionRewritesStaleLatest_06AC6(t *testing.T) {
+	t.Parallel()
 	f := newStateFix(t)
 	v1 := f.i.journal().RecoveryBundle
 	_, _, v2 := f.crashedRotation(true)
@@ -292,6 +297,7 @@ func (s lockStuckStore) Delete(ctx context.Context, key, ifMatch string) error {
 // Plan 50 section 7.1 and 17.4 (review 2 N-d): when `state verify` cannot release the run lock it exits non-zero with
 // RUN_LOCK_RELEASE_FAILED, as ExecuteOp does, instead of exiting 0 with the error swallowed.
 func TestStateVerify_RunLockReleaseFails_ExitsNonZeroNamed_Plan50(t *testing.T) {
+	t.Parallel()
 	f := newStateFix(t)
 	d := f.i.deps("")
 	d.State = f.fake

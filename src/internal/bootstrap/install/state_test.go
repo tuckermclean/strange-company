@@ -355,6 +355,7 @@ func (f *stFix) versionIDs(module string) map[string]bool {
 // 06-AC-8: `state status` lists, per module, the current version id, serial and lineage, and the holder of a state lock
 // object. It needs no passphrase.
 func TestStateStatus_ListsModulesVersionsAndLocks_06AC8(t *testing.T) {
+	t.Parallel()
 	f := newStateFix(t)
 	f.put("compute", 41, f.pass1, 1)
 	f.put("storage", 57, f.pass1, 1)
@@ -394,6 +395,7 @@ func TestStateStatus_ListsModulesVersionsAndLocks_06AC8(t *testing.T) {
 // 06-AC-8: after a garbage upload as a new version, `./bootstrap status` reports TOFU_STATE_INVALID and names the module;
 // before it, it does not.
 func TestStatus_ReportsInvalidCurrentState_06AC8(t *testing.T) {
+	t.Parallel()
 	f := newStateFix(t)
 	code, out := f.run("", nil, "status")
 	requireExit(t, code, 0, out)
@@ -422,6 +424,7 @@ func TestStatus_ReportsInvalidCurrentState_06AC8(t *testing.T) {
 // 06-AC-8, plan 06 section 20.2: restoring the version before the garbage copies it onto the key as a new version; the history
 // keeps growing by exactly one version, the content is the restored version's, and the state is valid again.
 func TestStateRestore_CopiesPreviousVersionAsNewVersion_06AC8(t *testing.T) {
+	t.Parallel()
 	f := newStateFix(t)
 	storageBefore := len(f.versions("storage"))
 	f.corrupt("compute")
@@ -475,6 +478,7 @@ func TestStateRestore_CopiesPreviousVersionAsNewVersion_06AC8(t *testing.T) {
 // 06-AC-8, plan 06 section 7.2: the restore needs the typed confirmation `restore <cluster> <module> <V[0:8]>`; a wrong text and
 // --non-interactive without one exit 5 and change nothing.
 func TestStateRestore_RequiresTypedConfirmation_06AC8(t *testing.T) {
+	t.Parallel()
 	f := newStateFix(t)
 	f.corrupt("compute")
 	before := f.versions("compute")
@@ -495,6 +499,7 @@ func TestStateRestore_RequiresTypedConfirmation_06AC8(t *testing.T) {
 // 06-AC-8, plan 06 section 20.2: a version that does not validate (the garbage itself) is refused with TOFU_STATE_INVALID, and an
 // unknown version id is TOFU_VERSION_NOT_FOUND. Nothing is written.
 func TestStateRestore_RefusesUnreadableOrUnknownVersion_06AC8(t *testing.T) {
+	t.Parallel()
 	f := newStateFix(t)
 	f.corrupt("compute")
 	vs := f.versions("compute")
@@ -522,6 +527,7 @@ func TestStateRestore_RefusesUnreadableOrUnknownVersion_06AC8(t *testing.T) {
 
 // Plan 06 section 17: restoring the version that is already current is a no-op.
 func TestStateRestore_CurrentVersionIsNoOp_06AC8(t *testing.T) {
+	t.Parallel()
 	f := newStateFix(t)
 	cur := f.versions("compute")[0]
 	n := len(f.versions("compute"))
@@ -534,6 +540,7 @@ func TestStateRestore_CurrentVersionIsNoOp_06AC8(t *testing.T) {
 
 // Plan 06 sections 9 and 15: a state held by someone else's lock is not restored over; the refusal is TOFU_STATE_LOCKED.
 func TestStateRestore_RefusesWhileStateIsLocked_06AC3(t *testing.T) {
+	t.Parallel()
 	f := newStateFix(t)
 	f.corrupt("compute")
 	before := f.versions("compute")
@@ -610,6 +617,7 @@ func stResultObject(t testing.TB, w *s3World) (stResult, []byte) {
 // 06-AC-8, plan 06 section 20.1: `state verify` on healthy states exits 0, decrypts and plans every module, and writes a valid
 // restore-test-result with the module set, outcome passed and no secret.
 func TestStateVerify_WritesValidResult_06AC14(t *testing.T) {
+	t.Parallel()
 	f := newStateFix(t)
 	code, out := f.run("", nil, "--non-interactive", "state", "verify")
 	requireExit(t, code, 0, out)
@@ -651,6 +659,7 @@ func TestStateVerify_WritesValidResult_06AC14(t *testing.T) {
 // 06-AC-8, plan 06 section 20.1 step 3: an unreadable current state makes the verification fail: exit 1, and the failed
 // result is written (valid against the contract, with a failure and a failed check).
 func TestStateVerify_FailsOnDamagedState_06AC8(t *testing.T) {
+	t.Parallel()
 	f := newStateFix(t)
 	f.corrupt("compute")
 	code, out := f.run("", nil, "--non-interactive", "state", "verify")
@@ -673,6 +682,7 @@ func TestStateVerify_FailsOnDamagedState_06AC8(t *testing.T) {
 
 // Plan 06 section 20.1 step 3: the serial must be monotonic between the current and the newest noncurrent version.
 func TestStateVerify_FailsOnSerialRegression_06AC8(t *testing.T) {
+	t.Parallel()
 	f := newStateFix(t)
 	f.put("compute", 1, f.pass1, 1)
 	code, out := f.run("", nil, "--non-interactive", "state", "verify")
@@ -687,6 +697,7 @@ func TestStateVerify_FailsOnSerialRegression_06AC8(t *testing.T) {
 // 06-AC-14 (BOOT-4): the `existing` provider with bucket mode `existing` has no OpenTofu module: `state verify` exits 0 and writes
 // a result with modules: [] and outcome passed, with the one check state-not-applicable. It needs no bundle and no passphrase.
 func TestStateVerify_NoModuleInstall_06AC14(t *testing.T) {
+	t.Parallel()
 	i := newInst(t)
 	i.setVars(map[string]string{"PROVIDER": "existing", "S3_BUCKET_MODE": "existing", "EXISTING_NODES": "node-01=ops@192.0.2.10/10.0.0.11"})
 	if err := i.world.createBucket(stateKeyID, bucketName("tofu-state")); err != nil {
@@ -730,6 +741,7 @@ var stPassRe = regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`)
 // refresh-only apply ran with P2 enforced and P1 as the fallback; the new bundle version lists SC-TOFU-ENCRYPTION as the
 // instances current (P2, generation 2) and previous (P1, generation 1), is on disk and in S3, and no passphrase leaks.
 func TestRotateTofuPassphrase_06AC6(t *testing.T) {
+	t.Parallel()
 	f := newStateFix(t)
 	jb := f.i.journal().RecoveryBundle
 	oldPath := jb.LocalPath
@@ -833,6 +845,7 @@ func TestRotateTofuPassphrase_06AC6(t *testing.T) {
 
 // 06-AC-6 and plan 50 section 7.2: a wrong bundle passphrase exits 8 before any state is touched.
 func TestRotateTofuPassphrase_WrongBundlePassphraseExits8_06AC6(t *testing.T) {
+	t.Parallel()
 	f := newStateFix(t)
 	jb := f.i.journal().RecoveryBundle
 	bad := write(t, filepath.Join(f.i.dir, "wrong-passphrase"), "not the recovery passphrase at all\n", 0o600)
@@ -875,6 +888,7 @@ func identityStop(t *testing.T) (*inst, map[string]string, []string, string) {
 // The writer: a fresh installation's bundle carries the journal's install_uid in its manifest, and that uid is not the key-derived
 // one (the derivation is only the fallback for bundles without the field).
 func TestInstallIdentity_BundleManifestCarriesInstallUID_InstallUID(t *testing.T) {
+	t.Parallel()
 	i, _, _, path := identityStop(t)
 	m, files := stOpenBundle(t, path, goodPass)
 	uid := i.journal().InstallUID
@@ -929,6 +943,7 @@ func rewriteManifest(t *testing.T, i *inst, path string, mutate func(m map[strin
 
 // Adoption (journal missing, bundle on disk): the uid comes from the manifest, and the installation commit carries it.
 func TestInstallIdentity_AdoptionTakesUIDFromManifest_InstallUID(t *testing.T) {
+	t.Parallel()
 	i, env, args, path := identityStop(t)
 	const forced = "5f0c2b9e-7a41-4d8e-8b3a-9c1d2e3f4a5b"
 	rewriteManifest(t, i, path, func(m map[string]any) { m["install_uid"] = forced })
@@ -944,6 +959,7 @@ func TestInstallIdentity_AdoptionTakesUIDFromManifest_InstallUID(t *testing.T) {
 
 // The fallback: a bundle without install_uid (older bundles) gets the uid derived from the SC-AGE-CLUSTER key.
 func TestInstallIdentity_AdoptionFallsBackToDerivedUID_InstallUID(t *testing.T) {
+	t.Parallel()
 	i, env, args, path := identityStop(t)
 	m, files := stOpenBundle(t, path, goodPass)
 	var key []byte

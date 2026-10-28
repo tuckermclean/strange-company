@@ -41,6 +41,7 @@ func requireExit(t *testing.T, got, want int, out string) {
 // 50-AC-11: `plan` on a fresh fake install creates no S3 bucket, no object and no Git commit, and previews the
 // storage footprint through a storage plan (never an apply).
 func TestPlan_CreatesNothing_50AC11(t *testing.T) {
+	t.Parallel()
 	i := newInst(t)
 	head := i.git("rev-parse", "HEAD")
 
@@ -83,6 +84,7 @@ func TestPlan_CreatesNothing_50AC11(t *testing.T) {
 
 // 50-AC-30: --non-interactive without --confirm-storage exits 5, prints the footprint, and no bucket exists.
 func TestStorageConfirm_NonInteractiveWithoutFlagExits5_50AC30(t *testing.T) {
+	t.Parallel()
 	i := newInst(t)
 	code, out := i.run("", i.passphraseFile(), i.args("--non-interactive"))
 	requireExit(t, code, 5, out)
@@ -110,6 +112,7 @@ func TestStorageConfirm_NonInteractiveWithoutFlagExits5_50AC30(t *testing.T) {
 
 // 50-AC-30: a confirmation for another cluster does not confirm the footprint.
 func TestStorageConfirm_MismatchedValueExits5_50AC30(t *testing.T) {
+	t.Parallel()
 	i := newInst(t)
 	code, out := i.run("", i.passphraseFile(), i.args("--non-interactive", "--confirm-storage", "other-cluster"))
 	requireExit(t, code, 5, out)
@@ -121,6 +124,7 @@ func TestStorageConfirm_MismatchedValueExits5_50AC30(t *testing.T) {
 // 50-AC-30: with the confirmation (flag or SC_CONFIRM_STORAGE) the buckets are created, after a storage-footprint
 // confirmation whose journal timestamp precedes the first CreateBucket (the injected clock ticks on every read).
 func TestStorageConfirm_BucketsCreatedAfterConfirmation_50AC30(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		args []string
@@ -181,6 +185,7 @@ func TestStorageConfirm_BucketsCreatedAfterConfirmation_50AC30(t *testing.T) {
 
 // 50-AC-30: the typed confirmation `storage <cluster>` (interactive) also confirms the footprint.
 func TestStorageConfirm_TypedConfirmation_50AC30(t *testing.T) {
+	t.Parallel()
 	i := newInst(t)
 	stdin := twice(goodPass) + "storage " + clusterName + "\n"
 	code, out := i.run(stdin, stopAfter("plan.storage-apply"), i.args())
@@ -214,6 +219,7 @@ func requireNoStateObjects(t *testing.T, i *inst) {
 // 50-AC-32 / 06-AC-13: shared credential mode without S3_STATE_* fails closed at plan.storage-credentials with
 // OBJSTORE_STATE_UNPROTECTED (exit 3), and no remote state object exists.
 func TestStateProtection_SharedWithoutStateAccountExits3_50AC32_06AC13(t *testing.T) {
+	t.Parallel()
 	i := newInst(t)
 	i.dropStateAccount()
 	code, out := i.run("", merge(i.passphraseFile(), stopAfter("plan.state-migrate")), i.args("--non-interactive", "--confirm-storage", clusterName))
@@ -239,6 +245,7 @@ func TestStateProtection_SharedWithoutStateAccountExits3_50AC32_06AC13(t *testin
 // 50-AC-32 / 06-AC-13: with S3_STATE_* the state buckets B1 and B2 exist only in the second account, the
 // in-cluster (main) key gets AccessDenied or NoSuchBucket on them, and the state account key is in no repository file.
 func TestStateProtection_SecondAccountHoldsStateBuckets_50AC32_06AC13(t *testing.T) {
+	t.Parallel()
 	i := newInst(t)
 	code, out := i.run("", merge(i.passphraseFile(), stopAfter("plan.state-migrate")), i.args("--non-interactive", "--confirm-storage", clusterName))
 	requireExit(t, code, 0, out)
@@ -306,6 +313,7 @@ func TestStateProtection_SecondAccountHoldsStateBuckets_50AC32_06AC13(t *testing
 // 50-AC-32: with S3_ALLOW_UNPROTECTED_STATE=true the run proceeds with every bucket in the one account, the
 // journal records accept-state-unprotected, and the run reports the warning.
 func TestStateProtection_AllowUnprotectedProceedsAndIsRecorded_50AC32(t *testing.T) {
+	t.Parallel()
 	i := newInst(t)
 	i.dropStateAccount()
 	i.setVars(map[string]string{"S3_ALLOW_UNPROTECTED_STATE": "true"})
@@ -339,6 +347,7 @@ func TestStateProtection_AllowUnprotectedProceedsAndIsRecorded_50AC32(t *testing
 // 06-AC-2: behind the If-None-Match-stripping proxy the run exits 3 with PF_S3_LOCK_UNSUPPORTED and the state
 // prefix <cluster>/storage/ holds no objects.
 func TestStateConformance_StrippedConditionalWritesExit3_06AC2(t *testing.T) {
+	t.Parallel()
 	i := newInst(t)
 	i.world.ignoreIfNoneMatch = true
 	code, out := i.run("", merge(i.passphraseFile(), stopAfter("plan.state-migrate")), i.args("--non-interactive", "--confirm-storage", clusterName))
@@ -376,6 +385,7 @@ func expectedStorageAddresses() []string {
 // addresses as the pre-migration state, the pre-migration list is in the run log, and the journal records the
 // remote object. A rerun changes nothing.
 func TestStateMigrate_LocalStateGoneAndAddressesEqual_06AC5(t *testing.T) {
+	t.Parallel()
 	i := newInst(t)
 	args := i.args("--non-interactive", "--confirm-storage", clusterName)
 	env := merge(i.passphraseFile(), stopAfter("plan.state-migrate"))
@@ -436,6 +446,7 @@ func TestStateMigrate_LocalStateGoneAndAddressesEqual_06AC5(t *testing.T) {
 // 06-AC-5 (data safety): when the remote address set differs from the pre-migration set the step fails and the
 // local state is kept.
 func TestStateMigrate_AddressMismatchKeepsLocalState_06AC5(t *testing.T) {
+	t.Parallel()
 	i := newInst(t)
 	i.tofu.dropRemoteAddress = true
 	code, out := i.run("", merge(i.passphraseFile(), stopAfter("plan.state-migrate")), i.args("--non-interactive", "--confirm-storage", clusterName))
@@ -451,6 +462,7 @@ func TestStateMigrate_AddressMismatchKeepsLocalState_06AC5(t *testing.T) {
 // 50-AC-10: three wrong re-entered passphrases at plan.bundle-confirm exit 8 with recovery_bundle.status
 // uploaded, the bundle really in the recovery bucket, provision never started; the next run asks again.
 func TestPlanPipeline_BundleConfirmThreeWrongExit8_50AC10(t *testing.T) {
+	t.Parallel()
 	i := newInst(t)
 	stdin := twice(goodPass) + "wrong one entry\nwrong two entry\nwrong three entry\n"
 	code, out := i.run(stdin, nil, i.args("--confirm-storage", clusterName))
