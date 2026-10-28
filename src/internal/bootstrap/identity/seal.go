@@ -273,6 +273,21 @@ func Open(data []byte, passphrase string) (*Opened, error) {
 	if err != nil {
 		return nil, fail("BUNDLE_PASSPHRASE_WRONG", "the passphrase cannot open the recovery bundle")
 	}
+	return openWith(data, id)
+}
+
+// OpenFresh is Open with age's own scrypt identity: the key is derived afresh and never read from or written to the
+// process key cache (plan 50 section 14.3 step 9, 50-AC-10).
+func OpenFresh(data []byte, passphrase string) (*Opened, error) {
+	id, err := age.NewScryptIdentity(passphrase)
+	if err != nil {
+		return nil, fail("BUNDLE_PASSPHRASE_WRONG", "the passphrase cannot open the recovery bundle")
+	}
+	id.SetMaxWorkFactor(maxWorkFactor)
+	return openWith(data, id)
+}
+
+func openWith(data []byte, id age.Identity) (*Opened, error) {
 	r, err := age.Decrypt(bytes.NewReader(data), id)
 	releaseScryptMemory()
 	if err != nil {

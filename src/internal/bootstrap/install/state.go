@@ -353,14 +353,25 @@ type check struct {
 type verifyFailure struct{ Code, Message string }
 
 func (s *sess) stateVerify(ctx context.Context) int {
-	started := s.clk.Now().UTC()
-	modules := s.stateModules()
 	// The run lock keeps a rotation or restore in flight from making this look like a failure (plan 50 section 7.1).
 	if r := s.eng.Acquire(ctx); r.Exit != 0 {
 		s.errorf("%s: %s\n", r.Code, r.Message)
 		return r.Exit
 	}
-	defer s.eng.Release(ctx)
+	code := s.stateVerifyLocked(ctx)
+	// A lock that cannot be released is reported, as ExecuteOp does; an earlier failure keeps its own exit code.
+	if r := s.eng.Release(ctx); r.Exit != 0 {
+		s.errorf("%s: %s\n", r.Code, r.Message)
+		if code == 0 {
+			return r.Exit
+		}
+	}
+	return code
+}
+
+func (s *sess) stateVerifyLocked(ctx context.Context) int {
+	started := s.clk.Now().UTC()
+	modules := s.stateModules()
 	if r := s.eng.LoadJournal(ctx); r.Exit != 0 {
 		s.errorf("%s: %s\n", r.Code, r.Message)
 		return r.Exit
@@ -604,7 +615,7 @@ func (s *sess) rotateTofuPassphrase(ctx context.Context) error {
 	}
 	// A rotation that died after sealing its bundle is finished first: the bundle is in the recovery bucket and the journal
 	// before any state is rewritten with the passphrase it carries.
-	settled, enc1, err := s.settleRotationBundle(ctx, enc1)
+	_, enc1, err = s.settleRotationBundle(ctx, enc1)
 	if err != nil {
 		return wrapErr(err)
 	}
@@ -614,8 +625,10 @@ func (s *sess) rotateTofuPassphrase(ctx context.Context) error {
 	rot := enc1
 	// A bundle that already lists current and previous may come from a rotation that stopped before every module was
 	// rewritten: finish that one instead of starting another.
-	resume := settled
-	if enc1.Previous != "" && !resume {
+	// Whether a settled bundle leaves modules to finish is decided by the same probe: a rotation adopted after the journal
+	// was lost may have rewritten every module already, and then a new rotation starts.
+	resume := false
+	if enc1.Previous != "" {
 		for _, m := range modules {
 			raw, err := rawOf(m)
 			if err != nil {
@@ -709,6 +722,25 @@ func (s *sess) settleRotationBundle(ctx context.Context, enc tofustate.Encryptio
 	if err != nil {
 		return false, enc, conflict("it is not a recovery bundle of this install")
 	}
+	var man struct {
+		BundleVersion int     `json:"bundle_version"`
+		Previous      *string `json:"previous_bundle_sha256"`
+		Reason        struct {
+			Trigger string `json:"trigger"`
+		} `json:"reason"`
+	}
+	if json.Unmarshal(o.Manifest, &man) != nil {
+		return false, enc, conflict("its manifest cannot be read")
+	}
+	if man.BundleVersion != rb.Generation+1 {
+		return false, enc, conflict("its manifest names another bundle_version")
+	}
+	if man.Previous == nil || strings.TrimPrefix(*man.Previous, "sha256:") != strings.TrimPrefix(rb.Sha256, "sha256:") || rb.Sha256 == "" {
+		return false, enc, conflict("its manifest does not chain to the current bundle")
+	}
+	if man.Reason.Trigger != "rotation" {
+		return false, enc, conflict("its manifest has another trigger")
+	}
 	ne, err := tofuEncryptionOf(set)
 	if err != nil || ne.Previous != enc.Current || ne.Generation != enc.Generation+1 || ne.Current == enc.Current {
 		return false, enc, conflict("its SC-TOFU-ENCRYPTION current/previous are not the new and the old passphrase at the next generations")
@@ -716,6 +748,10 @@ func (s *sess) settleRotationBundle(ctx context.Context, enc tofustate.Encryptio
 	identity.RegisterSecrets(s.red, set, pass)
 	s.set = set
 	s.tofuGen, s.tofuPrev = ne.Generation, ne.Previous
+	latest, _ := json.Marshal(map[string]any{"generation": rb.Generation + 1, "file": filepath.Base(next), "sha256": sha256Digest(data)})
+	if err := writeAtomic(filepath.Join(filepath.Dir(next), "LATEST.json"), append(latest, '\n')); err != nil {
+		return false, enc, err
+	}
 	s.eng.SetRecoveryBundle(engine.RecoveryBundleState{Status: "created", Generation: rb.Generation + 1, Sha256: sha256Digest(data),
 		LocalPath: next, CreatedAt: s.clk.Now().UTC().Format(time.RFC3339)})
 	if err := s.eng.Checkpoint(ctx); err != nil {

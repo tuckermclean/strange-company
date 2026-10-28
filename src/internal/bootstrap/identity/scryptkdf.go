@@ -1,6 +1,39 @@
+// This file is derived from filippo.io/age v1.3.2 (scrypt.go) and carries age's licence:
+//
+// Copyright 2019 The age Authors
+// Copyright 2019 Google LLC
+// Copyright 2022 Filippo Valsorda
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are
+// met:
+//
+//    * Redistributions of source code must retain the above copyright
+// notice, this list of conditions and the following disclaimer.
+//    * Redistributions in binary form must reproduce the above
+// copyright notice, this list of conditions and the following disclaimer
+// in the documentation and/or other materials provided with the
+// distribution.
+//    * Neither the name of the age project nor the names of its
+// contributors may be used to endorse or promote products derived from
+// this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+// A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+// OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+// SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+// LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+// THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
 package identity
 
 import (
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -10,6 +43,7 @@ import (
 	"fmt"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 
 	"filippo.io/age"
@@ -37,8 +71,18 @@ var (
 	kdfDigit = regexp.MustCompile(`^[1-9][0-9]*$`)
 )
 
+// kdfMacKey is the random per-process key of the cache index: the index is an HMAC-SHA-256 of the inputs, never a plain
+// hash of passphrase and salt.
+var kdfMacKey = func() []byte {
+	k := make([]byte, 32)
+	if _, err := rand.Read(k); err != nil {
+		panic("identity: no randomness for the key cache: " + err.Error())
+	}
+	return k
+}()
+
 func kdfCacheID(password, salt []byte, logN int) [32]byte {
-	h := sha256.New()
+	h := hmac.New(sha256.New, kdfMacKey)
 	var n [8]byte
 	for _, part := range [][]byte{password, salt} {
 		binary.BigEndian.PutUint64(n[:], uint64(len(part)))
@@ -52,29 +96,47 @@ func kdfCacheID(password, salt []byte, logN int) [32]byte {
 	return id
 }
 
-// kdfKey returns scrypt(password, label+salt, 2^logN, 8, 1) from the cache, deriving it on a miss.
-func kdfKey(password, salt []byte, logN int) ([]byte, error) {
-	id := kdfCacheID(password, salt, logN)
-	kdfMu.Lock()
-	k, ok := kdfKeys[id]
-	kdfMu.Unlock()
-	if ok {
-		return k, nil
-	}
+func kdfDerive(password, salt []byte, logN int) ([]byte, error) {
 	k, err := scrypt.Key(password, append([]byte(kdfLabel), salt...), 1<<logN, 8, 1, chacha20poly1305.KeySize)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate scrypt hash: %v", err)
 	}
+	return k, nil
+}
+
+func kdfLookup(id [32]byte) ([]byte, bool) {
 	kdfMu.Lock()
-	if _, dup := kdfKeys[id]; !dup {
-		if len(kdfOrder) >= kdfCacheSize {
-			delete(kdfKeys, kdfOrder[0])
-			kdfOrder = kdfOrder[1:]
-		}
-		kdfKeys[id] = k
-		kdfOrder = append(kdfOrder, id)
+	defer kdfMu.Unlock()
+	k, ok := kdfKeys[id]
+	return k, ok
+}
+
+func kdfStore(id [32]byte, k []byte) {
+	kdfMu.Lock()
+	defer kdfMu.Unlock()
+	if _, dup := kdfKeys[id]; dup {
+		return
 	}
-	kdfMu.Unlock()
+	if len(kdfOrder) >= kdfCacheSize {
+		delete(kdfKeys, kdfOrder[0])
+		kdfOrder = kdfOrder[1:]
+	}
+	kdfKeys[id] = k
+	kdfOrder = append(kdfOrder, id)
+}
+
+// kdfKey returns the wrapping key from the cache, deriving it on a miss (used when sealing, where the key is correct
+// by construction).
+func kdfKey(password, salt []byte, logN int) ([]byte, error) {
+	id := kdfCacheID(password, salt, logN)
+	if k, ok := kdfLookup(id); ok {
+		return k, nil
+	}
+	k, err := kdfDerive(password, salt, logN)
+	if err != nil {
+		return nil, err
+	}
+	kdfStore(id, k)
 	return k, nil
 }
 
@@ -153,7 +215,10 @@ func (i *kdfIdentity) unwrap(block *age.Stanza) ([]byte, error) {
 	if len(block.Args) != 2 {
 		return nil, errors.New("invalid scrypt recipient block")
 	}
-	salt, err := base64.RawStdEncoding.DecodeString(block.Args[0])
+	if strings.ContainsAny(block.Args[0], "\r\n") {
+		return nil, errors.New("failed to parse scrypt salt: invalid base64")
+	}
+	salt, err := base64.RawStdEncoding.Strict().DecodeString(block.Args[0])
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse scrypt salt: %v", err)
 	}
@@ -170,9 +235,15 @@ func (i *kdfIdentity) unwrap(block *age.Stanza) ([]byte, error) {
 	if logN > i.maxWorkFactor {
 		return nil, fmt.Errorf("scrypt work factor too large: %v", logN)
 	}
-	k, err := kdfKey(i.password, salt, logN)
-	if err != nil {
-		return nil, err
+	if logN <= 0 {
+		return nil, fmt.Errorf("invalid scrypt work factor: %v", logN)
+	}
+	id := kdfCacheID(i.password, salt, logN)
+	k, cached := kdfLookup(id)
+	if !cached {
+		if k, err = kdfDerive(i.password, salt, logN); err != nil {
+			return nil, err
+		}
 	}
 	aead, err := chacha20poly1305.New(k)
 	if err != nil {
@@ -184,6 +255,9 @@ func (i *kdfIdentity) unwrap(block *age.Stanza) ([]byte, error) {
 	fileKey, err := aead.Open(nil, make([]byte, chacha20poly1305.NonceSize), block.Body, nil)
 	if err != nil {
 		return nil, fmt.Errorf("%w: incorrect passphrase", age.ErrIncorrectIdentity)
+	}
+	if !cached {
+		kdfStore(id, k) // only a derivation that opened the stanza is remembered
 	}
 	return fileKey, nil
 }

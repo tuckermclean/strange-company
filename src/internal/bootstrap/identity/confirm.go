@@ -93,7 +93,7 @@ func (u *bundleConfirm) Run(ctx context.Context) ([]engine.OutputRef, error) {
 			}
 			return nil, bundleErr("BUNDLE_PASSPHRASE_PROMPT_FAILED", "the recovery passphrase could not be read: "+err.Error())
 		}
-		o, err := Open(data, pass)
+		o, err := OpenFresh(data, pass)
 		if err == nil && o != nil {
 			st.Status = "confirmed"
 			st.ConfirmedAt = u.cfg.Clock.Now().UTC().Format(time.RFC3339)
