@@ -741,7 +741,8 @@ func (e *Engine) leaf(ctx context.Context, u Unit, r *unitJ, phaseName string, o
 		}
 		e.prevCode[r] = r.Error.Code
 	}
-	if r.Status == stFailed && r.Error != nil && r.Attempt >= retryCeiling && lastDigest == d && o.RetryPhase != phaseName {
+	if r.Status == stFailed && r.Error != nil && r.Attempt >= retryCeiling && lastDigest == d && o.RetryPhase != phaseName && phaseName != "preflight" {
+		// preflight is always re-run and read-only (plan 50 section 14.2): the ceiling never applies to it.
 		msg := fmt.Sprintf("%s failed %d times with %s and its inputs did not change; change the cause or pass --retry-phase %s",
 			u.Name(), r.Attempt, r.Error.Code, phaseName)
 		return false, &Result{Exit: 1, Code: "RETRY_CEILING", Message: e.red.String(msg)}

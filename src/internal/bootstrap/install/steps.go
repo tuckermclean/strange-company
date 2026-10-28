@@ -2,12 +2,14 @@ package install
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -191,11 +193,17 @@ func (s *sess) runIdentity(ctx context.Context) ([]engine.OutputRef, error) {
 		return nil, err
 	}
 	var set *identity.Set
+	adopt := false
 	if s.eng.InstallUID() == "" {
 		if matches, _ := filepath.Glob(filepath.Join(s.cdir(), "bundles", "sc-recovery-"+s.cluster+"-v*.tar.age")); len(matches) > 0 {
-			return nil, fail("BUNDLE_EXISTS_WITHOUT_JOURNAL", 8, procResume,
-				"%s holds a recovery bundle but the journal has no install_uid; restore the journal from S3 or run ./bootstrap abandon-identity", s.cdir())
+			// The journal is missing but a bundle exists: the bundle is the source of truth (plan 50 section 14.3).
+			if err := s.adoptBundle(ctx, reg, matches); err != nil {
+				return nil, err
+			}
+			adopt = true
 		}
+	}
+	if s.eng.InstallUID() == "" && !adopt {
 		pass, err := s.newPassphrase(ctx)
 		if err != nil {
 			return nil, err
@@ -205,6 +213,7 @@ func (s *sess) runIdentity(ctx context.Context) ([]engine.OutputRef, error) {
 		if err != nil {
 			return nil, err
 		}
+		set.InstallUID = deriveInstallUID(set)
 		s.addOperatorSecrets(set)
 		s.set = set
 		identity.RegisterSecrets(s.red, set, pass)
@@ -238,15 +247,72 @@ func (s *sess) runIdentity(ctx context.Context) ([]engine.OutputRef, error) {
 		s.addOperatorSecrets(set)
 		identity.RegisterSecrets(s.red, set, s.pass)
 	}
-	sha, err := s.renderAndCommitInstall(ctx, set)
+	sha, found, err := commit.FindInstall(ctx, s.repo, s.eng.InstallUID())
 	if err != nil {
 		return nil, err
+	}
+	if !found {
+		if sha, err = s.renderAndCommitInstall(ctx, set); err != nil {
+			return nil, err
+		}
 	}
 	rb := s.eng.RecoveryBundle()
 	return []engine.OutputRef{
 		{Kind: "git-commit", Ref: sha},
 		{Kind: "file", Ref: rb.LocalPath, Sha256: rb.Sha256},
 	}, nil
+}
+
+// deriveInstallUID derives the install UUID from the cluster age identity, which the recovery bundle carries, so a
+// bundle alone recovers the identity of its installation (the manifest schema has no field for it).
+func deriveInstallUID(set *identity.Set) string {
+	sec := set.Find("SC-AGE-CLUSTER", "")
+	h := sha256.Sum256(append([]byte("sc-install-uid\x00"), sec.Value...))
+	b := h[:16]
+	b[6] = b[6]&0x0f | 0x40
+	b[8] = b[8]&0x3f | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+// adoptBundle opens the newest local bundle and records its identity in the journal.
+func (s *sess) adoptBundle(ctx context.Context, reg *identity.Register, matches []string) error {
+	best, bestV := "", -1
+	prefix := "sc-recovery-" + s.cluster + "-v"
+	for _, m := range matches {
+		v, err := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(filepath.Base(m), prefix), ".tar.age"))
+		if err == nil && v > bestV {
+			best, bestV = m, v
+		}
+	}
+	if best == "" {
+		return fail("BUNDLE_MISSING", 8, procResume, "no recovery bundle in %s has a readable version", s.cdir())
+	}
+	data, err := os.ReadFile(best)
+	if err != nil {
+		return fail("BUNDLE_MISSING", 8, procResume, "the local recovery bundle cannot be read: %v", err)
+	}
+	pass, err := s.existingPassphrase(ctx)
+	if err != nil {
+		return err
+	}
+	o, err := identity.Open(data, pass)
+	if err != nil {
+		return err
+	}
+	set, err := identity.SetFromBundle(reg, "", o)
+	if err != nil {
+		return err
+	}
+	if set.Find("SC-AGE-CLUSTER", "") == nil {
+		return fail("BUNDLE_CORRUPT", 8, procResume, "the recovery bundle lacks the SC-AGE-CLUSTER identity")
+	}
+	set.InstallUID = deriveInstallUID(set)
+	identity.RegisterSecrets(s.red, set, pass)
+	s.set = set
+	s.eng.SetInstallUID(set.InstallUID)
+	s.eng.SetRecoveryBundle(engine.RecoveryBundleState{Status: "created", Generation: bestV, Sha256: sha256Digest(data),
+		LocalPath: best, CreatedAt: s.clk.Now().UTC().Format(time.RFC3339)})
+	return s.eng.Checkpoint(ctx)
 }
 
 // requireSet makes sure s.set holds the secrets: from memory, else by opening the local bundle.
@@ -704,14 +770,25 @@ func (s *sess) authenticateAll(ctx context.Context) error {
 	return nil
 }
 
-func (s *sess) commitSubjectExists(ctx context.Context, subject string) bool {
-	out, err := s.git(ctx, "log", "--format=%s", "-n", "500")
+// commitForInstall reports whether a commit with the subject carries this installation's SC-Install-Uid trailer.
+func (s *sess) commitForInstall(ctx context.Context, subject string) bool {
+	uid := s.eng.InstallUID()
+	if uid == "" {
+		return false
+	}
+	out, err := s.git(ctx, "log", "--format=%s%x1f%(trailers:key=SC-Install-Uid,valueonly,separator=%x1f)%x1e")
 	if err != nil {
 		return false
 	}
-	for _, l := range strings.Split(out, "\n") {
-		if l == subject {
-			return true
+	for _, rec := range strings.Split(out, "\x1e") {
+		f := strings.Split(strings.TrimSpace(rec), "\x1f")
+		if len(f) < 2 || f[0] != subject {
+			continue
+		}
+		for _, v := range f[1:] {
+			if strings.TrimSpace(v) == uid {
+				return true
+			}
 		}
 	}
 	return false
@@ -747,7 +824,7 @@ func (s *sess) runCredentials(ctx context.Context) ([]engine.OutputRef, error) {
 	}
 	var refs []engine.OutputRef
 	subject := "bootstrap(" + s.cluster + "): object-storage credentials"
-	if !s.commitSubjectExists(ctx, subject) {
+	if !s.commitForInstall(ctx, subject) {
 		var objs []identity.Secret
 		for _, sec := range s.set.Secrets {
 			if sec.Class == "SC-OBJECT-STORAGE" {

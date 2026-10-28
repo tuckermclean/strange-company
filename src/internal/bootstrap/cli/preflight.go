@@ -539,7 +539,14 @@ func (c *pfCtx) pf29() row {
 			"no spend backstop attested for %s; pass --confirm-backstops <file> or set SC_CONFIRM_BACKSTOPS to a file that lists providers.<id>.limitUsd and providers.<id>.consoleMfaEnabled: true (the limit may be at most 1.25 x monthlyUsd and the provider console needs MFA)",
 			strings.Join(missing, ", "))
 	}
-	if len(fresh) > 0 && !c.deps.ReadOnly {
+	changed := false
+	for k, v := range fresh {
+		if e, ok := existing[k]; !ok || e.Limit != v.Limit || e.MFA != v.MFA {
+			changed = true
+		}
+	}
+	// An unchanged attestation is a no-op (plan 50 section 17.1 rule 3): no rewrite, no second confirmation.
+	if changed && !c.deps.ReadOnly {
 		merged := map[string]attestation{}
 		for k, v := range existing {
 			merged[k] = v
