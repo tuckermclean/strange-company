@@ -206,7 +206,10 @@ func semanticEqual(a, b []byte) bool {
 	return reflect.DeepEqual(x, y)
 }
 
-func (e *Engine) journalKey() string   { return e.cfg.Cluster + "/journal/journal.json" }
+// JournalKey is the S3 key of the cluster's journal below the tofu-state bucket.
+func JournalKey(cluster string) string { return cluster + "/journal/journal.json" }
+
+func (e *Engine) journalKey() string   { return JournalKey(e.cfg.Cluster) }
 func (e *Engine) localJournal() string { return filepath.Join(e.cfg.Dir, "journal.json") }
 
 func (e *Engine) now() time.Time { return e.clk.Now().UTC() }

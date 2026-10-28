@@ -171,8 +171,10 @@ type Engine struct {
 	// saveFailed latches the first JOURNAL_CONFLICT / JOURNAL_REMOTE_WRITE_FAILED of the run (plan 50 section 17.3).
 	saveFailed *Result
 	// prevCode is the error code each unit record carried before its current attempt began.
-	prevCode  map[*unitJ]string
-	unitStart time.Time
+	prevCode map[*unitJ]string
+	// afterSuccess marks the units whose current attempt began from a success.
+	afterSuccess map[*unitJ]bool
+	unitStart    time.Time
 }
 
 // New returns an engine for one run.
@@ -547,8 +549,14 @@ func (e *Engine) finish(ctx context.Context, run *runJ, pl *pipelineJ, res Resul
 	default:
 		pl.Status = stFailed
 	}
-	if sres := e.save(ctx); sres != nil && res.Exit == 0 {
-		return *sres
+	if sres := e.save(ctx); sres != nil {
+		if res.Exit == 0 {
+			return *sres
+		}
+		if sres.Exit == 7 {
+			// a journal conflict is exit 7 wherever it is found, also by the save that ends a failed run
+			res = *sres
+		}
 	}
 	e.Log("info", "run-end", "run finished", map[string]any{"exit": res.Exit, "code": res.Code})
 	res.Message = e.red.String(res.Message)
@@ -687,6 +695,7 @@ func resetForRange(u *unitJ) {
 // leaf runs the Check/Run protocol of plan 50 section 8.1 for a step or a stepless phase and records it in r.
 func (e *Engine) leaf(ctx context.Context, u Unit, r *unitJ, phaseName string, o Options, onStart func(), onSuccess func()) (bool, *Result) {
 	isPhase := r.phase
+	e.unitStart = time.Time{} // a probe that fails before the unit starts logs duration 0, not the previous unit's
 	e.crash(u.Name(), "before")
 	d, err := digestOf(ctx, u)
 	if err != nil {
@@ -759,6 +768,13 @@ func (e *Engine) leaf(ctx context.Context, u Unit, r *unitJ, phaseName string, o
 	if onStart != nil {
 		onStart()
 	}
+	if r.Status == stSucceeded || r.Status == stSkipped {
+		// a failure now is the first of a new series (plan 50 section 16): failUnit counts it as attempt 1
+		if e.afterSuccess == nil {
+			e.afterSuccess = map[*unitJ]bool{}
+		}
+		e.afterSuccess[r] = true
+	}
 	r.Status, r.Attempt = stRunning, r.Attempt+1
 	r.InputDigest, r.StartedAt, r.FinishedAt, r.Error = ptr(d), ptr(e.stamp()), nil, nil
 	if isPhase {
@@ -770,11 +786,18 @@ func (e *Engine) leaf(ctx context.Context, u Unit, r *unitJ, phaseName string, o
 	e.unitStart = e.clk.Now()
 	e.Log("info", "unit-start", u.Name(), map[string]any{"attempt": r.Attempt})
 
-	rctx, cancel := ctx, context.CancelFunc(func() {})
-	if t := u.Timeout(); t > 0 {
-		rctx, cancel = context.WithTimeout(ctx, t)
-	}
+	// The timeout is measured on the injected clock (plan 52 D8). Only the wall clock needs a watcher to stop a Run
+	// that hangs; an injected clock is judged after Run returns.
+	rctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	timeout, began := u.Timeout(), e.clk.Now()
+	if _, real := e.clk.(clock.Real); real && timeout > 0 {
+		go func() {
+			if e.clk.Sleep(rctx, timeout) == nil {
+				cancel()
+			}
+		}()
+	}
 	var refs []OutputRef
 	var rerr error
 	for try := 1; ; try++ {
@@ -796,7 +819,7 @@ func (e *Engine) leaf(ctx context.Context, u Unit, r *unitJ, phaseName string, o
 			r.Status, r.FinishedAt = stInterrupted, ptr(e.stamp())
 			return true, &Result{Exit: 130, Code: "INTERRUPTED", Message: "interrupted; the state is consistent and the run can be resumed"}
 		}
-		if errors.Is(rctx.Err(), context.DeadlineExceeded) {
+		if timeout > 0 && e.clk.Now().Sub(began) >= timeout {
 			rerr = &Error{Code: "PHASE_TIMEOUT", Message: fmt.Sprintf("%s exceeded its timeout of %s", u.Name(), u.Timeout())}
 		}
 		return true, e.failUnit(ctx, u, r, nil, rerr)
@@ -837,6 +860,16 @@ func (e *Engine) failUnit(ctx context.Context, u Unit, r *unitJ, onStart func(),
 		msg, code = code+": "+msg, "PHASE_FAILED"
 	}
 	msg = e.red.String(msg)
+	switch {
+	case r.Status != stRunning:
+		// the probe failed before the unit started: this is the unit's failed attempt
+		if r.Status == stSucceeded || r.Status == stSkipped {
+			r.Attempt = 0
+		}
+		r.Attempt++
+	case e.afterSuccess[r]:
+		r.Attempt = 1
+	}
 	r.Status, r.FinishedAt = stFailed, ptr(e.stamp())
 	if prev := e.prevCode[r]; prev != "" && prev != code {
 		r.Attempt = 1

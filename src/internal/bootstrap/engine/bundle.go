@@ -116,6 +116,27 @@ func (e *Engine) Confirmed(kind, subjectDigest string) bool {
 	return false
 }
 
+// ConfirmedSubject returns the subject digest of the newest confirmation of the kind in the journal (or this run),
+// "" when there is none.
+func (e *Engine) ConfirmedSubject(kind string) string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	subject := ""
+	if e.jr != nil {
+		for _, c := range e.jr.Confirmations {
+			if c.Kind == kind {
+				subject = c.SubjectDigest
+			}
+		}
+	}
+	for _, c := range e.pending {
+		if c.Kind == kind {
+			subject = c.SubjectDigest
+		}
+	}
+	return subject
+}
+
 // InstallationState returns installation.state of the loaded journal ("new" before one is loaded).
 func (e *Engine) InstallationState() string {
 	if e.jr == nil {
