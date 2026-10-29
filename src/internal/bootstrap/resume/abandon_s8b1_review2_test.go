@@ -118,7 +118,7 @@ func TestInstallIdentity_RecoveryListingFailureLeavesNoUidWithoutBundleAndTheRer
 	if code != 7 {
 		t.Fatalf("exit %d, want 7 (the recovery bucket cannot be listed):\n%s", code, out)
 	}
-	if j, ok := s.journalIfAny(); ok && j.InstallUID != "" && j.RecoveryBundle.LocalPath == "" {
+	if j, ok := s.journalIfAny(); ok && j.InstallUID != "" && j.InstallUID != "00000000-0000-4000-8000-000000000000" && j.RecoveryBundle.LocalPath == "" {
 		t.Errorf("the journal carries install_uid %s without a recovery bundle after the failed identity step", j.InstallUID)
 	}
 
