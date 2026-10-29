@@ -231,7 +231,7 @@ func (s *sess) runIdentity(ctx context.Context) ([]engine.OutputRef, error) {
 			adopt = true
 			// SC-AGE-RECOVERY is never in the bundle, so the adopt path cannot restore the file; it only warns.
 			if _, serr := os.Stat(filepath.Join(s.cdir(), "recovery-identity.txt")); os.IsNotExist(serr) {
-				s.errorf("warning: recovery-identity.txt is not on this host (expected if it was moved offline); make sure an offline copy of SC-AGE-RECOVERY exists, otherwise follow procedures/rotate-age-key.md (lost-bundle)\n")
+				s.errorf("warning: recovery-identity.txt is not on this host (expected if it was moved offline); make sure an offline copy of SC-AGE-RECOVERY exists, otherwise follow procedures/rotate-age-key.md#recovery-key (lost variant)\n")
 			}
 		}
 	}
