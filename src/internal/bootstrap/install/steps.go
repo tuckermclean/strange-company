@@ -245,7 +245,7 @@ func (s *sess) runIdentity(ctx context.Context) ([]engine.OutputRef, error) {
 		s.set = set
 		identity.RegisterSecrets(s.red, set, pass)
 		s.eng.SetInstallUID(set.InstallUID)
-		first, previous := s.firstGeneration()
+		first, previous := s.firstGenerationFor(ctx)
 		sealed, err := s.seal(set, first, previous)
 		if err != nil {
 			return nil, err
@@ -839,7 +839,7 @@ func (s *sess) stepStorageCredentials() engine.Unit {
 				return notDone("shared credential mode needs a state account"), nil
 			}
 			rb := s.eng.RecoveryBundle()
-			if first, _ := s.firstGeneration(); rb.Generation <= first || (rb.Status != "uploaded" && rb.Status != "confirmed") {
+			if first := s.identityFirst(); rb.Generation <= first || (rb.Status != "uploaded" && rb.Status != "confirmed") {
 				return notDone("the bundle has not been re-sealed with the credentials"), nil
 			}
 			if err := s.authenticateAll(ctx); err != nil {
@@ -953,7 +953,7 @@ func (s *sess) runCredentials(ctx context.Context) ([]engine.OutputRef, error) {
 	}
 	// Re-seal once with the credentials (generation N+1) and upload it.
 	cur := s.eng.RecoveryBundle()
-	if first, _ := s.firstGeneration(); cur.Generation <= first {
+	if first := s.identityFirst(); cur.Generation <= first {
 		sealed, err := s.seal(s.set, cur.Generation+1, strings.TrimPrefix(cur.Sha256, "sha256:"))
 		if err != nil {
 			return nil, err
@@ -1065,6 +1065,22 @@ func sameSet(a, b []string) bool {
 	return strings.Join(x, "\n") == strings.Join(y, "\n")
 }
 
+// storageStateStale reports whether the remote storage state exists but this identity's passphrase does not open it
+// (the identity was abandoned after the migration) and the Tofu can import the buckets afresh. The passphrase comes
+// from the recovery bundle; without it nothing is judged stale.
+func (s *sess) storageStateStale(ctx context.Context, spec StorageSpec, remote RemoteState) bool {
+	if _, ok := s.deps.Tofu.(StorageImporter); !ok {
+		return false
+	}
+	pass, err := s.tofuPassphrase(ctx)
+	if err != nil {
+		return false
+	}
+	spec.Passphrase, spec.Generation, spec.Previous = pass, s.tofuGen, s.tofuPrev
+	_, err = s.deps.Tofu.StateList(ctx, spec, &remote)
+	return err != nil
+}
+
 func (s *sess) stepStateMigrate() engine.Unit {
 	return &unit{name: stepMigrate, timeout: 30 * time.Minute, inputs: map[string]any{"key": tofustate.StateKey(s.cluster, "storage")},
 		check: func(ctx context.Context) (engine.Check, error) {
@@ -1082,6 +1098,9 @@ func (s *sess) stepStateMigrate() engine.Unit {
 			}
 			local := localStateFiles(spec)
 			if len(local) == 0 {
+				if s.storageStateStale(ctx, spec, remote) {
+					return notDone("the remote storage state is not readable with this identity's passphrase"), nil
+				}
 				return done("the remote state exists and no local state is left"), nil
 			}
 			// A crash between the migration and the deletion: delete the local file only after re-verification.
@@ -1105,6 +1124,17 @@ func (s *sess) stepStateMigrate() engine.Unit {
 			}
 			spec := s.storageSpec(pass)
 			remote := s.remoteState()
+			if len(localStateFiles(spec)) == 0 && s.storageStateStale(ctx, spec, remote) {
+				// the buckets exist and their state is encrypted under an abandoned identity's passphrase: rebuild it
+				imp := s.deps.Tofu.(StorageImporter)
+				if err := imp.ImportStorage(ctx, spec, remote); err != nil {
+					return nil, fail("STATE_IMPORT_FAILED", 1, procState, "the storage buckets cannot be re-imported: %v", err)
+				}
+				if _, err := s.deps.Tofu.StateList(ctx, spec, &remote); err != nil {
+					return nil, fail("STATE_LIST_FAILED", 1, procState, "the re-imported storage state cannot be listed: %v", err)
+				}
+				return []engine.OutputRef{{Kind: "tofu-state", Ref: "s3://" + remote.Bucket + "/" + remote.Key}}, nil
+			}
 			before, err := s.deps.Tofu.StateList(ctx, spec, nil)
 			if err != nil {
 				return nil, fail("STATE_LIST_FAILED", 1, procState, "the local storage state cannot be listed: %v", err)

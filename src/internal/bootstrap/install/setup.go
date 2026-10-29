@@ -334,10 +334,18 @@ func (s *sess) tryAttach(ctx context.Context) {
 	name := s.bucketName("tofu-state")
 	if herr := acct.HeadBucket(ctx, name); herr != nil {
 		// only a definite "no such bucket" rules a remote journal out; dial errors, 403 and the rest stay unknown
-		s.bucketAbsent = store.Is(herr, store.NotFound)
+		s.bucketAbsent = store.Is(herr, store.NotFound) && s.noSuchBucket(ctx, acct, name)
 		return
 	}
 	_ = s.lazy.Attach(ctx, acct.Bucket(name), nil)
+}
+
+// noSuchBucket confirms an absent bucket with a body-bearing request: a HEAD 404 has no body, so a wrong endpoint, a
+// proxy or a wildcard host cannot be told from a missing bucket by it. Only the error code NoSuchBucket counts.
+func (s *sess) noSuchBucket(ctx context.Context, acct Account, name string) bool {
+	_, err := acct.Bucket(name).List(ctx, "")
+	var se *s3client.Error
+	return errors.As(err, &se) && se.Status == 404 && se.Code == "NoSuchBucket"
 }
 
 // attach binds the journal store after plan.storage-apply created the bucket.

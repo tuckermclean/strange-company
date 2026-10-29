@@ -352,6 +352,57 @@ func (t *ExecTofu) ApplyStorage(ctx context.Context, spec StorageSpec) error {
 	return nil
 }
 
+// ImportStorage rebuilds the storage state of existing buckets (plan 06 `state import --module storage`): a fresh
+// encrypted local state is filled with `tofu import` of every resource of every bucket (the provider credential is
+// the account's of the bucket, as in ApplyStorage), then moved to the remote object, replacing the state encrypted
+// under another passphrase.
+func (t *ExecTofu) ImportStorage(ctx context.Context, spec StorageSpec, remote RemoteState) error {
+	for _, f := range localStateFiles(spec) {
+		if err := os.Remove(f); err != nil {
+			return err
+		}
+	}
+	hcl, err := t.localBackend(spec)
+	if err != nil {
+		return err
+	}
+	if err := t.prepare(spec, hcl); err != nil {
+		return err
+	}
+	type pass struct {
+		s3      TofuS3
+		buckets []BucketSpec
+	}
+	passes := []pass{{s3: spec.Main, buckets: spec.Buckets}}
+	if spec.State != nil {
+		var inState, inMain []BucketSpec
+		for _, b := range spec.Buckets {
+			if b.StateAccount {
+				inState = append(inState, b)
+			} else {
+				inMain = append(inMain, b)
+			}
+		}
+		passes = []pass{{s3: spec.Main, buckets: inMain}, {s3: *spec.State, buckets: inState}}
+	}
+	for _, ps := range passes {
+		env := t.env(spec, ps.s3)
+		if err := t.init(ctx, spec, env); err != nil {
+			return err
+		}
+		for _, b := range ps.buckets {
+			p := strings.TrimPrefix(b.Name, spec.Prefix+"-")
+			for _, typ := range []string{"aws_s3_bucket", "aws_s3_bucket_versioning", "aws_s3_bucket_public_access_block", "aws_s3_bucket_lifecycle_configuration"} {
+				addr := fmt.Sprintf("%s.this[%q]", typ, p)
+				if _, err := t.run(ctx, spec.WorkDir, env, "import", "-input=false", "-no-color", "-lock-timeout=60s", addr, b.Name); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return t.Migrate(ctx, spec, remote)
+}
+
 // StateList lists the addresses of the local state (remote nil) or of the remote object.
 func (t *ExecTofu) StateList(ctx context.Context, spec StorageSpec, remote *RemoteState) ([]string, error) {
 	hcl, s3, err := t.backendFor(spec, remote)

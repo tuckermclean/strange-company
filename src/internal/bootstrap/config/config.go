@@ -149,6 +149,19 @@ func (n *norm) match(k string, re *regexp.Regexp, what string) string {
 	return v
 }
 
+// noPath rejects an endpoint variable with a URL path: the S3 client keeps only scheme and host, so requests would go
+// elsewhere than configured.
+func (n *norm) noPath(k string) {
+	v := n.env[k]
+	if v == "" {
+		return
+	}
+	rest := strings.TrimPrefix(v, "https://")
+	if i := strings.IndexAny(rest, "/?#"); i >= 0 && strings.Trim(rest[i:], "/") != "" {
+		n.bad("%s=%q has a URL path or query; give scheme, host and port only", k, v)
+	}
+}
+
 func (n *norm) match2(k, d string, re *regexp.Regexp, what string) string {
 	v := n.def(k, d)
 	if !re.MatchString(v) {
@@ -494,6 +507,7 @@ func (n *norm) objectStorage(cluster string) map[string]any {
 	if !rePrefix.MatchString(prefix) {
 		n.bad("bucket prefix %q is not a valid bucket name prefix", prefix)
 	}
+	n.noPath("S3_ENDPOINT")
 	s3 := map[string]any{
 		"endpoint":              n.match("S3_ENDPOINT", reHTTPS, "an https:// URL"),
 		"region":                n.get("S3_REGION"),
@@ -518,6 +532,7 @@ func (n *norm) objectStorage(cluster string) map[string]any {
 		if !reHTTPS.MatchString(ep) {
 			n.bad("S3_STATE_ENDPOINT=%q is not an https:// URL", ep)
 		}
+		n.noPath("S3_STATE_ENDPOINT")
 		s3["stateAccount"] = map[string]any{
 			"endpoint":        ep,
 			"accessKeyId":     n.secret("S3_STATE_ACCESS_KEY_ID", "SC-OBJECT-STORAGE"),

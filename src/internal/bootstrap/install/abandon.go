@@ -3,6 +3,7 @@ package install
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -40,6 +41,44 @@ func (s *sess) firstGeneration() (int, string) {
 		return bestV + 1, ""
 	}
 	return bestV + 1, strings.TrimPrefix(sha256Digest(data), "sha256:")
+}
+
+// firstGenerationFor is firstGeneration for the creation of a new identity: the recovery bucket's bundle listing (every
+// identity's objects, immutable under Object Lock) is consulted as well, so a new machine without the abandoned/
+// folder does not reuse a version. The result is remembered in <cdir>/first-generation, for identityFirst.
+func (s *sess) firstGenerationFor(ctx context.Context) (int, string) {
+	first, previous := s.firstGeneration()
+	if acct, err := s.account(s.credFor("recovery")); err == nil {
+		b := acct.Bucket(s.bucketName("recovery"))
+		prefix := s.cluster + "/bundles/sc-recovery-" + s.cluster + "-v"
+		keys, _ := b.List(ctx, prefix)
+		bestKey, bestV := "", 0
+		for _, k := range keys {
+			v, aerr := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(k, prefix), ".tar.age"))
+			if aerr == nil && v > bestV {
+				bestKey, bestV = k, v
+			}
+		}
+		if bestV+1 > first {
+			first, previous = bestV+1, ""
+			if o, gerr := b.Get(ctx, bestKey); gerr == nil {
+				previous = strings.TrimPrefix(sha256Digest(o.Data), "sha256:")
+			}
+		}
+	}
+	_ = writeAtomic(filepath.Join(s.cdir(), "first-generation"), []byte(strconv.Itoa(first)+"\n"))
+	return first, previous
+}
+
+// identityFirst is the first bundle generation of the current identity: the remembered one, else the local lookup.
+func (s *sess) identityFirst() int {
+	if b, err := os.ReadFile(filepath.Join(s.cdir(), "first-generation")); err == nil {
+		if v, aerr := strconv.Atoi(strings.TrimSpace(string(b))); aerr == nil && v > 0 {
+			return v
+		}
+	}
+	first, _ := s.firstGeneration()
+	return first
 }
 
 func journalSeq(b []byte) int {
@@ -161,6 +200,9 @@ func (s *sess) moveLocalAside(aside string) string {
 			return err.Error()
 		}
 	}
+	if err := os.Rename(filepath.Join(s.cdir(), "first-generation"), filepath.Join(aside, "first-generation")); err != nil && !os.IsNotExist(err) {
+		return err.Error()
+	}
 	if err := os.Rename(filepath.Join(s.cdir(), "recovery-identity.txt"), filepath.Join(aside, "recovery-identity.txt")); err != nil && !os.IsNotExist(err) {
 		return err.Error()
 	}
@@ -187,6 +229,10 @@ func (s *sess) moveOrphans() (moved bool, code int) {
 		s.errorf("ABANDON_MOVE_FAILED: %s\n", msg)
 		return true, 1
 	}
-	s.printf("No installation identity is left on this host; its leftover local files are in %s.\nThe next run generates a new identity over the same buckets.\n", aside)
+	where := ""
+	if s.bucketAbsent {
+		where = fmt.Sprintf("The tofu-state bucket %s does not exist at %s, so no remote journal exists.\n", s.bucketName("tofu-state"), s.stateCred().Endpoint)
+	}
+	s.printf("No installation identity is left on this host; its leftover local files are in %s.\n%sThe next run generates a new identity over the same buckets.\n", aside, where)
 	return true, 0
 }

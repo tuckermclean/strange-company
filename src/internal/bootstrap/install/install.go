@@ -60,6 +60,13 @@ type RemoteState struct {
 	SkipS3Checksum bool
 }
 
+// StorageImporter is the optional capability of a Tofu to rebuild the storage state of existing buckets under the
+// passphrase of s, at remote (plan 06 `state import --module storage`). The rerun after abandon-identity uses it
+// when the remote storage state is encrypted under the abandoned identity's passphrase.
+type StorageImporter interface {
+	ImportStorage(ctx context.Context, s StorageSpec, remote RemoteState) error
+}
+
 // Tofu is the OpenTofu seam. Production runs the tofu binary in the work directory; tests inject a fake.
 type Tofu interface {
 	// PlanStorage plans the storage module against a throwaway local backend and returns the plan summary.
