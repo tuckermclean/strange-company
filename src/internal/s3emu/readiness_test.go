@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"strange.company/sc/internal/clock"
 	"strange.company/sc/internal/s3emu"
 )
 
@@ -32,7 +33,7 @@ func init() {
 		os.Exit(2)
 	}
 	go func() { _ = http.Serve(l, http.NotFoundHandler()) }()
-	time.Sleep(1500 * time.Millisecond)
+	_ = clock.Real{}.Sleep(context.Background(), 1500*time.Millisecond)
 	fmt.Fprintln(os.Stderr, "fake weed: listen tcp: bind: address already in use")
 	os.Exit(1)
 }
