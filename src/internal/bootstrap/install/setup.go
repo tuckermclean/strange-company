@@ -28,6 +28,7 @@ import (
 	"strange.company/sc/internal/bootstrap/engine"
 	"strange.company/sc/internal/bootstrap/identity"
 	"strange.company/sc/internal/bootstrap/redact"
+	"strange.company/sc/internal/bootstrap/store"
 	"strange.company/sc/internal/clock"
 	"strange.company/sc/internal/provider"
 	"strange.company/sc/internal/s3client"
@@ -91,6 +92,11 @@ type sess struct {
 	reg  *identity.Register
 	set  *identity.Set
 	pass string
+
+	// bucketAbsent is set when tryAttach saw HeadBucket answer "not found" for the tofu-state bucket: the store is
+	// reachable and no remote journal can exist (before plan.storage-apply).
+	bucketAbsent bool
+
 	// tofuGen and tofuPrev are the generation and fallback passphrase of the last tofuPassphrase call.
 	tofuGen  int
 	tofuPrev string
@@ -326,7 +332,9 @@ func (s *sess) tryAttach(ctx context.Context) {
 		return
 	}
 	name := s.bucketName("tofu-state")
-	if acct.HeadBucket(ctx, name) != nil {
+	if herr := acct.HeadBucket(ctx, name); herr != nil {
+		// only a definite "no such bucket" rules a remote journal out; dial errors, 403 and the rest stay unknown
+		s.bucketAbsent = store.Is(herr, store.NotFound)
 		return
 	}
 	_ = s.lazy.Attach(ctx, acct.Bucket(name), nil)

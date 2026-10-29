@@ -71,8 +71,9 @@ func (s *sess) cmdAbandon(ctx context.Context) int {
 	uid := s.eng.InstallUID()
 	if uid == "" {
 		if _, serr := os.Stat(filepath.Join(s.boot, "journal.json")); os.IsNotExist(serr) {
-			if !s.lazy.Attached() {
-				// without the store LoadJournal cannot show that no remote journal exists, so nothing is moved
+			if !s.lazy.Attached() && !s.bucketAbsent {
+				// without the store LoadJournal cannot show that no remote journal exists, so nothing is moved; a
+				// tofu-state bucket confirmed absent (before plan.storage-apply) rules a remote journal out
 				return refuse(7, "ABANDON_REMOTE_UNREACHABLE", "the object store cannot be reached, so a remote journal cannot be ruled out; nothing was changed; retry when it is reachable (procedures/object-storage-outage.md)")
 			}
 			if moved, code := s.moveOrphans(); moved || code != 0 {
