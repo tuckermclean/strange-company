@@ -240,10 +240,11 @@ func TestStorageCredentials_CommitIsCreatedAgainAfterGitReset_R4b1_3(t *testing.
 
 // The adopt path (plan 50 section 14.3): the journal is lost on both sides (here: no S3 journal exists yet, the local
 // one is deleted), the bundle files of an earlier run are still in the blackstart directory, and recovery-identity.txt
-// is not (a local write failed after the bundle files were written). The run opens the newest bundle with the
-// passphrase, and writes recovery-identity.txt again: the SC-AGE-RECOVERY identity of the bundle, the file the
-// operator is told to take offline.
-func TestAdoptPath_WritesRecoveryIdentityFile_AfterJournalLostOnBothSides(t *testing.T) {
+// is not. The adopt path cannot restore that file: the SC-AGE-RECOVERY private key is never placed in the cluster or in
+// the recovery bundle (ADR-0012), so a run that rebuilds the secret set from the bundle has nothing to write it from.
+// The run exits 0, does not write the file, and warns that it is missing so the operator restores it from the offline
+// copy.
+func TestAdoptPath_WarnsThatRecoveryIdentityFileIsMissing_AfterJournalLostOnBothSides(t *testing.T) {
 	t.Parallel()
 	s := newScenario(t)
 	env := s.unattendedEnv()
@@ -252,8 +253,7 @@ func TestAdoptPath_WritesRecoveryIdentityFile_AfterJournalLostOnBothSides(t *tes
 	res := s.run("", merge(env, stopAfter("plan.install-identity")), args)
 	s.requireExit(res, 0, "run to plan.install-identity")
 	rid := filepath.Join(s.cdir(), "recovery-identity.txt")
-	want, err := os.ReadFile(rid)
-	if err != nil || len(bytes.TrimSpace(want)) == 0 {
+	if b, err := os.ReadFile(rid); err != nil || len(bytes.TrimSpace(b)) == 0 {
 		t.Fatalf("fixture: recovery-identity.txt after plan.install-identity: %v", err)
 	}
 	if err := os.Remove(rid); err != nil {
@@ -268,11 +268,16 @@ func TestAdoptPath_WritesRecoveryIdentityFile_AfterJournalLostOnBothSides(t *tes
 
 	res = s.run("", merge(env, stopAfter("plan.install-identity")), args)
 	s.requireExit(res, 0, "run that adopts the bundle")
-	got, err := os.ReadFile(rid)
-	if err != nil {
-		t.Fatalf("the adopt path did not write recovery-identity.txt: %v", err)
+	if _, err := os.Stat(rid); err == nil {
+		t.Errorf("the adopt path wrote recovery-identity.txt, but SC-AGE-RECOVERY is never in the bundle")
 	}
-	if !bytes.Equal(got, want) {
-		t.Errorf("recovery-identity.txt written by the adopt path differs from the bundle's recovery identity")
+	warned := false
+	for _, line := range strings.Split(res.out, "\n") {
+		if strings.Contains(line, "recovery-identity.txt") && (strings.Contains(line, "warning") || strings.Contains(line, "WARN") || strings.Contains(line, "warn")) {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Errorf("the adopt path printed no warning naming recovery-identity.txt:\n%s", tail(res.out, 2000))
 	}
 }
