@@ -89,11 +89,6 @@ var bundleFileRe = regexp.MustCompile(`-v([0-9]+)\.tar\.age$`)
 // reference of plan.install-identity (the bundle file it created, valid on every host), else the host-local marker,
 // else the local lookup.
 func (s *sess) identityFirst() int {
-	if b, err := os.ReadFile(filepath.Join(s.cdir(), "first-generation")); err == nil {
-		if v, aerr := strconv.Atoi(strings.TrimSpace(string(b))); aerr == nil && v > 0 {
-			return v
-		}
-	}
 	for _, r := range s.eng.StepOutputRefs(stepIdentity) {
 		if r.Kind != "file" {
 			continue
@@ -102,6 +97,11 @@ func (s *sess) identityFirst() int {
 			if v, err := strconv.Atoi(m[1]); err == nil && v > 0 {
 				return v
 			}
+		}
+	}
+	if b, err := os.ReadFile(filepath.Join(s.cdir(), "first-generation")); err == nil {
+		if v, aerr := strconv.Atoi(strings.TrimSpace(string(b))); aerr == nil && v > 0 {
+			return v
 		}
 	}
 	return s.identityFirstLocal()

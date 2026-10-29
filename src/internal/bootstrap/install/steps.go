@@ -244,11 +244,11 @@ func (s *sess) runIdentity(ctx context.Context) ([]engine.OutputRef, error) {
 		s.addOperatorSecrets(set)
 		s.set = set
 		identity.RegisterSecrets(s.red, set, pass)
-		s.eng.SetInstallUID(set.InstallUID)
 		first, previous, ferr := s.firstGenerationFor(ctx)
 		if ferr != nil {
 			return nil, ferr
 		}
+		s.eng.SetInstallUID(set.InstallUID)
 		sealed, err := s.seal(set, first, previous)
 		if err != nil {
 			return nil, err
@@ -1168,6 +1168,10 @@ func (s *sess) stepStateMigrate() engine.Unit {
 				} else if s.storageStateStale(ctx, spec, remote) {
 					return notDone("the remote storage state is not readable with this identity's passphrase"), nil
 				}
+				if !s.eng.StepEverSucceeded(stepMigrate) {
+					// a success must carry its output reference, so that it is durable in the journal
+					return notDone("the remote state exists but this identity has not recorded the migration"), nil
+				}
 				return done("the remote state exists and no local state is left"), nil
 			}
 			// A crash between the migration and the deletion: delete the local file only after re-verification.
@@ -1182,6 +1186,9 @@ func (s *sess) stepStateMigrate() engine.Unit {
 				return notDone("the local and the remote state differ"), nil
 			}
 			removeAll(local)
+			if !s.eng.StepEverSucceeded(stepMigrate) {
+				return notDone("the remote state matches and the local state was deleted; the migration is recorded by the run"), nil
+			}
 			return done("the remote state matches; the local state was deleted"), nil
 		},
 		run: func(ctx context.Context) ([]engine.OutputRef, error) {
@@ -1191,13 +1198,19 @@ func (s *sess) stepStateMigrate() engine.Unit {
 			}
 			spec := s.storageSpec(pass)
 			remote := s.remoteState()
-			if len(localStateFiles(spec)) == 0 && s.storageStateStale(ctx, spec, remote) {
-				// the buckets exist and their state is encrypted under an abandoned identity's passphrase: rebuild it
-				if err := s.importStorage(ctx, spec, remote); err != nil {
-					return nil, err
+			if len(localStateFiles(spec)) == 0 {
+				if s.storageStateStale(ctx, spec, remote) {
+					// the buckets exist and their state is encrypted under an abandoned identity's passphrase: rebuild it
+					if err := s.importStorage(ctx, spec, remote); err != nil {
+						return nil, err
+					}
 				}
 				if len(localStateFiles(spec)) == 0 {
-					return []engine.OutputRef{{Kind: "tofu-state", Ref: "s3://" + remote.Bucket + "/" + remote.Key}}, nil
+					if acct, aerr := s.account(s.stateCred()); aerr == nil {
+						if _, herr := acct.Bucket(remote.Bucket).Head(ctx, remote.Key); herr == nil {
+							return []engine.OutputRef{{Kind: "tofu-state", Ref: "s3://" + remote.Bucket + "/" + remote.Key}}, nil
+						}
+					}
 				}
 			}
 			before, err := s.deps.Tofu.StateList(ctx, spec, nil)
