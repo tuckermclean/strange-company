@@ -256,7 +256,7 @@ func TestStateMigrate_PartialImportIsNeverMigratedAndTheRerunReimports_50AC18_S8
 	if m := e.tf.migrateCount(); m != baseline {
 		t.Errorf("a partial import was migrated (%d Migrate calls after the failing import, want %d)", m-baseline, 0)
 	}
-	code, out = e.rerunNewIdentity(s, newPassS8b1R1+"\n")
+	code, out = e.rerunNewIdentity(s, twice(newPassS8b1R1))
 	if code != 0 {
 		t.Errorf("the rerun after the interrupted import: exit %d, want 0:\n%s", code, out)
 	}
