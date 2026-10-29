@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -154,19 +155,36 @@ func Start(ctx context.Context, o Options) (*Emulator, error) {
 func (e *Emulator) waitReady(ctx context.Context) error {
 	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
 	clk := clock.Real{}
+	// The S3 start line proves the listener belongs to this process, not to another weed that took the port.
+	port := e.endpoint[strings.LastIndex(e.endpoint, ":")+1:]
+	announced := func() bool {
+		for _, l := range strings.Split(e.out.String(), "\n") {
+			if strings.Contains(l, "Start Seaweed S3 API Server") && strings.Contains(l, "at http port "+port) {
+				return true
+			}
+		}
+		return false
+	}
 	for i := 0; i < readyPolls; i++ {
 		select {
 		case <-e.done:
 			return fmt.Errorf("s3emu: the emulator exited during start-up:\n%s", tail(e.out.String(), 4000))
 		default:
 		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, e.endpoint+"/", nil)
-		if err != nil {
-			return err
-		}
-		if resp, err := client.Do(req); err == nil {
-			resp.Body.Close()
-			return nil
+		if announced() {
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, e.endpoint+"/", nil)
+			if err != nil {
+				return err
+			}
+			if resp, err := client.Do(req); err == nil {
+				resp.Body.Close()
+				select {
+				case <-e.done:
+					return fmt.Errorf("s3emu: the emulator exited during start-up:\n%s", tail(e.out.String(), 4000))
+				default:
+				}
+				return nil
+			}
 		}
 		if err := clk.Sleep(ctx, readyEvery); err != nil {
 			return err
