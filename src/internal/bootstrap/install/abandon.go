@@ -71,6 +71,10 @@ func (s *sess) cmdAbandon(ctx context.Context) int {
 	uid := s.eng.InstallUID()
 	if uid == "" {
 		if _, serr := os.Stat(filepath.Join(s.boot, "journal.json")); os.IsNotExist(serr) {
+			if !s.lazy.Attached() {
+				// without the store LoadJournal cannot show that no remote journal exists, so nothing is moved
+				return refuse(7, "ABANDON_REMOTE_UNREACHABLE", "the object store cannot be reached, so a remote journal cannot be ruled out; nothing was changed; retry when it is reachable (procedures/object-storage-outage.md)")
+			}
 			if moved, code := s.moveOrphans(); moved || code != 0 {
 				return code
 			}
@@ -80,14 +84,14 @@ func (s *sess) cmdAbandon(ctx context.Context) int {
 	if len(uid) < 8 {
 		return refuse(2, "ABANDON_INVALID_IDENTITY", "the journal's install_uid %q is not an installation identity (fewer than 8 characters)", uid)
 	}
-	if rb := s.eng.RecoveryBundle(); !s.lazy.Attached() && (rb.S3URI != "" || rb.S3VersionID != "") {
-		// the journal shows the remote store exists (a bundle was uploaded) but it cannot be reached: the remote journal
-		// would stay behind and the next run would adopt it again, so nothing is changed
-		return refuse(7, "ABANDON_REMOTE_UNREACHABLE", "the remote journal of installation %s cannot be reached; nothing was changed; retry when the object store is reachable (procedures/object-storage-outage.md)", uid)
-	}
 	if s.eng.ConfirmedSubject("paid-footprint") != "" || s.eng.ConfirmedSubject("existing-nodes") != "" {
 		return refuse(4, "ABANDON_REFUSED_COMPUTE_CONFIRMED",
 			"a compute plan was confirmed for installation %s; its resources may exist, so the identity cannot be abandoned (procedures/bootstrap-resume.md)", uid)
+	}
+	if rb := s.eng.RecoveryBundle(); !s.lazy.Attached() && (s.eng.StepSucceeded("plan.storage-apply") || rb.S3URI != "" || rb.S3VersionID != "") {
+		// the remote journal exists (storage was applied or a bundle was uploaded) but cannot be reached: it would stay
+		// behind and the next run would adopt it again, so nothing is changed
+		return refuse(7, "ABANDON_REMOTE_UNREACHABLE", "the remote journal of installation %s cannot be reached; nothing was changed; retry when the object store is reachable (procedures/object-storage-outage.md)", uid)
 	}
 	want := "abandon " + s.cluster + " " + uid[:8]
 	line, err := s.readLine(ctx, "Type '"+want+"' to abandon the installation identity: ", false)

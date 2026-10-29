@@ -116,6 +116,25 @@ func (e *Engine) Confirmed(kind, subjectDigest string) bool {
 	return false
 }
 
+// StepSucceeded reports whether the journal records the named step (in any phase) as succeeded.
+func (e *Engine) StepSucceeded(name string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.jr == nil {
+		return false
+	}
+	for _, pl := range e.jr.Pipelines {
+		for _, ph := range pl.Phases {
+			for _, st := range ph.Steps {
+				if st.Name == name && st.Status == stSucceeded {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 // ConfirmedSubject returns the subject digest of the newest confirmation of the kind in the journal (or this run),
 // "" when there is none.
 func (e *Engine) ConfirmedSubject(kind string) string {
