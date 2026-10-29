@@ -45,6 +45,8 @@ func fakeWeed() int {
 		fmt.Fprintln(os.Stderr, "fake weed:", err)
 		return 2
 	}
+	// Real weed logs this line to stderr once its S3 listener is bound; s3emu's readiness keys on it.
+	fmt.Fprintf(os.Stderr, "I1029 20:18:52.428001 s3.go:538 Start Seaweed S3 API Server 30GB 4.48 530be3e37337488ecc34d58441e0bc476e121c93 at http port %s\n", port)
 	_ = http.Serve(l, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) }))
 	return 0
 }
