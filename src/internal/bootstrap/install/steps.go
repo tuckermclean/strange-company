@@ -245,7 +245,10 @@ func (s *sess) runIdentity(ctx context.Context) ([]engine.OutputRef, error) {
 		s.set = set
 		identity.RegisterSecrets(s.red, set, pass)
 		s.eng.SetInstallUID(set.InstallUID)
-		first, previous := s.firstGenerationFor(ctx)
+		first, previous, ferr := s.firstGenerationFor(ctx)
+		if ferr != nil {
+			return nil, ferr
+		}
 		sealed, err := s.seal(set, first, previous)
 		if err != nil {
 			return nil, err
@@ -1065,20 +1068,79 @@ func sameSet(a, b []string) bool {
 	return strings.Join(x, "\n") == strings.Join(y, "\n")
 }
 
-// storageStateStale reports whether the remote storage state exists but this identity's passphrase does not open it
-// (the identity was abandoned after the migration) and the Tofu can import the buckets afresh. The passphrase comes
-// from the recovery bundle; without it nothing is judged stale.
-func (s *sess) storageStateStale(ctx context.Context, spec StorageSpec, remote RemoteState) bool {
+// storageStateList lists the remote storage state with this identity's passphrase. applicable is false when nothing
+// can be judged: the Tofu cannot import, or the passphrase is not available (it comes from the recovery bundle).
+func (s *sess) storageStateList(ctx context.Context, spec StorageSpec, remote RemoteState) (applicable bool, err error) {
 	if _, ok := s.deps.Tofu.(StorageImporter); !ok {
-		return false
+		return false, nil
 	}
-	pass, err := s.tofuPassphrase(ctx)
-	if err != nil {
-		return false
+	pass, perr := s.tofuPassphrase(ctx)
+	if perr != nil {
+		return false, nil
 	}
 	spec.Passphrase, spec.Generation, spec.Previous = pass, s.tofuGen, s.tofuPrev
 	_, err = s.deps.Tofu.StateList(ctx, spec, &remote)
-	return err != nil
+	return true, err
+}
+
+// storageStateStale reports whether the remote storage state exists but this identity's passphrase does not open it
+// (the identity was abandoned after the migration) and the Tofu can import the buckets afresh. Only an identity that
+// never completed plan.state-migrate can be stale: for one that did, a failing listing is a store problem and not a
+// reason to replace the remote state.
+func (s *sess) storageStateStale(ctx context.Context, spec StorageSpec, remote RemoteState) bool {
+	if s.eng.StepEverSucceeded(stepMigrate) {
+		return false
+	}
+	ok, err := s.storageStateList(ctx, spec, remote)
+	return ok && err != nil
+}
+
+// importStorage rebuilds the storage state (plan 06 section 20.4): the import is built in a scratch path next to the
+// local state, so a crash or a failure leaves no local state that a rerun could migrate; the plan after the import
+// must show no changes; only then the state becomes the local state. It returns with no local state left when the
+// Tofu wrote the remote object itself.
+func (s *sess) importStorage(ctx context.Context, spec StorageSpec, remote RemoteState) error {
+	imp := s.deps.Tofu.(StorageImporter)
+	tmp := filepath.Join(filepath.Dir(spec.LocalState), "importing", filepath.Base(spec.LocalState))
+	scratch := spec
+	scratch.LocalState = tmp
+	cleanup := func() { removeAll(localStateFiles(scratch)) }
+	if err := os.MkdirAll(filepath.Dir(tmp), 0o700); err != nil {
+		return fail("STATE_IMPORT_FAILED", 1, procState, "the scratch directory of the import cannot be created: %v", err)
+	}
+	cleanup()
+	if err := imp.ImportStorage(ctx, scratch, remote); err != nil {
+		cleanup()
+		return fail("STATE_IMPORT_FAILED", 1, procState, "the storage buckets cannot be re-imported: %v", err)
+	}
+	built := localStateFiles(scratch)
+	var from *RemoteState
+	if len(built) == 0 {
+		from = &remote
+	}
+	n, err := s.deps.Tofu.Changes(ctx, scratch, from)
+	if err != nil {
+		cleanup()
+		return fail("STATE_PLAN_FAILED", 1, procState, "tofu plan after the import failed: %v", err)
+	}
+	if n != 0 {
+		cleanup()
+		return fail("STATE_IMPORT_MISMATCH", 1, procState, "tofu plan after the import shows %d changes; the remote state is unchanged", n)
+	}
+	if len(built) == 0 {
+		if _, err := s.deps.Tofu.StateList(ctx, spec, &remote); err != nil {
+			return fail("STATE_LIST_FAILED", 1, procState, "the re-imported storage state cannot be listed: %v", err)
+		}
+		return nil
+	}
+	for _, f := range built {
+		if err := os.Rename(f, spec.LocalState+strings.TrimPrefix(f, tmp)); err != nil {
+			cleanup()
+			removeAll(localStateFiles(spec))
+			return fail("STATE_IMPORT_FAILED", 1, procState, "the imported state cannot be moved into place: %v", err)
+		}
+	}
+	return nil
 }
 
 func (s *sess) stepStateMigrate() engine.Unit {
@@ -1098,7 +1160,12 @@ func (s *sess) stepStateMigrate() engine.Unit {
 			}
 			local := localStateFiles(spec)
 			if len(local) == 0 {
-				if s.storageStateStale(ctx, spec, remote) {
+				if s.eng.StepEverSucceeded(stepMigrate) {
+					// an established install: a listing failure is the store's, not a stale passphrase
+					if _, lerr := s.storageStateList(ctx, spec, remote); lerr != nil {
+						return engine.Check{}, lerr
+					}
+				} else if s.storageStateStale(ctx, spec, remote) {
 					return notDone("the remote storage state is not readable with this identity's passphrase"), nil
 				}
 				return done("the remote state exists and no local state is left"), nil
@@ -1126,14 +1193,12 @@ func (s *sess) stepStateMigrate() engine.Unit {
 			remote := s.remoteState()
 			if len(localStateFiles(spec)) == 0 && s.storageStateStale(ctx, spec, remote) {
 				// the buckets exist and their state is encrypted under an abandoned identity's passphrase: rebuild it
-				imp := s.deps.Tofu.(StorageImporter)
-				if err := imp.ImportStorage(ctx, spec, remote); err != nil {
-					return nil, fail("STATE_IMPORT_FAILED", 1, procState, "the storage buckets cannot be re-imported: %v", err)
+				if err := s.importStorage(ctx, spec, remote); err != nil {
+					return nil, err
 				}
-				if _, err := s.deps.Tofu.StateList(ctx, spec, &remote); err != nil {
-					return nil, fail("STATE_LIST_FAILED", 1, procState, "the re-imported storage state cannot be listed: %v", err)
+				if len(localStateFiles(spec)) == 0 {
+					return []engine.OutputRef{{Kind: "tofu-state", Ref: "s3://" + remote.Bucket + "/" + remote.Key}}, nil
 				}
-				return []engine.OutputRef{{Kind: "tofu-state", Ref: "s3://" + remote.Bucket + "/" + remote.Key}}, nil
 			}
 			before, err := s.deps.Tofu.StateList(ctx, spec, nil)
 			if err != nil {

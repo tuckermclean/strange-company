@@ -354,8 +354,8 @@ func (t *ExecTofu) ApplyStorage(ctx context.Context, spec StorageSpec) error {
 
 // ImportStorage rebuilds the storage state of existing buckets (plan 06 `state import --module storage`): a fresh
 // encrypted local state is filled with `tofu import` of every resource of every bucket (the provider credential is
-// the account's of the bucket, as in ApplyStorage), then moved to the remote object, replacing the state encrypted
-// under another passphrase.
+// the account's of the bucket, as in ApplyStorage). The caller checks the plan and migrates it to the remote object,
+// replacing the state encrypted under another passphrase.
 func (t *ExecTofu) ImportStorage(ctx context.Context, spec StorageSpec, remote RemoteState) error {
 	for _, f := range localStateFiles(spec) {
 		if err := os.Remove(f); err != nil {
@@ -400,7 +400,7 @@ func (t *ExecTofu) ImportStorage(ctx context.Context, spec StorageSpec, remote R
 			}
 		}
 	}
-	return t.Migrate(ctx, spec, remote)
+	return nil
 }
 
 // StateList lists the addresses of the local state (remote nil) or of the remote object.

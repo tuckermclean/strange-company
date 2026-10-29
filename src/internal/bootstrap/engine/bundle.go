@@ -135,6 +135,49 @@ func (e *Engine) StepSucceeded(name string) bool {
 	return false
 }
 
+// StepEverSucceeded reports whether the named step succeeded at any time in this journal: its status is succeeded or
+// skipped, or it still carries the output references of an earlier success (a later failed check or run changes the
+// status but keeps the references until the step succeeds again).
+func (e *Engine) StepEverSucceeded(name string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.jr == nil {
+		return false
+	}
+	for _, pl := range e.jr.Pipelines {
+		for _, ph := range pl.Phases {
+			for _, st := range ph.Steps {
+				if st.Name == name && (st.Status == stSucceeded || st.Status == stSkipped || len(st.OutputRefs) > 0) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// StepOutputRefs returns the output references the journal records for the named step (in any phase).
+func (e *Engine) StepOutputRefs(name string) []OutputRef {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.jr == nil {
+		return nil
+	}
+	var out []OutputRef
+	for _, pl := range e.jr.Pipelines {
+		for _, ph := range pl.Phases {
+			for _, st := range ph.Steps {
+				if st.Name == name {
+					for _, r := range st.OutputRefs {
+						out = append(out, OutputRef{Kind: r.Kind, Ref: r.Ref, Sha256: r.Sha256})
+					}
+				}
+			}
+		}
+	}
+	return out
+}
+
 // ConfirmedSubject returns the subject digest of the newest confirmation of the kind in the journal (or this run),
 // "" when there is none.
 func (e *Engine) ConfirmedSubject(kind string) string {

@@ -3,14 +3,17 @@ package install
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
 	"strange.company/sc/internal/bootstrap/engine"
 	"strange.company/sc/internal/bootstrap/store"
+	"strange.company/sc/internal/s3client"
 )
 
 // abandon-identity (plan 50 section 7.1, BOOT-6, 50-AC-18): an installation identity that never reached a confirmed
@@ -46,12 +49,16 @@ func (s *sess) firstGeneration() (int, string) {
 // firstGenerationFor is firstGeneration for the creation of a new identity: the recovery bucket's bundle listing (every
 // identity's objects, immutable under Object Lock) is consulted as well, so a new machine without the abandoned/
 // folder does not reuse a version. The result is remembered in <cdir>/first-generation, for identityFirst.
-func (s *sess) firstGenerationFor(ctx context.Context) (int, string) {
+func (s *sess) firstGenerationFor(ctx context.Context) (int, string, error) {
 	first, previous := s.firstGeneration()
 	if acct, err := s.account(s.credFor("recovery")); err == nil {
 		b := acct.Bucket(s.bucketName("recovery"))
 		prefix := s.cluster + "/bundles/sc-recovery-" + s.cluster + "-v"
-		keys, _ := b.List(ctx, prefix)
+		keys, lerr := b.List(ctx, prefix)
+		if lerr != nil && !isNoSuchBucket(lerr) {
+			// the immutable versions that exist are unknown: starting at generation 1 could collide with one of them
+			return 0, "", fail("RECOVERY_LIST_FAILED", 7, procResume, "the recovery bucket %s cannot be listed, so the first bundle version of the new identity is unknown: %v", s.bucketName("recovery"), lerr)
+		}
 		bestKey, bestV := "", 0
 		for _, k := range keys {
 			v, aerr := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(k, prefix), ".tar.age"))
@@ -67,16 +74,40 @@ func (s *sess) firstGenerationFor(ctx context.Context) (int, string) {
 		}
 	}
 	_ = writeAtomic(filepath.Join(s.cdir(), "first-generation"), []byte(strconv.Itoa(first)+"\n"))
-	return first, previous
+	return first, previous, nil
 }
 
-// identityFirst is the first bundle generation of the current identity: the remembered one, else the local lookup.
+// isNoSuchBucket reports the definite answer "the bucket does not exist" of an S3 listing.
+func isNoSuchBucket(err error) bool {
+	var se *s3client.Error
+	return errors.As(err, &se) && se.Status == 404 && se.Code == "NoSuchBucket"
+}
+
+var bundleFileRe = regexp.MustCompile(`-v([0-9]+)\.tar\.age$`)
+
+// identityFirst is the first bundle generation of the current identity: the one the journal records in the output
+// reference of plan.install-identity (the bundle file it created, valid on every host), else the host-local marker,
+// else the local lookup.
 func (s *sess) identityFirst() int {
 	if b, err := os.ReadFile(filepath.Join(s.cdir(), "first-generation")); err == nil {
 		if v, aerr := strconv.Atoi(strings.TrimSpace(string(b))); aerr == nil && v > 0 {
 			return v
 		}
 	}
+	for _, r := range s.eng.StepOutputRefs(stepIdentity) {
+		if r.Kind != "file" {
+			continue
+		}
+		if m := bundleFileRe.FindStringSubmatch(r.Ref); m != nil {
+			if v, err := strconv.Atoi(m[1]); err == nil && v > 0 {
+				return v
+			}
+		}
+	}
+	return s.identityFirstLocal()
+}
+
+func (s *sess) identityFirstLocal() int {
 	first, _ := s.firstGeneration()
 	return first
 }
@@ -232,6 +263,8 @@ func (s *sess) moveOrphans() (moved bool, code int) {
 	where := ""
 	if s.bucketAbsent {
 		where = fmt.Sprintf("The tofu-state bucket %s does not exist at %s, so no remote journal exists.\n", s.bucketName("tofu-state"), s.stateCred().Endpoint)
+	} else {
+		where = fmt.Sprintf("The tofu-state bucket %s at %s holds no journal of this install.\n", s.bucketName("tofu-state"), s.stateCred().Endpoint)
 	}
 	s.printf("No installation identity is left on this host; its leftover local files are in %s.\n%sThe next run generates a new identity over the same buckets.\n", aside, where)
 	return true, 0
