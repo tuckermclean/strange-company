@@ -555,6 +555,8 @@ func (e *Engine) finish(ctx context.Context, run *runJ, pl *pipelineJ, res Resul
 		}
 		if sres.Exit == 7 {
 			// a journal conflict is exit 7 wherever it is found, also by the save that ends a failed run
+			// (kept over the unit failure: the failure was not persisted, another writer owns the journal, and the
+			// operator must resolve that before the failure means anything; the failure is in the log)
 			res = *sres
 		}
 	}
@@ -697,6 +699,13 @@ func (e *Engine) leaf(ctx context.Context, u Unit, r *unitJ, phaseName string, o
 	isPhase := r.phase
 	e.unitStart = time.Time{} // a probe that fails before the unit starts logs duration 0, not the previous unit's
 	e.crash(u.Name(), "before")
+	// the code of the previous failure, noted before any probe so a probe failure of another code starts a new series
+	if r.Error != nil && r.Error.Code != "" {
+		if e.prevCode == nil {
+			e.prevCode = map[*unitJ]string{}
+		}
+		e.prevCode[r] = r.Error.Code
+	}
 	d, err := digestOf(ctx, u)
 	if err != nil {
 		return false, e.failUnit(ctx, u, r, onStart, &Error{Code: "INPUTS_FAILED", Message: "cannot compute the inputs of " + u.Name() + ": " + err.Error()})
@@ -749,12 +758,6 @@ func (e *Engine) leaf(ctx context.Context, u Unit, r *unitJ, phaseName string, o
 	lastDigest := ""
 	if r.InputDigest != nil {
 		lastDigest = *r.InputDigest
-	}
-	if r.Error != nil && r.Error.Code != "" {
-		if e.prevCode == nil {
-			e.prevCode = map[*unitJ]string{}
-		}
-		e.prevCode[r] = r.Error.Code
 	}
 	if r.Status == stFailed && r.Error != nil && r.Attempt >= retryCeiling && lastDigest == d && o.RetryPhase != phaseName && phaseName != "preflight" {
 		// preflight is always re-run and read-only (plan 50 section 14.2): the ceiling never applies to it.
@@ -812,6 +815,9 @@ func (e *Engine) leaf(ctx context.Context, u Unit, r *unitJ, phaseName string, o
 		e.Log("warn", "unit-retry", fmt.Sprintf("%s: transient error, retrying in %s", u.Name(), delay), map[string]any{"try": try})
 		if serr := e.clk.Sleep(rctx, delay); serr != nil {
 			break
+		}
+		if timeout > 0 && e.clk.Now().Sub(began) >= timeout {
+			break // plan 50 section 16: retries stay within the phase timeout
 		}
 	}
 	if rerr != nil {

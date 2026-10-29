@@ -70,7 +70,20 @@ func (s *sess) cmdAbandon(ctx context.Context) int {
 	}
 	uid := s.eng.InstallUID()
 	if uid == "" {
+		if _, serr := os.Stat(filepath.Join(s.boot, "journal.json")); os.IsNotExist(serr) {
+			if moved, code := s.moveOrphans(); moved || code != 0 {
+				return code
+			}
+		}
 		return refuse(2, "ABANDON_NO_IDENTITY", "the journal holds no installation identity to abandon")
+	}
+	if len(uid) < 8 {
+		return refuse(2, "ABANDON_INVALID_IDENTITY", "the journal's install_uid %q is not an installation identity (fewer than 8 characters)", uid)
+	}
+	if rb := s.eng.RecoveryBundle(); !s.lazy.Attached() && (rb.S3URI != "" || rb.S3VersionID != "") {
+		// the journal shows the remote store exists (a bundle was uploaded) but it cannot be reached: the remote journal
+		// would stay behind and the next run would adopt it again, so nothing is changed
+		return refuse(7, "ABANDON_REMOTE_UNREACHABLE", "the remote journal of installation %s cannot be reached; nothing was changed; retry when the object store is reachable (procedures/object-storage-outage.md)", uid)
 	}
 	if s.eng.ConfirmedSubject("paid-footprint") != "" || s.eng.ConfirmedSubject("existing-nodes") != "" {
 		return refuse(4, "ABANDON_REFUSED_COMPUTE_CONFIRMED",
@@ -93,35 +106,28 @@ func (s *sess) cmdAbandon(ctx context.Context) int {
 		}
 		if len(journal) > 0 {
 			if _, perr := s.lazy.PutIfAbsent(ctx, s.cluster+"/journal/abandoned-"+uid+".json", journal); perr != nil && !store.Is(perr, store.Exists) {
-				return refuse(1, "ABANDON_ARCHIVE_FAILED", "the journal cannot be archived: %v", perr)
+				return refuse(7, "ABANDON_ARCHIVE_FAILED", "the journal cannot be archived: %v", perr)
 			}
 		}
 		if derr := s.lazy.Delete(ctx, engine.JournalKey(s.cluster), ""); derr != nil && !store.Is(derr, store.NotFound) {
-			return refuse(1, "ABANDON_ARCHIVE_FAILED", "the remote journal cannot be removed: %v", derr)
+			return refuse(7, "ABANDON_ARCHIVE_FAILED", "the remote journal cannot be removed: %v", derr)
 		}
 	}
 	// NB1: what belongs to the abandoned identity moves aside (never deleted), or the next run would adopt the bundle
 	// again and fail its confirmation for ever.
+	// The journal goes last: a crash before that leaves the identity in place and a rerun finishes the move, while a
+	// journal removed first would strand bundles that no abandon-identity could find again.
 	aside := s.abandonedDir(uid)
 	if len(journal) > 0 {
 		if werr := writeAtomic(filepath.Join(aside, "journal.json"), journal); werr != nil {
 			return refuse(1, "ABANDON_MOVE_FAILED", "%v", werr)
 		}
 	}
+	if code := s.moveLocalAside(aside); code != "" {
+		return refuse(1, "ABANDON_MOVE_FAILED", "%s", code)
+	}
 	if rerr := os.Remove(localPath); rerr != nil && !os.IsNotExist(rerr) {
 		return refuse(1, "ABANDON_MOVE_FAILED", "%v", rerr)
-	}
-	if merr := os.MkdirAll(filepath.Join(aside, "bundles"), 0o700); merr != nil {
-		return refuse(1, "ABANDON_MOVE_FAILED", "%v", merr)
-	}
-	bundles, _ := filepath.Glob(filepath.Join(s.cdir(), "bundles", "*"))
-	for _, f := range bundles {
-		if merr := os.Rename(f, filepath.Join(aside, "bundles", filepath.Base(f))); merr != nil {
-			return refuse(1, "ABANDON_MOVE_FAILED", "%v", merr)
-		}
-	}
-	if merr := os.Rename(filepath.Join(s.cdir(), "recovery-identity.txt"), filepath.Join(aside, "recovery-identity.txt")); merr != nil && !os.IsNotExist(merr) {
-		return refuse(1, "ABANDON_MOVE_FAILED", "%v", merr)
 	}
 	s.printf("Installation identity %s abandoned; its journal is archived as %s/journal/abandoned-%s.json and its local files are in %s.\n"+
 		"The next run generates a new identity over the same buckets.\n", uid, s.cluster, uid, aside)
@@ -136,4 +142,46 @@ func (s *sess) abandonInputErr(err error) int {
 	}
 	s.errorf("sc-bootstrap: %v\n", err)
 	return 1
+}
+
+// moveLocalAside moves the bundle directory's files (LATEST.json included) and recovery-identity.txt below aside. It
+// returns an error text, "" on success.
+func (s *sess) moveLocalAside(aside string) string {
+	if err := os.MkdirAll(filepath.Join(aside, "bundles"), 0o700); err != nil {
+		return err.Error()
+	}
+	bundles, _ := filepath.Glob(filepath.Join(s.cdir(), "bundles", "*"))
+	for _, f := range bundles {
+		if err := os.Rename(f, filepath.Join(aside, "bundles", filepath.Base(f))); err != nil {
+			return err.Error()
+		}
+	}
+	if err := os.Rename(filepath.Join(s.cdir(), "recovery-identity.txt"), filepath.Join(aside, "recovery-identity.txt")); err != nil && !os.IsNotExist(err) {
+		return err.Error()
+	}
+	return ""
+}
+
+// moveOrphans handles a host with no journal and no identity but leftover bundles (an abandon-identity that died
+// between the steps): they move below abandoned/orphaned-<sha256 prefix> so the next run starts a new identity. No
+// identity is named, so there is nothing to confirm. moved is false when nothing was left.
+func (s *sess) moveOrphans() (moved bool, code int) {
+	bundles, _ := filepath.Glob(filepath.Join(s.cdir(), "bundles", "*"))
+	rid := filepath.Join(s.cdir(), "recovery-identity.txt")
+	_, rerr := os.Stat(rid)
+	if len(bundles) == 0 && rerr != nil {
+		return false, 0
+	}
+	src := rid
+	if len(bundles) > 0 {
+		src = bundles[0]
+	}
+	data, _ := os.ReadFile(src)
+	aside := filepath.Join(s.cdir(), "abandoned", "orphaned-"+strings.TrimPrefix(sha256Digest(data), "sha256:")[:12])
+	if msg := s.moveLocalAside(aside); msg != "" {
+		s.errorf("ABANDON_MOVE_FAILED: %s\n", msg)
+		return true, 1
+	}
+	s.printf("No installation identity is left on this host; its leftover local files are in %s.\nThe next run generates a new identity over the same buckets.\n", aside)
+	return true, 0
 }
