@@ -221,7 +221,7 @@ func (s *sess) runIdentity(ctx context.Context) ([]engine.OutputRef, error) {
 		return nil, err
 	}
 	var set *identity.Set
-	adopt := false
+	adopt, created := false, false
 	if s.eng.InstallUID() == "" {
 		if matches, _ := filepath.Glob(filepath.Join(s.cdir(), "bundles", "sc-recovery-"+s.cluster+"-v*.tar.age")); len(matches) > 0 {
 			// The journal is missing but a bundle exists: the bundle is the source of truth (plan 50 section 14.3).
@@ -248,7 +248,6 @@ func (s *sess) runIdentity(ctx context.Context) ([]engine.OutputRef, error) {
 		if ferr != nil {
 			return nil, ferr
 		}
-		s.eng.SetInstallUID(set.InstallUID)
 		sealed, err := s.seal(set, first, previous)
 		if err != nil {
 			return nil, err
@@ -260,11 +259,14 @@ func (s *sess) runIdentity(ctx context.Context) ([]engine.OutputRef, error) {
 		if _, err := identity.WriteRecoveryIdentity(s.cdir(), set); err != nil {
 			return nil, err
 		}
+		// the uid is recorded only together with its bundle: a failure above leaves no identity without a bundle
+		s.eng.SetInstallUID(set.InstallUID)
 		s.eng.SetRecoveryBundle(engine.RecoveryBundleState{Status: "created", Generation: first, Sha256: "sha256:" + sealed.SHA256,
 			LocalPath: path, CreatedAt: s.clk.Now().UTC().Format(time.RFC3339)})
 		if err := s.eng.Checkpoint(ctx); err != nil {
 			return nil, err
 		}
+		created = true
 	} else {
 		// The bundle exists (journal and file) but HEAD holds no installation commit: the bundle is the source of
 		// truth, so the commit is rendered from its contents (plan 50 section 14.3, resume).
@@ -287,11 +289,46 @@ func (s *sess) runIdentity(ctx context.Context) ([]engine.OutputRef, error) {
 			return nil, err
 		}
 	}
+	return []engine.OutputRef{{Kind: "git-commit", Ref: sha}, s.identityFileRef(created, adopt)}, nil
+}
+
+// identityFileRef is the file output reference of plan.install-identity: the identity's first bundle, from which
+// identityFirst derives the generation plan.storage-credentials compares against (BOOT-19: re-sealed at most once). A
+// rerun of the step keeps the reference it recorded (the journal's bundle may already be the re-sealed one); an
+// adopted bundle (the journal was lost) names the oldest local bundle of the identity.
+func (s *sess) identityFileRef(created, adopt bool) engine.OutputRef {
 	rb := s.eng.RecoveryBundle()
-	return []engine.OutputRef{
-		{Kind: "git-commit", Ref: sha},
-		{Kind: "file", Ref: rb.LocalPath, Sha256: rb.Sha256},
-	}, nil
+	ref := engine.OutputRef{Kind: "file", Ref: rb.LocalPath, Sha256: rb.Sha256}
+	switch {
+	case created:
+	case adopt:
+		prefix := "sc-recovery-" + s.cluster + "-v"
+		matches, _ := filepath.Glob(filepath.Join(s.cdir(), "bundles", prefix+"*.tar.age"))
+		best, bestV := "", 0
+		for _, m := range matches {
+			v, err := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(filepath.Base(m), prefix), ".tar.age"))
+			if err == nil && v > 0 && (bestV == 0 || v < bestV) {
+				best, bestV = m, v
+			}
+		}
+		if best != "" && best != rb.LocalPath {
+			if data, err := os.ReadFile(best); err == nil {
+				ref = engine.OutputRef{Kind: "file", Ref: best, Sha256: sha256Digest(data)}
+			}
+		}
+	default:
+		for _, r := range s.eng.StepOutputRefs(stepIdentity) {
+			if r.Kind != "file" {
+				continue
+			}
+			if m := bundleFileRe.FindStringSubmatch(r.Ref); m != nil {
+				if v, err := strconv.Atoi(m[1]); err == nil && v > 0 && v <= rb.Generation {
+					return r
+				}
+			}
+		}
+	}
+	return ref
 }
 
 // deriveInstallUID derives the install UUID from the cluster age identity. It is only the fallback for a bundle whose
@@ -1207,8 +1244,8 @@ func (s *sess) stepStateMigrate() engine.Unit {
 				}
 				if len(localStateFiles(spec)) == 0 {
 					if acct, aerr := s.account(s.stateCred()); aerr == nil {
-						if _, herr := acct.Bucket(remote.Bucket).Head(ctx, remote.Key); herr == nil {
-							return []engine.OutputRef{{Kind: "tofu-state", Ref: "s3://" + remote.Bucket + "/" + remote.Key}}, nil
+						if info, herr := acct.Bucket(remote.Bucket).Head(ctx, remote.Key); herr == nil {
+							return []engine.OutputRef{{Kind: "tofu-state", Ref: stateRef(remote, info.VersionID)}}, nil
 						}
 					}
 				}
@@ -1245,12 +1282,17 @@ func (s *sess) stepStateMigrate() engine.Unit {
 				return nil, fail("STATE_MIGRATE_MISMATCH", 1, procState, "the remote state object cannot be read back: %v", err)
 			}
 			removeAll(localStateFiles(spec))
-			ref := "s3://" + remote.Bucket + "/" + remote.Key
-			if info.VersionID != "" {
-				ref += "?versionId=" + info.VersionID
-			}
-			return []engine.OutputRef{{Kind: "tofu-state", Ref: ref}}, nil
+			return []engine.OutputRef{{Kind: "tofu-state", Ref: stateRef(remote, info.VersionID)}}, nil
 		}}
+}
+
+// stateRef is the tofu-state output reference of plan.state-migrate: the remote object with its version id.
+func stateRef(remote RemoteState, versionID string) string {
+	ref := "s3://" + remote.Bucket + "/" + remote.Key
+	if versionID != "" {
+		ref += "?versionId=" + versionID
+	}
+	return ref
 }
 
 func removeAll(paths []string) {
