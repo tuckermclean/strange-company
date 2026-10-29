@@ -229,6 +229,10 @@ func (s *sess) runIdentity(ctx context.Context) ([]engine.OutputRef, error) {
 				return nil, err
 			}
 			adopt = true
+			// SC-AGE-RECOVERY is never in the bundle, so the adopt path cannot restore the file; it only warns.
+			if _, serr := os.Stat(filepath.Join(s.cdir(), "recovery-identity.txt")); os.IsNotExist(serr) {
+				s.errorf("warning: recovery-identity.txt is missing from %s; restore it from the offline copy of SC-AGE-RECOVERY (procedures/rotate-age-key.md if it is lost)\n", s.cdir())
+			}
 		}
 	}
 	if s.eng.InstallUID() == "" && !adopt {
@@ -325,6 +329,13 @@ func (s *sess) identityFileRef(created, adopt bool) engine.OutputRef {
 				if v, err := strconv.Atoi(m[1]); err == nil && v > 0 && v <= rb.Generation {
 					return r
 				}
+			}
+		}
+		// No stored reference (the step's check path recorded it): the identity's first bundle, never the latest.
+		if first := s.identityFirst(); first > 0 && first <= rb.Generation {
+			p := filepath.Join(s.cdir(), "bundles", "sc-recovery-"+s.cluster+"-v"+strconv.Itoa(first)+".tar.age")
+			if data, err := os.ReadFile(p); err == nil {
+				return engine.OutputRef{Kind: "file", Ref: p, Sha256: sha256Digest(data)}
 			}
 		}
 	}
@@ -881,6 +892,9 @@ func (s *sess) stepStorageCredentials() engine.Unit {
 			rb := s.eng.RecoveryBundle()
 			if first := s.identityFirst(); rb.Generation <= first || (rb.Status != "uploaded" && rb.Status != "confirmed") {
 				return notDone("the bundle has not been re-sealed with the credentials"), nil
+			}
+			if !s.commitForInstall(ctx, "bootstrap("+s.cluster+"): object-storage credentials") {
+				return notDone("the object-storage credentials commit is missing"), nil
 			}
 			if err := s.authenticateAll(ctx); err != nil {
 				return notDone("an instance credential does not authenticate"), nil
