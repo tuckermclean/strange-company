@@ -1,4 +1,4 @@
-package resume_test
+package abandon_test
 
 import (
 	"os"

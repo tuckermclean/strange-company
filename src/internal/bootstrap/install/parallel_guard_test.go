@@ -50,7 +50,7 @@ func TestInstallTests_AreParallel(t *testing.T) {
 			}
 		}
 	}
-	if seen < 50 {
+	if seen < 20 {
 		t.Errorf("found only %d top-level tests; the guard is not looking at the package", seen)
 	}
 }

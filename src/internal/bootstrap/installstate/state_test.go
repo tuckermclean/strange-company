@@ -1,4 +1,4 @@
-package install_test
+package installstate_test
 
 import (
 	"archive/tar"
