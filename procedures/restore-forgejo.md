@@ -28,7 +28,7 @@ Do **not** use for: Authentik login problems with Forgejo otherwise healthy (`au
 1. **Never** force-push, delete a repository, or regenerate `SECRET_KEY` or the SSH host key during any step. Both come from Git (ADR-0252). A Forgejo started with a different `SECRET_KEY` cannot decrypt push-mirror credentials and 2FA secrets.
 2. **Never** force-detach a Longhorn volume while the old pod might still be running on a reachable node (risk of corruption).
 3. Before any destructive DB action, take an on-demand backup of the current state (plan 12 `restore-cnpg.md` step 1) so the "bad" state stays recoverable.
-4. Pause autonomous work so no worker pushes during restore: `./bootstrap exec -- sc-bootstrap estop set --scope workers --reason "forgejo restore"` (plan 33 CLI). Record the time.
+4. Pause autonomous work so no worker pushes during restore: `./bootstrap exec -- sc-bootstrap estop set --level workers --reason "forgejo restore"` (plan 33 CLI). Record the time.
 5. Blast radius: Flux keeps the last applied state while Forgejo is down (no new deploys). The Runner, Woodpecker and Renovate stall. Nothing is lost except in-flight webhooks and mirror syncs.
 
 ## Steps
@@ -74,7 +74,7 @@ Do **not** use for: Authentik login problems with Forgejo otherwise healthy (`au
 - **W7 (step R9 — credentials encrypted with `SECRET_KEY`)** Verify `SECRET_KEY`: `./bootstrap exec -- sc-bootstrap forge key-hash --source pod` (sha256 of the value in the rendered `app.ini`) equals the W2 hash. Mismatch → stop: the Secret mount is wrong; fix the SOPS Secret delivery (Flux) before anything else. Then check the push mirror: `./bootstrap exec -- sc-bootstrap mirror status`. If `last_error` reports authentication/decrypt failure → `github-mirror-failure.md` §D (Recreate). Users whose 2FA secrets cannot be decrypted re-enrol (only possible if the key changed historically; record).
 - **W8** Re-run forge-init in recover mode: `./bootstrap exec -- sc-bootstrap forge init --recover`. Expected: every step `verified` or `updated`, none `failed`; tokens that no longer validate are re-minted and their SOPS files change → commit and push through a PR (`FORGE_OUTPUTS_REQUIRE_PR` path) and merge after review. Then `./bootstrap exec -- sc-bootstrap forge apply` (stage `steady`).
 - **W9** Flux: `./bootstrap exec -- flux reconcile source git flux-system -n flux-system` → Ready at Forgejo `main`. Agent branches lost between `T` and the incident are treated by the Runner as infrastructure failures (plan 26).
-- **W10** Resume workers: `./bootstrap exec -- sc-bootstrap estop clear --scope workers`.
+- **W10** Resume workers: `./bootstrap exec -- sc-bootstrap estop set --level none`.
 
 ### §Diverged (`FORGE_MAIN_DIVERGED` at forge-init, or Forgejo `main` diverged from GitHub `main`)
 - **D1** `./bootstrap exec -- sc-bootstrap mirror compare-refs` and `git log --oneline --graph <forgejo main> <github main> -20`. Identify the commits unique to each side and their authors/merge PRs.

@@ -73,7 +73,7 @@ The passphrase is forgotten or no bundle copy is readable, but the recovery iden
 ### ci-key
 
 `SC-AGE-CI` (tier 1b, release credentials; held only in the bundle).
-1. `./bootstrap rotate age-ci` (plan 50 target; until it exists: `./bootstrap exec -- sc-bootstrap secrets age-ci rotate`). Opens the bundle, generates C₂.
+1. `./bootstrap rotate age-ci` (plan 50 target). Opens the bundle, generates C₂.
 2. Rewrap every file under `secrets/ci/<cluster>/` to {C₂, R} (`sops rotate --add-age C₂ --rm-age C₁`), update the `.sops.yaml` tier-1b rule, PR (opened as `sc-admin`), merge.
 3. Seal bundle vN+1 with C₂; confirm.
 4. *If compromised:* the release credentials themselves are exposed — continue with `signing-key-rotation.md#emergency-revocation` and rotate `SC-REGISTRY-PUSH`, `SC-GHCR-PUSH`, `SC-FORGEJO-BOT-TOKENS/sc-release` (`rotate-secrets.md`), then `sc-bootstrap ci-secrets apply`.
