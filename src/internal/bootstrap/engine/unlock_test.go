@@ -118,8 +118,8 @@ func TestUnlock_BreaksADeadLockAndRecordsIt_50S17_4(t *testing.T) {
 				continue
 			}
 			c := cs[0]
-			if str(c["method"]) != "typed" || str(c["subject_digest"]) != shaOf(body) || str(c["run_id"]) != u.RunID() {
-				t.Errorf("ifMatch=%v: %s confirmation %v, want method typed, subject_digest %s, run_id %s", ifMatch, what, c, shaOf(body), u.RunID())
+			if str(c["method"]) != "interactive" || str(c["subject_digest"]) != shaOf(body) || str(c["run_id"]) != u.RunID() {
+				t.Errorf("ifMatch=%v: %s confirmation %v, want method interactive, subject_digest %s, run_id %s", ifMatch, what, c, shaOf(body), u.RunID())
 			}
 			journalSchemaValidate(t, j)
 		}
