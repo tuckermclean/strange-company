@@ -32,11 +32,21 @@ func (e *Engine) Unlock(ctx context.Context, o UnlockOptions) Result {
 		return Result{Exit: 1, Code: "UNLOCK_FAILED", Message: err.Error()}
 	}
 	path := filepath.Join(e.cfg.Dir, "run.lock")
+	_, statErr := os.Stat(path)
+	existed := statErr == nil
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return Result{Exit: 1, Code: "UNLOCK_FAILED", Message: err.Error()}
 	}
 	defer f.Close()
+	if !existed {
+		// the probe file is not a lock: when no lock turns up it must not stay behind as an empty run.lock
+		defer func() {
+			if fi, serr := os.Stat(path); serr == nil && fi.Size() == 0 {
+				_ = os.Remove(path)
+			}
+		}()
+	}
 	got, err := tryLockFile(f)
 	if err != nil {
 		return Result{Exit: 1, Code: "UNLOCK_FAILED", Message: "the local run lock cannot be probed: " + err.Error()}

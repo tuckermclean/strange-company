@@ -138,6 +138,16 @@ func Parse(args []string) (inv Invocation, err error) {
 	if cur.maxArgs >= 0 && len(inv.Args) > cur.maxArgs {
 		return inv, fmt.Errorf("%q: unexpected argument %q", strings.Join(words, " "), inv.Args[cur.maxArgs])
 	}
+	if cur.words != nil {
+		if len(inv.Args) == 1 && !contains(cur.words, inv.Args[0]) {
+			return inv, fmt.Errorf("%q: argument must be one of %s, not %q", strings.Join(words, " "), strings.Join(cur.words, "|"), inv.Args[0])
+		}
+	}
+	if _, d := inv.Flags["delete"]; d {
+		if _, all := inv.Flags["delete-all-release"]; all {
+			return inv, errors.New("--delete and --delete-all-release are mutually exclusive")
+		}
+	}
 	if _, ok := inv.Flags["resume-after-emergency"]; ok && inv.Flags["from-phase"] != "flux-bootstrap" {
 		return inv, errors.New("--resume-after-emergency is only valid with --from-phase flux-bootstrap")
 	}
@@ -183,6 +193,9 @@ func (inv *Invocation) setFlag(c *cmd, name, val string, hasVal bool, next func(
 		return fmt.Errorf("--%s needs a value, not the flag %q", name, val)
 	}
 	vals, optional := c.opt[name]
+	if optional && hasVal && len(vals) > 0 && !contains(vals, val) {
+		return fmt.Errorf("--%s=%s: invalid value (one of %s)", name, val, strings.Join(vals, ", "))
+	}
 	switch {
 	case optional && !hasVal:
 		// an optional-value flag takes the next word only when that word can be its value
