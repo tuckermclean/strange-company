@@ -152,7 +152,7 @@ func readStorage(t *testing.T, name string) string {
 	return string(b)
 }
 
-// CD-70f / plan 14 section 9.1: the storage root module declares the whole bucket set as one for_each list.
+// CD-70f / plan 14 section 9.1: the storage root module declares the whole bucket set as one for_each bucket resource per provider.
 func TestStorageModule_DeclaresTheBucketSet_06AC9(t *testing.T) {
 	var all strings.Builder
 	files, _ := filepath.Glob(filepath.Join(repoRoot(t), "infra", "tofu", "storage", "*.tf"))
@@ -169,16 +169,30 @@ func TestStorageModule_DeclaresTheBucketSet_06AC9(t *testing.T) {
 			t.Errorf("the storage module does not name the bucket purpose %q", b)
 		}
 	}
-	if n := len(regexp.MustCompile(`(?m)^resource\s+"aws_s3_bucket"\s`).FindAllString(src, -1)); n != 1 {
-		t.Errorf("%d aws_s3_bucket resources, want exactly one (a for_each over the bucket list)", n)
+	// One for_each bucket resource per provider (default plus each alias): a resource cannot switch providers per instance.
+	heads := regexp.MustCompile(`(?m)^resource\s+"aws_s3_bucket"\s+"[^"]+"\s*\{`).FindAllStringIndex(src, -1)
+	if len(heads) == 0 {
+		t.Error("no aws_s3_bucket resource (want a for_each over the bucket list per provider)")
 	}
-	if i := regexp.MustCompile(`(?m)^resource\s+"aws_s3_bucket"\s+"[^"]+"\s*\{`).FindStringIndex(src); i != nil {
+	perProvider := map[string]int{}
+	providerLine := regexp.MustCompile(`(?m)^\s*provider\s*=\s*(\S+)`)
+	for _, i := range heads {
 		block := src[i[0]:]
 		if j := strings.Index(block[1:], "\nresource "); j >= 0 {
 			block = block[:j+1]
 		}
 		if !strings.Contains(block, "for_each") {
-			t.Error("the aws_s3_bucket resource does not use for_each")
+			t.Errorf("the aws_s3_bucket resource %q does not use for_each", strings.TrimSpace(src[i[0]:i[1]]))
+		}
+		prov := "default"
+		if m := providerLine.FindStringSubmatch(block); m != nil {
+			prov = m[1]
+		}
+		perProvider[prov]++
+	}
+	for prov, n := range perProvider {
+		if n > 1 {
+			t.Errorf("%d aws_s3_bucket resources on provider %s, want at most one per provider", n, prov)
 		}
 	}
 	if !regexp.MustCompile(`resource\s+"aws_s3_bucket_versioning"`).MatchString(src) || !strings.Contains(src, `"Enabled"`) {
