@@ -40,7 +40,10 @@ import (
 // pluginCache is one provider cache shared by every test of the run.
 func pluginCache(t *testing.T) string {
 	t.Helper()
-	d := filepath.Join(os.TempDir(), "sc-tier-e-plugin-cache")
+	d := os.Getenv("TF_PLUGIN_CACHE_DIR")
+	if d == "" {
+		d = filepath.Join(repoRoot(t), ".cache", "tofu-plugins")
+	}
 	if err := os.MkdirAll(d, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -492,7 +495,7 @@ func TestIntegration_WeedAnswers501ForPublicAccessBlock_S8b3(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := (&http.Client{}).Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
