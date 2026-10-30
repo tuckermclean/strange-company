@@ -88,11 +88,11 @@ func Parse(args []string) (inv Invocation, err error) {
 				pending = append(pending, a)
 				continue
 			}
-			next := func() (string, bool) {
+			next := func(accept func(string) bool) (string, bool) {
 				if i+1 >= len(args) {
 					return "", false
 				}
-				if strings.HasPrefix(args[i+1], "-") {
+				if strings.HasPrefix(args[i+1], "-") || (accept != nil && !accept(args[i+1])) {
 					return "", false
 				}
 				i++
@@ -131,7 +131,7 @@ func Parse(args []string) (inv Invocation, err error) {
 		if _, dup := inv.Flags[name]; dup && (name == "from-phase" || name == "retry-phase") {
 			return inv, fmt.Errorf("--%s is given before and after the command; give it once", name)
 		}
-		if err := inv.setFlag(cur, name, val, hasVal, func() (string, bool) { return "", false }); err != nil {
+		if err := inv.setFlag(cur, name, val, hasVal, func(func(string) bool) (string, bool) { return "", false }); err != nil {
 			return inv, err
 		}
 	}
@@ -174,7 +174,7 @@ func (inv *Invocation) setGlobal(name, val string) error {
 	return nil
 }
 
-func (inv *Invocation) setFlag(c *cmd, name, val string, hasVal bool, next func() (string, bool)) error {
+func (inv *Invocation) setFlag(c *cmd, name, val string, hasVal bool, next func(func(string) bool) (string, bool)) error {
 	takesVal, known := c.flags[name]
 	if !known && !c.lenient {
 		return fmt.Errorf("unknown flag --%s", name)
@@ -182,9 +182,16 @@ func (inv *Invocation) setFlag(c *cmd, name, val string, hasVal bool, next func(
 	if known && takesVal && hasVal && strings.HasPrefix(val, "-") {
 		return fmt.Errorf("--%s needs a value, not the flag %q", name, val)
 	}
+	vals, optional := c.opt[name]
 	switch {
+	case optional && !hasVal:
+		// an optional-value flag takes the next word only when that word can be its value
+		val = "true"
+		if v, ok := next(func(w string) bool { return len(vals) == 0 || contains(vals, w) }); ok {
+			val = v
+		}
 	case known && takesVal && !hasVal:
-		v, ok := next()
+		v, ok := next(nil)
 		if !ok {
 			return fmt.Errorf("--%s needs a value", name)
 		}
@@ -195,8 +202,22 @@ func (inv *Invocation) setFlag(c *cmd, name, val string, hasVal bool, next func(
 	if (name == "from-phase" || name == "retry-phase") && val == "" {
 		return fmt.Errorf("--%s needs a phase name, not an empty value", name)
 	}
+	if name == "attach" {
+		if old, ok := inv.Flags[name]; ok {
+			val = old + "\n" + val // repeatable
+		}
+	}
 	inv.Flags[name] = val
 	return nil
+}
+
+func contains(l []string, v string) bool {
+	for _, x := range l {
+		if x == v {
+			return true
+		}
+	}
+	return false
 }
 
 // Confirmation is a journal confirmation entry (contracts/bootstrap-journal.schema.yaml): the engine of a later slice
