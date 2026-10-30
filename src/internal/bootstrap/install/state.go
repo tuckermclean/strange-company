@@ -917,7 +917,7 @@ func (t *ExecStateTofu) Decrypt(ctx context.Context, module string, raw []byte, 
 		return nil, err
 	}
 	env := t.env(module, TofuS3{}, e)
-	if _, _, err := t.run(ctx, dir, env, "init", "-input=false", "-no-color"); err != nil {
+	if _, _, err := t.run(ctx, dir, env, "init", "-input=false", "-no-color", "-lockfile=readonly"); err != nil {
 		return nil, err
 	}
 	out, _, err := t.run(ctx, dir, env, "state", "pull")
@@ -940,7 +940,7 @@ func (t *ExecStateTofu) PlanCopy(ctx context.Context, module string, raw []byte,
 		return 0, err
 	}
 	env := t.env(module, TofuS3{}, e)
-	if _, _, err := t.run(ctx, dir, env, "init", "-input=false", "-no-color"); err != nil {
+	if _, _, err := t.run(ctx, dir, env, "init", "-input=false", "-no-color", "-lockfile=readonly"); err != nil {
 		return 0, err
 	}
 	out, exit, err := t.run(ctx, dir, env, "plan", "-refresh=false", "-lock=false", "-detailed-exitcode", "-input=false", "-no-color")
@@ -976,7 +976,7 @@ func (t *ExecStateTofu) RefreshOnly(ctx context.Context, module string, remote R
 		return err
 	}
 	env := t.env(module, remote.S3, e)
-	if _, _, err := t.run(ctx, dir, env, "init", "-input=false", "-no-color"); err != nil {
+	if _, _, err := t.run(ctx, dir, env, "init", "-input=false", "-no-color", "-lockfile=readonly"); err != nil {
 		return err
 	}
 	_, _, err = t.run(ctx, dir, env, "apply", "-refresh-only", "-auto-approve", "-input=false", "-no-color", "-lock-timeout=60s")
@@ -989,7 +989,21 @@ func (s *sess) stateVars(module string) []string {
 	case "storage":
 		return varsEnv(s.storageSpec(""))
 	case "compute":
-		return []string{"TF_VAR_cluster=" + s.cluster, "TF_VAR_sc_test_mode=" + s.env["SC_TEST_MODE"]}
+		vars := []string{"TF_VAR_cluster=" + s.cluster, "TF_VAR_sc_test_mode=" + s.env["SC_TEST_MODE"]}
+		// The node name to internal IP map of the provider inventory (S7 review N5): a plan against the state copy then
+		// counts drift rather than the destroy of every node.
+		if s.prov != nil {
+			if inv, err := s.prov.Inventory(context.Background()); err == nil && inv != nil {
+				nodes := map[string]string{}
+				for _, n := range inv.Nodes {
+					nodes[n.Name] = n.InternalIP
+				}
+				if b, err := json.Marshal(nodes); err == nil {
+					vars = append(vars, "TF_VAR_nodes="+string(b))
+				}
+			}
+		}
+		return vars
 	}
 	return nil
 }

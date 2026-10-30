@@ -3,9 +3,12 @@ package install
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +18,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
+	"strange.company/sc/internal/clock"
 	"strange.company/sc/internal/provider/fake"
 	"strange.company/sc/internal/s3client"
 	"strange.company/sc/internal/tofustate"
@@ -100,6 +104,11 @@ func tofuEnv(env map[string]string, s3 TofuS3, enc tofustate.Encryption) []strin
 			out = append(out, k+"="+v)
 		}
 	}
+	// SC_LAB_S3_CA_FILE (test mode only, plan 50 section 9.2) adds the lab CA for the S3 backend and the aws provider;
+	// AWS_CA_BUNDLE extends the system roots, where SSL_CERT_FILE would replace them.
+	if env["SC_TEST_MODE"] == "1" && env["SC_LAB_S3_CA_FILE"] != "" {
+		out = append(out, "AWS_CA_BUNDLE="+env["SC_LAB_S3_CA_FILE"])
+	}
 	if s3.AccessKey != "" {
 		out = append(out, "AWS_ACCESS_KEY_ID="+s3.AccessKey, "AWS_SECRET_ACCESS_KEY="+s3.SecretKey)
 	}
@@ -124,12 +133,33 @@ func specEncryption(s StorageSpec) tofustate.Encryption {
 	return tofustate.Encryption{Current: s.Passphrase, Generation: gen, Previous: s.Previous}
 }
 
+// varsEnv are the TF_VAR_* of the storage module: the main account for the default provider and, with a state account,
+// the second account for the aliased provider aws.state (empty otherwise: the alias then follows the main account).
 func varsEnv(s StorageSpec) []string {
-	return []string{
+	v := []string{
 		"TF_VAR_bucket_prefix=" + s.Prefix, "TF_VAR_cluster=" + s.Cluster, "TF_VAR_region=" + s.Main.Region,
 		"TF_VAR_endpoint=" + s.Main.Endpoint, "TF_VAR_path_style=" + strconv.FormatBool(s.Main.PathStyle),
+		"TF_VAR_access_key=" + s.Main.AccessKey, "TF_VAR_secret_key=" + s.Main.SecretKey,
 	}
+	if st := s.State; st != nil {
+		v = append(v, "TF_VAR_state_endpoint="+st.Endpoint, "TF_VAR_state_region="+st.Region,
+			"TF_VAR_state_path_style="+strconv.FormatBool(st.PathStyle),
+			"TF_VAR_state_access_key="+st.AccessKey, "TF_VAR_state_secret_key="+st.SecretKey)
+	}
+	return v
 }
+
+// storageResource is the address of a bucket resource of infra/tofu/storage: the buckets of the state account (B1
+// tofu-state and B2 recovery) are the "state" resources on the aliased provider, the others the "this" resources.
+func storageResource(typ, purpose string) string {
+	name := "this"
+	if purpose == "tofu-state" || purpose == "recovery" {
+		name = "state"
+	}
+	return fmt.Sprintf("%s.%s[%q]", typ, name, purpose)
+}
+
+var storageResourceTypes = []string{"aws_s3_bucket", "aws_s3_bucket_versioning", "aws_s3_bucket_public_access_block", "aws_s3_bucket_lifecycle_configuration"}
 
 func (t *ExecTofu) run(ctx context.Context, dir string, env []string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, t.bin(), append([]string{"-chdir=" + dir}, args...)...)
@@ -286,21 +316,9 @@ func (t *ExecTofu) guardPlan(planJSON string) error {
 	return nil
 }
 
-func targetsFor(purposes []string) []string {
-	var out []string
-	for _, p := range purposes {
-		for _, typ := range []string{"aws_s3_bucket", "aws_s3_bucket_versioning", "aws_s3_bucket_public_access_block", "aws_s3_bucket_lifecycle_configuration"} {
-			out = append(out, fmt.Sprintf("-target=%s.this[%q]", typ, p))
-		}
-	}
-	return out
-}
-
 // ApplyStorage plans, guards and applies the module against an encrypted local state. With a state account the
-// module is applied twice, once per credential, each time targeted at the buckets of that account: the state
-// buckets B1 and B2 with the second account's key, the rest with the main key. The module has a single provider
-// block, so the two passes share its configuration and differ only in AWS_* (S6 follow-up: a provider alias
-// in infra/tofu/storage, tier E).
+// module is still applied once: the aliased provider aws.state carries the second account's coordinates (TF_VAR_state_*)
+// and creates the state buckets B1 and B2 there, the default provider the rest with the main account.
 func (t *ExecTofu) ApplyStorage(ctx context.Context, spec StorageSpec) error {
 	hcl, err := t.localBackend(spec)
 	if err != nil {
@@ -309,52 +327,28 @@ func (t *ExecTofu) ApplyStorage(ctx context.Context, spec StorageSpec) error {
 	if err := t.prepare(spec, hcl); err != nil {
 		return err
 	}
-	type pass struct {
-		s3      TofuS3
-		targets []string
+	env := t.env(spec, spec.Main)
+	if err := t.init(ctx, spec, env); err != nil {
+		return err
 	}
-	passes := []pass{{s3: spec.Main}}
-	if spec.State != nil {
-		var inState, inMain []string
-		for _, b := range spec.Buckets {
-			p := strings.TrimPrefix(b.Name, spec.Prefix+"-")
-			if b.StateAccount {
-				inState = append(inState, p)
-			} else {
-				inMain = append(inMain, p)
-			}
-		}
-		sort.Strings(inState)
-		sort.Strings(inMain)
-		passes = []pass{{s3: spec.Main, targets: targetsFor(inMain)}, {s3: *spec.State, targets: targetsFor(inState)}}
+	const planFile = "storage.tfplan"
+	if _, err := t.run(ctx, spec.WorkDir, env, "plan", "-input=false", "-no-color", "-lock-timeout=60s", "-out="+planFile); err != nil {
+		return err
 	}
-	for i, ps := range passes {
-		env := t.env(spec, ps.s3)
-		if err := t.init(ctx, spec, env); err != nil {
-			return err
-		}
-		planFile := fmt.Sprintf("storage-%d.tfplan", i)
-		args := append([]string{"plan", "-input=false", "-no-color", "-lock-timeout=60s", "-out=" + planFile}, ps.targets...)
-		if _, err := t.run(ctx, spec.WorkDir, env, args...); err != nil {
-			return err
-		}
-		js, err := t.run(ctx, spec.WorkDir, env, "show", "-json", planFile)
-		if err != nil {
-			return err
-		}
-		if err := t.guardPlan(js); err != nil {
-			return err
-		}
-		if _, err := t.run(ctx, spec.WorkDir, env, "apply", "-input=false", "-no-color", "-lock-timeout=60s", planFile); err != nil {
-			return err
-		}
+	js, err := t.run(ctx, spec.WorkDir, env, "show", "-json", planFile)
+	if err != nil {
+		return err
 	}
-	return nil
+	if err := t.guardPlan(js); err != nil {
+		return err
+	}
+	_, err = t.run(ctx, spec.WorkDir, env, "apply", "-input=false", "-no-color", "-lock-timeout=60s", planFile)
+	return err
 }
 
 // ImportStorage rebuilds the storage state of existing buckets (plan 06 `state import --module storage`): a fresh
-// encrypted local state is filled with `tofu import` of every resource of every bucket (the provider credential is
-// the account's of the bucket, as in ApplyStorage). The caller checks the plan and migrates it to the remote object,
+// encrypted local state is filled with `tofu import` of every resource of every bucket (both accounts reach the module through
+// TF_VAR_*, as in ApplyStorage). The caller checks the plan and migrates it to the remote object,
 // replacing the state encrypted under another passphrase.
 func (t *ExecTofu) ImportStorage(ctx context.Context, spec StorageSpec, remote RemoteState) error {
 	for _, f := range localStateFiles(spec) {
@@ -369,34 +363,15 @@ func (t *ExecTofu) ImportStorage(ctx context.Context, spec StorageSpec, remote R
 	if err := t.prepare(spec, hcl); err != nil {
 		return err
 	}
-	type pass struct {
-		s3      TofuS3
-		buckets []BucketSpec
+	env := t.env(spec, spec.Main)
+	if err := t.init(ctx, spec, env); err != nil {
+		return err
 	}
-	passes := []pass{{s3: spec.Main, buckets: spec.Buckets}}
-	if spec.State != nil {
-		var inState, inMain []BucketSpec
-		for _, b := range spec.Buckets {
-			if b.StateAccount {
-				inState = append(inState, b)
-			} else {
-				inMain = append(inMain, b)
-			}
-		}
-		passes = []pass{{s3: spec.Main, buckets: inMain}, {s3: *spec.State, buckets: inState}}
-	}
-	for _, ps := range passes {
-		env := t.env(spec, ps.s3)
-		if err := t.init(ctx, spec, env); err != nil {
-			return err
-		}
-		for _, b := range ps.buckets {
-			p := strings.TrimPrefix(b.Name, spec.Prefix+"-")
-			for _, typ := range []string{"aws_s3_bucket", "aws_s3_bucket_versioning", "aws_s3_bucket_public_access_block", "aws_s3_bucket_lifecycle_configuration"} {
-				addr := fmt.Sprintf("%s.this[%q]", typ, p)
-				if _, err := t.run(ctx, spec.WorkDir, env, "import", "-input=false", "-no-color", "-lock-timeout=60s", addr, b.Name); err != nil {
-					return err
-				}
+	for _, b := range spec.Buckets {
+		p := strings.TrimPrefix(b.Name, spec.Prefix+"-")
+		for _, typ := range storageResourceTypes {
+			if _, err := t.run(ctx, spec.WorkDir, env, "import", "-input=false", "-no-color", "-lock-timeout=60s", storageResource(typ, p), b.Name); err != nil {
+				return err
 			}
 		}
 	}
@@ -459,7 +434,40 @@ func (t *ExecTofu) Migrate(ctx context.Context, spec StorageSpec, remote RemoteS
 	if err := os.WriteFile(filepath.Join(spec.WorkDir, "_backend.tf"), []byte(rhcl), 0o600); err != nil {
 		return err
 	}
+	err = t.init(ctx, spec, t.env(spec, remote.S3), "-migrate-state", "-force-copy")
+	if err == nil || !strings.Contains(err.Error(), "decryption failed") {
+		return err
+	}
+	// The remote object holds a state encrypted under a passphrase this run does not have: an identity that was abandoned
+	// and re-imported (S8b1 N-1; the old passphrase is lost by design, so no fallback key provider can open it). The
+	// locally rebuilt state replaces it. The bucket is versioned, so the old object stays as a noncurrent version.
+	if derr := t.deleteRemote(ctx, remote); derr != nil {
+		return fmt.Errorf("%w (replacing the remote state failed: %v)", err, derr)
+	}
 	return t.init(ctx, spec, t.env(spec, remote.S3), "-migrate-state", "-force-copy")
+}
+
+// deleteRemote deletes the current version of the remote state object.
+func (t *ExecTofu) deleteRemote(ctx context.Context, remote RemoteState) error {
+	cfg := s3client.Config{Endpoint: remote.S3.Endpoint, Region: remote.S3.Region, AccessKey: remote.S3.AccessKey,
+		SecretKey: remote.S3.SecretKey, PathStyle: remote.S3.PathStyle, Clock: clock.Real{}}
+	if ca := t.Env["SC_LAB_S3_CA_FILE"]; ca != "" && t.Env["SC_TEST_MODE"] == "1" {
+		pemBytes, err := os.ReadFile(ca)
+		if err != nil {
+			return err
+		}
+		pool, err := x509.SystemCertPool()
+		if err != nil || pool == nil {
+			pool = x509.NewCertPool()
+		}
+		pool.AppendCertsFromPEM(pemBytes)
+		cfg.HTTP = &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}}}
+	}
+	c, err := s3client.New(cfg)
+	if err != nil {
+		return err
+	}
+	return c.Bucket(remote.Bucket).Delete(ctx, remote.Key, "")
 }
 
 // Changes counts the resource changes a plan shows against the backend.
