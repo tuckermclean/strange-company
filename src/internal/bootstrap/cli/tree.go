@@ -44,7 +44,7 @@ var tree = map[string]*cmd{
 	"verify":           leaf("json only= check= ack-notifications", 1),
 	"expand":           leaf(pipeline, 0),
 	"destroy":          leaf("dry-run skip-final-backup accept-unmirrored-loss", 0),
-	"recover":          leaf(pipeline+" scope= *", 0),
+	"recover":          leaf(pipeline+" scope= bundle= old-installation= no-backups from-capsule= pitr-target= skip-longhorn-restore= drill drill-source= step=", 0),
 	"report":           leaf("run-id= json", 0),
 	"unlock":           leaf("run-id=", 0),
 	"version":          leaf("", 0),
@@ -104,8 +104,8 @@ var tree = map[string]*cmd{
 	}),
 	"provider": group(map[string]*cmd{"delete": leaf("id= confirm-fenced=", 0)}),
 	"bundle": group(map[string]*cmd{
-		"open": leaf("show extract", 0), "manifest": leaf("*", 0), "export-env": leaf("*", 0),
-		"stage-rotation": leaf("abort", 0),
+		"open": leaf("show= extract= from-offcluster=", 0), "manifest": leaf("*", 0), "export-env": leaf("*", 0),
+		"stage-rotation": leaf("abort", 1),
 	}),
 	"sops-age": group(map[string]*cmd{
 		"install": leaf("exact", 0), "fingerprint": leaf("*", 0), "rewrap-job": leaf("new-recipients=", 0),
@@ -113,12 +113,12 @@ var tree = map[string]*cmd{
 	"k3s":  group(map[string]*cmd{"secrets-encrypt-rotate": leaf("", 0)}),
 	"etcd": group(map[string]*cmd{"snapshot": leaf("name=", 0)}),
 	"mirror": group(map[string]*cmd{
-		"status": leaf("json", 0), "sync": leaf("*", 0), "verify": leaf("run-id=", 0), "check-github": leaf("*", 0),
-		"recreate": leaf("*", 0), "freshness": leaf("*", 0), "compare-refs": leaf("*", 0),
+		"status": leaf("json", 0), "sync": leaf("*", 0), "verify": leaf("run-id=", 0), "check-github": leaf("init-canary repository=", 0),
+		"recreate": leaf("token-from=", 0), "freshness": leaf("*", 0), "compare-refs": leaf("*", 0),
 		"delete-github-tag": leaf("*", 1), "gh-api": leaf("*", 1),
 	}),
 	"access": group(map[string]*cmd{
-		"join": leaf("*", 1), "leave": leaf("*", 1), "reset-mfa": leaf("*", 1), "revoke-sessions": leaf("*", 1),
+		"join": leaf("email= name= role=", 1), "leave": leaf("*", 1), "reset-mfa": leaf("*", 1), "revoke-sessions": leaf("*", 1),
 	}),
 	"authentik":  group(map[string]*cmd{"key-hash": leaf("source=", 0), "blueprints": leaf("*", 0), "login-test": leaf("*", 0)}),
 	"breakglass": group(map[string]*cmd{"drill": leaf("only=", 0)}),
