@@ -56,7 +56,7 @@ var (
 	codeSpan    = regexp.MustCompile("`([^`\n]+)`")
 	angleHolder = regexp.MustCompile(`<[^<>]*>`)
 	lowerWord   = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
-	fenceStart  = regexp.MustCompile("^\\s*(```|~~~)")
+	fenceStart  = regexp.MustCompile("^\\s*(?:(?:[0-9]+\\.|[-*+])\\s+)?(```|~~~)")
 )
 
 type tok struct {
