@@ -1,6 +1,7 @@
 #!/bin/sh
 # Strange Company wrapper (plan 02 sections 7.1, 14.2 to 14.6).
-#   ./bootstrap [--engine docker|podman] [--toolbox-build] [--env-file PATH] <command> [args...]
+#   ./bootstrap [--engine docker|podman] [--toolbox-build] [--env-file PATH] [global flags] [<command> [args...]]
+#   (global flags: --from-phase P --retry-phase P --non-interactive --profile P --log-format json|text -v --confirm-plan|storage|budget|backstops|install V; a bare ./bootstrap is run)
 #   ./bootstrap exec  [--image toolbox|ci] [--network bridge|host|none] -- <cmd> [args...]
 #   ./bootstrap shell [--image toolbox|ci] [--network bridge|host|none]
 #   ./bootstrap build [--no-cache] [--platform P] [-f FILE] --target toolbox|ci       (what `make toolbox` calls)
@@ -35,6 +36,19 @@ engine=${SC_CONTAINER_ENGINE:-}
 build=${SC_TOOLBOX_BUILD:-0}
 envfile=
 envfile_explicit=0
+gflags= # sc-bootstrap global flags given before the verb (plan 50 section 7.1): single-quoted words for eval
+nl='
+'
+no_newline() { # NAME VALUE: a newline in a forwarded value would add argv words or -e forwards
+	case $2 in *"$nl"*) usage "$1 must not contain a newline" ;; esac
+}
+add_gflag() {
+	no_newline "a flag value" "$1"
+	gflags="$gflags '$(printf '%s' "$1" | sed "s/'/'\\\\''/g")'"
+}
+value_flag() { # FLAG VALUE: a value flag takes a value, never another flag
+	case $2 in -*) usage "$1 needs a value, not the flag '$2'" ;; esac
+}
 while [ $# -gt 0 ]; do
 	case $1 in
 	--engine)
@@ -61,16 +75,44 @@ while [ $# -gt 0 ]; do
 		envfile_explicit=1
 		shift
 		;;
+	--non-interactive | -v | --verbose)
+		add_gflag "$1"
+		shift
+		;;
+	--profile | --log-format | --confirm-plan | --confirm-storage | --confirm-budget | --confirm-backstops | --confirm-install | --from-phase | --retry-phase)
+		[ $# -ge 2 ] || usage "$1 needs a value"
+		value_flag "$1" "$2"
+		if [ "$1" = --log-format ]; then
+			case $2 in json | text) ;; *) usage "--log-format must be json or text" ;; esac
+		fi
+		add_gflag "$1"
+		add_gflag "$2"
+		shift 2
+		;;
+	--profile=* | --log-format=* | --confirm-plan=* | --confirm-storage=* | --confirm-budget=* | --confirm-backstops=* | --confirm-install=* | --from-phase=* | --retry-phase=* | --resume-after-emergency)
+		if [ "${1%%=*}" = --log-format ]; then
+			case ${1#*=} in json | text) ;; *) usage "--log-format must be json or text" ;; esac
+		fi
+		add_gflag "$1"
+		shift
+		;;
 	*) break ;;
 	esac
 done
-[ $# -gt 0 ] || usage "missing command"
-command=$1
-shift
+# A bare ./bootstrap, or one with only global flags, means run (plan 50 section 7.1).
+if [ $# -gt 0 ]; then
+	command=$1
+	shift
+else
+	command=run
+fi
 case $command in
 exec | shell | build) ;;
 run | plan | preflight | status | verify | expand | destroy | recover | report | rotate | state | unlock | version) ;;
 *) usage "unknown command '$command'" ;;
+esac
+case $command in
+exec | shell | build) [ -z "$gflags" ] || usage "the global flags (--non-interactive, --profile, --log-format, -v, --confirm-*) apply to sc-bootstrap commands, not to $command" ;;
 esac
 
 image=
@@ -187,6 +229,7 @@ hostpath() { # PATH: a leading ~/ is the host $HOME
 mode_of() { ls -ldL -- "$1" 2>/dev/null | cut -c1-10; }
 group_other_bits() { mode_of "$1" | cut -c5-10; }
 in_mounts=
+rt_env=
 bs=
 if [ "$command" != build ] && [ "$image" != toolbox ] && [ "$envfile_explicit" = 1 ]; then
 	# the ci image gets no operator inputs; a missing explicit file is still worth saying
@@ -225,6 +268,24 @@ $SSH_AUTH_SOCK:/run/sc-input/ssh-agent.sock"
 		fi
 		;;
 	esac
+	# Plan 50 section 9.2 runtime-only variables and the passphrase file (plan 02 section 14.5): toolbox image only.
+	if [ -n "${SC_RECOVERY_PASSPHRASE_FILE:-}" ]; then
+		no_newline SC_RECOVERY_PASSPHRASE_FILE "$SC_RECOVERY_PASSPHRASE_FILE"
+		pp=$(hostpath "$SC_RECOVERY_PASSPHRASE_FILE")
+		case $pp in /*) ;; *) pp=$start_dir/$pp ;; esac
+		[ -f "$pp" ] || usage "SC_RECOVERY_PASSPHRASE_FILE $pp does not exist"
+		in_mounts="$in_mounts
+$pp:/run/sc-input/passphrase:ro"
+		rt_env="$rt_env
+SC_RECOVERY_PASSPHRASE_FILE=/run/sc-input/passphrase"
+	fi
+	for v in SC_TEST_MODE SC_TEST_CRASH_AT SC_TEST_STOP_AFTER SC_CONFIRM_PLAN SC_CONFIRM_STORAGE SC_CONFIRM_BUDGET \
+		SC_VERIFY_MEMORY_WINDOW SC_VERIFY_SETTLE SC_VERIFY_RECONCILE_TIMEOUT SC_ACCEPT_STALE_PRICES SC_LAB_S3_INCLUSTER_ENDPOINT; do
+		eval "val=\${$v:-}"
+		no_newline "$v" "$val"
+		[ -z "$val" ] || rt_env="$rt_env
+$v=$val"
+	done
 	bs=${SC_BLACKSTART_DIR:-}
 	if [ -z "$bs" ]; then
 		[ -n "${HOME:-}" ] || die WRAPPER_BLACKSTART_UNSAFE "HOME is unset and SC_BLACKSTART_DIR is not set; cannot place the black-start directory" 2
@@ -419,10 +480,14 @@ if [ -t 0 ] && [ -t 1 ]; then tty=-t; fi
 case $command in
 exec)
 	case $1 in
-	exec | shell | run | plan | preflight | status | verify | expand | destroy | recover | report | rotate | state | unlock | version) set -- exec -- "$@" ;;
+	exec | shell | run | plan | preflight | status | verify | expand | destroy | recover | report | rotate | state | unlock | version | -*) set -- exec -- "$@" ;;
 	esac
 	;;
-*) set -- "$command" "$@" ;;
+*)
+	# The global flags go after the verb's own arguments; sc-bootstrap accepts them on either side of the verb.
+	eval "set -- \"\$@\" $gflags"
+	set -- "$command" "$@"
+	;;
 esac
 
 # Build the engine arguments after the command words in "$@", then rotate the command words to the end.
@@ -448,6 +513,11 @@ for v in HTTP_PROXY HTTPS_PROXY NO_PROXY; do
 	[ -z "$val" ] || set -- "$@" -e "$v=$val"
 done
 if [ -n "$bs" ]; then set -- "$@" -v "$bs:/blackstart"; fi
+while IFS= read -r e; do
+	[ -z "$e" ] || set -- "$@" -e "$e"
+done <<EOT
+$rt_env
+EOT
 while IFS= read -r m; do
 	[ -z "$m" ] || set -- "$@" -v "$m"
 done <<EOT

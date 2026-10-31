@@ -1,0 +1,17 @@
+key_provider "pbkdf2" "current" {
+  passphrase = "{{CURRENT}}"
+}
+
+method "aes_gcm" "current" {
+  keys = key_provider.pbkdf2.current
+}
+
+state {
+  method   = method.aes_gcm.current
+  enforced = true
+}
+
+plan {
+  method   = method.aes_gcm.current
+  enforced = true
+}

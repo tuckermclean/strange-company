@@ -24,16 +24,26 @@ var newGlobRows = []instRow{
 }
 
 // 01-AC-23: valid instances at the version-lock globs (S1) pass naming file and schema.
-func TestInstances_LockGlobsPass_01AC23(t *testing.T) { checkPlaced(t, lockRows) }
+func TestInstances_LockGlobsPass_01AC23(t *testing.T) {
+	t.Parallel()
+	checkPlaced(t, lockRows)
+}
 
 // 01-AC-23: a valid instance at every other table glob passes, naming file and schema.
-func TestInstances_NewGlobsPass_01AC23(t *testing.T) { checkPlaced(t, newGlobRows) }
+func TestInstances_NewGlobsPass_01AC23(t *testing.T) {
+	t.Parallel()
+	checkPlaced(t, newGlobRows)
+}
 
 // 01-AC-23: a violating instance at the same globs fails, naming the file.
-func TestInstances_NewGlobsViolationFails_01AC23(t *testing.T) { checkViolating(t, newGlobRows) }
+func TestInstances_NewGlobsViolationFails_01AC23(t *testing.T) {
+	t.Parallel()
+	checkViolating(t, newGlobRows)
+}
 
 // 01-AC-23: the real governed files each get a pass row and a file+schema output line.
 func TestInstances_RealFilesPass_01AC23(t *testing.T) {
+	t.Parallel()
 	real := []instRow{
 		{".strange-company/repo.yaml", "context.schema.yaml", ""},
 		{".strange-company/policy.yaml", "repo-policy.schema.yaml", ""},
@@ -66,6 +76,7 @@ func TestInstances_RealFilesPass_01AC23(t *testing.T) {
 
 // 01-AC-23: the register files validate against their companion schema; breaking one fails, naming it.
 func TestInstances_RegisterViolationFails_01AC23(t *testing.T) {
+	t.Parallel()
 	regs := []struct{ path, schema, kind string }{
 		{"contracts/alert-catalog.yaml", "alert-catalog.schema.yaml", "AlertCatalog"},
 		{"contracts/secret-classes.yaml", "secret-classes.schema.yaml", "SecretClassRegister"},
@@ -92,6 +103,7 @@ func TestInstances_RegisterViolationFails_01AC23(t *testing.T) {
 
 // 01-AC-23: a profile file with `memory: 8GB` fails, naming substrate.schema.yaml.
 func TestInstances_ProfileMemory8GBFails_01AC23(t *testing.T) {
+	t.Parallel()
 	dir := treeCopy(t)
 	doc, _ := schemaExample(t, repoRoot(t), "substrate.schema.yaml", "BootstrapSubstrate")
 	spec := doc["spec"].(map[string]any)
@@ -113,10 +125,12 @@ func TestInstances_ProfileMemory8GBFails_01AC23(t *testing.T) {
 // 01-AC-23 (decision: missing kind is a kind with no schema, CONTRACT_KIND_UNKNOWN): a file without kind
 // under each kind-selected glob fails.
 func TestInstances_NoKindUnderKindGlobs_01AC23(t *testing.T) {
+	t.Parallel()
 	body := "apiVersion: strange.company/v1alpha1\nmetadata: {name: x}\nspec: {}\n"
 	for _, p := range []string{"infra/profiles/nokind.yaml", "policy/deep/nokind.yaml", "context/nokind.yaml"} {
 		p := p
 		t.Run(strings.ReplaceAll(p, "/", "_"), func(t *testing.T) {
+			t.Parallel()
 			expectFail(t, map[string]string{p: body}, "CONTRACT_KIND_UNKNOWN", p)
 		})
 	}
@@ -125,6 +139,7 @@ func TestInstances_NoKindUnderKindGlobs_01AC23(t *testing.T) {
 // 01-AC-23 (plan: files without kind are mapped by the fixed globs): a kind-less file at a fixed-schema glob
 // is validated against that schema and fails, naming file and schema.
 func TestInstances_NoKindFixedGlobsFail_01AC23(t *testing.T) {
+	t.Parallel()
 	fixed := []instRow{
 		{"infra/catalog/prices/nokind.yaml", "provider.schema.yaml", "InfraPriceCatalog"},
 		{"infra/tofu/x/guard-nokind.yaml", "provider.schema.yaml", "TofuPlanGuard"},
@@ -166,6 +181,7 @@ paths:
 
 // 01-AC-21 (S1 follow-up a): x- keys directly under responses are extensions, not responses.
 func TestInstances_OpenAPIResponsesExtensionIgnored_01AC21(t *testing.T) {
+	t.Parallel()
 	dir := treeCopy(t)
 	writeIn(t, dir, "contracts/fx-respext.openapi.yaml", oasResponses(`        "200":
           description: ok
@@ -188,6 +204,7 @@ func TestInstances_OpenAPIResponsesExtensionIgnored_01AC21(t *testing.T) {
 
 // 01-AC-21 (S1 follow-up b): the pointer in a CONTRACT_OPENAPI_REF_UNRESOLVED line is JSON-pointer escaped.
 func TestInstances_OpenAPIRefPointerEscaped_01AC21(t *testing.T) {
+	t.Parallel()
 	_, out := expectFail(t, map[string]string{"contracts/fx-ptr.openapi.yaml": oasResponses(`        "200":
           description: ok
           content:
@@ -203,6 +220,7 @@ func TestInstances_OpenAPIRefPointerEscaped_01AC21(t *testing.T) {
 
 // 01-AC-21 (S1 follow-up c): an empty x-defs-examples list declares no example and is a wrong shape.
 func TestInstances_EmptyDefsExamplesList_01AC21(t *testing.T) {
+	t.Parallel()
 	body := strings.Replace(schemaHead, "ID", "fx-emptydefs", 1) + kindSchemaTail + `$defs:
   T: {type: object}
 x-defs-examples:

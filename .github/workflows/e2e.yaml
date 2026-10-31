@@ -2,7 +2,8 @@
 # `e2e-gate` always runs and succeeds iff every selected job succeeded (no required check stuck in "expected").
 # F03 jobs: `toolbox` (images and wrapper on Docker rootful), the engine matrix `toolbox-podman` and `toolbox-selinux`,
 # `toolbox-pull-equivalence` (02-AC-4) and `e2e-k3d` (02-AC-12); `verify-e2e` runs make verify offline twice.
-# F07 job: `worker-component` (the harness-fake image rules and the container-level worker suite, Docker and Podman).
+# F07 job: `worker-component` (the harness-fake image rules and the container-level worker suite, Docker and Podman);
+# F08 adds `make test-integration` (06-AC-1, the S3 emulator and real tofu legs) to the same job.
 # Scheduled runs skip a commit that already passed a scheduled run, using a cache marker keyed by the
 # commit SHA rather than a query of earlier runs, so no permission beyond `contents: read` is needed (CD-52).
 name: e2e
@@ -34,6 +35,7 @@ jobs:
       verify-e2e: ${{ steps.select.outputs.verify_e2e }}
       cluster: ${{ steps.select.outputs.e2e_k3d }}
       worker: ${{ steps.select.outputs.worker }}
+      bootstrap-fake: ${{ steps.select.outputs.bootstrap_fake }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -64,12 +66,14 @@ jobs:
           verify_e2e=true
           e2e_k3d=true
           worker=true
+          bootstrap_fake=true
           if [ "$EVENT" = pull_request ]; then
             changed=$(git diff --name-only "$BASE_SHA" HEAD)
             toolbox=false
             verify_e2e=false
             e2e_k3d=false
             worker=false
+            bootstrap_fake=false
             # toolbox also selects the engine matrix (toolbox-podman, toolbox-selinux) and toolbox-pull-equivalence.
             if grep -q -e '^toolbox/' -e '^bootstrap$' -e '^test/e2e/wrapper/' -e '^\.github/workflows/e2e\.yaml$' \
               -e '^test/e2e/selinux/' \
@@ -88,15 +92,21 @@ jobs:
             fi
             # F07 Layer 2: the harness images, the worker and fake-harness code, the suite and the ci image it uses.
             if grep -q -e '^harnesses/' -e '^src/' -e '^test/e2e/worker/' -e '^test/e2e/fake-target/' -e '^toolbox/' \
-              -e '^bootstrap$' -e '^Makefile$' -e '^mk/worker\.mk$' -e '^\.dockerignore$' \
+              -e '^bootstrap$' -e '^Makefile$' -e '^mk/worker\.mk$' -e '^mk/tofu\.mk$' -e '^infra/tofu/' -e '^\.dockerignore$' \
               -e '^\.github/workflows/e2e\.yaml$' <<<"$changed"; then
               worker=true
+            fi
+            # F08 plan 50 section 22: the bootstrap orchestrator against provider fake and the S3 emulator.
+            if grep -q -e '^src/' -e '^toolbox/' -e '^bootstrap$' -e '^Makefile$' -e '^mk/bootstrap\.mk$' -e '^mk/test\.mk$' \
+              -e '^contracts/' -e '^\.github/workflows/e2e\.yaml$' <<<"$changed"; then
+              bootstrap_fake=true
             fi
           elif [ "$EVENT" = schedule ] && [ "$UNCHANGED" = true ]; then
             toolbox=false
             verify_e2e=false
             e2e_k3d=false
             worker=false
+            bootstrap_fake=false
             echo "skipped: unchanged" >> "$GITHUB_STEP_SUMMARY"
           fi
           {
@@ -104,6 +114,7 @@ jobs:
             echo "verify_e2e=$verify_e2e"
             echo "e2e_k3d=$e2e_k3d"
             echo "worker=$worker"
+            echo "bootstrap_fake=$bootstrap_fake"
           } >> "$GITHUB_OUTPUT"
 
   toolbox:
@@ -155,7 +166,8 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
-    timeout-minutes: 60
+    # Two full offline `make verify` runs at about 30 minutes each (F08 added the install and identity tests).
+    timeout-minutes: 90
     env:
       SC_CONTAINER_ENGINE: docker
     steps:
@@ -348,9 +360,42 @@ jobs:
       - name: Container-level worker suite
         run: make test-worker-component
 
+      # 06-AC-1 (and the library legs of 06-AC-2/-3/-4/-8): the conformance suite C1-C8 and the encrypted-state checks
+      # against the SeaweedFS emulator and the real tofu, both inside the ci image.
+      - name: State library against the S3 emulator
+        run: make test-integration
+
+  # 50-AC-4, 50-AC-9, 50-AC-19 (F08 S8b2): the SIGKILL crash matrix, status --json per journal and the new-machine
+  # resume, with provider fake and the SeaweedFS emulator inside the ci image.
+  e2e-bootstrap-fake:
+    needs: changes
+    if: needs.changes.outputs.bootstrap-fake == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 60
+    env:
+      SC_CONTAINER_ENGINE: docker
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # The hosted image ships unused SDKs; the ci image needs about 10 GB with its build cache.
+      - name: Free runner disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          docker image prune -af
+          df -h /
+
+      - name: Bootstrap orchestrator against provider fake (crash matrix)
+        run: make e2e-bootstrap-fake
+
   e2e-gate:
     needs: [changes, toolbox, verify-e2e, toolbox-podman, toolbox-selinux, toolbox-pull-equivalence, e2e-k3d,
-      worker-component]
+      worker-component, e2e-bootstrap-fake]
     if: always()
     runs-on: ubuntu-24.04
     permissions:
@@ -367,12 +412,14 @@ jobs:
           PULL_EQUIVALENCE: ${{ needs.toolbox-pull-equivalence.result }}
           E2E_K3D: ${{ needs.e2e-k3d.result }}
           WORKER: ${{ needs.worker-component.result }}
+          BOOTSTRAP_FAKE: ${{ needs.e2e-bootstrap-fake.result }}
         run: |
           echo "changes=$CHANGES toolbox=$TOOLBOX verify-e2e=$VERIFY_E2E toolbox-podman=$TOOLBOX_PODMAN"
           echo "toolbox-selinux=$TOOLBOX_SELINUX toolbox-pull-equivalence=$PULL_EQUIVALENCE e2e-k3d=$E2E_K3D"
-          echo "worker-component=$WORKER"
+          echo "worker-component=$WORKER e2e-bootstrap-fake=$BOOTSTRAP_FAKE"
           [ "$CHANGES" = success ] || exit 1
-          for r in "$TOOLBOX" "$VERIFY_E2E" "$TOOLBOX_PODMAN" "$TOOLBOX_SELINUX" "$PULL_EQUIVALENCE" "$E2E_K3D" "$WORKER"; do
+          for r in "$TOOLBOX" "$VERIFY_E2E" "$TOOLBOX_PODMAN" "$TOOLBOX_SELINUX" "$PULL_EQUIVALENCE" "$E2E_K3D" "$WORKER" \
+            "$BOOTSTRAP_FAKE"; do
             case $r in
               success | skipped) ;;
               *) exit 1 ;;

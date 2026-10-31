@@ -10,7 +10,9 @@ description: |
     `sc-restore-test`; ADR-0553). They upload to
     `s3://<prefix>-evidence/restore-tests/<test_id>/<YYYY>/<MM>/<started_at>-<result_id>.json`.
   - the off-cluster OpenTofu state test `./bootstrap state verify` (plan 06), which
-    uploads to `s3://<prefix>-tofu-state/<cluster>/restore-tests/<started_at>.json`.
+    uploads to `s3://<prefix>-tofu-state/<cluster>/restore-tests/<started_at>.json`. It
+    lists the tested modules in the optional `modules` field (empty for an install with
+    no OpenTofu module, CD-70(b)).
   - operator drills (`rt-blackstart-drill`, `rt-drill-*`), uploaded by the toolbox.
 
   The Job's exit code is the alerting signal (exit 0 if and only if every
@@ -132,6 +134,14 @@ properties:
   duration_seconds:
     type: number
     minimum: 0
+  modules:
+    description: >
+      Names of the OpenTofu modules a state test covered (`./bootstrap state verify`, plan 06 section 20.1);
+      empty for an install with no module (CD-70(b)). Written by no other test.
+    type: array
+    items:
+      type: string
+      pattern: "^[a-z][a-z0-9-]*$"
   decided_at:
     description: >
       Drills and real recoveries only: when the operator decided to rebuild (RTO clock start,

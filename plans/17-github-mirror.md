@@ -432,7 +432,7 @@ A `projects/*` repository in `forge/forge.yaml` may declare one `pushMirrors` en
 ## 16. Retry behavior
 
 - Forgejo retries a failed push at every interval (10 min) and on every new push (sync-on-commit). There is no tight loop.
-- `sc-bootstrap mirror sync/verify` waits are bounded (5 min each). forge-init M3/M4 failures are non-fatal at P05 (`mirror: pending`) and fatal at P06; `./bootstrap` resume re-runs them. After 3 identical failures plan 50 stops with `NEEDS_OPERATOR`.
+- The waits of `sc-bootstrap mirror sync` and `sc-bootstrap mirror verify` are bounded (5 min each). forge-init M3/M4 failures are non-fatal at P05 (`mirror: pending`) and fatal at P06; `./bootstrap` resume re-runs them. After 3 identical failures plan 50 stops with `NEEDS_OPERATOR`.
 - GitHub API calls from the probe and the CLI: 3 attempts with exponential backoff (2, 4, 8 s) on 5xx and connection errors; on `403` with `x-ratelimit-remaining: 0` or `429`, wait until reset (max 15 min) and export `sc_github_api_up 0` meanwhile.
 - Non-fast-forward rejections are never retried with force by any Strange Company tool.
 

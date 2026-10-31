@@ -195,10 +195,14 @@ var lockRows = []instRow{
 }
 
 // 01-AC-23: violating lock instances at the same globs fail, naming the file.
-func TestInstances_LockGlobsViolationFails_01AC23(t *testing.T) { checkViolating(t, lockRows) }
+func TestInstances_LockGlobsViolationFails_01AC23(t *testing.T) {
+	t.Parallel()
+	checkViolating(t, lockRows)
+}
 
 // 01-AC-23: a versions/x.yaml with kind HelmLock fails CONTRACT_KIND_UNKNOWN.
 func TestInstances_HelmLockKindUnknown_01AC23(t *testing.T) {
+	t.Parallel()
 	body := "apiVersion: strange.company/v1alpha1\nkind: HelmLock\nspec: {}\n"
 	expectFail(t, map[string]string{"versions/x.yaml": body}, "CONTRACT_KIND_UNKNOWN", "versions/x.yaml")
 }
@@ -206,6 +210,7 @@ func TestInstances_HelmLockKindUnknown_01AC23(t *testing.T) {
 // 01-AC-23 (decision: plan 01 8.3 is silent on the ID for a missing kind; it is a kind with no schema, so
 // CONTRACT_KIND_UNKNOWN): a file under a kind-selected glob without kind fails.
 func TestInstances_NoKindUnderVersionsGlob_01AC23(t *testing.T) {
+	t.Parallel()
 	body := "apiVersion: strange.company/v1alpha1\nspec: {}\n"
 	expectFail(t, map[string]string{"versions/nokind.yaml": body}, "CONTRACT_KIND_UNKNOWN", "versions/nokind.yaml")
 }

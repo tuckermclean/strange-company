@@ -1,0 +1,706 @@
+$schema: https://json-schema.org/draft/2020-12/schema
+$id: https://strange.company/contracts/bootstrap-config/v1alpha1
+title: BootstrapConfig
+description: |
+  Normalized installation configuration produced by sc-bootstrap from
+  `bootstrap.env` (plan 50 §9). It contains **no secret values**. Every secret is
+  a `secretRef` naming the environment variable (or file) that supplies it and
+  the secret class it belongs to (master plan §9 / plan 35). Because it contains
+  no secrets, this document is committed verbatim as
+  `gitops/clusters/<cluster>/bootstrap-config.yaml` and is the configuration that
+  `./bootstrap recover` reads after a black-start clone (plan 50 §14.9).
+
+  Environment-variable → field mapping is normative in plan 50 §9.2.
+  Owned by plan 50.
+type: object
+additionalProperties: false
+required: [apiVersion, kind, metadata, spec]
+properties:
+  apiVersion:
+    const: strange.company/v1alpha1
+  kind:
+    const: BootstrapConfig
+  metadata:
+    type: object
+    additionalProperties: false
+    required: [name, installUid, generatedAt, generatedBy, envDigest]
+    properties:
+      name:
+        description: Equals spec.cluster.name.
+        $ref: '#/$defs/clusterName'
+      installUid:
+        description: The installation identity (journal `install_uid`, bundle manifest). Read by PF-04, recover `unlock` and journal-loss recovery (BOOT-14).
+        type: string
+        format: uuid
+        pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+      generatedAt:
+        type: string
+        format: date-time
+      generatedBy:
+        description: sc-bootstrap version string.
+        type: string
+      envDigest:
+        description: sha256 of the canonicalized non-secret variable set (secret values excluded) used for drift detection.
+        type: string
+        pattern: '^sha256:[0-9a-f]{64}$'
+  spec:
+    type: object
+    additionalProperties: false
+    required: [cluster, provider, ssh, ingress, objectStorage, githubMirror, notifications, models]
+    properties:
+      cluster:
+        type: object
+        additionalProperties: false
+        required: [name, baseDomain, adminEmail, profile]
+        properties:
+          name:
+            $ref: '#/$defs/clusterName'
+          baseDomain:
+            type: string
+            pattern: '^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$'
+          adminEmail:
+            type: string
+            format: email
+          profile:
+            description: Active profile name; `infra/profiles/<profile>.yaml` (BootstrapSubstrate at install, ClusterProfile after expand).
+            type: string
+            pattern: '^[a-z][a-z0-9-]{1,61}[a-z0-9]$'
+      provider:
+        type: object
+        additionalProperties: false
+        required: [name, expectedNodeCount, maxMonthlyCost]
+        properties:
+          name:
+            enum: [ovh, existing, fake]
+          region:
+            type: string
+            minLength: 1
+          expectedNodeCount:
+            type: integer
+            minimum: 1
+            maximum: 9
+          machineClass:
+            description: Catalogue productId (provider.schema.yaml#/$defs/InfraPriceCatalog). Required for paid providers.
+            type: string
+            pattern: '^[a-z0-9][a-z0-9-]{2,62}$'
+          maxMonthlyCost:
+            type: object
+            additionalProperties: false
+            required: [amount, currency]
+            properties:
+              amount:
+                type: string
+                pattern: '^(0|[1-9][0-9]{0,6})(\.[0-9]{1,2})?$'
+              currency:
+                type: string
+                pattern: '^[A-Z]{3}$'
+          ovh:
+            type: object
+            additionalProperties: false
+            required: [endpoint, productLine, credentials]
+            properties:
+              endpoint:
+                enum: [ovh-eu, ovh-ca, ovh-us]
+              subsidiary:
+                description: OVH billing subsidiary (FR, IE, DE, GB, CA, US, ...). Default read from /me at preflight.
+                type: string
+                pattern: '^[A-Z]{2,4}$'
+              productLine:
+                description: vps = fallback (a), public-cloud = fallback (b) of plan 04 §14.
+                enum: [vps, public-cloud]
+              cloudProjectId:
+                type: string
+                pattern: '^[0-9a-f]{32}$'
+              credentials:
+                type: object
+                additionalProperties: false
+                required: [applicationKey, applicationSecret, consumerKey]
+                properties:
+                  applicationKey: {$ref: '#/$defs/secretRef'}
+                  applicationSecret: {$ref: '#/$defs/secretRef'}
+                  consumerKey: {$ref: '#/$defs/secretRef'}
+          existing:
+            type: object
+            additionalProperties: false
+            required: [nodes]
+            properties:
+              nodes:
+                type: array
+                minItems: 1
+                maxItems: 9
+                items:
+                  type: object
+                  additionalProperties: false
+                  required: [name, ssh]
+                  properties:
+                    name:
+                      type: string
+                      pattern: '^node-[0-9]{2}$'
+                    ssh:
+                      type: object
+                      additionalProperties: false
+                      required: [host, port, user]
+                      properties:
+                        host: {type: string, minLength: 1}
+                        port: {type: integer, minimum: 1, maximum: 65535}
+                        user: {type: string, pattern: '^[a-z_][a-z0-9_-]{0,31}$'}
+                    internalIp:
+                      description: Node IP for k3s when it differs from the SSH host (NAT, lab).
+                      type: string
+                    diskClassOverride:
+                      description: Operator attestation used when discovery cannot classify the disk (plan 05 §14.3).
+                      enum: [ssd, nvme]
+                    hostKeyFingerprint:
+                      type: string
+                      pattern: '^SHA256:[A-Za-z0-9+/]{43}$'
+        allOf:
+          - if:
+              properties: {name: {const: ovh}}
+            then:
+              required: [ovh, region, machineClass]
+          - if:
+              properties: {name: {const: existing}}
+            then:
+              required: [existing]
+      ssh:
+        type: object
+        additionalProperties: false
+        required: [privateKey, publicKeyPath, useAgent]
+        properties:
+          privateKey:
+            $ref: '#/$defs/secretRef'
+          publicKeyPath:
+            type: string
+            minLength: 1
+          useAgent:
+            type: boolean
+          allowedCidrs:
+            description: Source CIDRs allowed to reach node SSH (plan 08 applies). Empty = any.
+            type: array
+            items:
+              type: string
+      ingress:
+        type: object
+        additionalProperties: false
+        required: [mode, dnsProvider, acme]
+        properties:
+          mode:
+            description: "A recovery drill uses `tunnel` with `baseDomain: drill.<domain>` and a temporary drill tunnel (plan 45 §20.7); there is no drill-specific mode."
+            enum: [tunnel, direct]
+          dnsProvider:
+            description: |
+              `cloudflare` = sc-bootstrap manages DNS records through the Cloudflare API (plan 09).
+              `manual` = the operator creates the records shown by `sc-bootstrap dns plan`
+              (direct mode only; tunnel mode requires Cloudflare). Env `DNS_PROVIDER`, default `cloudflare`.
+            enum: [cloudflare, manual]
+          acme:
+            description: Public certificate issuance in direct mode (plan 10). Env `ACME_SOLVER`.
+            type: object
+            additionalProperties: false
+            required: [solver]
+            properties:
+              solver:
+                enum: [dns01-cloudflare, dns01-rfc2136, dns01-route53, http01]
+              apiToken:
+                description: Zone-scoped DNS-edit token for the in-cluster ACME solver (SC-DNS-ACME, AUTH-13); env `CLOUDFLARE_ACME_TOKEN`. Never the toolbox token SC-DNS-API.
+                $ref: '#/$defs/secretRef'
+            if: {properties: {solver: {const: dns01-cloudflare}}}
+            then: {required: [apiToken]}
+          cloudflare:
+            description: Used for the tunnel (tunnel mode) and ACME DNS-01 (direct mode). Plan 09/10 own the permissions.
+            type: object
+            additionalProperties: false
+            required: [accountId, apiToken]
+            properties:
+              accountId:
+                type: string
+                pattern: '^[0-9a-f]{32}$'
+              zoneId:
+                type: string
+                pattern: '^[0-9a-f]{32}$'
+              apiToken:
+                $ref: '#/$defs/secretRef'
+        allOf:
+          - if: {properties: {mode: {const: tunnel}}}
+            then:
+              required: [cloudflare]
+              properties: {dnsProvider: {const: cloudflare}}
+          - if: {properties: {dnsProvider: {const: cloudflare}}}
+            then: {required: [cloudflare]}
+          - if: {properties: {acme: {properties: {solver: {const: dns01-cloudflare}}}}}
+            then: {required: [cloudflare]}
+      network:
+        description: Cluster networks (plans 07, 09). Env `POD_CIDR`, `SERVICE_CIDR`; rendered into cluster-vars as `SC_POD_CIDR`, `SC_SERVICE_CIDR`.
+        type: object
+        additionalProperties: false
+        properties:
+          podCidr:
+            type: string
+            pattern: '^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$'
+            default: 10.42.0.0/16
+          serviceCidr:
+            type: string
+            pattern: '^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$'
+            default: 10.43.0.0/16
+      node:
+        description: Node baseline settings (plan 08). Env `NODE_MAINTENANCE_WINDOW` (`<Mon..Sun> HH:MM-HH:MM`, UTC), `NODE_SSH_IPV6`.
+        type: object
+        additionalProperties: false
+        properties:
+          maintenanceWindow:
+            type: object
+            additionalProperties: false
+            required: [weekday, start, end, tz]
+            properties:
+              weekday: {enum: [Mon, Tue, Wed, Thu, Fri, Sat, Sun]}
+              start: {type: string, pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'}
+              end: {type: string, pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'}
+              tz: {const: UTC}
+          sshIpv6:
+            type: boolean
+            default: false
+      objectStorage:
+        type: object
+        additionalProperties: false
+        required: [endpoint, region, bucketPrefix, forcePathStyle, bucketMode, credentials]
+        properties:
+          endpoint:
+            type: string
+            format: uri
+            pattern: '^https://'
+          region:
+            type: string
+            minLength: 1
+          bucketPrefix:
+            description: Buckets are named `<bucketPrefix>-<purpose>` (master plan §6.1, plan 14).
+            type: string
+            pattern: '^[a-z0-9][a-z0-9-]{1,40}[a-z0-9]$'
+          forcePathStyle:
+            type: boolean
+          bucketMode:
+            description: create = the storage root module creates the bucket set; existing = operator pre-created it (plan 06 §9).
+            enum: [create, existing]
+          provider:
+            description: S3 provider adapter (plan 14 §9.6). Env `S3_PROVIDER`, default `generic`; immutable after install.
+            enum: [aws, ovh, b2, generic]
+          credentialMode:
+            description: scoped = one key per credential instance (plan 14 §10); shared = every instance uses the admin key. Env `S3_CREDENTIAL_MODE`.
+            enum: [scoped, shared]
+          objectLock:
+            description: Env `S3_OBJECT_LOCK` (plan 14).
+            enum: [auto, required, 'off']
+          allowWeakProtection:
+            description: Env `S3_ALLOW_WEAK_PROTECTION`; recorded and permanently alerted when true (plan 14).
+            type: boolean
+          stateAccount:
+            description: Second object-storage account holding B1 `tofu-state` and B2 `recovery`; required in `shared` credential mode (plan 14 14-R-2a, BOOT-3). Env `S3_STATE_ACCESS_KEY_ID`, `S3_STATE_SECRET_ACCESS_KEY`, `S3_STATE_ENDPOINT`.
+            type: object
+            additionalProperties: false
+            required: [accessKeyId, secretAccessKey]
+            properties:
+              endpoint: {type: string, format: uri, pattern: '^https://'}
+              accessKeyId: {$ref: '#/$defs/secretRef'}
+              secretAccessKey: {$ref: '#/$defs/secretRef'}
+          allowUnprotectedState:
+            description: Env `S3_ALLOW_UNPROTECTED_STATE`; recorded as `accept-state-unprotected` and alerted permanently.
+            type: boolean
+          privateCidr:
+            description: Env `S3_PRIVATE_CIDR`; required when the endpoint is private or not on 443 (plan 36 `s3-egress`, PF-28).
+            type: string
+            pattern: '^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$'
+          instanceCredentials:
+            description: |
+              Operator-supplied per-instance keys for bucketMode `existing` with credentialMode `scoped`
+              (env `S3_CRED_<INSTANCE>_ACCESS_KEY_ID` / `S3_CRED_<INSTANCE>_SECRET_ACCESS_KEY`, instance
+              name upper-cased with `-` → `_`). Instance names are plan 14 §10's.
+            type: array
+            items:
+              type: object
+              additionalProperties: false
+              required: [instance, accessKeyId, secretAccessKey]
+              properties:
+                instance:
+                  type: string
+                  pattern: '^[a-z][a-z0-9-]{1,40}$'
+                accessKeyId: {$ref: '#/$defs/secretRef'}
+                secretAccessKey: {$ref: '#/$defs/secretRef'}
+          credentials:
+            description: The `admin` credential instance of SC-OBJECT-STORAGE (plan 14 §10).
+            type: object
+            additionalProperties: false
+            required: [accessKeyId, secretAccessKey]
+            properties:
+              accessKeyId: {$ref: '#/$defs/secretRef'}
+              secretAccessKey: {$ref: '#/$defs/secretRef'}
+      githubMirror:
+        type: object
+        additionalProperties: false
+        required: [repository, token, allowPublic]
+        properties:
+          repository:
+            type: string
+            pattern: '^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$'
+          token:
+            $ref: '#/$defs/secretRef'
+          allowPublic:
+            type: boolean
+          probeToken:
+            description: Read-only probe token (SC-GITHUB-PROBE, plan 17). Env `GITHUB_PROBE_TOKEN`; required unless the repository is public.
+            $ref: '#/$defs/secretRef'
+          readToken:
+            description: Read-only token for the RT-6 GitHub black-start test (SC-GITHUB-MIRROR-READ, plan 17); env `GITHUB_MIRROR_READ_TOKEN`; written to SOPS in plan.install-identity (CD-19).
+            $ref: '#/$defs/secretRef'
+          protectionTier:
+            description: Env `GITHUB_MIRROR_PROTECTION_TIER` (plan 17 §9.2).
+            enum: [rulesets, unavailable-accepted]
+      notifications:
+        type: object
+        additionalProperties: false
+        required: [transport, heartbeatUrl]
+        properties:
+          transport:
+            enum: [email, webhook, ntfy, slack, discord, matrix]
+          email:
+            type: object
+            additionalProperties: false
+            required: [smtpHost, smtpPort, from, to, username, password]
+            properties:
+              smtpHost: {type: string}
+              smtpPort: {type: integer, minimum: 1, maximum: 65535}
+              from: {type: string, format: email}
+              to:
+                type: array
+                minItems: 1
+                items: {type: string, format: email}
+              username: {$ref: '#/$defs/secretRef'}
+              password: {$ref: '#/$defs/secretRef'}
+          webhookUrl:
+            description: Used by webhook, ntfy, slack, discord and matrix (bridge) transports.
+            $ref: '#/$defs/secretRef'
+          ntfyToken:
+            $ref: '#/$defs/secretRef'
+          heartbeatUrl:
+            description: External dead-man's-switch URL (ADR-0009). null = total-outage detection absent (reported).
+            oneOf:
+              - type: 'null'
+              - $ref: '#/$defs/secretRef'
+        allOf:
+          - if: {properties: {transport: {const: email}}}
+            then: {required: [email]}
+          - if: {properties: {transport: {enum: [webhook, ntfy, slack, discord, matrix]}}}
+            then: {required: [webhookUrl]}
+      models:
+        type: object
+        additionalProperties: false
+        required: [providers]
+        properties:
+          providers:
+            description: At least one model API credential (SPEC §130). Use is defined by plan 53.
+            type: array
+            minItems: 1
+            items:
+              type: object
+              additionalProperties: false
+              required: [name, apiKey]
+              properties:
+                name:
+                  enum: [anthropic, openai, deepseek, zai, google, openai-compatible]
+                apiKey:
+                  $ref: '#/$defs/secretRef'
+                baseUrl:
+                  type: string
+                  format: uri
+$defs:
+  clusterName:
+    type: string
+    pattern: '^[a-z][a-z0-9-]{1,30}[a-z0-9]$'
+  secretRef:
+    description: Reference to a secret value; never the value itself.
+    type: object
+    additionalProperties: false
+    required: [secretClass]
+    properties:
+      env:
+        type: string
+        pattern: '^[A-Z][A-Z0-9_]{1,63}$'
+      file:
+        description: Path as seen inside the toolbox (e.g. /run/sc/ssh/id_key).
+        type: string
+        pattern: '^/'
+      secretClass:
+        type: string
+        pattern: '^SC-[A-Z0-9-]+$'
+    oneOf:
+      - required: [env]
+      - required: [file]
+examples:
+  - apiVersion: strange.company/v1alpha1
+    kind: BootstrapConfig
+    metadata:
+      name: prod
+      installUid: 6f1c2d3e-4b5a-4c6d-8e7f-0a1b2c3d4e5f
+      generatedAt: '2026-10-13T12:00:00Z'
+      generatedBy: sc-bootstrap v0.1.0
+      envDigest: sha256:3f5e0c9d4a2b1e8f7a6c5d4e3b2a19087f6e5d4c3b2a1908f7e6d5c4b3a29180
+    spec:
+      cluster:
+        name: prod
+        baseDomain: example.com
+        adminEmail: ops@example.com
+        profile: self-hosting-minimum
+      provider:
+        name: ovh
+        region: GRA
+        expectedNodeCount: 1
+        machineClass: ovh-vps-6c-12g-100nvme
+        maxMonthlyCost: {amount: '25.00', currency: EUR}
+        ovh:
+          endpoint: ovh-eu
+          subsidiary: FR
+          productLine: vps
+          credentials:
+            applicationKey: {env: OVH_APPLICATION_KEY, secretClass: SC-INFRA-PROVIDER}
+            applicationSecret: {env: OVH_APPLICATION_SECRET, secretClass: SC-INFRA-PROVIDER}
+            consumerKey: {env: OVH_CONSUMER_KEY, secretClass: SC-INFRA-PROVIDER}
+      ssh:
+        privateKey: {file: /run/sc/ssh/id_key, secretClass: SC-SSH-OPERATOR}
+        publicKeyPath: /run/sc/ssh/id_key.pub
+        useAgent: false
+        allowedCidrs: []
+      ingress:
+        mode: tunnel
+        dnsProvider: cloudflare
+        acme: {solver: dns01-cloudflare, apiToken: {env: CLOUDFLARE_ACME_TOKEN, secretClass: SC-DNS-ACME}}
+        cloudflare:
+          accountId: 0123456789abcdef0123456789abcdef
+          apiToken: {env: CLOUDFLARE_API_TOKEN, secretClass: SC-DNS-API}
+      objectStorage:
+        endpoint: https://s3.gra.io.cloud.ovh.net
+        region: gra
+        bucketPrefix: sc-prod
+        forcePathStyle: false
+        bucketMode: create
+        provider: ovh
+        credentialMode: scoped
+        allowUnprotectedState: false
+        objectLock: auto
+        allowWeakProtection: false
+        credentials:
+          accessKeyId: {env: S3_ACCESS_KEY_ID, secretClass: SC-OBJECT-STORAGE}
+          secretAccessKey: {env: S3_SECRET_ACCESS_KEY, secretClass: SC-OBJECT-STORAGE}
+      githubMirror:
+        repository: example-org/strange-company
+        token: {env: GITHUB_MIRROR_TOKEN, secretClass: SC-GITHUB-MIRROR}
+        allowPublic: false
+        probeToken: {env: GITHUB_PROBE_TOKEN, secretClass: SC-GITHUB-PROBE}
+        readToken: {env: GITHUB_MIRROR_READ_TOKEN, secretClass: SC-GITHUB-MIRROR-READ}
+        protectionTier: rulesets
+      network: {podCidr: 10.42.0.0/16, serviceCidr: 10.43.0.0/16}
+      node:
+        maintenanceWindow: {weekday: Sun, start: '04:00', end: '06:00', tz: UTC}
+        sshIpv6: false
+      notifications:
+        transport: ntfy
+        webhookUrl: {env: NOTIFY_WEBHOOK_URL, secretClass: SC-NOTIFY-TRANSPORT}
+        ntfyToken: {env: NOTIFY_NTFY_TOKEN, secretClass: SC-NOTIFY-TRANSPORT}
+        heartbeatUrl: {env: HEARTBEAT_URL, secretClass: SC-NOTIFY-TRANSPORT}
+      models:
+        providers:
+          - name: anthropic
+            apiKey: {env: ANTHROPIC_API_KEY, secretClass: SC-MODEL-API-KEYS}
+          - name: deepseek
+            apiKey: {env: DEEPSEEK_API_KEY, secretClass: SC-MODEL-API-KEYS}
+  - apiVersion: strange.company/v1alpha1
+    kind: BootstrapConfig
+    metadata:
+      name: lab-ci-4711
+      installUid: 0b7a9c1d-2e3f-4a5b-9c6d-7e8f90a1b2c3
+      generatedAt: '2026-10-13T12:00:00Z'
+      generatedBy: sc-bootstrap v0.1.0
+      envDigest: sha256:0000000000000000000000000000000000000000000000000000000000000001
+    spec:
+      cluster: {name: lab-ci-4711, baseDomain: lab.example.net, adminEmail: ci@example.net, profile: lab-small}
+      provider:
+        name: existing
+        expectedNodeCount: 1
+        maxMonthlyCost: {amount: '0', currency: EUR}
+        existing:
+          nodes:
+            - name: node-01
+              ssh: {host: 127.0.0.1, port: 2201, user: debian}
+              internalIp: 10.77.0.11
+              diskClassOverride: ssd
+      ssh:
+        privateKey: {file: /run/sc/ssh/id_key, secretClass: SC-LAB-SSH}
+        publicKeyPath: /run/sc/ssh/id_key.pub
+        useAgent: false
+      ingress:
+        mode: direct
+        dnsProvider: cloudflare
+        acme: {solver: dns01-cloudflare, apiToken: {env: CLOUDFLARE_ACME_TOKEN, secretClass: SC-DNS-ACME}}
+        cloudflare:
+          accountId: 0123456789abcdef0123456789abcdef
+          apiToken: {env: CLOUDFLARE_API_TOKEN, secretClass: SC-DNS-API}
+      objectStorage:
+        endpoint: https://minio.lab.internal:9000
+        region: us-east-1
+        bucketPrefix: lab-ci-4711
+        forcePathStyle: true
+        bucketMode: create
+        credentials:
+          accessKeyId: {env: S3_ACCESS_KEY_ID, secretClass: SC-OBJECT-STORAGE}
+          secretAccessKey: {env: S3_SECRET_ACCESS_KEY, secretClass: SC-OBJECT-STORAGE}
+      githubMirror:
+        repository: example-org/strange-company-lab
+        token: {env: GITHUB_MIRROR_TOKEN, secretClass: SC-GITHUB-MIRROR}
+        allowPublic: false
+      notifications:
+        transport: webhook
+        webhookUrl: {env: NOTIFY_WEBHOOK_URL, secretClass: SC-NOTIFY-TRANSPORT}
+        heartbeatUrl: null
+      models:
+        providers:
+          - name: openai-compatible
+            apiKey: {env: FAKE_MODEL_API_KEY, secretClass: SC-MODEL-API-KEYS}
+            baseUrl: http://fake-provider.lab.internal:8080
+x-invalid-examples:
+  - reason: a secret value is inlined instead of a secretRef
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: BootstrapConfig
+      metadata: {name: prod, installUid: 6f1c2d3e-4b5a-4c6d-8e7f-0a1b2c3d4e5f, generatedAt: '2026-10-13T12:00:00Z', generatedBy: x, envDigest: 'sha256:3f5e0c9d4a2b1e8f7a6c5d4e3b2a19087f6e5d4c3b2a1908f7e6d5c4b3a29180'}
+      spec:
+        cluster: {name: prod, baseDomain: example.com, adminEmail: ops@example.com, profile: self-hosting-minimum}
+        provider: {name: existing, expectedNodeCount: 1, maxMonthlyCost: {amount: '0', currency: EUR}, existing: {nodes: [{name: node-01, ssh: {host: 198.51.100.7, port: 22, user: debian}}]}}
+        ssh: {privateKey: {file: /run/sc/ssh/id_key, secretClass: SC-SSH-OPERATOR}, publicKeyPath: /run/sc/ssh/id_key.pub, useAgent: false}
+        ingress: {mode: tunnel, dnsProvider: cloudflare, acme: {solver: dns01-cloudflare, apiToken: {env: CLOUDFLARE_ACME_TOKEN, secretClass: SC-DNS-ACME}}, cloudflare: {accountId: 0123456789abcdef0123456789abcdef, apiToken: 'cf-plaintext-token'}}
+        objectStorage: {endpoint: 'https://s3.example.net', region: r, bucketPrefix: sc-prod, forcePathStyle: false, bucketMode: existing, credentials: {accessKeyId: {env: S3_ACCESS_KEY_ID, secretClass: SC-OBJECT-STORAGE}, secretAccessKey: {env: S3_SECRET_ACCESS_KEY, secretClass: SC-OBJECT-STORAGE}}}
+        githubMirror: {repository: o/strange-company, token: {env: GITHUB_MIRROR_TOKEN, secretClass: SC-GITHUB-MIRROR}, allowPublic: false}
+        notifications: {transport: webhook, webhookUrl: {env: NOTIFY_WEBHOOK_URL, secretClass: SC-NOTIFY-TRANSPORT}, heartbeatUrl: null}
+        models: {providers: [{name: anthropic, apiKey: {env: ANTHROPIC_API_KEY, secretClass: SC-MODEL-API-KEYS}}]}
+  - reason: paid provider ovh without machineClass and region
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: BootstrapConfig
+      metadata: {name: prod, installUid: 6f1c2d3e-4b5a-4c6d-8e7f-0a1b2c3d4e5f, generatedAt: '2026-10-13T12:00:00Z', generatedBy: x, envDigest: 'sha256:3f5e0c9d4a2b1e8f7a6c5d4e3b2a19087f6e5d4c3b2a1908f7e6d5c4b3a29180'}
+      spec:
+        cluster: {name: prod, baseDomain: example.com, adminEmail: ops@example.com, profile: self-hosting-minimum}
+        provider: {name: ovh, expectedNodeCount: 1, maxMonthlyCost: {amount: '25', currency: EUR}, ovh: {endpoint: ovh-eu, productLine: vps, credentials: {applicationKey: {env: OVH_APPLICATION_KEY, secretClass: SC-INFRA-PROVIDER}, applicationSecret: {env: OVH_APPLICATION_SECRET, secretClass: SC-INFRA-PROVIDER}, consumerKey: {env: OVH_CONSUMER_KEY, secretClass: SC-INFRA-PROVIDER}}}}
+        ssh: {privateKey: {file: /run/sc/ssh/id_key, secretClass: SC-SSH-OPERATOR}, publicKeyPath: /run/sc/ssh/id_key.pub, useAgent: false}
+        ingress: {mode: tunnel, dnsProvider: cloudflare, acme: {solver: dns01-cloudflare, apiToken: {env: CLOUDFLARE_ACME_TOKEN, secretClass: SC-DNS-ACME}}, cloudflare: {accountId: 0123456789abcdef0123456789abcdef, apiToken: {env: CLOUDFLARE_API_TOKEN, secretClass: SC-DNS-API}}}
+        objectStorage: {endpoint: 'https://s3.example.net', region: r, bucketPrefix: sc-prod, forcePathStyle: false, bucketMode: existing, credentials: {accessKeyId: {env: S3_ACCESS_KEY_ID, secretClass: SC-OBJECT-STORAGE}, secretAccessKey: {env: S3_SECRET_ACCESS_KEY, secretClass: SC-OBJECT-STORAGE}}}
+        githubMirror: {repository: o/strange-company, token: {env: GITHUB_MIRROR_TOKEN, secretClass: SC-GITHUB-MIRROR}, allowPublic: false}
+        notifications: {transport: webhook, webhookUrl: {env: NOTIFY_WEBHOOK_URL, secretClass: SC-NOTIFY-TRANSPORT}, heartbeatUrl: null}
+        models: {providers: [{name: anthropic, apiKey: {env: ANTHROPIC_API_KEY, secretClass: SC-MODEL-API-KEYS}}]}
+  - reason: no model credentials (SPEC §130 requires chosen model API credentials)
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: BootstrapConfig
+      metadata: {name: prod, installUid: 6f1c2d3e-4b5a-4c6d-8e7f-0a1b2c3d4e5f, generatedAt: '2026-10-13T12:00:00Z', generatedBy: x, envDigest: 'sha256:3f5e0c9d4a2b1e8f7a6c5d4e3b2a19087f6e5d4c3b2a1908f7e6d5c4b3a29180'}
+      spec:
+        cluster: {name: prod, baseDomain: example.com, adminEmail: ops@example.com, profile: self-hosting-minimum}
+        provider: {name: existing, expectedNodeCount: 1, maxMonthlyCost: {amount: '0', currency: EUR}, existing: {nodes: [{name: node-01, ssh: {host: 198.51.100.7, port: 22, user: debian}}]}}
+        ssh: {privateKey: {file: /run/sc/ssh/id_key, secretClass: SC-SSH-OPERATOR}, publicKeyPath: /run/sc/ssh/id_key.pub, useAgent: false}
+        ingress: {mode: tunnel, dnsProvider: cloudflare, acme: {solver: dns01-cloudflare, apiToken: {env: CLOUDFLARE_ACME_TOKEN, secretClass: SC-DNS-ACME}}, cloudflare: {accountId: 0123456789abcdef0123456789abcdef, apiToken: {env: CLOUDFLARE_API_TOKEN, secretClass: SC-DNS-API}}}
+        objectStorage: {endpoint: 'https://s3.example.net', region: r, bucketPrefix: sc-prod, forcePathStyle: false, bucketMode: existing, credentials: {accessKeyId: {env: S3_ACCESS_KEY_ID, secretClass: SC-OBJECT-STORAGE}, secretAccessKey: {env: S3_SECRET_ACCESS_KEY, secretClass: SC-OBJECT-STORAGE}}}
+        githubMirror: {repository: o/strange-company, token: {env: GITHUB_MIRROR_TOKEN, secretClass: SC-GITHUB-MIRROR}, allowPublic: false}
+        notifications: {transport: webhook, webhookUrl: {env: NOTIFY_WEBHOOK_URL, secretClass: SC-NOTIFY-TRANSPORT}, heartbeatUrl: null}
+        models: {providers: []}
+  - reason: object storage endpoint must be https
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: BootstrapConfig
+      metadata: {name: prod, installUid: 6f1c2d3e-4b5a-4c6d-8e7f-0a1b2c3d4e5f, generatedAt: '2026-10-13T12:00:00Z', generatedBy: x, envDigest: 'sha256:3f5e0c9d4a2b1e8f7a6c5d4e3b2a19087f6e5d4c3b2a1908f7e6d5c4b3a29180'}
+      spec:
+        cluster: {name: prod, baseDomain: example.com, adminEmail: ops@example.com, profile: self-hosting-minimum}
+        provider: {name: existing, expectedNodeCount: 1, maxMonthlyCost: {amount: '0', currency: EUR}, existing: {nodes: [{name: node-01, ssh: {host: 198.51.100.7, port: 22, user: debian}}]}}
+        ssh: {privateKey: {file: /run/sc/ssh/id_key, secretClass: SC-SSH-OPERATOR}, publicKeyPath: /run/sc/ssh/id_key.pub, useAgent: false}
+        ingress: {mode: tunnel, dnsProvider: cloudflare, acme: {solver: dns01-cloudflare, apiToken: {env: CLOUDFLARE_ACME_TOKEN, secretClass: SC-DNS-ACME}}, cloudflare: {accountId: 0123456789abcdef0123456789abcdef, apiToken: {env: CLOUDFLARE_API_TOKEN, secretClass: SC-DNS-API}}}
+        objectStorage: {endpoint: 'http://s3.example.net', region: r, bucketPrefix: sc-prod, forcePathStyle: false, bucketMode: existing, credentials: {accessKeyId: {env: S3_ACCESS_KEY_ID, secretClass: SC-OBJECT-STORAGE}, secretAccessKey: {env: S3_SECRET_ACCESS_KEY, secretClass: SC-OBJECT-STORAGE}}}
+        githubMirror: {repository: o/strange-company, token: {env: GITHUB_MIRROR_TOKEN, secretClass: SC-GITHUB-MIRROR}, allowPublic: false}
+        notifications: {transport: webhook, webhookUrl: {env: NOTIFY_WEBHOOK_URL, secretClass: SC-NOTIFY-TRANSPORT}, heartbeatUrl: null}
+        models: {providers: [{name: anthropic, apiKey: {env: ANTHROPIC_API_KEY, secretClass: SC-MODEL-API-KEYS}}]}
+  - reason: email transport selected without email settings
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: BootstrapConfig
+      metadata: {name: prod, installUid: 6f1c2d3e-4b5a-4c6d-8e7f-0a1b2c3d4e5f, generatedAt: '2026-10-13T12:00:00Z', generatedBy: x, envDigest: 'sha256:3f5e0c9d4a2b1e8f7a6c5d4e3b2a19087f6e5d4c3b2a1908f7e6d5c4b3a29180'}
+      spec:
+        cluster: {name: prod, baseDomain: example.com, adminEmail: ops@example.com, profile: self-hosting-minimum}
+        provider: {name: existing, expectedNodeCount: 1, maxMonthlyCost: {amount: '0', currency: EUR}, existing: {nodes: [{name: node-01, ssh: {host: 198.51.100.7, port: 22, user: debian}}]}}
+        ssh: {privateKey: {file: /run/sc/ssh/id_key, secretClass: SC-SSH-OPERATOR}, publicKeyPath: /run/sc/ssh/id_key.pub, useAgent: false}
+        ingress: {mode: tunnel, dnsProvider: cloudflare, acme: {solver: dns01-cloudflare, apiToken: {env: CLOUDFLARE_ACME_TOKEN, secretClass: SC-DNS-ACME}}, cloudflare: {accountId: 0123456789abcdef0123456789abcdef, apiToken: {env: CLOUDFLARE_API_TOKEN, secretClass: SC-DNS-API}}}
+        objectStorage: {endpoint: 'https://s3.example.net', region: r, bucketPrefix: sc-prod, forcePathStyle: false, bucketMode: existing, credentials: {accessKeyId: {env: S3_ACCESS_KEY_ID, secretClass: SC-OBJECT-STORAGE}, secretAccessKey: {env: S3_SECRET_ACCESS_KEY, secretClass: SC-OBJECT-STORAGE}}}
+        githubMirror: {repository: o/strange-company, token: {env: GITHUB_MIRROR_TOKEN, secretClass: SC-GITHUB-MIRROR}, allowPublic: false}
+        notifications: {transport: email, heartbeatUrl: null}
+        models: {providers: [{name: anthropic, apiKey: {env: ANTHROPIC_API_KEY, secretClass: SC-MODEL-API-KEYS}}]}
+  - reason: tunnel mode requires Cloudflare (dnsProvider manual is direct-mode only)
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: BootstrapConfig
+      metadata: {name: prod, installUid: 6f1c2d3e-4b5a-4c6d-8e7f-0a1b2c3d4e5f, generatedAt: '2026-10-13T12:00:00Z', generatedBy: x, envDigest: 'sha256:3f5e0c9d4a2b1e8f7a6c5d4e3b2a19087f6e5d4c3b2a1908f7e6d5c4b3a29180'}
+      spec:
+        cluster: {name: prod, baseDomain: example.com, adminEmail: ops@example.com, profile: self-hosting-minimum}
+        provider: {name: existing, expectedNodeCount: 1, maxMonthlyCost: {amount: '0', currency: EUR}, existing: {nodes: [{name: node-01, ssh: {host: 198.51.100.7, port: 22, user: debian}}]}}
+        ssh: {privateKey: {file: /run/sc/ssh/id_key, secretClass: SC-SSH-OPERATOR}, publicKeyPath: /run/sc/ssh/id_key.pub, useAgent: false}
+        ingress: {mode: tunnel, dnsProvider: manual, acme: {solver: http01}}
+        objectStorage: {endpoint: 'https://s3.example.net', region: r, bucketPrefix: sc-prod, forcePathStyle: false, bucketMode: existing, credentials: {accessKeyId: {env: S3_ACCESS_KEY_ID, secretClass: SC-OBJECT-STORAGE}, secretAccessKey: {env: S3_SECRET_ACCESS_KEY, secretClass: SC-OBJECT-STORAGE}}}
+        githubMirror: {repository: o/strange-company, token: {env: GITHUB_MIRROR_TOKEN, secretClass: SC-GITHUB-MIRROR}, allowPublic: false}
+        notifications: {transport: webhook, webhookUrl: {env: NOTIFY_WEBHOOK_URL, secretClass: SC-NOTIFY-TRANSPORT}, heartbeatUrl: null}
+        models: {providers: [{name: anthropic, apiKey: {env: ANTHROPIC_API_KEY, secretClass: SC-MODEL-API-KEYS}}]}
+  - reason: unknown S3 provider adapter
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: BootstrapConfig
+      metadata: {name: prod, installUid: 6f1c2d3e-4b5a-4c6d-8e7f-0a1b2c3d4e5f, generatedAt: '2026-10-13T12:00:00Z', generatedBy: x, envDigest: 'sha256:3f5e0c9d4a2b1e8f7a6c5d4e3b2a19087f6e5d4c3b2a1908f7e6d5c4b3a29180'}
+      spec:
+        cluster: {name: prod, baseDomain: example.com, adminEmail: ops@example.com, profile: self-hosting-minimum}
+        provider: {name: existing, expectedNodeCount: 1, maxMonthlyCost: {amount: '0', currency: EUR}, existing: {nodes: [{name: node-01, ssh: {host: 198.51.100.7, port: 22, user: debian}}]}}
+        ssh: {privateKey: {file: /run/sc/ssh/id_key, secretClass: SC-SSH-OPERATOR}, publicKeyPath: /run/sc/ssh/id_key.pub, useAgent: false}
+        ingress: {mode: direct, dnsProvider: manual, acme: {solver: http01}}
+        objectStorage: {endpoint: 'https://s3.example.net', region: r, bucketPrefix: sc-prod, forcePathStyle: false, bucketMode: existing, provider: r2, credentials: {accessKeyId: {env: S3_ACCESS_KEY_ID, secretClass: SC-OBJECT-STORAGE}, secretAccessKey: {env: S3_SECRET_ACCESS_KEY, secretClass: SC-OBJECT-STORAGE}}}
+        githubMirror: {repository: o/strange-company, token: {env: GITHUB_MIRROR_TOKEN, secretClass: SC-GITHUB-MIRROR}, allowPublic: false}
+        notifications: {transport: webhook, webhookUrl: {env: NOTIFY_WEBHOOK_URL, secretClass: SC-NOTIFY-TRANSPORT}, heartbeatUrl: null}
+        models: {providers: [{name: anthropic, apiKey: {env: ANTHROPIC_API_KEY, secretClass: SC-MODEL-API-KEYS}}]}
+  - reason: metadata.installUid missing (recover unlock and PF-04 depend on it)
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: BootstrapConfig
+      metadata: {name: prod, generatedAt: '2026-10-13T12:00:00Z', generatedBy: x, envDigest: 'sha256:3f5e0c9d4a2b1e8f7a6c5d4e3b2a19087f6e5d4c3b2a1908f7e6d5c4b3a29180'}
+      spec:
+        cluster: {name: prod, baseDomain: example.com, adminEmail: ops@example.com, profile: self-hosting-minimum}
+        provider: {name: existing, expectedNodeCount: 1, maxMonthlyCost: {amount: '0', currency: EUR}, existing: {nodes: [{name: node-01, ssh: {host: 198.51.100.7, port: 22, user: debian}}]}}
+        ssh: {privateKey: {file: /run/sc/ssh/id_key, secretClass: SC-SSH-OPERATOR}, publicKeyPath: /run/sc/ssh/id_key.pub, useAgent: false}
+        ingress: {mode: direct, dnsProvider: manual, acme: {solver: http01}}
+        objectStorage: {endpoint: 'https://s3.example.net', region: r, bucketPrefix: sc-prod, forcePathStyle: false, bucketMode: existing, credentials: {accessKeyId: {env: S3_ACCESS_KEY_ID, secretClass: SC-OBJECT-STORAGE}, secretAccessKey: {env: S3_SECRET_ACCESS_KEY, secretClass: SC-OBJECT-STORAGE}}}
+        githubMirror: {repository: o/strange-company, token: {env: GITHUB_MIRROR_TOKEN, secretClass: SC-GITHUB-MIRROR}, allowPublic: false}
+        notifications: {transport: webhook, webhookUrl: {env: NOTIFY_WEBHOOK_URL, secretClass: SC-NOTIFY-TRANSPORT}, heartbeatUrl: null}
+        models: {providers: [{name: anthropic, apiKey: {env: ANTHROPIC_API_KEY, secretClass: SC-MODEL-API-KEYS}}]}
+  - reason: dns01-cloudflare ACME solver without the in-cluster SC-DNS-ACME token
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: BootstrapConfig
+      metadata: {name: prod, installUid: 6f1c2d3e-4b5a-4c6d-8e7f-0a1b2c3d4e5f, generatedAt: '2026-10-13T12:00:00Z', generatedBy: x, envDigest: 'sha256:3f5e0c9d4a2b1e8f7a6c5d4e3b2a19087f6e5d4c3b2a1908f7e6d5c4b3a29180'}
+      spec:
+        cluster: {name: prod, baseDomain: example.com, adminEmail: ops@example.com, profile: self-hosting-minimum}
+        provider: {name: existing, expectedNodeCount: 1, maxMonthlyCost: {amount: '0', currency: EUR}, existing: {nodes: [{name: node-01, ssh: {host: 198.51.100.7, port: 22, user: debian}}]}}
+        ssh: {privateKey: {file: /run/sc/ssh/id_key, secretClass: SC-SSH-OPERATOR}, publicKeyPath: /run/sc/ssh/id_key.pub, useAgent: false}
+        ingress: {mode: tunnel, dnsProvider: cloudflare, acme: {solver: dns01-cloudflare}, cloudflare: {accountId: 0123456789abcdef0123456789abcdef, apiToken: {env: CLOUDFLARE_API_TOKEN, secretClass: SC-DNS-API}}}
+        objectStorage: {endpoint: 'https://s3.example.net', region: r, bucketPrefix: sc-prod, forcePathStyle: false, bucketMode: existing, credentials: {accessKeyId: {env: S3_ACCESS_KEY_ID, secretClass: SC-OBJECT-STORAGE}, secretAccessKey: {env: S3_SECRET_ACCESS_KEY, secretClass: SC-OBJECT-STORAGE}}}
+        githubMirror: {repository: o/strange-company, token: {env: GITHUB_MIRROR_TOKEN, secretClass: SC-GITHUB-MIRROR}, allowPublic: false}
+        notifications: {transport: webhook, webhookUrl: {env: NOTIFY_WEBHOOK_URL, secretClass: SC-NOTIFY-TRANSPORT}, heartbeatUrl: null}
+        models: {providers: [{name: anthropic, apiKey: {env: ANTHROPIC_API_KEY, secretClass: SC-MODEL-API-KEYS}}]}
+  - reason: stateAccount without its secret key
+    value:
+      apiVersion: strange.company/v1alpha1
+      kind: BootstrapConfig
+      metadata: {name: prod, installUid: 6f1c2d3e-4b5a-4c6d-8e7f-0a1b2c3d4e5f, generatedAt: '2026-10-13T12:00:00Z', generatedBy: x, envDigest: 'sha256:3f5e0c9d4a2b1e8f7a6c5d4e3b2a19087f6e5d4c3b2a1908f7e6d5c4b3a29180'}
+      spec:
+        cluster: {name: prod, baseDomain: example.com, adminEmail: ops@example.com, profile: self-hosting-minimum}
+        provider: {name: existing, expectedNodeCount: 1, maxMonthlyCost: {amount: '0', currency: EUR}, existing: {nodes: [{name: node-01, ssh: {host: 198.51.100.7, port: 22, user: debian}}]}}
+        ssh: {privateKey: {file: /run/sc/ssh/id_key, secretClass: SC-SSH-OPERATOR}, publicKeyPath: /run/sc/ssh/id_key.pub, useAgent: false}
+        ingress: {mode: direct, dnsProvider: manual, acme: {solver: http01}}
+        objectStorage: {endpoint: 'https://s3.example.net', region: r, bucketPrefix: sc-prod, forcePathStyle: false, bucketMode: create, credentialMode: shared, stateAccount: {accessKeyId: {env: S3_STATE_ACCESS_KEY_ID, secretClass: SC-OBJECT-STORAGE}}, credentials: {accessKeyId: {env: S3_ACCESS_KEY_ID, secretClass: SC-OBJECT-STORAGE}, secretAccessKey: {env: S3_SECRET_ACCESS_KEY, secretClass: SC-OBJECT-STORAGE}}}
+        githubMirror: {repository: o/strange-company, token: {env: GITHUB_MIRROR_TOKEN, secretClass: SC-GITHUB-MIRROR}, allowPublic: false}
+        notifications: {transport: webhook, webhookUrl: {env: NOTIFY_WEBHOOK_URL, secretClass: SC-NOTIFY-TRANSPORT}, heartbeatUrl: null}
+        models: {providers: [{name: anthropic, apiKey: {env: ANTHROPIC_API_KEY, secretClass: SC-MODEL-API-KEYS}}]}

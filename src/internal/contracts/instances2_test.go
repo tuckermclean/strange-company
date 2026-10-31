@@ -8,6 +8,7 @@ import (
 // 01-AC-23 (plan 01 8.3): a kind-selected row accepts only the schema files its table row names; a file whose
 // kind belongs to another schema fails CONTRACT_KIND_UNKNOWN naming the file.
 func TestInstances2_CrossSchemaKindRejected_01AC23(t *testing.T) {
+	t.Parallel()
 	root := repoRoot(t)
 	quar, _ := schemaExample(t, root, "test-quarantine.schema.yaml", "TestQuarantine")
 	lock, _ := schemaExample(t, root, "version-locks.schema.yaml", "PlatformVersionLock")
@@ -24,6 +25,7 @@ func TestInstances2_CrossSchemaKindRejected_01AC23(t *testing.T) {
 	for _, c := range cases {
 		c := c
 		t.Run(strings.ReplaceAll(c.path, "/", "_"), func(t *testing.T) {
+			t.Parallel()
 			dir := treeCopy(t)
 			putYAML(t, dir, c.path, c.doc)
 			code, out := makeContracts(t, dir)
@@ -39,9 +41,11 @@ func TestInstances2_CrossSchemaKindRejected_01AC23(t *testing.T) {
 
 // 01-AC-23: a fixed-schema row validates the whole document, so a list or scalar fails with a type mismatch.
 func TestInstances2_FixedRowNonObjectTypeMismatch_01AC23(t *testing.T) {
+	t.Parallel()
 	for name, body := range map[string]string{"list": "- a\n- b\n", "scalar": "just text\n"} {
 		body := body
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			p := "infra/catalog/prices/list.yaml"
 			dir := treeCopy(t)
 			writeIn(t, dir, p, body)
@@ -80,6 +84,7 @@ components:
 // 01-AC-21 (plan 01 8.3): only an operation's responses skip x- keys; a components.responses entry named
 // x-err is a Response Object whose schema examples are validated.
 func TestInstances2_ComponentResponseXNameExampleInvalid_01AC21(t *testing.T) {
+	t.Parallel()
 	body := oasComponentResponse(`      description: error
       content:
         application/json:
@@ -93,6 +98,7 @@ func TestInstances2_ComponentResponseXNameExampleInvalid_01AC21(t *testing.T) {
 
 // 01-AC-21: and its $refs are resolved.
 func TestInstances2_ComponentResponseXNameRefUnresolved_01AC21(t *testing.T) {
+	t.Parallel()
 	body := oasComponentResponse(`      description: error
       content:
         application/json:

@@ -64,6 +64,7 @@ func expectFail(t *testing.T, files map[string]string, subs ...string) (string, 
 
 // 01-AC-21: failing example lines carry the example index.
 func TestReview_ExampleIndexInOutput_01AC21(t *testing.T) {
+	t.Parallel()
 	f := "contracts/fx-idx.schema.yaml"
 	body := strings.Replace(schemaHead, "ID", "fx-idx", 1) + `examples:
   - {name: a}
@@ -77,6 +78,7 @@ x-invalid-examples:
 }
 
 func TestReview_DefsExampleIndexInOutput_01AC21(t *testing.T) {
+	t.Parallel()
 	f := "contracts/fx-defidx.schema.yaml"
 	body := strings.Replace(schemaHead, "ID", "fx-defidx", 1) + `$defs:
   Thing: {type: string, minLength: 1}
@@ -94,6 +96,7 @@ x-defs-examples:
 
 // 01-AC-20: an x-invalid-examples entry with a reason but no value fails and gets no pass row.
 func TestReview_InvalidExampleWithoutValue_01AC20(t *testing.T) {
+	t.Parallel()
 	f := "contracts/fx-novalue.schema.yaml"
 	body := strings.Replace(schemaHead, "ID", "fx-novalue", 1) + `examples:
   - {name: a}
@@ -111,6 +114,7 @@ x-invalid-examples:
 
 // 8.3: every schema example validates, including inline OpenAPI response schemas and nested properties.
 func TestReview_OpenAPIInlineExampleInvalid_01AC21(t *testing.T) {
+	t.Parallel()
 	f := "contracts/fx-inline.openapi.yaml"
 	body := `openapi: 3.1.0
 info:
@@ -140,6 +144,7 @@ components:
 }
 
 func TestReview_OpenAPINestedPropertyExampleInvalid_01AC21(t *testing.T) {
+	t.Parallel()
 	f := "contracts/fx-nested.openapi.yaml"
 	body := `openapi: 3.1.0
 info:
@@ -171,6 +176,7 @@ components:
 
 // 8.3: parse YAML; a second document is rejected.
 func TestReview_SecondYAMLDocument_01AC21(t *testing.T) {
+	t.Parallel()
 	f := "contracts/fx-twodocs.schema.yaml"
 	body := strings.Replace(schemaHead, "ID", "fx-twodocs", 1) + `examples:
   - {name: a}
@@ -185,6 +191,7 @@ extra: document
 
 // 01-AC-24 (6.3 lock files): versions/*.yaml and toolbox/image.lock validate against their kind.
 func TestReview_VersionsLockFilePasses_01AC24(t *testing.T) {
+	t.Parallel()
 	root := repoRoot(t)
 	b, err := os.ReadFile(filepath.Join(root, "contracts", "version-locks.schema.yaml"))
 	if err != nil {
@@ -211,6 +218,7 @@ func TestReview_VersionsLockFilePasses_01AC24(t *testing.T) {
 }
 
 func TestReview_ToolboxImageLockViolation_01AC24(t *testing.T) {
+	t.Parallel()
 	body := `apiVersion: strange.company/v1alpha1
 kind: ToolboxImageLock
 inputsId: ''

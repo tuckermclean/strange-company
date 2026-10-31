@@ -58,7 +58,7 @@
 | V-20 Authentik, SSO, break-glass | `restore-authentik.md`, `break-glass-access.md` (plan 15) |
 | V-21 Woodpecker | `woodpecker-failure.md` (plan 20) |
 | V-22, V-23 Prometheus/Grafana/OTel | `monitoring-failure.md` (plan 38) |
-| V-24 notifications / heartbeat | `notification-failure.md` (plan 42). The gate is automatic delivery evidence; acknowledging the nonces (`./bootstrap verify --ack V-24`) is optional |
+| V-24 notifications / heartbeat | `notification-failure.md` (plan 42). The gate is automatic delivery evidence; acknowledging the nonces (`./bootstrap verify --ack-notifications`) is optional |
 | V-25, V-37 restore tests (primed by `verify.dr-prime` in the same run) | `restore-test-failure.md` (plan 44); re-prime with `./bootstrap verify --only V-25,V-37` |
 | V-26 image pins and published release signatures | plan 23 supply-chain procedure. The installation's own signing chain is a post-transfer step, not a verify failure (CD-19) |
 | V-30 memory budget | [below](#memory-budget) |

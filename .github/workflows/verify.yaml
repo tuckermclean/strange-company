@@ -130,11 +130,12 @@ jobs:
           INPUTS_ID: ${{ steps.toolbox.outputs.id }}
         run: docker load -i ".cache/ci-image/$INPUTS_ID.tar"
 
-      # Plan 52 D4 / 01-AC-6: warm the caches with network, then run make verify offline.
+      # Plan 52 D4 / 01-AC-6: warm the caches with network, then run make verify offline. The networked
+      # `go mod tidy -diff` also fetches dependencies' test-only modules, which the offline one in `make lint` needs.
       - name: Warm the chart and Go module caches
         run: |
           ./bootstrap exec --image ci -- make gitops-cache
-          ./bootstrap exec --image ci -- sh -c 'cd src && go mod download'
+          ./bootstrap exec --image ci -- sh -c 'cd src && go mod download && go mod tidy -diff >/dev/null'
 
       - name: make verify (offline)
         run: ./bootstrap exec --image ci --network none -- make verify

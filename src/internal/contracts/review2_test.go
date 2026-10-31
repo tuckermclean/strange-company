@@ -21,6 +21,7 @@ func countCheck(rows []row, file, check, result string) int {
 
 // 01-AC-20: pass rows are accounted per check ID, not only in total.
 func TestMakeContracts_PerCheckAccounting_01AC20(t *testing.T) {
+	t.Parallel()
 	dir := treeCopy(t)
 	if code, out := makeContracts(t, dir); code != 0 {
 		t.Fatalf("`make contracts` exited %d, want 0:\n%s", code, out)
@@ -67,6 +68,7 @@ const kindSchemaTail = `examples:
 
 // 01-AC-24 / plan 52 D6: kind resolution must be deterministic; ambiguity is a failure.
 func TestReview2_KindAmbiguousWithinFile_01AC24(t *testing.T) {
+	t.Parallel()
 	f := "contracts/fx-kinddup.schema.yaml"
 	body := strings.Replace(schemaHead, "ID", "fx-kinddup", 1) + kindSchemaTail + `$defs:
   A:
@@ -82,6 +84,7 @@ func TestReview2_KindAmbiguousWithinFile_01AC24(t *testing.T) {
 }
 
 func TestReview2_KindAmbiguousAcrossFiles_01AC24(t *testing.T) {
+	t.Parallel()
 	mk := func(id string) string {
 		return strings.Replace(schemaHead, "ID", id, 1) + `  kind: {const: FxCrossKind}
 ` + kindSchemaTail
@@ -94,6 +97,7 @@ func TestReview2_KindAmbiguousAcrossFiles_01AC24(t *testing.T) {
 
 // 8.3: a wrongly shaped container is a failure, not silently skipped.
 func TestReview2_WrongShapedContainers_01AC21(t *testing.T) {
+	t.Parallel()
 	cases := map[string]string{
 		"invalid-as-mapping": "x-invalid-examples:\n  reason: nope\n",
 		"defs-as-list":       "x-defs-examples:\n  - {name: a}\n",
@@ -102,6 +106,7 @@ func TestReview2_WrongShapedContainers_01AC21(t *testing.T) {
 	for name, extra := range cases {
 		extra := extra
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			f := "contracts/fx-shape.schema.yaml"
 			body := strings.Replace(schemaHead, "ID", "fx-shape", 1) + kindSchemaTail + extra
 			expectFail(t, map[string]string{f: body}, "CONTRACT_SCHEMA_INVALID", "fx-shape.schema.yaml")
@@ -135,9 +140,11 @@ components:
 
 // 8.3: every schema example validates, even for properties named like keywords.
 func TestReview2_OpenAPIKeywordNamedProperties_01AC21(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"default", "examples", "enum"} {
 		name := name
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			f := "contracts/fx-kwprop.openapi.yaml"
 			body := openapiWith("        "+name+":\n          type: integer\n          examples: [\"x\"]\n", "")
 			expectFail(t, map[string]string{f: body}, "CONTRACT_OPENAPI_EXAMPLE_INVALID", "fx-kwprop.openapi.yaml")
@@ -147,6 +154,7 @@ func TestReview2_OpenAPIKeywordNamedProperties_01AC21(t *testing.T) {
 
 // An extension object is not a schema: its examples/type members are not checked.
 func TestReview2_OpenAPIExtensionNotASchema_01AC21(t *testing.T) {
+	t.Parallel()
 	dir := treeCopy(t)
 	body := openapiWith("        n: {type: integer, examples: [1]}\n", "x-notes:\n  examples: [1, 2]\n  type: 7\n")
 	writeIn(t, dir, "contracts/fx-ext.openapi.yaml", body)

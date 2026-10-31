@@ -30,7 +30,7 @@ Alert names are the catalogue names in `contracts/alert-catalog.yaml` (CD-01).
 1. **Pods and events.** `./bootstrap exec -- kubectl -n authentik get pods,deploy,hr -o wide` and `./bootstrap exec -- kubectl -n authentik get events --sort-by=.lastTimestamp | tail -30`.
    Expected: `authentik-server` and `authentik-worker` Running/Ready. Branch:
    - `CrashLoopBackOff` → step 2.
-   - `Pending` (insufficient memory, PriorityClass preemption) → `./bootstrap exec -- kubectl describe pod …`; check node memory (`SCNodeMemoryPressure`) and plan 51 capacity; free capacity by pausing workers (`./bootstrap exec -- sc-bootstrap estop set --scope workers --reason authentik-capacity`), never by lowering Authentik limits ad hoc.
+   - `Pending` (insufficient memory, PriorityClass preemption) → `./bootstrap exec -- kubectl describe pod …`; check node memory (`SCNodeMemoryPressure`) and plan 51 capacity; free capacity by pausing workers (`./bootstrap exec -- sc-bootstrap estop set --level workers --reason authentik-capacity`), never by lowering Authentik limits ad hoc.
    - HelmRelease `UpgradeFailed` → §Upgrade.
    - All Running but health failing → step 3.
 2. **Crash cause.** `./bootstrap exec -- kubectl -n authentik logs deploy/authentik-server --previous --tail=100`.

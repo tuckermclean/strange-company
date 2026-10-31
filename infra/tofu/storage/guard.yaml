@@ -1,0 +1,25 @@
+apiVersion: strange.company/v1alpha1
+kind: TofuPlanGuard
+metadata:
+  name: storage
+spec:
+  rootModule: infra/tofu/storage
+  allowedProviders:
+    - registry.opentofu.org/hashicorp/aws
+  resources:
+    - type: aws_s3_bucket
+      paid: false
+      allowedActions: [no-op, read, create, update]
+      maxCount: 10
+    - type: aws_s3_bucket_versioning
+      paid: false
+      allowedActions: [no-op, read, create, update]
+      maxCount: 10
+    - type: aws_s3_bucket_lifecycle_configuration
+      paid: false
+      allowedActions: [no-op, read, create, update]
+      maxCount: 10
+    - type: aws_s3_bucket_public_access_block
+      paid: false
+      allowedActions: [no-op, read, create, update]
+      maxCount: 10

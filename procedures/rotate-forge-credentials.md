@@ -36,7 +36,7 @@ Worker deploy keys (`SC-WORKER-DEPLOY-KEY`) are ephemeral and never rotated by h
 2. Never rotate `SECRET_KEY` with this procedure (ADR-0252). It is not rotatable in place.
 3. For §E, never accept a changed host key on a client "to make it work"; follow the phases.
 4. One credential class per change window, so failures are attributable.
-5. Pause workers for §D and §E: `./bootstrap exec -- sc-bootstrap estop set --scope workers --reason "forge credential rotation"` (plan 33 CLI). Clear it at the end.
+5. Pause workers for §D and §E: `./bootstrap exec -- sc-bootstrap estop set --level workers --reason "forge credential rotation"` (plan 33 CLI). Clear it at the end.
 
 ## Steps
 

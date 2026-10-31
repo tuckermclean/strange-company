@@ -24,6 +24,7 @@ paths:
 
 // 01-AC-21 (plan 01 8.3): responses.default is a Response Object; its $ref must resolve.
 func TestReview3_OpenAPIDefaultResponseRefUnresolved_01AC21(t *testing.T) {
+	t.Parallel()
 	body := oasWithDefaultResponse("          $ref: \"#/components/responses/NoSuchError\"\n")
 	expectFail(t, map[string]string{"contracts/fx-defresp.openapi.yaml": body},
 		"CONTRACT_OPENAPI_REF_UNRESOLVED", "fx-defresp.openapi.yaml")
@@ -31,6 +32,7 @@ func TestReview3_OpenAPIDefaultResponseRefUnresolved_01AC21(t *testing.T) {
 
 // 01-AC-21 (plan 01 8.3): schema examples under responses.default are validated.
 func TestReview3_OpenAPIDefaultResponseExampleInvalid_01AC21(t *testing.T) {
+	t.Parallel()
 	body := oasWithDefaultResponse(`          description: error
           content:
             application/json:
@@ -44,6 +46,7 @@ func TestReview3_OpenAPIDefaultResponseExampleInvalid_01AC21(t *testing.T) {
 
 // 01-AC-21 regression guard: a `default` DATA value is not walked for $ref.
 func TestReview3_OpenAPIDefaultDataNotWalked_01AC21(t *testing.T) {
+	t.Parallel()
 	body := openapiWith("        p:\n          type: object\n          default: {$ref: \"#/nope\"}\n", "")
 	dir := treeCopy(t)
 	writeIn(t, dir, "contracts/fx-defdata.openapi.yaml", body)

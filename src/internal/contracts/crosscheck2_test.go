@@ -48,6 +48,7 @@ var pairCount = regexp.MustCompile(`\b([0-9]+) pairs?\b`)
 
 // 01-AC-22: every verdict row of the listed checks has a non-empty pair; the crosscheck summary counts them all.
 func TestCrosscheck2_RealTreeRowsCarryPairs_01AC22(t *testing.T) {
+	t.Parallel()
 	dir := treeCopy(t)
 	code, out := makeContracts(t, dir)
 	if code != 0 {
@@ -132,6 +133,7 @@ func goZeroFailed(t *testing.T, dir, file string) {
 
 // 01-AC-22: a schema example that Go accepts and Python rejects (named group in a format: regex value) fails the target.
 func TestCrosscheck2_SchemaExampleDivergence_01AC22(t *testing.T) {
+	t.Parallel()
 	f := "contracts/fx-xre.schema.yaml"
 	body := strings.Replace(schemaHead, "ID", "fx-xre", 1) + `  re: {type: string, format: regex}
 examples:
@@ -143,6 +145,7 @@ examples:
 
 // 01-AC-22: the same for an OpenAPI schema example (these rows were never paired).
 func TestCrosscheck2_OpenAPIExampleDivergence_01AC22(t *testing.T) {
+	t.Parallel()
 	f := "contracts/fx-xre.openapi.yaml"
 	body := `openapi: 3.1.0
 info:
@@ -194,6 +197,7 @@ func runCrosscheck(t *testing.T, dir string) (int, string) {
 
 // 01-AC-22: a report with zero pairs fails the crosscheck.
 func TestCrosscheck2_ZeroPairsFails_01AC22(t *testing.T) {
+	t.Parallel()
 	dir := treeCopy(t)
 	writeIn(t, dir, "out/contracts/report.json", "[]\n")
 	code, out := runCrosscheck(t, dir)
@@ -205,6 +209,7 @@ func TestCrosscheck2_ZeroPairsFails_01AC22(t *testing.T) {
 // 01-AC-22: a report row whose pair cannot be evaluated (schema file does not exist) fails the crosscheck,
 // even though other rows carry valid pairs.
 func TestCrosscheck2_UnevaluablePairFails_01AC22(t *testing.T) {
+	t.Parallel()
 	dir := treeCopy(t)
 	if code, out := makeContracts(t, dir); code != 0 {
 		t.Fatalf("`make contracts` exited %d, want 0:\n%s", code, out)
@@ -235,6 +240,7 @@ func TestCrosscheck2_UnevaluablePairFails_01AC22(t *testing.T) {
 // 01-AC-22: Python loads YAML like sc-contracts (YAML 1.2 core): `1:20` is a string, not the YAML 1.1
 // sexagesimal integer 80, so the example passes in both validators.
 func TestCrosscheck2_LoaderEquivalence_01AC22(t *testing.T) {
+	t.Parallel()
 	f := "contracts/fx-yaml12.schema.yaml"
 	body := strings.Replace(schemaHead, "ID", "fx-yaml12", 1) + `  t: {type: string}
 examples:

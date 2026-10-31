@@ -115,13 +115,13 @@ terraform {
 Encryption is supplied through the `TF_ENCRYPTION` environment variable (verify), which holds HCL equivalent to:
 
 ```hcl
-key_provider "pbkdf2" "current" { passphrase = "<SC-TOFU-ENCRYPTION>" }   # ≥16 chars; we generate 43
-method "aes_gcm" "current"      { keys = key_provider.pbkdf2.current }
-state { method = method.aes_gcm.current  enforced = true }
-plan  { method = method.aes_gcm.current  enforced = true }
+key_provider "pbkdf2" "p<N>" { passphrase = "<SC-TOFU-ENCRYPTION>" }   # ≥16 chars; we generate 43
+method "aes_gcm" "p<N>"      { keys = key_provider.pbkdf2.p<N> }
+state { method = method.aes_gcm.p<N>  enforced = true }
+plan  { method = method.aes_gcm.p<N>  enforced = true }
 ```
 
-During a rotation it additionally carries `key_provider "pbkdf2" "previous"`, `method "aes_gcm" "previous"` and `fallback { method = method.aes_gcm.previous }` in both `state` and `plan` (§20.3). The passphrase therefore never appears on disk, in files under `.bootstrap/` or in process arguments. It appears only in the environment of the `tofu` subprocess inside the container.
+`<N>` is the passphrase's generation (the bundle entry generation of that `SC-TOFU-ENCRYPTION` value; the first passphrase is `p1`). The names are stable per passphrase and never renamed: OpenTofu records the key provider's name in the encrypted state's metadata, so renaming a passphrase's provider (for example from `current` to `previous`) makes fallback decryption of existing state fail (verified with OpenTofu 1.13.1 during F08). During a rotation `TF_ENCRYPTION` additionally carries the previous passphrase's `key_provider "pbkdf2" "p<N-1>"` and `method "aes_gcm" "p<N-1>"`, and `fallback { method = method.aes_gcm.p<N-1> }` in both `state` and `plan` (§20.3). The bundle's instance names `current` and `previous` (06-AC-6) are independent of these provider names. The passphrase therefore never appears on disk, in files under `.bootstrap/` or in process arguments. It appears only in the environment of the `tofu` subprocess inside the container.
 
 ## 8. Internal interfaces
 
@@ -287,7 +287,7 @@ It is run automatically by bootstrap `verify` (V-33) and by `expand`, `destroy` 
 ### 20.3 Passphrase rotation (`./bootstrap rotate tofu-passphrase`)
 
 1. Open the bundle. Generate a new passphrase P2 (keeping P1).
-2. Build `TF_ENCRYPTION` with `current = P2` and `fallback = P1` for state and plan.
+2. Build `TF_ENCRYPTION` with P2 as the enforced method (key provider `p<N+1>`, where P1 is `p<N>`) and P1 as the fallback (key provider `p<N>`, unchanged name) for state and plan (§7.3).
 3. For each module, run `tofu apply -refresh-only -auto-approve -input=false`. A refresh-only apply writes state, which re-encrypts it with P2. If a module has no changes and OpenTofu skips the write, force a write via `tofu state push` of the pulled state with a serial bump (verify the exact behavior. 06-AC-6 asserts the outcome, not the mechanism).
 4. Verify that each module decrypts with **P2 only** (no fallback).
 5. Re-seal the bundle (plan 35): P2 becomes the current `SC-TOFU-ENCRYPTION`, and P1 is kept as instance `previous` in the bundle while any **retained** version of any module is still P1-encrypted. `state verify` lists the versions and tries P2 then P1 on each; once no retained version needs P1 (they expired, or were re-encrypted by `./bootstrap rotate tofu-passphrase --reencrypt-history`, which re-uploads each retained noncurrent version re-encrypted with P2 as a new version and then lets the old ones expire), P1 is dropped from the bundle at the next re-seal (BOOT-25). The newest-100 lifecycle rule therefore cannot pin P1 forever.
