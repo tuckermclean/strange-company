@@ -16,7 +16,7 @@ func main() {
 
 func run(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: sc-lint <junit|layout|dag|locks|secrets|quarantine|netcheck|tdd-discipline|licenses|version>")
+		fmt.Fprintln(os.Stderr, "usage: sc-lint <junit|layout|dag|locks|secrets|quarantine|netcheck|tdd-discipline|licenses|config-docs|tofu-validate|version>")
 		return 2
 	}
 	switch args[0] {
@@ -29,7 +29,7 @@ func run(args []string) int {
 	case "version":
 		fmt.Printf("sc-lint %s %s\n", version.Version, version.Commit)
 		return 0
-	case "layout", "dag", "locks", "secrets", "quarantine", "netcheck", "tdd-discipline", "licenses":
+	case "layout", "dag", "locks", "secrets", "quarantine", "netcheck", "tdd-discipline", "licenses", "config-docs", "tofu-validate":
 		return lint.Main(args, os.Stdout, os.Stderr)
 	}
 	fmt.Fprintf(os.Stderr, "sc-lint: unknown subcommand %q\n", args[0])

@@ -1,4 +1,4 @@
-// Command sc-bootstrap is the in-toolbox bootstrap tool (plan 02 section 8).
+// Command sc-bootstrap is the in-toolbox bootstrap tool (plan 02 section 8, plan 50 section 7.1).
 package main
 
 import (
@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	"strange.company/sc/internal/bootstrap/cli"
+	"strange.company/sc/internal/bootstrap/install"
 	"strange.company/sc/internal/toolbox"
 )
 
@@ -16,5 +18,6 @@ func main() {
 			env[k] = v
 		}
 	}
-	os.Exit(toolbox.Run(os.Args[1:], toolbox.ProductionEnv(env), os.Stdout, os.Stderr, time.Sleep))
+	// plan, run and status are the install pipeline; install.Run hands every other command to the command tree.
+	os.Exit(install.Run(os.Args[1:], toolbox.ProductionEnv(env), os.Stdout, os.Stderr, install.Deps{CLI: cli.Deps{Sleep: time.Sleep}}))
 }

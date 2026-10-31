@@ -30,11 +30,7 @@ func (c *cmdCtx) preflight(args []string) int {
 	}
 	failed := false
 	for _, r := range rows {
-		label := r.Status
-		if r.Code != "" {
-			label = r.Code + " (" + r.Status + ")"
-		}
-		fmt.Fprintf(c.out, "%s %s %s\n", r.ID, label, r.Msg)
+		fmt.Fprintln(c.out, FormatRow(r))
 		if r.Status == "fail" {
 			failed = true
 		}
@@ -56,11 +52,11 @@ func (c *cmdCtx) pf01() pfRow {
 	var bad []string
 	for _, t := range rep.Tools {
 		if !t.OK {
-			bad = append(bad, t.Tool)
+			bad = append(bad, fmt.Sprintf("%s (locked %s, observed %q)", t.Tool, t.Expected, strings.Join(strings.Fields(t.Actual), " ")))
 		}
 	}
 	if len(bad) > 0 {
-		return pfRow{"PF-01", "fail", "TOOLBOX_TOOL_MISMATCH", "tools not at their locked version: " + strings.Join(bad, ", ")}
+		return pfRow{"PF-01", "fail", "TOOLBOX_TOOL_MISMATCH", "tools not at their locked version: " + strings.Join(bad, "; ")}
 	}
 	msg := fmt.Sprintf("%d tools match tools.lock.yaml", len(rep.Tools))
 	if ref := c.env["SC_TOOLBOX_IMAGE_REF"]; ref != "" {
@@ -174,4 +170,25 @@ func (c *cmdCtx) pf06(vars map[string]string) pfRow {
 		return fail("SSH_PUBKEY_MISMATCH", fmt.Sprintf("%s does not match the public key derived from %s", pubShown, shown))
 	}
 	return pfRow{"PF-06", "pass", "", fmt.Sprintf("%s: %s", shown, key.Type)}
+}
+
+// PFRow is one preflight result row (plan 50 section 14.2): ID, Status (pass, warn, fail), a stable Code on failure
+// and a message.
+type PFRow = pfRow
+
+// ToolboxRows runs the toolbox-side checks PF-01 (toolbox self-check) and PF-06 (SSH key) for the sc-bootstrap
+// command tree. vars are the parsed bootstrap.env variables; envFile is the file they came from (used by PF-01
+// only through the context).
+func ToolboxRows(env map[string]string, envFile string, vars map[string]string) []PFRow {
+	c := &cmdCtx{env: env, envFile: envFile}
+	return []PFRow{c.pf01(), c.pf06(vars)}
+}
+
+// FormatRow renders a row in the section 14.2 line format: "PF-06 pass msg" or "PF-06 CODE (fail) msg".
+func FormatRow(r PFRow) string {
+	label := r.Status
+	if r.Code != "" {
+		label = r.Code + " (" + r.Status + ")"
+	}
+	return fmt.Sprintf("%s %s %s", r.ID, label, r.Msg)
 }

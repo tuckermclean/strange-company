@@ -1,0 +1,1 @@
+{"resource":{"aws_s3_bucket":{"safe2":{"bucket":"safe2","lifecycle":{"prevent_destroy":true}}}}}

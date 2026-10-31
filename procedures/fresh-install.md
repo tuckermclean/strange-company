@@ -118,7 +118,7 @@ Installing a new Strange Company from a clone, with profile `self-hosting-minimu
 
 ## Follow-ups
 - Set up the installation's own release chain after transfer (CD-19; not part of this procedure): `./bootstrap supply-chain init`, review and merge the trusted-keys PR, then the first own release and promotion (plan 23).
-- Optionally acknowledge the V-24 test notifications: `./bootstrap verify --ack V-24` and type the nonces you received.
+- Optionally acknowledge the V-24 test notifications: `./bootstrap verify --ack-notifications` and type the nonces you received.
 - Run `./bootstrap state verify` monthly (alert `SCTofuStateRestoreTestFailed` fires after 35 days without a passing run; `recover-opentofu-state.md#restore-test`).
 - Run the break-glass drill within 30 days (plan 15).
 - Plan expansion to small-ha when ready (`expand-to-small-ha.md`, plan 47).

@@ -12,6 +12,7 @@ var crosscheckPairs = regexp.MustCompile(`\b([1-9][0-9]*) pairs?\b`)
 // of (schema, instance) pairs and reports zero mismatches. Expected output line (from test/contracts/crosscheck.py
 // or its wrapper): contains "crosscheck", "<N> pairs" with N > 0, and "0 mismatch".
 func TestMakeContracts_CrosscheckRuns_01AC22(t *testing.T) {
+	t.Parallel()
 	dir := treeCopy(t)
 	code, out := makeContracts(t, dir)
 	if code != 0 {
@@ -30,6 +31,7 @@ func TestMakeContracts_CrosscheckRuns_01AC22(t *testing.T) {
 // jsonschema 4.19.2 without optional packages, so "not a uri" is rejected by Go and accepted by Python.
 // The invalid example makes the Go side deterministic too; the crosscheck must name the file.
 func TestMakeContracts_CrosscheckDivergenceFails_01AC22(t *testing.T) {
+	t.Parallel()
 	f := "contracts/fx-diverge-uri.schema.yaml"
 	body := strings.Replace(schemaHead, "ID", "fx-diverge-uri", 1) + `  site: {type: string, format: uri}
 examples:

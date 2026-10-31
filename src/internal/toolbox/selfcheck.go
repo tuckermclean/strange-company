@@ -96,6 +96,7 @@ func checkTool(t lockTool) toolRow {
 	var buf bytes.Buffer
 	cmd := exec.CommandContext(ctx, t.VersionCommand[0], t.VersionCommand[1:]...)
 	cmd.Stdout, cmd.Stderr = &buf, &buf
+	cmd.Env = versionEnv(os.Environ())
 	err = cmd.Run()
 	if ctx.Err() != nil {
 		row.Actual = "timeout"
@@ -114,6 +115,23 @@ func checkTool(t lockTool) toolRow {
 	}
 	row.Actual = out
 	return row
+}
+
+// helmPluginsDir is where the toolbox image unpacks the helm plugins (toolbox/Containerfile sets HELM_PLUGINS to it).
+const helmPluginsDir = "/opt/sc/helm-plugins"
+
+// versionEnv is the environment of a version command: the process environment plus the image's own HELM_PLUGINS,
+// so a caller that starts sc-bootstrap with a stripped environment still sees the plugin the image carries.
+func versionEnv(env []string) []string {
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "HELM_PLUGINS=") {
+			return env
+		}
+	}
+	if st, err := os.Stat(helmPluginsDir); err == nil && st.IsDir() {
+		return append(env, "HELM_PLUGINS="+helmPluginsDir)
+	}
+	return env
 }
 
 func (c *cmdCtx) selfcheck(args []string) int {

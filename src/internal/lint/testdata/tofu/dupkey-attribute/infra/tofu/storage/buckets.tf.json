@@ -1,0 +1,1 @@
+{"resource":{"aws_s3_bucket":{"leak":{"bucket":"leak","lifecycle":{"prevent_destroy":false,"prevent_destroy":true}}}}}

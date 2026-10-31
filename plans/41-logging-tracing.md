@@ -362,7 +362,7 @@ All deterministic, no paid model calls.
 
 ### GATE-H03
 
-- **41-AC-4** `gitops/clusters/<c>/config/telemetry-decision.yaml` exists, validates (`kind: TelemetryDecision`), and its `outcome` follows from its recorded `inputs` by the §9.6 rule (`sc-bootstrap telemetry-decide --verify <file>` exit 0).
+- **41-AC-4** `gitops/clusters/<c>/config/telemetry-decision.yaml` exists, validates (`kind: TelemetryDecision`), and its `outcome` follows from its recorded `inputs` by the §9.6 rule (`sc-bootstrap telemetry-decide --verify` exit 0 on that file).
 - **41-AC-5a** The expand platform PR of H01 contains none of `loki`, `tempo`, `otel-agent` (`git show <H01 merge> --stat | grep -c -E 'loki|tempo|otel-agent'` = 0), and the telemetry PR is a separate merge after H02.
 - **41-AC-5** With outcome `deploy`: `flux get helmreleases -n monitoring loki tempo` both Ready; `kubectl -n monitoring-node get ds otel-agent` has `numberAvailable` = node count.
 - **41-AC-5b** With outcome `tempo-only`: Tempo Ready, no `loki` HelmRelease, no `otel-agent` DaemonSet; 41-AC-8 (Tempo part) and 41-AC-9 (trace part) pass; the Loki/agent ACs are `n/a` and recorded so in the gate evidence.
