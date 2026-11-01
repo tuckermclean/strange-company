@@ -1,0 +1,6 @@
+module: /nonexistent-sc-module-dir
+productCode: vps-2025-model2
+region: {type: ovh_vps, path: "plan[0].configuration[0].value", want: GRA}
+sshKey: {type: ovh_vps, path: public_ssh_key, want: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleOnlyNotARealKeyxxxxxxxxxxxxxxxxxx sc-prod"}
+cases:
+  - {file: valid-create.json, nodes: 1, want: pass}
