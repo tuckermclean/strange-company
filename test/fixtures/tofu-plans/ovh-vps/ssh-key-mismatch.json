@@ -1,0 +1,270 @@
+{
+  "format_version": "1.2",
+  "terraform_version": "1.13.1",
+  "variables": {
+    "cluster": {
+      "value": "prod"
+    },
+    "datacenter": {
+      "value": "GRA"
+    },
+    "image_id": {
+      "value": "img-debian-13-example"
+    },
+    "node_names": {
+      "value": [
+        "node-01"
+      ]
+    },
+    "os_label": {
+      "value": "Debian 13"
+    },
+    "ovh_subsidiary": {
+      "value": "FR"
+    },
+    "plan_code": {
+      "value": "vps-2025-model2"
+    },
+    "ssh_login_pub": {
+      "value": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAnotherExampleKeyNotRealxxxxxxxxxxxxxxxxxx other"
+    }
+  },
+  "planned_values": {
+    "root_module": {
+      "resources": [
+        {
+          "address": "ovh_vps.node[\"node-01\"]",
+          "mode": "managed",
+          "type": "ovh_vps",
+          "name": "node",
+          "index": "node-01",
+          "provider_name": "registry.opentofu.org/ovh/ovh",
+          "schema_version": 0,
+          "values": {
+            "display_name": "sc-prod-node-01",
+            "do_not_send_password": true,
+            "image_id": "img-debian-13-example",
+            "ovh_subsidiary": "FR",
+            "plan": [
+              {
+                "configuration": [
+                  {
+                    "label": "vps_datacenter",
+                    "value": "GRA"
+                  },
+                  {
+                    "label": "vps_os",
+                    "value": "Debian 13"
+                  }
+                ],
+                "duration": "P1M",
+                "item_id": null,
+                "plan_code": "vps-2025-model2",
+                "pricing_mode": "default",
+                "quantity": null
+              }
+            ],
+            "plan_option": null,
+            "public_ssh_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAnotherExampleKeyNotRealxxxxxxxxxxxxxxxxxx other"
+          },
+          "sensitive_values": {
+            "iam": {},
+            "model": {},
+            "monitoring_ip_blocks": [],
+            "order": {},
+            "plan": [
+              {
+                "configuration": [
+                  {},
+                  {}
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "resource_changes": [
+    {
+      "address": "ovh_vps.node[\"node-01\"]",
+      "mode": "managed",
+      "type": "ovh_vps",
+      "name": "node",
+      "index": "node-01",
+      "provider_name": "registry.opentofu.org/ovh/ovh",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "before": null,
+        "after": {
+          "display_name": "sc-prod-node-01",
+          "do_not_send_password": true,
+          "image_id": "img-debian-13-example",
+          "ovh_subsidiary": "FR",
+          "plan": [
+            {
+              "configuration": [
+                {
+                  "label": "vps_datacenter",
+                  "value": "GRA"
+                },
+                {
+                  "label": "vps_os",
+                  "value": "Debian 13"
+                }
+              ],
+              "duration": "P1M",
+              "item_id": null,
+              "plan_code": "vps-2025-model2",
+              "pricing_mode": "default",
+              "quantity": null
+            }
+          ],
+          "plan_option": null,
+          "public_ssh_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAnotherExampleKeyNotRealxxxxxxxxxxxxxxxxxx other"
+        },
+        "after_unknown": {
+          "cluster": true,
+          "iam": true,
+          "id": true,
+          "keymap": true,
+          "memory_limit": true,
+          "model": true,
+          "monitoring_ip_blocks": true,
+          "name": true,
+          "netboot_mode": true,
+          "offer_type": true,
+          "order": true,
+          "plan": [
+            {
+              "configuration": [
+                {},
+                {}
+              ]
+            }
+          ],
+          "service_name": true,
+          "sla_monitoring": true,
+          "state": true,
+          "vcore": true,
+          "zone": true
+        },
+        "before_sensitive": false,
+        "after_sensitive": {
+          "iam": {},
+          "model": {},
+          "monitoring_ip_blocks": [],
+          "order": {},
+          "plan": [
+            {
+              "configuration": [
+                {},
+                {}
+              ]
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration": {
+    "provider_config": {
+      "ovh": {
+        "name": "ovh",
+        "full_name": "registry.opentofu.org/ovh/ovh",
+        "version_constraint": "2.22.0"
+      }
+    },
+    "root_module": {
+      "resources": [
+        {
+          "address": "ovh_vps.node",
+          "mode": "managed",
+          "type": "ovh_vps",
+          "name": "node",
+          "provider_config_key": "ovh",
+          "expressions": {
+            "display_name": {
+              "references": [
+                "var.cluster",
+                "each.key"
+              ]
+            },
+            "do_not_send_password": {
+              "constant_value": true
+            },
+            "image_id": {
+              "references": [
+                "var.image_id"
+              ]
+            },
+            "ovh_subsidiary": {
+              "references": [
+                "var.ovh_subsidiary"
+              ]
+            },
+            "plan": {
+              "references": [
+                "var.plan_code",
+                "var.datacenter",
+                "var.os_label"
+              ]
+            },
+            "public_ssh_key": {
+              "references": [
+                "var.ssh_login_pub"
+              ]
+            }
+          },
+          "schema_version": 0,
+          "for_each_expression": {
+            "references": [
+              "var.node_names"
+            ]
+          }
+        }
+      ],
+      "variables": {
+        "cluster": {
+          "type": "string",
+          "required": true
+        },
+        "datacenter": {
+          "type": "string",
+          "required": true
+        },
+        "image_id": {
+          "type": "string",
+          "required": true
+        },
+        "node_names": {
+          "type": [
+            "list",
+            "string"
+          ],
+          "required": true
+        },
+        "os_label": {
+          "type": "string",
+          "required": true
+        },
+        "ovh_subsidiary": {
+          "type": "string",
+          "required": true
+        },
+        "plan_code": {
+          "type": "string",
+          "required": true
+        },
+        "ssh_login_pub": {
+          "type": "string",
+          "required": true
+        }
+      }
+    }
+  },
+  "timestamp": "2026-11-01T01:23:17Z",
+  "errored": false
+}
