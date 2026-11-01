@@ -4,8 +4,7 @@ package fake
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -17,6 +16,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"strange.company/sc/internal/provider"
+	"strange.company/sc/internal/provider/guard"
 )
 
 const counterFile = "creates"
@@ -95,32 +95,93 @@ func (p *Provider) Preflight(context.Context, provider.Config) ([]provider.Findi
 	return []provider.Finding{{ID: "PF-07", Status: "pass", Message: "the fake provider needs no credentials"}}, nil
 }
 
-// Plan lists the nodes to create; it creates nothing.
+// Plan builds the synthetic plan JSON (PlanJSON plus the scenario's plan.extraResources), judges it with the fake
+// guard (infra/tofu/compute/fake/guard.yaml; a failing verdict is an error carrying its GUARD_* code) and returns the
+// nodes to create with the guard digest of the plan. It creates nothing.
 func (p *Provider) Plan(_ context.Context, d provider.Desired) (*provider.ProviderPlan, error) {
-	ns := nodes(d.NodeCount)
-	h := sha256.Sum256([]byte(fmt.Sprintf("%s/%d", d.Cluster, d.NodeCount)))
-	return &provider.ProviderPlan{Digest: "sha256:" + hex.EncodeToString(h[:]), Nodes: ns}, nil
+	sc, err := p.scenario()
+	if err != nil {
+		return nil, err
+	}
+	g, err := guard.ParseGuard([]byte(guardYAML))
+	if err != nil {
+		return nil, provider.NewError("GUARD_INVALID", err.Error(), false)
+	}
+	pj := planJSON(d.Cluster, d.NodeCount, sc.Plan.ExtraResources)
+	if v := g.Evaluate(pj, guard.Expect{ExpectedNodeCount: d.NodeCount}); !v.Pass {
+		return nil, provider.NewError(v.Code, fmt.Sprintf("%s (%s)", v.Message, v.Address), false)
+	}
+	dg, err := g.Digest(pj)
+	if err != nil {
+		return nil, provider.NewError("GUARD_DIGEST_FAILED", err.Error(), false)
+	}
+	return &provider.ProviderPlan{Digest: "sha256:" + dg, Nodes: nodes(d.NodeCount)}, nil
 }
 
-// Apply "creates" every node of the plan and counts them.
+// Apply "creates" every node of the plan and counts them. With the scenario orphan.crashAfterOrder the order is
+// counted and recorded, then Apply fails before any node counts as recorded (the in-process stand-in for a crash).
 func (p *Provider) Apply(_ context.Context, plan *provider.ProviderPlan) error {
 	if plan == nil {
 		return provider.NewError("PLAN_MISSING", "no plan to apply", false)
 	}
-	return p.bump(len(plan.Nodes))
+	sc, err := p.scenario()
+	if err != nil {
+		return err
+	}
+	if err := p.bump(len(plan.Nodes)); err != nil {
+		return err
+	}
+	if sc.Orphan.CrashAfterOrder {
+		if err := os.WriteFile(filepath.Join(p.dir, orderFile), []byte(strconv.Itoa(len(plan.Nodes))+"\n"), 0o600); err != nil {
+			return err
+		}
+		return provider.NewError("FAKE_CRASH_AFTER_ORDER", "the fake run died after the order was accepted", false)
+	}
+	return nil
 }
 
-// Inventory returns the nodes the counter says exist.
+// orderFile holds the size of an order that was accepted but never recorded.
+const orderFile = "order"
+
+func (p *Provider) unrecordedOrder() (int, error) {
+	b, err := os.ReadFile(filepath.Join(p.dir, orderFile))
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("fake provider: %s does not hold an order size", filepath.Join(p.dir, orderFile))
+	}
+	return n, nil
+}
+
+// Inventory returns the nodes the counter says exist, without those of an unrecorded order.
 func (p *Provider) Inventory(context.Context) (*provider.ProviderOutput, error) {
 	n, err := CreateCount(p.dir)
 	if err != nil {
 		return nil, err
 	}
-	return &provider.ProviderOutput{Nodes: nodes(n)}, nil
+	o, err := p.unrecordedOrder()
+	if err != nil {
+		return nil, err
+	}
+	if o > n {
+		o = n
+	}
+	return &provider.ProviderOutput{Nodes: nodes(n - o)}, nil
 }
 
-// OrphanScan finds nothing.
-func (p *Provider) OrphanScan(context.Context) ([]string, error) { return nil, nil }
+// OrphanScan lists the order that was accepted but never recorded, if any.
+func (p *Provider) OrphanScan(context.Context) ([]string, error) {
+	o, err := p.unrecordedOrder()
+	if err != nil || o == 0 {
+		return nil, err
+	}
+	return []string{fmt.Sprintf("fake order of %d node(s)", o)}, nil
+}
 
 // Expand plans with a higher node count.
 func (p *Provider) Expand(ctx context.Context, target int) (*provider.ProviderPlan, error) {
@@ -163,7 +224,80 @@ func (p *Provider) Discover(context.Context) (*provider.Discovery, error) {
 	return &provider.Discovery{Resolvers: sc.Discovery.Resolvers}, nil
 }
 
+type extraResource struct {
+	Type    string   `yaml:"type"`
+	Name    string   `yaml:"name"`
+	Actions []string `yaml:"actions"`
+}
+
+type scenarioDoc struct {
+	Plan struct {
+		ExtraResources []extraResource `yaml:"extraResources"`
+	} `yaml:"plan"`
+	Orphan struct {
+		CrashAfterOrder bool `yaml:"crashAfterOrder"`
+	} `yaml:"orphan"`
+}
+
+// scenario reads <dir>/scenario.yaml; a missing file is the empty scenario.
+func (p *Provider) scenario() (scenarioDoc, error) {
+	var sc scenarioDoc
+	b, err := os.ReadFile(filepath.Join(p.dir, scenarioFile))
+	if errors.Is(err, os.ErrNotExist) {
+		return sc, nil
+	}
+	if err != nil {
+		return sc, err
+	}
+	if err := yaml.Unmarshal(b, &sc); err != nil {
+		return sc, provider.NewError("SCENARIO_INVALID", fmt.Sprintf("%s is not a fake provider scenario: %v", filepath.Join(p.dir, scenarioFile), err), false)
+	}
+	return sc, nil
+}
+
+// fakeProviderSource is the provider the synthetic plan names. The fake module (infra/tofu/compute/fake) really uses
+// the built-in terraform_data, which no guard admits; the synthetic plan therefore names this registry-style source,
+// which infra/tofu/compute/fake/guard.yaml allows.
+const fakeProviderSource = "registry.opentofu.org/strange-company/fake"
+
 // PlanJSON is the synthetic OpenTofu plan JSON (show -json) the fake feeds through the guard for cluster and nodeCount,
 // without scenario additions.
-// SC-STUB(F09 03-AC-6)
-func PlanJSON(cluster string, nodeCount int) []byte { return nil }
+func PlanJSON(cluster string, nodeCount int) []byte { return planJSON(cluster, nodeCount, nil) }
+
+func planJSON(cluster string, nodeCount int, extras []extraResource) []byte {
+	changes := []any{}
+	for _, n := range nodes(nodeCount) {
+		changes = append(changes, map[string]any{
+			"address": fmt.Sprintf("fake_node.node[%q]", n.Name), "mode": "managed", "type": "fake_node", "name": "node",
+			"index": n.Name, "provider_name": fakeProviderSource,
+			"change": map[string]any{
+				"actions": []string{"create"}, "before": nil,
+				"after":           map[string]any{"cluster": cluster, "name": n.Name, "ip": n.InternalIP},
+				"after_unknown":   map[string]any{"id": true},
+				"after_sensitive": map[string]any{},
+			},
+		})
+	}
+	for _, x := range extras {
+		changes = append(changes, map[string]any{
+			"address": x.Type + "." + x.Name, "mode": "managed", "type": x.Type, "name": x.Name,
+			"provider_name": fakeProviderSource,
+			"change": map[string]any{
+				"actions": x.Actions, "before": nil, "after": map[string]any{"name": x.Name},
+				"after_unknown": map[string]any{}, "after_sensitive": map[string]any{},
+			},
+		})
+	}
+	b, err := json.Marshal(map[string]any{
+		"format_version":    "1.2",
+		"terraform_version": "1.9.0",
+		"resource_changes":  changes,
+		"configuration": map[string]any{
+			"provider_config": map[string]any{"fake": map[string]any{"name": "fake", "full_name": fakeProviderSource}},
+		},
+	})
+	if err != nil {
+		panic(err) // unreachable: only strings and maps of strings
+	}
+	return b
+}

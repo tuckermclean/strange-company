@@ -63,7 +63,11 @@ func (s *sess) providerOrFail() (provider.Provider, error) {
 func wrapProviderErr(err error) error {
 	var pe *provider.Error
 	if errors.As(err, &pe) {
-		return &engine.Error{Code: pe.Code, Message: pe.Message, Retryable: pe.Retryable()}
+		e := &engine.Error{Code: pe.Code, Message: pe.Message, Retryable: pe.Retryable()}
+		if strings.HasPrefix(pe.Code, "GUARD_") {
+			e.Exit = 4 // a guard refusal is a plan the operator must not apply (plan 03 section 14.4)
+		}
+		return e
 	}
 	return err
 }
