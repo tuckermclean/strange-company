@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"testing"
-
 )
 
 // Static HCL checks for the OVH compute modules (04-AC-6, plan 04 section 10 and plan 03 l.143), run by
