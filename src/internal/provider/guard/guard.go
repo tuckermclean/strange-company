@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"regexp"
 	"sort"
 	"strconv"
@@ -70,7 +71,8 @@ type Guard struct {
 }
 
 // Attr names a provider-specific attribute that must equal configuration (rule 6): Path is a dotted path with
-// optional [n] indexes, evaluated on the planned `after` value of every resource of Type.
+// optional [n] indexes and [?key=="value"] selectors (the one list element whose key equals value; no match, several
+// matches or an unknown candidate fail closed), evaluated on the planned `after` value of every resource of Type.
 type Attr struct {
 	Type string
 	Path string
@@ -90,6 +92,7 @@ type Expect struct {
 }
 
 // Verdict is the guard result: Pass, or the first failing rule's Code and the offending resource Address.
+// For GUARD_RULE_UNDECLARED the Address is the literal "rule6", not a resource address.
 type Verdict struct {
 	Pass    bool
 	Code    string
@@ -108,9 +111,21 @@ var (
 // ParseGuard reads a guard.yaml document with strict decoding and the TofuPlanGuard structural rules.
 func ParseGuard(doc []byte) (Guard, error) {
 	var d guardDoc
+	var root yaml.Node
 	dec := yaml.NewDecoder(bytes.NewReader(doc))
-	dec.KnownFields(true)
-	if err := dec.Decode(&d); err != nil {
+	if err := dec.Decode(&root); err != nil {
+		return Guard{}, fmt.Errorf("guard: decode: %w", err)
+	}
+	var extra yaml.Node
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		return Guard{}, errors.New("guard: exactly one YAML document is allowed")
+	}
+	if err := checkScalarTags(&root); err != nil {
+		return Guard{}, err
+	}
+	strict := yaml.NewDecoder(bytes.NewReader(doc))
+	strict.KnownFields(true)
+	if err := strict.Decode(&d); err != nil {
 		return Guard{}, fmt.Errorf("guard: decode: %w", err)
 	}
 	if d.APIVersion != "strange.company/v1alpha1" || d.Kind != "TofuPlanGuard" {
@@ -277,7 +292,7 @@ func (g Guard) Evaluate(planJSON []byte, e Expect) Verdict {
 		if !ok {
 			return fail(CodeUnexpectedResource, rc.Address, "resource type %q is not allowed", rc.Type)
 		}
-		if r.Paid != nil && *r.Paid && forbidReplace && len(rc.Change.Actions) == 2 && has(rc.Change.Actions, "delete") && has(rc.Change.Actions, "create") {
+		if r.isPaid() && forbidReplace && len(rc.Change.Actions) == 2 && has(rc.Change.Actions, "delete") && has(rc.Change.Actions, "create") {
 			return fail(CodeReplaceForbidden, rc.Address, "replace of paid resource %s is forbidden", rc.Type)
 		}
 		for _, a := range rc.Change.Actions {
@@ -311,7 +326,7 @@ func (g Guard) Evaluate(planJSON []byte, e Expect) Verdict {
 	// Rule 5.
 	for _, rc := range p.ResourceChanges {
 		r := g.byTy[rc.Type]
-		if rc.Mode != "managed" || r.Paid == nil || !*r.Paid || r.PriceProductFrom == "" || isDeleteOnly(rc.Change.Actions) {
+		if rc.Mode != "managed" || !r.isPaid() || r.PriceProductFrom == "" || isDeleteOnly(rc.Change.Actions) {
 			continue
 		}
 		val, known := lookup(rc.Change.After, rc.Change.AfterUnknown, r.PriceProductFrom)
@@ -322,6 +337,11 @@ func (g Guard) Evaluate(planJSON []byte, e Expect) Verdict {
 	// Rule 6. A guard with a paid type must come with declared Region and SSHKey attributes.
 	if g.hasPaid() && (e.Region.Type == "" || e.Region.Path == "" || e.SSHKey.Type == "" || e.SSHKey.Path == "") {
 		return fail(CodeRuleUndeclared, "rule6", "region and ssh key attributes (type and path) must be declared for a paid guard")
+	}
+	for _, a := range []Attr{e.Region, e.SSHKey} {
+		if a.Type != "" && !g.byTy[a.Type].isPaid() {
+			return fail(CodeRuleUndeclared, "rule6", "rule 6 type %q is not a paid type of the guard", a.Type)
+		}
 	}
 	for _, chk := range []struct {
 		attr Attr
@@ -425,6 +445,10 @@ func lookup(after, unknown any, path string) (string, bool) {
 	}
 	cur, unk := after, unknown
 	for _, st := range steps {
+		// Unknown (after_unknown true) at any step: the value is computed at apply, fail closed.
+		if b, _ := unk.(bool); b {
+			return "", false
+		}
 		switch st.kind {
 		case 'f':
 			m, isMap := cur.(map[string]any)
@@ -454,13 +478,21 @@ func lookup(after, unknown any, path string) (string, bool) {
 			ul, _ := unk.([]any)
 			found := -1
 			for n, el := range l {
-				em, isMap := el.(map[string]any)
-				if !isMap {
-					continue
-				}
 				var eu any
 				if n < len(ul) {
 					eu = ul[n]
+				}
+				// OpenTofu writes null for an unknown list element and omits unknown object keys from after;
+				// after_unknown carries true for them. Such an element might be the target.
+				if b, _ := eu.(bool); b {
+					return "", false
+				}
+				if b, _ := mapGet(eu, st.selKey).(bool); b {
+					return "", false
+				}
+				em, isMap := el.(map[string]any)
+				if !isMap {
+					continue
 				}
 				kv, known := lookupScalar(em[st.selKey], mapGet(eu, st.selKey))
 				if !known {
@@ -593,4 +625,48 @@ func D8(digest string) string {
 		return digest
 	}
 	return digest[:8]
+}
+
+// checkScalarTags rejects YAML 1.1 boolean spellings (yes, on, ...) and non-string names where the schema wants
+// a boolean or string: a plain scalar must resolve to !!bool for paid and forbidReplace and to !!str for metadata.name.
+func checkScalarTags(root *yaml.Node) error {
+	top := root
+	if top.Kind == yaml.DocumentNode && len(top.Content) == 1 {
+		top = top.Content[0]
+	}
+	field := func(n *yaml.Node, key string) *yaml.Node {
+		if n == nil || n.Kind != yaml.MappingNode {
+			return nil
+		}
+		for i := 0; i+1 < len(n.Content); i += 2 {
+			if n.Content[i].Value == key {
+				return n.Content[i+1]
+			}
+		}
+		return nil
+	}
+	want := func(n *yaml.Node, tag, what string) error {
+		if n == nil {
+			return nil
+		}
+		if n.Kind != yaml.ScalarNode || n.ShortTag() != tag || (tag == "!!bool" && n.Value != "true" && n.Value != "false") {
+			return fmt.Errorf("guard: %s must be a YAML %s", what, tag)
+		}
+		return nil
+	}
+	if err := want(field(field(top, "metadata"), "name"), "!!str", "metadata.name"); err != nil {
+		return err
+	}
+	spec := field(top, "spec")
+	if err := want(field(spec, "forbidReplace"), "!!bool", "spec.forbidReplace"); err != nil {
+		return err
+	}
+	if res := field(spec, "resources"); res != nil && res.Kind == yaml.SequenceNode {
+		for _, r := range res.Content {
+			if err := want(field(r, "paid"), "!!bool", "resource paid"); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
