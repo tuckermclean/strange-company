@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -27,6 +28,8 @@ const (
 	CodeProductMismatch       = "GUARD_PRODUCT_MISMATCH"
 	CodeRegionMismatch        = "GUARD_REGION_MISMATCH"
 	CodeSSHKeyMismatch        = "GUARD_SSH_KEY_MISMATCH"
+	// CodeRuleUndeclared is not a plan code: a paid guard was evaluated without declared rule 6 attributes.
+	CodeRuleUndeclared = "GUARD_RULE_UNDECLARED"
 )
 
 const expectedNodeCountLiteral = "expectedNodeCount"
@@ -36,11 +39,13 @@ var supportedFormatMajors = map[string]bool{"1": true}
 
 type resourceRule struct {
 	Type             string   `yaml:"type"`
-	Paid             bool     `yaml:"paid"`
+	Paid             *bool    `yaml:"paid"`
 	AllowedActions   []string `yaml:"allowedActions"`
 	MaxCount         any      `yaml:"maxCount"`
 	PriceProductFrom string   `yaml:"priceProductFrom"`
 }
+
+func (r resourceRule) isPaid() bool { return r.Paid != nil && *r.Paid }
 
 type guardSpec struct {
 	RootModule       string         `yaml:"rootModule"`
@@ -92,6 +97,14 @@ type Verdict struct {
 	Message string
 }
 
+// Patterns mirror contracts/provider.schema.yaml $defs/TofuPlanGuard (spec.rootModule, spec.allowedProviders items,
+// spec.resources items type); keep them in sync with the schema.
+var (
+	rootModuleRE = regexp.MustCompile(`^infra/tofu/[a-z0-9/-]+$`)
+	providerRE   = regexp.MustCompile(`^registry\.opentofu\.org/[a-z0-9-]+/[a-z0-9-]+$`)
+	typeRE       = regexp.MustCompile(`^[a-z][a-z0-9_]+$`)
+)
+
 // ParseGuard reads a guard.yaml document with strict decoding and the TofuPlanGuard structural rules.
 func ParseGuard(doc []byte) (Guard, error) {
 	var d guardDoc
@@ -109,12 +122,28 @@ func ParseGuard(doc []byte) (Guard, error) {
 	if len(d.Spec.AllowedProviders) == 0 || len(d.Spec.Resources) == 0 {
 		return Guard{}, errors.New("guard: allowedProviders and resources must not be empty")
 	}
+	if !rootModuleRE.MatchString(d.Spec.RootModule) {
+		return Guard{}, fmt.Errorf("guard: rootModule %q does not match the TofuPlanGuard schema", d.Spec.RootModule)
+	}
+	for _, p := range d.Spec.AllowedProviders {
+		if !providerRE.MatchString(p) {
+			return Guard{}, fmt.Errorf("guard: allowedProviders entry %q is not a fully qualified registry.opentofu.org source", p)
+		}
+	}
 	g := Guard{spec: d.Spec, byTy: map[string]resourceRule{}}
 	for _, r := range d.Spec.Resources {
-		if r.Type == "" || len(r.AllowedActions) == 0 {
-			return Guard{}, errors.New("guard: each resource needs type and allowedActions")
+		if r.Type == "" || len(r.AllowedActions) == 0 || r.Paid == nil {
+			return Guard{}, errors.New("guard: each resource needs type, paid and allowedActions")
 		}
+		if !typeRE.MatchString(r.Type) {
+			return Guard{}, fmt.Errorf("guard: resource type %q does not match the TofuPlanGuard schema", r.Type)
+		}
+		seen := map[string]bool{}
 		for _, a := range r.AllowedActions {
+			if seen[a] {
+				return Guard{}, fmt.Errorf("guard: resource %s: duplicate allowed action %q", r.Type, a)
+			}
+			seen[a] = true
 			switch a {
 			case "no-op", "read", "create", "update", "delete":
 			default:
@@ -193,6 +222,15 @@ func has(list []string, s string) bool {
 
 func isDeleteOnly(a []string) bool { return len(a) == 1 && a[0] == "delete" }
 
+func (g Guard) hasPaid() bool {
+	for _, r := range g.spec.Resources {
+		if r.isPaid() {
+			return true
+		}
+	}
+	return false
+}
+
 // Evaluate applies rules 1 to 9 in order to a plan JSON document; the first failure stops evaluation.
 func (g Guard) Evaluate(planJSON []byte, e Expect) Verdict {
 	p, err := parsePlan(planJSON)
@@ -223,14 +261,23 @@ func (g Guard) Evaluate(planJSON []byte, e Expect) Verdict {
 	forbidReplace := g.spec.ForbidReplace == nil || *g.spec.ForbidReplace
 	// Rules 3, 7, 8, 9: managed changes (data reads pass).
 	for _, rc := range p.ResourceChanges {
-		if rc.Mode != "managed" {
+		switch rc.Mode {
+		case "managed":
+		case "data":
+			for _, a := range rc.Change.Actions {
+				if a != "read" && a != "no-op" {
+					return fail(CodeActionForbidden, rc.Address, "data source %s may only be read, not %q", rc.Type, a)
+				}
+			}
 			continue
+		default:
+			return fail(CodeUnexpectedResource, rc.Address, "resource mode %q is not allowed", rc.Mode)
 		}
 		r, ok := g.byTy[rc.Type]
 		if !ok {
 			return fail(CodeUnexpectedResource, rc.Address, "resource type %q is not allowed", rc.Type)
 		}
-		if r.Paid && forbidReplace && len(rc.Change.Actions) == 2 && has(rc.Change.Actions, "delete") && has(rc.Change.Actions, "create") {
+		if r.Paid != nil && *r.Paid && forbidReplace && len(rc.Change.Actions) == 2 && has(rc.Change.Actions, "delete") && has(rc.Change.Actions, "create") {
 			return fail(CodeReplaceForbidden, rc.Address, "replace of paid resource %s is forbidden", rc.Type)
 		}
 		for _, a := range rc.Change.Actions {
@@ -264,7 +311,7 @@ func (g Guard) Evaluate(planJSON []byte, e Expect) Verdict {
 	// Rule 5.
 	for _, rc := range p.ResourceChanges {
 		r := g.byTy[rc.Type]
-		if rc.Mode != "managed" || !r.Paid || r.PriceProductFrom == "" || isDeleteOnly(rc.Change.Actions) {
+		if rc.Mode != "managed" || r.Paid == nil || !*r.Paid || r.PriceProductFrom == "" || isDeleteOnly(rc.Change.Actions) {
 			continue
 		}
 		val, known := lookup(rc.Change.After, rc.Change.AfterUnknown, r.PriceProductFrom)
@@ -272,7 +319,10 @@ func (g Guard) Evaluate(planJSON []byte, e Expect) Verdict {
 			return fail(CodeProductMismatch, rc.Address, "%s is %q, want %q (unknown fails closed)", r.PriceProductFrom, val, e.ProductCode)
 		}
 	}
-	// Rule 6.
+	// Rule 6. A guard with a paid type must come with declared Region and SSHKey attributes.
+	if g.hasPaid() && (e.Region.Type == "" || e.Region.Path == "" || e.SSHKey.Type == "" || e.SSHKey.Path == "") {
+		return fail(CodeRuleUndeclared, "rule6", "region and ssh key attributes (type and path) must be declared for a paid guard")
+	}
 	for _, chk := range []struct {
 		attr Attr
 		code string
@@ -293,38 +343,162 @@ func (g Guard) Evaluate(planJSON []byte, e Expect) Verdict {
 	return Verdict{Pass: true}
 }
 
-// lookup resolves a dotted path with [n] indexes in after; known is false when the value is absent, computed
-// at apply, or not a scalar.
-func lookup(after, unknown any, path string) (string, bool) {
-	cur, unk := after, unknown
-	for _, seg := range strings.Split(path, ".") {
-		name, idx, ok := splitSeg(seg)
-		if !ok {
-			return "", false
+// pathStep is one parsed step of an Attr.Path: a field name, a list index, or a [?key=="value"] selector.
+type pathStep struct {
+	field    string
+	index    int
+	selKey   string
+	selValue string
+	kind     byte // 'f' field, 'i' index, 's' selector
+}
+
+// parsePath parses the Attr.Path grammar:
+//
+//	path = seg { "." seg }
+//	seg  = name { "[" digits "]" } | name '[?' key '=="' value '"]' "." seg
+//
+// A selector is only valid directly after a field name, uses double quotes, needs a non-empty key and value and
+// must be followed by ".field". Anything else is malformed.
+func parsePath(path string) ([]pathStep, bool) {
+	var steps []pathStep
+	i := 0
+	for {
+		j := i
+		for j < len(path) && path[j] != '.' && path[j] != '[' {
+			j++
 		}
-		if name != "" {
+		if j == i {
+			return nil, false
+		}
+		steps = append(steps, pathStep{kind: 'f', field: path[i:j]})
+		i = j
+		selected := false
+		for i < len(path) && path[i] == '[' {
+			if strings.HasPrefix(path[i:], "[?") {
+				if selected || steps[len(steps)-1].kind != 'f' {
+					return nil, false
+				}
+				rest := path[i+2:]
+				key, after, ok := strings.Cut(rest, `=="`)
+				if !ok || key == "" || strings.ContainsAny(key, `[]"=?.`) {
+					return nil, false
+				}
+				val, tail, ok := strings.Cut(after, `"]`)
+				if !ok || val == "" || strings.Contains(val, `"`) {
+					return nil, false
+				}
+				steps = append(steps, pathStep{kind: 's', selKey: key, selValue: val})
+				i = len(path) - len(tail)
+				selected = true
+				if i >= len(path) || path[i] != '.' {
+					return nil, false
+				}
+				continue
+			}
+			end := strings.IndexByte(path[i:], ']')
+			if end < 0 || selected {
+				return nil, false
+			}
+			n, err := strconv.Atoi(path[i+1 : i+end])
+			if err != nil || n < 0 || path[i+1] == '+' {
+				return nil, false
+			}
+			steps = append(steps, pathStep{kind: 'i', index: n})
+			i += end + 1
+		}
+		if i == len(path) {
+			return steps, true
+		}
+		if path[i] != '.' {
+			return nil, false
+		}
+		i++
+	}
+}
+
+// lookup resolves a path (see parsePath) in after; known is false when the path is malformed, the value is absent,
+// computed at apply (after_unknown), not a scalar, or a selector matches no element or more than one element.
+func lookup(after, unknown any, path string) (string, bool) {
+	steps, ok := parsePath(path)
+	if !ok {
+		return "", false
+	}
+	cur, unk := after, unknown
+	for _, st := range steps {
+		switch st.kind {
+		case 'f':
 			m, isMap := cur.(map[string]any)
 			if !isMap {
 				return "", false
 			}
-			cur = m[name]
+			cur = m[st.field]
 			um, _ := unk.(map[string]any)
-			unk = um[name]
-		}
-		for _, i := range idx {
+			unk = um[st.field]
+		case 'i':
 			l, isList := cur.([]any)
-			if !isList || i >= len(l) {
+			if !isList || st.index >= len(l) {
 				return "", false
 			}
-			cur = l[i]
+			cur = l[st.index]
 			ul, _ := unk.([]any)
-			if i < len(ul) {
-				unk = ul[i]
+			if st.index < len(ul) {
+				unk = ul[st.index]
+			} else {
+				unk = nil
+			}
+		case 's':
+			l, isList := cur.([]any)
+			if !isList {
+				return "", false
+			}
+			ul, _ := unk.([]any)
+			found := -1
+			for n, el := range l {
+				em, isMap := el.(map[string]any)
+				if !isMap {
+					continue
+				}
+				var eu any
+				if n < len(ul) {
+					eu = ul[n]
+				}
+				kv, known := lookupScalar(em[st.selKey], mapGet(eu, st.selKey))
+				if !known {
+					// An element whose selector key is absent is not a candidate; one whose key is unknown
+					// could be the target, so the lookup fails closed.
+					if _, present := em[st.selKey]; present {
+						return "", false
+					}
+					continue
+				}
+				if kv != st.selValue {
+					continue
+				}
+				if found >= 0 {
+					return "", false // several matches: ambiguous, fail closed
+				}
+				found = n
+			}
+			if found < 0 {
+				return "", false
+			}
+			cur = l[found]
+			if found < len(ul) {
+				unk = ul[found]
 			} else {
 				unk = nil
 			}
 		}
 	}
+	return lookupScalar(cur, unk)
+}
+
+func mapGet(v any, k string) any {
+	m, _ := v.(map[string]any)
+	return m[k]
+}
+
+func lookupScalar(cur, unk any) (string, bool) {
 	if b, _ := unk.(bool); b {
 		return "", false
 	}
@@ -337,25 +511,6 @@ func lookup(after, unknown any, path string) (string, bool) {
 		return strconv.FormatBool(v), true
 	}
 	return "", false
-}
-
-func splitSeg(seg string) (string, []int, bool) {
-	name, rest, _ := strings.Cut(seg, "[")
-	var idx []int
-	if rest == "" {
-		return name, nil, name != ""
-	}
-	for _, part := range strings.Split("["+rest, "]") {
-		if part == "" {
-			continue
-		}
-		n, err := strconv.Atoi(strings.TrimPrefix(part, "["))
-		if err != nil || n < 0 || !strings.HasPrefix(part, "[") {
-			return "", nil, false
-		}
-		idx = append(idx, n)
-	}
-	return name, idx, true
 }
 
 // mask replaces every value that after_sensitive marks sensitive.
@@ -408,7 +563,7 @@ func (g Guard) Digest(planJSON []byte) (string, error) {
 			actions[i] = a
 		}
 		ch := map[string]any{"actions": actions}
-		if g.byTy[rc.Type].Paid {
+		if g.byTy[rc.Type].isPaid() {
 			ch["after"] = mask(rc.Change.After, rc.Change.AfterSens)
 		}
 		changes = append(changes, map[string]any{"address": rc.Address, "type": rc.Type, "change": ch})
