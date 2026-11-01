@@ -1,0 +1,8 @@
+# Fake provider scenario (plan 03 section 22, F09 03-AC-5). Copied to <.bootstrap/fake-provider>/scenario.yaml.
+# plan.extraResources adds one resource_changes entry per item to the SYNTHETIC plan JSON the fake feeds through the
+# guard (infra/tofu/compute/fake/guard.yaml). A type the guard does not list is GUARD_UNEXPECTED_RESOURCE (exit 4).
+plan:
+  extraResources:
+    - type: fake_unlisted_resource
+      name: rogue
+      actions: [create]

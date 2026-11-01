@@ -162,3 +162,8 @@ func (p *Provider) Discover(context.Context) (*provider.Discovery, error) {
 	}
 	return &provider.Discovery{Resolvers: sc.Discovery.Resolvers}, nil
 }
+
+// PlanJSON is the synthetic OpenTofu plan JSON (show -json) the fake feeds through the guard for cluster and nodeCount,
+// without scenario additions.
+// SC-STUB(F09 03-AC-6)
+func PlanJSON(cluster string, nodeCount int) []byte { return nil }
