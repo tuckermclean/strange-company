@@ -9,7 +9,8 @@ import (
 	"strange.company/sc/internal/clock"
 )
 
-// Rule IDs of the price-catalogue checks of `sc-lint locks` (plan 01 section 6.3 check 5, plan 04 04-AC-1).
+// Rule IDs of the price-catalogue freshness and schema checks of `sc-lint locks` (plan 04 04-AC-1). Plan 01 section 6.3
+// check 5 (the metadata.version bump versus the merge base) is not implemented here.
 const (
 	rulePriceFresh  = "price-catalog-fresh"
 	rulePriceSchema = "price-catalog-schema"

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 
 	"go.yaml.in/yaml/v3"
@@ -76,8 +77,40 @@ func ProfilesCheck(root string) (Result, error) {
 			continue
 		}
 		if !reflect.DeepEqual(got, want) {
-			r.add(ruleProfilesMatch, p.file, "differs from the SPEC.md %ssection block", p.heading)
+			r.add(ruleProfilesMatch, p.file, "differs from the SPEC.md %s block%s", specSection(p.heading), firstDiffKey(want, got))
 		}
 	}
 	return r, nil
+}
+
+// specSection renders a heading prefix such as "# 11. " as "§11".
+func specSection(heading string) string {
+	return "\u00a7" + strings.TrimSuffix(strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(heading), "#")), ".")
+}
+
+// firstDiffKey names the first top-level key (sorted) whose value differs, as a message suffix.
+func firstDiffKey(want, got any) string {
+	w, ok1 := want.(map[string]any)
+	g, ok2 := got.(map[string]any)
+	if !ok1 || !ok2 {
+		return ""
+	}
+	keys := map[string]bool{}
+	for k := range w {
+		keys[k] = true
+	}
+	for k := range g {
+		keys[k] = true
+	}
+	var sorted []string
+	for k := range keys {
+		sorted = append(sorted, k)
+	}
+	sort.Strings(sorted)
+	for _, k := range sorted {
+		if !reflect.DeepEqual(w[k], g[k]) {
+			return fmt.Sprintf(" (first differing top-level key: %q)", k)
+		}
+	}
+	return ""
 }

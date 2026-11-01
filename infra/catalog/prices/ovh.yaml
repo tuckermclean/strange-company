@@ -31,7 +31,7 @@ spec:
       resourceType: ovh_vps
       planCode: vps-2025-model1
       displayName: VPS-1 (2025 range; below the 100 GiB disk minimum, not usable)
-      specs: {cpu: 4, memory: 8GB, storage: {size: 75GB, class: ssd}}
+      specs: {cpu: 4, memory: 8GB, storage: {size: 75GB, class: nvme}}
       regions: [BHS, DE, EU-SOUTH-MIL, EU-WEST-RBX, GRA, SBG, SGP, SYD, UK, WAW, YNM]
       monthlyPrice: '6.49'
       setupFee: '0'
@@ -60,6 +60,9 @@ spec:
       planCode: b3-16
       displayName: Public Cloud b3-16 (general purpose)
       specs: {cpu: 4, memory: 16GB, storage: {size: 100GB, class: nvme}}
+      # Unverified: these regions are not listed in the public cloud catalogue (the b3-16.consumption addons carry no
+      # region configuration). They were taken from plan 04's region examples and stay unverified until spike S-6 /
+      # PF-08's live check (plan 04 section 14.2).
       regions: [GRA11, SBG5, DE1, UK1, WAW1]
       monthlyPrice: '74.679'
       hourlyPrice: '0.1023'
