@@ -1,6 +1,8 @@
 # OVH VPS compute module (plan 04 section 8). Credentials come only from the provider's environment variables
 # (OVH_ENDPOINT, OVH_APPLICATION_KEY, OVH_APPLICATION_SECRET, OVH_CONSUMER_KEY); no credential is a variable.
 terraform {
+  required_version = ">= 1.13.1"
+
   required_providers {
     ovh = {
       source  = "ovh/ovh"

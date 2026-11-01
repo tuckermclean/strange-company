@@ -66,12 +66,20 @@ func checkGuardFixtures(res *Result, root string) {
 			res.add(ruleGuardFixtures, expRel, "expect.yaml has no module")
 			continue
 		}
+		if !filepath.IsLocal(filepath.FromSlash(ex.Module)) {
+			res.add(ruleGuardFixtures, expRel, "expect.yaml module %q must be a local repository path", ex.Module)
+			continue
+		}
 		modDir := filepath.Join(root, filepath.FromSlash(ex.Module))
 		if st, err := os.Stat(modDir); err != nil || !st.IsDir() {
 			continue
 		}
 		guards := map[bool]*guard.Guard{}
-		for destroy, name := range map[bool]string{false: "guard.yaml", true: "guard-destroy.yaml"} {
+		for _, gf := range []struct {
+			destroy bool
+			name    string
+		}{{false, "guard.yaml"}, {true, "guard-destroy.yaml"}} {
+			destroy, name := gf.destroy, gf.name
 			rel := path.Join(ex.Module, name)
 			b, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
 			if err != nil {
@@ -87,6 +95,10 @@ func checkGuardFixtures(res *Result, root string) {
 		}
 		covered := map[string]bool{}
 		for _, c := range ex.Cases {
+			if !filepath.IsLocal(filepath.FromSlash(c.File)) {
+				res.add(ruleGuardFixtures, expRel, "expect.yaml case file %q must be a local path", c.File)
+				continue
+			}
 			covered[c.File] = true
 			rel := path.Join(dirRel, c.File)
 			plan, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))

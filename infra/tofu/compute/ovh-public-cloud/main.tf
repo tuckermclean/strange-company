@@ -1,6 +1,8 @@
 # OVH Public Cloud instance compute module (plan 04 section 8, CD-72: nested blocks at ovh/ovh v2.22.0).
 # Credentials come only from the provider's environment variables; no credential is a variable.
 terraform {
+  required_version = ">= 1.13.1"
+
   required_providers {
     ovh = {
       source  = "ovh/ovh"

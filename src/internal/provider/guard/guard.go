@@ -120,6 +120,9 @@ func ParseGuard(doc []byte) (Guard, error) {
 	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
 		return Guard{}, errors.New("guard: exactly one YAML document is allowed")
 	}
+	if err := rejectAliasesAndMerges(&root); err != nil {
+		return Guard{}, err
+	}
 	if err := checkScalarTags(&root); err != nil {
 		return Guard{}, err
 	}
@@ -335,11 +338,19 @@ func (g Guard) Evaluate(planJSON []byte, e Expect) Verdict {
 		}
 	}
 	// Rule 6. A guard with a paid type must come with declared Region and SSHKey attributes.
-	if g.hasPaid() && (e.Region.Type == "" || e.Region.Path == "" || e.SSHKey.Type == "" || e.SSHKey.Path == "") {
+	paidGuard := g.hasPaid()
+	if paidGuard && (e.Region.Type == "" || e.Region.Path == "" || e.SSHKey.Type == "" || e.SSHKey.Path == "") {
 		return fail(CodeRuleUndeclared, "rule6", "region and ssh key attributes (type and path) must be declared for a paid guard")
 	}
 	for _, a := range []Attr{e.Region, e.SSHKey} {
-		if a.Type != "" && !g.byTy[a.Type].isPaid() {
+		if a.Type == "" {
+			continue
+		}
+		r, ok := g.byTy[a.Type]
+		if !ok {
+			return fail(CodeRuleUndeclared, "rule6", "rule 6 type %q is not a type of the guard", a.Type)
+		}
+		if paidGuard && !r.isPaid() {
 			return fail(CodeRuleUndeclared, "rule6", "rule 6 type %q is not a paid type of the guard", a.Type)
 		}
 	}
@@ -666,6 +677,30 @@ func checkScalarTags(root *yaml.Node) error {
 			if err := want(field(r, "paid"), "!!bool", "resource paid"); err != nil {
 				return err
 			}
+		}
+	}
+	return nil
+}
+
+// rejectAliasesAndMerges rejects every alias node and every merge key (`<<`): the KnownFields decoder resolves them
+// past the literal-key tag checks, so a guard file must spell every value out.
+func rejectAliasesAndMerges(n *yaml.Node) error {
+	if n == nil {
+		return nil
+	}
+	if n.Kind == yaml.AliasNode {
+		return errors.New("guard: YAML aliases are not allowed")
+	}
+	if n.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(n.Content); i += 2 {
+			if k := n.Content[i]; k.Kind == yaml.ScalarNode && (k.ShortTag() == "!!merge" || k.Value == "<<") {
+				return errors.New("guard: YAML merge keys are not allowed")
+			}
+		}
+	}
+	for _, c := range n.Content {
+		if err := rejectAliasesAndMerges(c); err != nil {
+			return err
 		}
 	}
 	return nil
