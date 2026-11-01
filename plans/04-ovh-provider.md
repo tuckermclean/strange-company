@@ -135,7 +135,7 @@ resource "ovh_cloud_project_instance" "node" {
   flavor { flavor_id = var.flavor_id }   # flavor of MACHINE_CLASS; nested blocks at ovh/ovh v2.22.0 (CD-72)
   boot_from { image_id = var.image_id }
   ssh_key_create {
-    name       = "sc-${var.cluster}"
+    name       = "sc-${var.cluster}-${each.key}"   # one key per node (CD-73)
     public_key = var.ssh_public_key
   }
   billing_period = "hourly"
@@ -362,7 +362,7 @@ Runs in `preflight`, `plan.compute-plan`, `plan.confirm`, `provision` (plan 50 ย
 - **04-AC-3** Normalization: the recorded OVH API fixtures produce a `ProviderOutput` that validates against `provider.schema.yaml` with `internal_ip == public_ipv4`, `capabilities.reversible_within_hours == false` for `vps`, and no field containing an OVH-specific key outside `provider_id`, `machine_class`, `region.provider_region`, `labels` (`jq` path scan).
 - **04-AC-4** Orphan-scan unit suite: a delivered orphan yields `ORPHAN_PAID_RESOURCE`, a pending order yields `ORPHAN_PENDING_ORDER`, a foreign VPS (`displayName` not matching) yields nothing.
 - **04-AC-5** Credential scope: a fixture credential with rule `{method: POST, path: /*}` fails PF-07 with `OVH_CREDENTIAL_TOO_BROAD`; the ยง10 rule set passes.
-- **04-AC-6** `make tofu-validate`: every variable in `infra/tofu/compute/ovh-*/` whose name matches `(?i)(secret|password|token|key)`, and not `(?i)public`, is `sensitive` and `ephemeral` (or absent because credentials come only from provider env vars; CD-72), and `do_not_send_password = true` is present for `ovh_vps` (static HCL check).
+- **04-AC-6** `make tofu-validate`: every variable in `infra/tofu/compute/ovh-*/` whose name matches `(?i)(secret|password|token|key)`, and is not a public-key name `(?i)(^|_)(public|pub)(_ssh)?_key$`, is `sensitive` and `ephemeral` (or absent because credentials come only from provider env vars; CD-72), and `do_not_send_password = true` is present for `ovh_vps` (static HCL check).
 
 ### GATE-P02 (co-owned with plans 03, 05; applies when the reference install uses `PROVIDER=ovh`)
 
