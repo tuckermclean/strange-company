@@ -1,0 +1,29 @@
+{
+ "GET /me/order": [],
+ "GET /vps": [
+  "vps-9f8e7d6c.vps.ovh.net"
+ ],
+ "GET /vps/vps-9f8e7d6c.vps.ovh.net": {
+  "cluster": "",
+  "displayName": "my-personal-blog",
+  "keymap": "us",
+  "lockStatus": "unlocked",
+  "memoryLimit": 12288,
+  "model": {
+   "disk": 100,
+   "memory": 12288,
+   "name": "vps-2025-model2",
+   "offer": "VPS vps-2025-model2",
+   "vcore": 6,
+   "version": "2025v1"
+  },
+  "name": "vps-9f8e7d6c.vps.ovh.net",
+  "netbootMode": "local",
+  "offerType": "ssd",
+  "slaMonitoring": true,
+  "state": "running",
+  "vcore": 6,
+  "zone": "Region OpenStack: os-gra1",
+  "zoneType": "region"
+ }
+}

@@ -1,0 +1,252 @@
+{
+ "GET /me/order": [
+  9001003,
+  9001004,
+  9001005
+ ],
+ "GET /me/order/9001003": {
+  "date": "2026-11-01T10:00:00+01:00",
+  "expirationDate": "2026-11-15T10:00:00+01:00",
+  "orderId": 9001003,
+  "priceWithTax": {
+   "currencyCode": "EUR",
+   "priceInUcents": 1199000000,
+   "text": "11.99 EUR",
+   "value": 11.99
+  },
+  "priceWithoutTax": {
+   "currencyCode": "EUR",
+   "priceInUcents": 999000000,
+   "text": "9.99 EUR",
+   "value": 9.99
+  },
+  "tax": {
+   "currencyCode": "EUR",
+   "priceInUcents": 200000000,
+   "text": "2.00 EUR",
+   "value": 2.0
+  },
+  "url": "https://www.ovh.com/cgi-bin/order/displayOrder.cgi?orderId=9001003&orderPassword=invented"
+ },
+ "GET /me/order/9001003/details": [
+  1
+ ],
+ "GET /me/order/9001003/details/1": {
+  "cancelled": false,
+  "description": "VPS 2",
+  "detailType": "CREATION",
+  "domain": "vps-0a1b2c3d.vps.ovh.net",
+  "orderDetailId": 1,
+  "quantity": "1",
+  "totalPrice": {
+   "currencyCode": "EUR",
+   "priceInUcents": 999000000,
+   "text": "9.99 EUR",
+   "value": 9.99
+  },
+  "unitPrice": {
+   "currencyCode": "EUR",
+   "priceInUcents": 999000000,
+   "text": "9.99 EUR",
+   "value": 9.99
+  }
+ },
+ "GET /me/order/9001003/details/1/extension": {
+  "order": {
+   "action": "installation",
+   "configurations": [
+    {
+     "label": "vps_datacenter",
+     "value": "GRA"
+    },
+    {
+     "label": "vps_os",
+     "value": "Debian 13"
+    }
+   ],
+   "plan": {
+    "code": "vps-2025-model2",
+    "duration": "P1M",
+    "pricingMode": "default",
+    "product": {
+     "name": "vps-2025-model2"
+    },
+    "quantity": 1
+   },
+   "type": "plan"
+  }
+ },
+ "GET /me/order/9001003/status": "delivered",
+ "GET /me/order/9001004": {
+  "date": "2026-11-01T10:00:00+01:00",
+  "expirationDate": "2026-11-15T10:00:00+01:00",
+  "orderId": 9001004,
+  "priceWithTax": {
+   "currencyCode": "EUR",
+   "priceInUcents": 1199000000,
+   "text": "11.99 EUR",
+   "value": 11.99
+  },
+  "priceWithoutTax": {
+   "currencyCode": "EUR",
+   "priceInUcents": 999000000,
+   "text": "9.99 EUR",
+   "value": 9.99
+  },
+  "tax": {
+   "currencyCode": "EUR",
+   "priceInUcents": 200000000,
+   "text": "2.00 EUR",
+   "value": 2.0
+  },
+  "url": "https://www.ovh.com/cgi-bin/order/displayOrder.cgi?orderId=9001004&orderPassword=invented"
+ },
+ "GET /me/order/9001004/details": [
+  1
+ ],
+ "GET /me/order/9001004/details/1": {
+  "cancelled": false,
+  "description": "VPS 2",
+  "detailType": "CREATION",
+  "domain": "",
+  "orderDetailId": 1,
+  "quantity": "1",
+  "totalPrice": {
+   "currencyCode": "EUR",
+   "priceInUcents": 999000000,
+   "text": "9.99 EUR",
+   "value": 9.99
+  },
+  "unitPrice": {
+   "currencyCode": "EUR",
+   "priceInUcents": 999000000,
+   "text": "9.99 EUR",
+   "value": 9.99
+  }
+ },
+ "GET /me/order/9001004/details/1/extension": {
+  "order": {
+   "action": "installation",
+   "configurations": [
+    {
+     "label": "vps_datacenter",
+     "value": "GRA"
+    },
+    {
+     "label": "vps_os",
+     "value": "Debian 13"
+    }
+   ],
+   "plan": {
+    "code": "vps-2025-model2",
+    "duration": "P1M",
+    "pricingMode": "default",
+    "product": {
+     "name": "vps-2025-model2"
+    },
+    "quantity": 1
+   },
+   "type": "plan"
+  }
+ },
+ "GET /me/order/9001004/status": "cancelled",
+ "GET /me/order/9001005": {
+  "date": "2026-11-01T10:00:00+01:00",
+  "expirationDate": "2026-11-15T10:00:00+01:00",
+  "orderId": 9001005,
+  "priceWithTax": {
+   "currencyCode": "EUR",
+   "priceInUcents": 1199000000,
+   "text": "11.99 EUR",
+   "value": 11.99
+  },
+  "priceWithoutTax": {
+   "currencyCode": "EUR",
+   "priceInUcents": 999000000,
+   "text": "9.99 EUR",
+   "value": 9.99
+  },
+  "tax": {
+   "currencyCode": "EUR",
+   "priceInUcents": 200000000,
+   "text": "2.00 EUR",
+   "value": 2.0
+  },
+  "url": "https://www.ovh.com/cgi-bin/order/displayOrder.cgi?orderId=9001005&orderPassword=invented"
+ },
+ "GET /me/order/9001005/details": [
+  1
+ ],
+ "GET /me/order/9001005/details/1": {
+  "cancelled": false,
+  "description": "VPS 2",
+  "detailType": "CREATION",
+  "domain": "",
+  "orderDetailId": 1,
+  "quantity": "1",
+  "totalPrice": {
+   "currencyCode": "EUR",
+   "priceInUcents": 999000000,
+   "text": "9.99 EUR",
+   "value": 9.99
+  },
+  "unitPrice": {
+   "currencyCode": "EUR",
+   "priceInUcents": 999000000,
+   "text": "9.99 EUR",
+   "value": 9.99
+  }
+ },
+ "GET /me/order/9001005/details/1/extension": {
+  "order": {
+   "action": "installation",
+   "configurations": [
+    {
+     "label": "vps_datacenter",
+     "value": "GRA"
+    },
+    {
+     "label": "vps_os",
+     "value": "Debian 13"
+    }
+   ],
+   "plan": {
+    "code": "domain-renewal-example",
+    "duration": "P1M",
+    "pricingMode": "default",
+    "product": {
+     "name": "domain-renewal-example"
+    },
+    "quantity": 1
+   },
+   "type": "plan"
+  }
+ },
+ "GET /me/order/9001005/status": "delivering",
+ "GET /vps": [
+  "vps-0a1b2c3d.vps.ovh.net"
+ ],
+ "GET /vps/vps-0a1b2c3d.vps.ovh.net": {
+  "cluster": "",
+  "displayName": "sc-prod-node-01",
+  "keymap": "us",
+  "lockStatus": "unlocked",
+  "memoryLimit": 12288,
+  "model": {
+   "disk": 100,
+   "memory": 12288,
+   "name": "vps-2025-model2",
+   "offer": "VPS vps-2025-model2",
+   "vcore": 6,
+   "version": "2025v1"
+  },
+  "name": "vps-0a1b2c3d.vps.ovh.net",
+  "netbootMode": "local",
+  "offerType": "ssd",
+  "slaMonitoring": true,
+  "state": "running",
+  "vcore": 6,
+  "zone": "Region OpenStack: os-gra1",
+  "zoneType": "region"
+ }
+}
