@@ -8,3 +8,9 @@ are edited by hand. Plan 03 section 22 lists the fixture classes; each file name
 The guard files here are test inputs in the `TofuPlanGuard` shape; they are not the guards of a real module.
 Test expectations: region `REG-1`, plan code `plan-small`, ssh key `sc-prod-key`, two nodes.
 OVH fixtures are derived separately (CD-71).
+
+CD-72 hardening fixtures (all source: synthetic, hand-written compact JSON in the same shape): `mode-missing`,
+`mode-unknown` (resource-change mode not managed/data), `data-create`, `data-delete` (data entries with a
+non-read action), `destroy-with-data-read` (delete plus a data read), `expand-prior-state` (two no-op instances
+plus one create), `selector-valid` and `selector-unknown` (a `plan[0].configuration` list with the region and
+ssh key entries not at index 0, for `[?label=="..."]` selector paths).
