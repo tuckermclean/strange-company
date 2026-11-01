@@ -1,0 +1,71 @@
+# OVH price catalogue (plan 03 section 14.5, plan 04 section 9.2). Prices are copied from OVH's public order
+# catalogue on the day of entry (CD-71): ovhSubsidiary=FR, currency EUR, taxRate 20 %. The catalogue lists
+# `price` before tax (the 20 % VAT is a separate `tax` field), so every entry is taxIncluded: false.
+# Monthly VPS prices are the `renew` pricing, interval 1 month, mode `default`; the installation fee is 0.
+# The Public Cloud monthlyPrice is derived (hourlyPrice x 730 h); OVH bills b3-16 hourly.
+apiVersion: strange.company/v1alpha1
+kind: InfraPriceCatalog
+metadata:
+  name: ovh
+  version: 2026.10.31
+spec:
+  provider: ovh
+  currency: EUR
+  entries:
+    - productId: ovh-vps-6c-12g-100nvme
+      productLine: vps
+      resourceType: ovh_vps
+      planCode: vps-2025-model2
+      displayName: VPS-2 (2025 range)
+      specs: {cpu: 6, memory: 12GB, storage: {size: 100GB, class: nvme}}
+      regions: [BHS, DE, EU-SOUTH-MIL, EU-WEST-RBX, GRA, SBG, SGP, SYD, UK, WAW, YNM]
+      monthlyPrice: '9.99'
+      setupFee: '0'
+      commitment: P1M
+      taxIncluded: false
+      effectiveFrom: '2026-10-31'
+      verifiedAt: '2026-10-31'
+      sourceUrl: https://eu.api.ovh.com/v1/order/catalog/public/vps?ovhSubsidiary=FR
+    - productId: ovh-vps-4c-8g-75ssd
+      productLine: vps
+      resourceType: ovh_vps
+      planCode: vps-2025-model1
+      displayName: VPS-1 (2025 range; below the 100 GiB disk minimum, not usable)
+      specs: {cpu: 4, memory: 8GB, storage: {size: 75GB, class: ssd}}
+      regions: [BHS, DE, EU-SOUTH-MIL, EU-WEST-RBX, GRA, SBG, SGP, SYD, UK, WAW, YNM]
+      monthlyPrice: '6.49'
+      setupFee: '0'
+      commitment: P1M
+      taxIncluded: false
+      effectiveFrom: '2026-10-31'
+      verifiedAt: '2026-10-31'
+      sourceUrl: https://eu.api.ovh.com/v1/order/catalog/public/vps?ovhSubsidiary=FR
+    - productId: ovh-vps-8c-24g-200nvme
+      productLine: vps
+      resourceType: ovh_vps
+      planCode: vps-2025-model3
+      displayName: VPS-3 (2025 range)
+      specs: {cpu: 8, memory: 24GB, storage: {size: 200GB, class: nvme}}
+      regions: [BHS, DE, EU-SOUTH-MIL, EU-WEST-RBX, GRA, SBG, SGP, SYD, UK, WAW, YNM]
+      monthlyPrice: '19.99'
+      setupFee: '0'
+      commitment: P1M
+      taxIncluded: false
+      effectiveFrom: '2026-10-31'
+      verifiedAt: '2026-10-31'
+      sourceUrl: https://eu.api.ovh.com/v1/order/catalog/public/vps?ovhSubsidiary=FR
+    - productId: ovh-pci-4c-16g-100nvme
+      productLine: public-cloud
+      resourceType: ovh_cloud_project_instance
+      planCode: b3-16
+      displayName: Public Cloud b3-16 (general purpose)
+      specs: {cpu: 4, memory: 16GB, storage: {size: 100GB, class: nvme}}
+      regions: [GRA11, SBG5, DE1, UK1, WAW1]
+      monthlyPrice: '74.679'
+      hourlyPrice: '0.1023'
+      setupFee: '0'
+      commitment: PT1H
+      taxIncluded: false
+      effectiveFrom: '2026-10-31'
+      verifiedAt: '2026-10-31'
+      sourceUrl: https://eu.api.ovh.com/v1/order/catalog/public/cloud?ovhSubsidiary=FR

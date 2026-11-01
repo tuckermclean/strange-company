@@ -56,10 +56,10 @@ func (r Result) failed() bool {
 	return false
 }
 
-// Main implements `sc-lint <layout|dag|locks|secrets|quarantine|netcheck|tofu-validate|tdd-discipline> [--root DIR]`. Exit codes: 0 pass, 1 findings, 2 usage or I/O error.
+// Main implements `sc-lint <layout|dag|locks|profiles|secrets|quarantine|netcheck|tofu-validate|tdd-discipline> [--root DIR]`. Exit codes: 0 pass, 1 findings, 2 usage or I/O error.
 func Main(args []string, stdout, stderr io.Writer) int {
 	if len(args) < 1 {
-		fmt.Fprintln(stderr, "usage: sc-lint <layout|dag|locks|secrets|quarantine|netcheck|tofu-validate|tdd-discipline> [--root DIR]")
+		fmt.Fprintln(stderr, "usage: sc-lint <layout|dag|locks|profiles|secrets|quarantine|netcheck|tofu-validate|tdd-discipline> [--root DIR]")
 		return 2
 	}
 	if args[0] == "licenses" {
@@ -84,6 +84,8 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		check, name = LocksCheck, "locks-check"
 	case "secrets":
 		check, name = SecretsScan, "secrets-scan"
+	case "profiles":
+		check, name = ProfilesCheck, "profiles-check"
 	case "quarantine":
 		check, name = QuarantineCheck, "quarantine-check"
 	case "netcheck":

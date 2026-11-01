@@ -1,0 +1,44 @@
+apiVersion: strange.company/v1alpha1
+kind: ClusterProfile
+
+metadata:
+  name: small-ha
+
+spec:
+  nodes:
+    count: 3
+
+    minimumSupportedPerNode:
+      cpu: 4
+      memory: 12Gi
+
+      storage:
+        size: 100Gi
+        class: ssd
+
+    constrainedLowerBoundPerNode:
+      cpu: 4
+      memory: 8Gi
+
+      storage:
+        size: 100Gi
+        class: ssd
+
+    preferredPerNode:
+      storage:
+        size: 200Gi
+        class: nvme
+
+  kubernetes:
+    servers: 3
+    datastore: embedded-etcd
+
+  storage:
+    cnpg:
+      instances: 3
+
+    longhorn:
+      replicas: 2
+
+  execution:
+    maximumConcurrentAgents: 2
