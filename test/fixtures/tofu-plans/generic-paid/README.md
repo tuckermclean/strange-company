@@ -14,3 +14,10 @@ CD-72 hardening fixtures (all source: synthetic, hand-written compact JSON in th
 non-read action), `destroy-with-data-read` (delete plus a data read), `expand-prior-state` (two no-op instances
 plus one create), `selector-valid` and `selector-unknown` (a `plan[0].configuration` list with the region and
 ssh key entries not at index 0, for `[?label=="..."]` selector paths).
+
+CD-72 review-2 fixtures (source: synthetic, derived from `selector-valid.json` by a throwaway script, same shape;
+unknown encoding follows OpenTofu: unknown object keys are omitted from `after`, unknown list elements are null,
+`after_unknown` carries `true`): `selector-unknown-key-omitted` (an element whose label is unknown and omitted),
+`selector-unknown-null-element` (a null unknown list element), `selector-unknown-list-omitted` and
+`selector-unknown-list` (the whole `configuration` list unknown, absent or present in `after`), and
+`selector-unrelated-unknown` (only an unrelated key of an unrelated element unknown; must pass).
