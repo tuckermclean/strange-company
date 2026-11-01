@@ -1,0 +1,15 @@
+apiVersion: strange.company/v1alpha1
+kind: TofuPlanGuard
+metadata:
+  name: ovh-public-cloud-apply
+spec:
+  rootModule: infra/tofu/compute/ovh-public-cloud
+  allowedProviders:
+    - registry.opentofu.org/ovh/ovh
+  forbidReplace: true
+  resources:
+    - type: ovh_cloud_project_instance
+      paid: true
+      allowedActions: [no-op, read, create, update]
+      maxCount: expectedNodeCount
+      priceProductFrom: flavor[0].flavor_id
