@@ -10,7 +10,6 @@ import (
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
-	hcljson "github.com/hashicorp/hcl/v2/json"
 )
 
 const (
@@ -83,55 +82,10 @@ func checkOVHModules(res *Result, root string) {
 	}
 }
 
-// checkOVHJSON applies the same two rules to a .tf.json / .tofu.json file through the hcl/v2 JSON parser.
-func checkOVHJSON(res *Result, rel string, src []byte) {
-	file, diags := hcljson.Parse(src, rel)
-	if diags.HasErrors() {
-		res.add(ruleOVHSecretVars, rel, "cannot parse JSON configuration: %s", diags.Error())
-		return
-	}
-	content, _, diags := file.Body.PartialContent(&hcl.BodySchema{Blocks: []hcl.BlockHeaderSchema{
-		{Type: "variable", LabelNames: []string{"name"}},
-		{Type: "resource", LabelNames: []string{"type", "name"}},
-	}})
-	if diags.HasErrors() {
-		res.add(ruleOVHSecretVars, rel, "cannot read JSON configuration: %s", diags.Error())
-		return
-	}
-	jsonTrue := func(b hcl.Body, name string) bool {
-		attrs, d := b.JustAttributes()
-		if d.HasErrors() {
-			return false
-		}
-		a, ok := attrs[name]
-		if !ok {
-			return false
-		}
-		v, d := a.Expr.Value(nil)
-		return !d.HasErrors() && v.IsKnown() && !v.IsNull() && v.Type().FriendlyName() == "bool" && v.True()
-	}
-	for _, blk := range content.Blocks {
-		switch {
-		case blk.Type == "variable":
-			name := blk.Labels[0]
-			if !secretVarRE.MatchString(name) || publicVarRE.MatchString(name) {
-				continue
-			}
-			var missing []string
-			for _, attr := range []string{"sensitive", "ephemeral"} {
-				if !jsonTrue(blk.Body, attr) {
-					missing = append(missing, attr+" = true")
-				}
-			}
-			if len(missing) > 0 {
-				res.add(ruleOVHSecretVars, rel, "variable %s matches the secret-name pattern and must set %s (literals)", name, strings.Join(missing, " and "))
-			}
-		case blk.Type == "resource" && blk.Labels[0] == "ovh_vps":
-			if !jsonTrue(blk.Body, "do_not_send_password") {
-				res.add(ruleOVHNoPassword, rel, "ovh_vps.%s must set do_not_send_password = true (a literal)", blk.Labels[1])
-			}
-		}
-	}
+// checkOVHJSON reports a .tf.json / .tofu.json file: the static checks need HCL, and parsing the JSON syntax
+// would link a dependency whose licence is not allowed.
+func checkOVHJSON(res *Result, rel string, _ []byte) {
+	res.add(ruleOVHSecretVars, rel, "JSON configuration is not supported in OVH modules (the static checks need HCL); use .tf or .tofu")
 }
 
 func literalTrue(b *hclsyntax.Body, name string) bool {
