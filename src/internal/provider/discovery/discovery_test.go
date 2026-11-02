@@ -336,7 +336,9 @@ func (e *env) disk() map[string]any {
 	return e.facts["lsblk"].(map[string]any)["blockdevices"].([]any)[0].(map[string]any)
 }
 
-func (e *env) setMem(n int64) { e.facts["meminfo"] = fmt.Sprintf("MemTotal:       %d kB\nMemFree: 1000 kB\n", n/1024) }
+func (e *env) setMem(n int64) {
+	e.facts["meminfo"] = fmt.Sprintf("MemTotal:       %d kB\nMemFree: 1000 kB\n", n/1024)
+}
 
 // makeSata turns the root disk into a SATA disk sda (rotational or not) with partitions sda1 and sda2.
 func (e *env) makeSata(rotational bool) {
@@ -371,7 +373,9 @@ func (e *env) setOS(id, version, pretty string) {
 	e.facts["os_release"] = fmt.Sprintf("PRETTY_NAME=%q\nNAME=%q\nVERSION_ID=%q\nID=%s\n", pretty, pretty, version, id)
 }
 
-func (e *env) listen(rows ...string) { e.facts["ss"] = e.facts["ss"].(string) + strings.Join(rows, "\n") + "\n" }
+func (e *env) listen(rows ...string) {
+	e.facts["ss"] = e.facts["ss"].(string) + strings.Join(rows, "\n") + "\n"
+}
 
 func nodeAt(n map[string]any, path ...string) any {
 	var cur any = n
