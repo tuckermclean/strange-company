@@ -3,10 +3,12 @@
 package fake
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -210,13 +212,9 @@ func (p *Provider) Discover(context.Context) (*provider.Discovery, error) {
 	if err != nil {
 		return nil, err
 	}
-	var sc struct {
-		Discovery struct {
-			Resolvers []string `yaml:"resolvers"`
-		} `yaml:"discovery"`
-	}
-	if err := yaml.Unmarshal(b, &sc); err != nil {
-		return nil, provider.NewError("SCENARIO_INVALID", fmt.Sprintf("%s is not a fake provider scenario: %v", filepath.Join(p.dir, scenarioFile), err), false)
+	sc, err := parseScenario(p.dir, b)
+	if err != nil {
+		return nil, err
 	}
 	if len(sc.Discovery.Resolvers) == 0 {
 		return &provider.Discovery{Resolvers: []string{DefaultResolver}}, nil
@@ -231,6 +229,11 @@ type extraResource struct {
 }
 
 type scenarioDoc struct {
+	APIVersion string `yaml:"apiVersion"`
+	Kind       string `yaml:"kind"`
+	Discovery  struct {
+		Resolvers []string `yaml:"resolvers"`
+	} `yaml:"discovery"`
 	Plan struct {
 		ExtraResources []extraResource `yaml:"extraResources"`
 	} `yaml:"plan"`
@@ -249,8 +252,16 @@ func (p *Provider) scenario() (scenarioDoc, error) {
 	if err != nil {
 		return sc, err
 	}
-	if err := yaml.Unmarshal(b, &sc); err != nil {
-		return sc, provider.NewError("SCENARIO_INVALID", fmt.Sprintf("%s is not a fake provider scenario: %v", filepath.Join(p.dir, scenarioFile), err), false)
+	return parseScenario(p.dir, b)
+}
+
+// parseScenario decodes the one scenario document strictly: an unknown key is SCENARIO_INVALID.
+func parseScenario(dir string, b []byte) (scenarioDoc, error) {
+	var sc scenarioDoc
+	dec := yaml.NewDecoder(bytes.NewReader(b))
+	dec.KnownFields(true)
+	if err := dec.Decode(&sc); err != nil && !errors.Is(err, io.EOF) {
+		return scenarioDoc{}, provider.NewError("SCENARIO_INVALID", fmt.Sprintf("%s is not a fake provider scenario: %v", filepath.Join(dir, scenarioFile), err), false)
 	}
 	return sc, nil
 }
@@ -290,7 +301,7 @@ func planJSON(cluster string, nodeCount int, extras []extraResource) []byte {
 	}
 	b, err := json.Marshal(map[string]any{
 		"format_version":    "1.2",
-		"terraform_version": "1.9.0",
+		"terraform_version": "1.13.1",
 		"resource_changes":  changes,
 		"configuration": map[string]any{
 			"provider_config": map[string]any{"fake": map[string]any{"name": "fake", "full_name": fakeProviderSource}},

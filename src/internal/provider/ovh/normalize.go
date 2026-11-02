@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/big"
 	"net/netip"
+	"sort"
 	"strings"
 )
 
@@ -47,15 +48,21 @@ type NormalizeInput struct {
 
 type obj = map[string]any
 
-// nodeState maps vps.VpsStateEnum to the ProviderOutput node state.
+// nodeState maps vps.VpsStateEnum (backuping, installing, maintenance, rebooting, rescued, running, stopped, stopping,
+// upgrading) to the ProviderOutput node state; any other value is unknown.
 func nodeState(s string) string {
 	switch s {
 	case "running":
 		return "running"
 	case "stopped":
 		return "stopped"
-	case "installing", "reinstalling", "starting", "upgrading", "migrating":
+	case "installing", "upgrading", "rebooting", "maintenance", "rescued":
+		// transient or not serving the node role: not yet usable, so provisioning
 		return "provisioning"
+	case "backuping":
+		return "running" // the machine is up while a backup runs
+	case "stopping":
+		return "stopped" // heading to stopped
 	}
 	return "unknown"
 }
@@ -68,6 +75,9 @@ func money(r *big.Rat) string {
 
 // Normalize maps the OVH API responses to a ProviderOutput JSON document (plan 04 section 7.2).
 func Normalize(in NormalizeInput) ([]byte, error) {
+	if in.ProductLine != "vps" {
+		return nil, fmt.Errorf("ovh: normalize: product line %q is not supported (only vps)", in.ProductLine)
+	}
 	if len(in.Nodes) == 0 {
 		return nil, errors.New("ovh: normalize: no nodes")
 	}
@@ -82,8 +92,10 @@ func Normalize(in NormalizeInput) ([]byte, error) {
 	count := int64(len(in.Nodes))
 	unit := new(big.Rat).Quo(total, big.NewRat(count, 1))
 
+	sorted := append([]NodeInput(nil), in.Nodes...)
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
 	nodes := make([]obj, 0, len(in.Nodes))
-	for _, n := range in.Nodes {
+	for _, n := range sorted {
 		var v struct {
 			Name  string `json:"name"`
 			State string `json:"state"`

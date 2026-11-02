@@ -64,7 +64,10 @@ func wrapProviderErr(err error) error {
 	var pe *provider.Error
 	if errors.As(err, &pe) {
 		e := &engine.Error{Code: pe.Code, Message: pe.Message, Retryable: pe.Retryable()}
-		if strings.HasPrefix(pe.Code, "GUARD_") {
+		switch {
+		case pe.Code == "GUARD_INVALID" || pe.Code == "GUARD_DIGEST_FAILED":
+			e.Exit = 1 // the guard machinery failed and judged nothing: a failed phase, not a refusal
+		case strings.HasPrefix(pe.Code, "GUARD_"):
 			e.Exit = 4 // a guard refusal is a plan the operator must not apply (plan 03 section 14.4)
 		}
 		return e

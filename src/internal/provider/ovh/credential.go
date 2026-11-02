@@ -28,7 +28,7 @@ var allowedRules = map[string]bool{
 	"GET /order/catalog/*": true,
 	"POST /order/cart":     true, "POST /order/cart/*": true, "GET /order/cart/*": true, "DELETE /order/cart/*": true,
 	"GET /me/order": true, "GET /me/order/*": true, "POST /me/order/*/payWithRegisteredPaymentMean": true,
-	"GET /vps/*": true, "PUT /vps/*": true, "POST /vps/*": true, "DELETE /vps/*": true,
+	"GET /vps": true, "GET /vps/*": true, "PUT /vps/*": true, "POST /vps/*": true, "DELETE /vps/*": true,
 	"POST /vps/*/terminate": true, "POST /vps/*/confirmTermination": true,
 }
 

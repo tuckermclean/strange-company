@@ -3,6 +3,7 @@ package ovh
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/url"
 	"regexp"
 )
@@ -45,6 +46,9 @@ func NewScanner(c *Client, cfg ScanConfig) *Scanner { return &Scanner{c: c, cfg:
 
 // Scan returns delivered orphans, pending orders and delivered unnamed orders; it only issues GET requests.
 func (s *Scanner) Scan(ctx context.Context) ([]Orphan, error) {
+	if s.cfg.Cluster == "" || s.cfg.InstallCreatedAt == "" {
+		return nil, errors.New("ovh: orphan scan: the cluster and the install created_at are required")
+	}
 	inState := set(s.cfg.StateIDs)
 	plans := set(s.cfg.PlanCodes)
 	named := regexp.MustCompile(`^sc-` + regexp.QuoteMeta(s.cfg.Cluster) + `-node-[0-9]{2}$`)
@@ -110,21 +114,25 @@ func (s *Scanner) Scan(ctx context.Context) ([]Orphan, error) {
 			}
 			var ext struct {
 				Order struct {
-					Plan struct {
-						Code string `json:"code"`
+					Plan *struct {
+						Code *string `json:"code"`
 					} `json:"plan"`
 				} `json:"order"`
 			}
 			if err := s.c.Get(ctx, base+"/extension", &ext); err != nil {
 				return nil, err
 			}
-			if !plans[ext.Order.Plan.Code] || inState[det.Domain] && det.Domain != "" {
+			// A missing plan code cannot be shown to be foreign: fail closed and report it.
+			if p := ext.Order.Plan; p != nil && p.Code != nil && !plans[*p.Code] {
+				continue
+			}
+			if det.Domain != "" && inState[det.Domain] {
 				continue
 			}
 			switch {
-			case status == "delivered" && det.Domain != "":
+			case status == "delivered":
 				add(Orphan{Code: CodeOrphanPaidResource, ProviderID: det.Domain, OrderID: id})
-			case status != "delivered":
+			default:
 				add(Orphan{Code: CodeOrphanPendingOrder, ProviderID: det.Domain, OrderID: id})
 			}
 		}
