@@ -27,6 +27,17 @@ const counterFile = "creates"
 type Provider struct {
 	dir string
 	mu  sync.Mutex
+	// profileFile is the effective profile node hardware is validated against and catalogueFile the price catalogue of a
+	// paid scenario (Configure); both are only read by OutputDocument.
+	profileFile, catalogueFile string
+}
+
+// Configure names the effective profile (infra/profiles/<profile>.yaml) and the price catalogue
+// (infra/catalog/prices/fake.yaml) of the installation.
+func (p *Provider) Configure(profileFile, catalogueFile string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.profileFile, p.catalogueFile = profileFile, catalogueFile
 }
 
 var _ provider.Provider = (*Provider)(nil)
@@ -79,9 +90,11 @@ func nodes(n int) []provider.Node {
 	return out
 }
 
-// Capabilities: the fake creates nodes but costs nothing.
+// Capabilities: the fake creates nodes; it costs nothing unless the scenario says paid: true (03-AC-11). A scenario that
+// cannot be read leaves the fake unpaid; Plan reports the same scenario as SCENARIO_INVALID.
 func (p *Provider) Capabilities() provider.Capabilities {
-	return provider.Capabilities{Name: "fake", CreatesNodes: true}
+	sc, _ := p.scenario()
+	return provider.Capabilities{Name: "fake", CreatesNodes: true, Paid: sc.Paid}
 }
 
 // Validate checks the node count.
@@ -117,7 +130,7 @@ func (p *Provider) Plan(_ context.Context, d provider.Desired) (*provider.Provid
 	if err != nil {
 		return nil, provider.NewError("GUARD_DIGEST_FAILED", err.Error(), false)
 	}
-	return &provider.ProviderPlan{Digest: "sha256:" + dg, Nodes: nodes(d.NodeCount)}, nil
+	return &provider.ProviderPlan{Digest: "sha256:" + dg, Nodes: nodes(d.NodeCount), MachineClass: sc.MachineClass}, nil
 }
 
 // Apply "creates" every node of the plan and counts them. With the scenario orphan.crashAfterOrder the order is
@@ -240,6 +253,17 @@ type scenarioDoc struct {
 	Orphan struct {
 		CrashAfterOrder bool `yaml:"crashAfterOrder"`
 	} `yaml:"orphan"`
+	// Capacity is the hardware every fake node reports; an omitted field takes the preferred shape of the supported
+	// profile (4 CPUs, 12 Gi, 200 Gi nvme).
+	Capacity struct {
+		CPU         int64  `yaml:"cpu"`
+		MemoryBytes int64  `yaml:"memoryBytes"`
+		DiskBytes   int64  `yaml:"diskBytes"`
+		DiskClass   string `yaml:"diskClass"`
+	} `yaml:"capacity"`
+	// Paid makes Capabilities().Paid true; MachineClass is the catalogue productId such a fake orders.
+	Paid         bool   `yaml:"paid"`
+	MachineClass string `yaml:"machineClass"`
 }
 
 // scenario reads <dir>/scenario.yaml; a missing file is the empty scenario.

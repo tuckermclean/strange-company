@@ -695,29 +695,7 @@ func (e *eval) check(prof *profile, c Context) {
 
 	// capacity
 	e.memory, e.cpu = memTotal(f.Meminfo), int64(f.Nproc)
-	meets := func(s *shape, classKnown bool) bool {
-		if s == nil {
-			return false
-		}
-		ok := e.cpu >= s.cpu && atLeast(e.memory, s.memory) && atLeast(e.diskSize, s.storage)
-		if classKnown {
-			ok = ok && classRank[e.diskClass] >= classRank[s.class]
-		}
-		return ok
-	}
-	// An unknown class is reported by DISK_CLASS_UNVERIFIED; it is not also counted as undersized.
-	e.meetsLower = meets(prof.constrained, e.diskClass != "unknown")
-	e.meetsMinimum = e.diskClass != "unknown" && meets(prof.minimum, true)
-	e.meetsPref = e.diskClass != "unknown" && meets(prof.preferred, true)
-	if !e.meetsLower {
-		e.add("NODE_BELOW_MINIMUM", sevFail, "%s (%d CPUs, %d bytes memory, %d bytes %s disk) is below the lower bound of profile %s", n.Name, e.cpu, e.memory, e.diskSize, e.diskClass, prof.name)
-	} else if e.diskClass != "unknown" {
-		if !e.meetsMinimum {
-			e.add("NODE_CONSTRAINED", sevWarn, "%s meets only the constrained lower bound of profile %s: no capacity guarantee (ADR-0020)", n.Name, prof.name)
-		} else if !e.meetsPref {
-			e.add("BELOW_PREFERRED_DISK", sevWarn, "%s meets the minimum of profile %s but not the preferred shape", n.Name, prof.name)
-		}
-	}
+	e.capacity(prof, n.Name)
 
 	// addresses
 	e.machineID = strings.TrimSpace(f.MachineID)
@@ -779,6 +757,34 @@ func (e *eval) check(prof *profile, c Context) {
 		"substrate_validation": map[string]any{
 			"profile": prof.name, "meets_minimum": e.meetsMinimum, "meets_preferred": pref, "findings": []any{},
 		},
+	}
+}
+
+// capacity compares e.cpu, e.memory, e.diskSize and e.diskClass with the lower bound, the minimum and the preferred shape of
+// the profile (plan 03 section 14.3) and records the findings.
+func (e *eval) capacity(prof *profile, name string) {
+	meets := func(s *shape, classKnown bool) bool {
+		if s == nil {
+			return false
+		}
+		ok := e.cpu >= s.cpu && atLeast(e.memory, s.memory) && atLeast(e.diskSize, s.storage)
+		if classKnown {
+			ok = ok && classRank[e.diskClass] >= classRank[s.class]
+		}
+		return ok
+	}
+	// An unknown class is reported by DISK_CLASS_UNVERIFIED; it is not also counted as undersized.
+	e.meetsLower = meets(prof.constrained, e.diskClass != "unknown")
+	e.meetsMinimum = e.diskClass != "unknown" && meets(prof.minimum, true)
+	e.meetsPref = e.diskClass != "unknown" && meets(prof.preferred, true)
+	if !e.meetsLower {
+		e.add("NODE_BELOW_MINIMUM", sevFail, "%s (%d CPUs, %d bytes memory, %d bytes %s disk) is below the lower bound of profile %s", name, e.cpu, e.memory, e.diskSize, e.diskClass, prof.name)
+	} else if e.diskClass != "unknown" {
+		if !e.meetsMinimum {
+			e.add("NODE_CONSTRAINED", sevWarn, "%s meets only the constrained lower bound of profile %s: no capacity guarantee (ADR-0020)", name, prof.name)
+		} else if !e.meetsPref {
+			e.add("BELOW_PREFERRED_DISK", sevWarn, "%s meets the minimum of profile %s but not the preferred shape", name, prof.name)
+		}
 	}
 }
 

@@ -179,6 +179,9 @@ func (s *sess) stepComputePlan() engine.Unit {
 			if err != nil {
 				return nil, wrapProviderErr(err)
 			}
+			if err := s.costCheck(plan); err != nil {
+				return nil, err
+			}
 			s.plan = plan
 			return nil, nil
 		}}

@@ -20,6 +20,7 @@ import (
 	"strange.company/sc/internal/bootstrap/store"
 	"strange.company/sc/internal/s3client"
 	"strange.company/sc/internal/tofustate"
+	"strange.company/sc/internal/toolbox"
 	"strange.company/sc/internal/version"
 )
 
@@ -88,7 +89,15 @@ func (s *sess) runPreflight(context.Context) ([]engine.OutputRef, error) {
 			s.eng.RecordConfirmation(c)
 		}
 	}
-	if code := cli.RunPreflight(s.inv, s.env, s.out, s.errw, deps); code != 0 {
+	code := cli.RunPreflight(s.inv, s.env, s.out, s.errw, deps)
+	paid := s.prov != nil && s.prov.Capabilities().Paid
+	if row := pf03(s.repo, s.profileName(), kindSubstrate, paid); row != nil {
+		s.printf("%s\n", toolbox.FormatRow(*row))
+		if code == 0 {
+			code = 3
+		}
+	}
+	if code != 0 {
 		return nil, fail("PREFLIGHT_FAILED", code, procPreflight, "preflight failed (exit %d); the rows above name each failing check", code)
 	}
 	return nil, nil

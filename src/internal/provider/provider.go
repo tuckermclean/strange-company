@@ -59,6 +59,8 @@ type ProviderPlan struct {
 	Nodes  []Node
 	// MonthlyCost is the catalogue estimate in the config currency (empty for providers without a price).
 	MonthlyCost string
+	// MachineClass is the catalogue productId the plan orders (empty for providers that order nothing from a catalogue).
+	MachineClass string
 }
 
 // ProviderOutput is the inventory (contracts/provider.schema.yaml, reduced).

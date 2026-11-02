@@ -119,6 +119,9 @@ func Run(args []string, env map[string]string, stdout, stderr io.Writer, deps De
 	if err != nil {
 		return cli.Run(args, env, stdout, stderr, deps.CLI)
 	}
+	if code, handled := profileCommand(args, inv, env, stdout, stderr, deps); handled {
+		return code
+	}
 	switch inv.Command[0] {
 	case "plan", "run", "status", "abandon-identity", "unlock":
 	case "state":

@@ -518,6 +518,7 @@ func (s *sess) startFakeProvider() error {
 	if err != nil {
 		return err
 	}
+	p.Configure(profilePath(s.repo, s.profileName()), filepath.Join(s.repo, "infra", "catalog", "prices", "fake.yaml"))
 	s.prov = p
 	return nil
 }
