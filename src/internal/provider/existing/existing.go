@@ -133,14 +133,20 @@ func (p *Provider) contact(ctx context.Context, n discovery.Node) (discovery.Inp
 	}
 	if n.HostKeyFingerprint != "" {
 		fps := discovery.Fingerprints(keys)
-		ok := false
-		for _, fp := range fps {
-			ok = ok || fp == n.HostKeyFingerprint
+		var narrowed []string
+		for _, l := range keys {
+			for _, fp := range discovery.Fingerprints([]string{l}) {
+				if fp == n.HostKeyFingerprint {
+					narrowed = append(narrowed, l)
+					break
+				}
+			}
 		}
-		if !ok {
+		if len(narrowed) == 0 {
 			return discovery.Input{}, provider.NewError("HOST_KEY_MISMATCH",
 				fmt.Sprintf("%s (%s:%d): none of its host keys has the attested fingerprint %s (found: %s); nothing was contacted", n.Name, n.Host, n.Port, n.HostKeyFingerprint, strings.Join(fps, ", ")), false)
 		}
+		keys = narrowed
 	}
 	facts, err := p.cfg.Transport.Facts(ctx, n, keys)
 	if err != nil {
