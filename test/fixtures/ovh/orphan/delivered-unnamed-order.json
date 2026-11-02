@@ -89,7 +89,10 @@
   "model": {
    "disk": 100,
    "memory": 12288,
-   "monitoringIpBlocks": [],
+   "availableOptions": [],
+   "datacenter": [],
+   "diskLocationType": "local",
+   "maximumAdditionnalIp": 16,
    "name": "vps-2025-model2",
    "offer": "VPS vps-2025-model2",
    "vcore": 6,

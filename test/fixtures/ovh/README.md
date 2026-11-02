@@ -29,6 +29,9 @@ state), `pending-order` (order `delivering`, no VPS yet), `foreign-vps` (display
 Fidelity (F09 review): `lockStatus` is the `vps.LockStatus` object (`{locked, reason}`, here `{"locked": false}`), and every
 non-null field of `vps.VPSWithIAM` (`cluster`, `monitoringIpBlocks`) and `billing.Order` (`password`, `pdfUrl`) is present,
 as the schema documents fetched on 2026-11-01 define them.
+`lockStatus.reason` is omitted when the VPS is unlocked (its enum, `vps.LockReasonEnum`, only has `abuse`). `vps.Model`
+carries `availableOptions`, `datacenter`, `disk`, `diskLocationType`, `maximumAdditionnalIp`, `memory`, `name`, `offer`,
+`vcore` and `version`; `monitoringIpBlocks` belongs only at the top level of `vps.VPSWithIAM`.
 
 Open (verify, S-1): that the plan code is carried by `.../extension` for VPS orders, and that `domain` holds the
 service name; this is the plan 04 section 14.4 "verify field names" item.
