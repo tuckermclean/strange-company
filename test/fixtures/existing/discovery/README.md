@@ -1,7 +1,7 @@
 # Existing-nodes discovery fixtures (05-AC-2, plan 05 section 14.2)
 
 source: derived, not recorded. No machine of these kinds was available (CD-71 applies the same rule to the OVH
-fixtures). `facts.json` is the output format of the discovery script (`discovery.Script()`); the values under
+fixtures). `facts.json` has the keys of the discovery script's output (`discovery.Script()`) and is the parser's input; the values under
 `lsblk`, `findmnt`, `ip_addr` and `ip_route_get` follow the documented JSON output of `lsblk -J -b`,
 `findmnt -J`, `ip -j addr` and `ip -j route get` (util-linux 2.39 to 2.41, iproute2 6.x); `meminfo`, `os_release`
 and `ss` are the verbatim text of `/proc/meminfo`, `/etc/os-release` and `ss -Hltnu`. Every value is invented
@@ -17,7 +17,7 @@ and the SHA256 fingerprints in `expected.json` were computed from them with `ssh
 | `nproc`, `cpu_model` | `nproc --all`; model name from `/proc/cpuinfo` |
 | `meminfo` | text of `/proc/meminfo` (MemTotal in kB) |
 | `lsblk` | `lsblk -J -b -o NAME,KNAME,PKNAME,SIZE,ROTA,TYPE,TRAN,MODEL,MOUNTPOINTS`. `size` and `rota` are numbers and booleans (util-linux 2.41) or strings (`"480103981056"`, `"0"`; older); the parser accepts both |
-| `findmnt` | `findmnt -J -b -T /var/lib/rancher` (falling back to `/var/lib`, `/`), `size` and `avail` as strings |
+| `findmnt` | `findmnt -J -b -o TARGET,SOURCE,FSTYPE,SIZE,AVAIL -T /var/lib/rancher` (falling back to `/var/lib`, `/`); `size` and `avail` are JSON numbers (bytes), as `findmnt -b` prints them |
 | `os_release` | text of `/etc/os-release` |
 | `kernel`, `arch` | `uname -r`, `uname -m` (`x86_64`, `aarch64`) |
 | `virt` | `systemd-detect-virt` (`none` = bare metal) |
