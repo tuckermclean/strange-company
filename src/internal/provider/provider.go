@@ -42,6 +42,15 @@ type Desired struct {
 type Node struct {
 	Name       string
 	InternalIP string
+	// SSHHost, SSHPort and SSHUser are the SSH endpoint of a node the provider did not create (existing nodes); empty
+	// for providers that create their nodes.
+	SSHHost string
+	SSHPort int
+	SSHUser string
+	// HostKeys are the SHA256 fingerprints of the node's SSH host keys (trust on first use or attested).
+	HostKeys []string
+	// Summary is a one-line description of the discovered machine for the confirmation footprint.
+	Summary string
 }
 
 // ProviderPlan is what Plan returns and Apply executes exactly.

@@ -19,6 +19,8 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"strange.company/sc/internal/clock"
+	"strange.company/sc/internal/provider/discovery"
+	"strange.company/sc/internal/provider/existing"
 	"strange.company/sc/internal/provider/fake"
 	"strange.company/sc/internal/s3client"
 	"strange.company/sc/internal/tofustate"
@@ -517,5 +519,57 @@ func (s *sess) startFakeProvider() error {
 		return err
 	}
 	s.prov = p
+	return nil
+}
+
+// startExistingProvider binds the existing-nodes provider (plan 05) to the EXISTING_NODES list and the effective profile
+// of <repo>/infra/profiles. Discovery goes over SSH; in test mode SC_EXISTING_DISCOVERY_DIR=<dir> replaces the transport
+// with recorded <node>.facts.json and <node>.hostkeys files (plan 05 section 14.7).
+func (s *sess) startExistingProvider() error {
+	profile := str(dig(s.doc, "spec", "cluster", "profile"))
+	if profile == "" {
+		return errors.New("the configuration names no profile")
+	}
+	var nodes []discovery.Node
+	list, _ := dig(s.doc, "spec", "provider", "existing", "nodes").([]any)
+	for _, e := range list {
+		port, err := strconv.Atoi(fmt.Sprint(dig(e, "ssh", "port")))
+		if err != nil {
+			port = 22
+		}
+		nodes = append(nodes, discovery.Node{
+			Name: str(dig(e, "name")), Host: str(dig(e, "ssh", "host")), Port: port, User: str(dig(e, "ssh", "user")),
+			InternalIP: str(dig(e, "internalIp")), DiskClassOverride: str(dig(e, "diskClassOverride")),
+			HostKeyFingerprint: str(dig(e, "hostKeyFingerprint")),
+		})
+	}
+	key := s.merged["SSH_PRIVATE_KEY_PATH"]
+	if f := str(dig(s.doc, "spec", "ssh", "privateKey", "file")); f != "" {
+		if _, err := os.Stat(f); err == nil {
+			key = f
+		}
+	}
+	if dig(s.doc, "spec", "ssh", "useAgent") == true {
+		key = ""
+	}
+	if err := os.MkdirAll(s.boot, 0o700); err != nil {
+		return err
+	}
+	var tr existing.Transport = existing.SSHTransport{KeyPath: key, TempDir: s.boot, Clock: s.clk}
+	if dir := s.env["SC_EXISTING_DISCOVERY_DIR"]; dir != "" {
+		if s.env["SC_TEST_MODE"] != "1" {
+			return errors.New("SC_EXISTING_DISCOVERY_DIR needs SC_TEST_MODE=1")
+		}
+		tr = existing.DirTransport{Dir: dir}
+	}
+	s.prov = existing.New(existing.Config{
+		Nodes: nodes, ProfileFile: filepath.Join(s.repo, "infra", "profiles", profile+".yaml"), Transport: tr,
+		InstallUID: func() string {
+			if s.eng == nil {
+				return ""
+			}
+			return s.eng.InstallUID()
+		},
+	})
 	return nil
 }

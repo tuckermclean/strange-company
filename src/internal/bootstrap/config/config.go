@@ -466,6 +466,10 @@ func (n *norm) nodes() []any {
 			n.bad("EXISTING_NODES entry %q has no host", ent)
 			continue
 		}
+		if byName[nm] != nil {
+			n.bad("EXISTING_NODES entry %q repeats node %s: duplicate node names are not allowed", ent, nm)
+			continue
+		}
 		nd := map[string]any{"name": nm, "ssh": map[string]any{"host": host, "port": port, "user": user}}
 		if internal != "" {
 			nd["internalIp"] = internal

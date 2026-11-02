@@ -165,6 +165,12 @@ func (s *sess) cmdRun(ctx context.Context) int {
 			return 2
 		}
 	}
+	if str(dig(s.doc, "spec", "provider", "name")) == "existing" {
+		if err := s.startExistingProvider(); err != nil {
+			s.errorf("PROVIDER_CONFIG_INVALID: %v\n", err)
+			return 2
+		}
+	}
 	s.tryAttach(ctx)
 	cfg := s.engineConfig("run")
 	cfg.AtEnd = func() {
