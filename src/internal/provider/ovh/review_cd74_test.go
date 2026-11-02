@@ -202,7 +202,7 @@ func TestNormalize_NodeStateCoversVpsStateEnum_04AC3(t *testing.T) {
 	}{
 		{"running", running}, {"stopped", stopped},
 		{"installing", provisioning}, {"upgrading", provisioning},
-		{"rebooting", ""}, {"stopping", ""}, {"backuping", ""}, {"maintenance", ""}, {"rescued", ""},
+		{"rebooting", ""}, {"stopping", ""}, {"backuping", ""}, {"maintenance", ""}, {"rescued", unknown},
 		// not in vps.VpsStateEnum
 		{"reinstalling", unknown}, {"starting", unknown}, {"migrating", unknown}, {"Running", unknown},
 		{"", unknown}, {"deleted", unknown},
