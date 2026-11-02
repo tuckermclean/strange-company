@@ -49,14 +49,14 @@ type NormalizeInput struct {
 type obj = map[string]any
 
 // nodeState maps vps.VpsStateEnum (backuping, installing, maintenance, rebooting, rescued, running, stopped, stopping,
-// upgrading) to the ProviderOutput node state; any other value is unknown.
+// upgrading) to the ProviderOutput node state; rescued (the node is not in its own system) and any other value are unknown.
 func nodeState(s string) string {
 	switch s {
 	case "running":
 		return "running"
 	case "stopped":
 		return "stopped"
-	case "installing", "upgrading", "rebooting", "maintenance", "rescued":
+	case "installing", "upgrading", "rebooting", "maintenance":
 		// transient or not serving the node role: not yet usable, so provisioning
 		return "provisioning"
 	case "backuping":

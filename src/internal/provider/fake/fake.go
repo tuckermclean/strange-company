@@ -263,6 +263,19 @@ func parseScenario(dir string, b []byte) (scenarioDoc, error) {
 	if err := dec.Decode(&sc); err != nil && !errors.Is(err, io.EOF) {
 		return scenarioDoc{}, provider.NewError("SCENARIO_INVALID", fmt.Sprintf("%s is not a fake provider scenario: %v", filepath.Join(dir, scenarioFile), err), false)
 	}
+	invalid := func(why string) (scenarioDoc, error) {
+		return scenarioDoc{}, provider.NewError("SCENARIO_INVALID", fmt.Sprintf("%s is not a fake provider scenario: %s", filepath.Join(dir, scenarioFile), why), false)
+	}
+	var extra any
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		return invalid("it must hold exactly one YAML document")
+	}
+	if sc.Kind != "" && sc.Kind != "FakeProviderScenario" {
+		return invalid("kind must be FakeProviderScenario")
+	}
+	if sc.APIVersion != "" && sc.APIVersion != "strange.company/v1alpha1" {
+		return invalid("apiVersion must be strange.company/v1alpha1")
+	}
 	return sc, nil
 }
 

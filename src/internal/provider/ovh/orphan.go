@@ -49,6 +49,9 @@ func (s *Scanner) Scan(ctx context.Context) ([]Orphan, error) {
 	if s.cfg.Cluster == "" || s.cfg.InstallCreatedAt == "" {
 		return nil, errors.New("ovh: orphan scan: the cluster and the install created_at are required")
 	}
+	if len(s.cfg.PlanCodes) == 0 {
+		return nil, errors.New("ovh: orphan scan: the catalogue plan codes are required (an empty set would classify nothing)")
+	}
 	inState := set(s.cfg.StateIDs)
 	plans := set(s.cfg.PlanCodes)
 	named := regexp.MustCompile(`^sc-` + regexp.QuoteMeta(s.cfg.Cluster) + `-node-[0-9]{2}$`)
