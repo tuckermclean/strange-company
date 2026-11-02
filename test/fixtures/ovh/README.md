@@ -26,6 +26,10 @@ state), `pending-order` (order `delivering`, no VPS yet), `foreign-vps` (display
 `none`, `delivered-unnamed-order` (BOOT-28: delivered order whose VPS has the default display name),
 `known-in-state` (VPS in state, a cancelled order and a non-VPS order; nothing to report).
 
+Fidelity (F09 review): `lockStatus` is the `vps.LockStatus` object (`{locked, reason}`, here `{"locked": false}`), and every
+non-null field of `vps.VPSWithIAM` (`cluster`, `monitoringIpBlocks`) and `billing.Order` (`password`, `pdfUrl`) is present,
+as the schema documents fetched on 2026-11-01 define them.
+
 Open (verify, S-1): that the plan code is carried by `.../extension` for VPS orders, and that `domain` holds the
 service name; this is the plan 04 section 14.4 "verify field names" item.
 

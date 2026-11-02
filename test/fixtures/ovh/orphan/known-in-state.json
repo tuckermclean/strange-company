@@ -8,6 +8,8 @@
   "date": "2026-11-01T10:00:00+01:00",
   "expirationDate": "2026-11-15T10:00:00+01:00",
   "orderId": 9001003,
+  "password": "invented-9001003",
+  "pdfUrl": "https://www.ovh.com/cgi-bin/order/facture.pdf?reference=INVENTED9001003&passwd=invented",
   "priceWithTax": {
    "currencyCode": "EUR",
    "priceInUcents": 1199000000,
@@ -81,6 +83,8 @@
   "date": "2026-11-01T10:00:00+01:00",
   "expirationDate": "2026-11-15T10:00:00+01:00",
   "orderId": 9001004,
+  "password": "invented-9001004",
+  "pdfUrl": "https://www.ovh.com/cgi-bin/order/facture.pdf?reference=INVENTED9001004&passwd=invented",
   "priceWithTax": {
    "currencyCode": "EUR",
    "priceInUcents": 1199000000,
@@ -154,6 +158,8 @@
   "date": "2026-11-01T10:00:00+01:00",
   "expirationDate": "2026-11-15T10:00:00+01:00",
   "orderId": 9001005,
+  "password": "invented-9001005",
+  "pdfUrl": "https://www.ovh.com/cgi-bin/order/facture.pdf?reference=INVENTED9001005&passwd=invented",
   "priceWithTax": {
    "currencyCode": "EUR",
    "priceInUcents": 1199000000,
@@ -230,16 +236,18 @@
   "cluster": "",
   "displayName": "sc-prod-node-01",
   "keymap": "us",
-  "lockStatus": "unlocked",
+  "lockStatus": {"locked": false},
   "memoryLimit": 12288,
   "model": {
    "disk": 100,
    "memory": 12288,
+   "monitoringIpBlocks": [],
    "name": "vps-2025-model2",
    "offer": "VPS vps-2025-model2",
    "vcore": 6,
    "version": "2025v1"
   },
+  "monitoringIpBlocks": [],
   "name": "vps-0a1b2c3d.vps.ovh.net",
   "netbootMode": "local",
   "offerType": "ssd",

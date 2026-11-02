@@ -6,6 +6,8 @@
   "date": "2026-11-01T10:00:00+01:00",
   "expirationDate": "2026-11-15T10:00:00+01:00",
   "orderId": 9001001,
+  "password": "invented-9001001",
+  "pdfUrl": "https://www.ovh.com/cgi-bin/order/facture.pdf?reference=INVENTED9001001&passwd=invented",
   "priceWithTax": {
    "currencyCode": "EUR",
    "priceInUcents": 1199000000,

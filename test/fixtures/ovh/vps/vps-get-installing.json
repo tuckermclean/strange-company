@@ -1,9 +1,11 @@
 {
+  "cluster": "",
   "displayName": "sc-prod-node-01",
   "keymap": "us",
-  "lockStatus": "unlocked",
+  "lockStatus": {"locked": false},
   "memoryLimit": 12288,
   "model": {"disk": 100, "memory": 12288, "name": "vps-2025-model2", "offer": "VPS vps-2025-model2", "vcore": 6, "version": "2025v1"},
+  "monitoringIpBlocks": [],
   "name": "vps-0a1b2c3d.vps.ovh.net",
   "netbootMode": "local",
   "offerType": "ssd",

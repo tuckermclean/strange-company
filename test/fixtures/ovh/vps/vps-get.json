@@ -9,7 +9,7 @@
     "urn": "urn:v1:eu:resource:vps:vps-0a1b2c3d.vps.ovh.net"
   },
   "keymap": "us",
-  "lockStatus": "unlocked",
+  "lockStatus": {"locked": false},
   "memoryLimit": 12288,
   "model": {
     "availableOptions": ["automatedBackup", "snapshot"],

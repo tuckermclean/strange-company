@@ -6,6 +6,8 @@
   "date": "2026-11-01T10:00:00+01:00",
   "expirationDate": "2026-11-15T10:00:00+01:00",
   "orderId": 9001002,
+  "password": "invented-9001002",
+  "pdfUrl": "https://www.ovh.com/cgi-bin/order/facture.pdf?reference=INVENTED9001002&passwd=invented",
   "priceWithTax": {
    "currencyCode": "EUR",
    "priceInUcents": 1199000000,
@@ -82,16 +84,18 @@
   "cluster": "",
   "displayName": "vps-4b5c6d7e",
   "keymap": "us",
-  "lockStatus": "unlocked",
+  "lockStatus": {"locked": false},
   "memoryLimit": 12288,
   "model": {
    "disk": 100,
    "memory": 12288,
+   "monitoringIpBlocks": [],
    "name": "vps-2025-model2",
    "offer": "VPS vps-2025-model2",
    "vcore": 6,
    "version": "2025v1"
   },
+  "monitoringIpBlocks": [],
   "name": "vps-4b5c6d7e.vps.ovh.net",
   "netbootMode": "local",
   "offerType": "ssd",
