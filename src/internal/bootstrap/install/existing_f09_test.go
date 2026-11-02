@@ -66,7 +66,9 @@ func newExisting(t testing.TB) (*inst, map[string]string) {
 		write(t, filepath.Join(i.repo, "infra", "profiles", p+".yaml"), string(b), 0o644)
 	}
 	i.git("add", "-A")
-	i.git("-c", "user.name=fixture", "-c", "user.email=fixture@example.net", "commit", "-q", "-m", "profiles")
+	if i.git("status", "--porcelain") != "" { // newInst already commits the real profiles
+		i.git("-c", "user.name=fixture", "-c", "user.email=fixture@example.net", "commit", "-q", "-m", "profiles")
+	}
 
 	disc := filepath.Join(i.dir, "discovery")
 	facts, err := os.ReadFile(filepath.Join(exFixtureDir(t), "facts.json"))
