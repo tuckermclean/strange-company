@@ -263,6 +263,18 @@ func newInst(t testing.TB) *inst {
 	}
 	write(t, filepath.Join(i.repo, "contracts", "secret-classes.yaml"), string(reg), 0o644)
 	write(t, filepath.Join(i.repo, ".gitignore"), ".bootstrap/\n", 0o644)
+	// The effective profile is read from <repo>/infra/profiles (PF-03): every scratch repository carries the real ones.
+	profs, err := filepath.Glob(filepath.Join(repoRoot(t), "infra", "profiles", "*.yaml"))
+	if err != nil || len(profs) == 0 {
+		t.Fatalf("no real profiles found: %v", err)
+	}
+	for _, pf := range profs {
+		pb, err := os.ReadFile(pf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		write(t, filepath.Join(i.repo, "infra", "profiles", filepath.Base(pf)), string(pb), 0o644)
+	}
 	i.key = writeEd25519(t, filepath.Join(dir, "ssh"), "id_ed25519")
 
 	mr := schemaExample(t, "model-routing.schema.yaml")
