@@ -1,0 +1,8 @@
+# Fake provider scenario "capacity-small-disk" (plan 03 sections 9.2 and 14.3, CD-25, F09 03-AC-8). The root disk is
+# 0.919 x 100 Gi (100 Gi = 107374182400 bytes; 0.92 x 100 Gi = 98784247808 bytes): below the 0.92 tolerance of the
+# 100 Gi minimum, so the node fails NODE_BELOW_MINIMUM. CPU and memory meet the supported minimum (12 Gi = 12884901888).
+capacity:
+  cpu: 4
+  memoryBytes: 12884901888
+  diskBytes: 98676873625
+  diskClass: ssd

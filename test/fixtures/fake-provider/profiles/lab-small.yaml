@@ -1,0 +1,34 @@
+# Lab substrate fixture (plan 03 section 9.1, plan 05 section 14.6; the substrate.schema.yaml example lab-small):
+# labeled strange.company/lab: "true", so it is refused when the provider is paid (03-AC-11). The tests copy it to
+# <repo>/infra/profiles/lab-small.yaml; the real infra/profiles/lab-*.yaml files belong to the lab node.
+apiVersion: strange.company/v1alpha1
+kind: BootstrapSubstrate
+metadata:
+  name: lab-small
+  labels:
+    strange.company/lab: "true"
+spec:
+  nodes:
+    count: 1
+    minimumSupportedPerNode:
+      cpu: 2
+      memory: 4Gi
+      storage:
+        size: 20Gi
+        class: ssd
+  kubernetes:
+    distribution: k3s
+    servers: 1
+    datastore: embedded-etcd
+  execution:
+    maximumConcurrentAgents: 0
+    maximumConcurrentCIPipelines: 0
+  storage:
+    cnpg:
+      instances: 1
+      storageClass: local
+    longhorn:
+      enabled: true
+      replicas: 1
+    objectStorage:
+      required: true

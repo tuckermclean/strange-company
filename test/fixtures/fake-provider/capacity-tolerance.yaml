@@ -1,0 +1,8 @@
+# Fake provider scenario "capacity-tolerance" (plan 03 sections 14.3 and 22, F09 03-AC-8). Memory is 0.921 x 8 Gi
+# (7911329760 bytes), just above the 0.92 tolerance of the 8 Gi constrained lower bound: the node passes with
+# meets_preferred false and a warn finding (it is below the 12 Gi supported minimum). CPU and disk meet the preferred shape.
+capacity:
+  cpu: 4
+  memoryBytes: 7911329760
+  diskBytes: 214748364800
+  diskClass: nvme

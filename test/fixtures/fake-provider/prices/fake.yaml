@@ -1,0 +1,27 @@
+# Price catalogue fixture of the paid fake provider (plan 03 section 14.5, contracts/provider.schema.yaml
+# #/$defs/InfraPriceCatalog with provider: fake). The tests copy it to <repo>/infra/catalog/prices/fake.yaml and set
+# entries[].verifiedAt relative to the injected clock (fresh: 10 days, stale: 181 days), so the date below is only a
+# valid placeholder. One node costs 9.99 EUR per month, excluding tax.
+apiVersion: strange.company/v1alpha1
+kind: InfraPriceCatalog
+metadata:
+  name: fake
+  version: 2026.10.01
+spec:
+  provider: fake
+  currency: EUR
+  entries:
+    - productId: fake-vps-small
+      productLine: fake
+      resourceType: fake_node
+      planCode: fake-plan-small
+      displayName: Fake VPS (test fixture)
+      specs: {cpu: 4, memory: 12Gi, storage: {size: 200Gi, class: nvme}}
+      regions: [fake-1, fake-2]
+      monthlyPrice: '9.99'
+      setupFee: '0'
+      commitment: P1M
+      taxIncluded: false
+      effectiveFrom: '2026-10-01'
+      verifiedAt: '2026-10-01'
+      sourceUrl: https://strange.company/fake-provider

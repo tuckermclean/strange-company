@@ -1,0 +1,9 @@
+# Fake provider scenario "capacity-below-minimum" (plan 03 sections 14.3 and 22, F09 03-AC-8). Copied to
+# <.bootstrap/fake-provider>/scenario.yaml. The fake node reports the hardware below: memory is 0.919 x 8 Gi
+# (8 Gi = 8589934592 bytes; 0.92 x 8 Gi = 7902739825 bytes), which is under the 0.92 tolerance of the constrained lower
+# bound, so substrate validation fails the node with NODE_BELOW_MINIMUM. CPU and disk meet the preferred shape.
+capacity:
+  cpu: 4
+  memoryBytes: 7894149890
+  diskBytes: 214748364800
+  diskClass: nvme
