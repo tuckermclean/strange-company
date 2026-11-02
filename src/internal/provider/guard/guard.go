@@ -705,3 +705,17 @@ func rejectAliasesAndMerges(n *yaml.Node) error {
 	}
 	return nil
 }
+
+// RecoverMode is the recover-pipeline context of the guard (plan 03 section 20.1, DR-12): Fenced are the plan addresses
+// recorded in the journal's facts.fenced_nodes.
+// SC-STUB(F09 03-AC-12)
+type RecoverMode struct {
+	Fenced []string
+}
+
+// EvaluateRecover is Evaluate in recover mode: rule 6 accepts a resource outside the configured region only when its
+// address is fenced; replace and delete stay forbidden.
+// SC-STUB(F09 03-AC-12)
+func (g Guard) EvaluateRecover(planJSON []byte, e Expect, r RecoverMode) Verdict {
+	return Verdict{}
+}
