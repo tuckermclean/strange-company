@@ -58,7 +58,7 @@ need() {
 	return 0
 }
 
-for t in sh nproc lsblk findmnt ip ss uname stat timedatectl; do need "$t" || :; done
+for t in sh cat od awk sed tr head grep nproc lsblk findmnt ip ss uname stat timedatectl systemd-detect-virt; do need "$t" || :; done
 
 # first_file prints the content of the first readable file, else nothing.
 first_file() {
@@ -81,7 +81,7 @@ fi
 if have findmnt; then
 	findmnt_j=null
 	for p in /var/lib/rancher /var/lib /; do
-		out=$(findmnt -J -b -T "$p" 2>/dev/null)
+		out=$(findmnt -J -b -o TARGET,SOURCE,FSTYPE,SIZE,AVAIL -T "$p" 2>/dev/null)
 		if [ -n "$out" ]; then findmnt_j="$out"; break; fi
 	done
 else

@@ -144,6 +144,9 @@ func (p *Provider) contact(ctx context.Context, n discovery.Node) (discovery.Inp
 	}
 	facts, err := p.cfg.Transport.Facts(ctx, n, keys)
 	if err != nil {
+		if strings.Contains(err.Error(), "Host key verification failed") {
+			return discovery.Input{}, provider.NewError("HOST_KEY_MISMATCH", fmt.Sprintf("%s (%s:%d): the host key changed since it was captured: %v", n.Name, n.Host, n.Port, err), false)
+		}
 		return discovery.Input{}, provider.NewError("EXISTING_NODE_UNREACHABLE", fmt.Sprintf("%s (%s:%d): %v", n.Name, n.Host, n.Port, err), true)
 	}
 	return discovery.Input{Node: n, Facts: facts, HostKeys: keys}, nil
@@ -217,8 +220,9 @@ func asList(v any) []any {
 }
 
 // planDigest is the sha256 of a canonical document of everything that identifies the machines: their configuration,
-// host-key fingerprints and the stable discovered facts. Facts that legitimately change between runs (free space, swap,
-// time-sync status, the kernel release) are left out and re-checked at provision (plan 05 section 17).
+// host-key fingerprints, the machine id, the install marker, the platforms found, the kernel release and the other
+// discovered facts. Only the facts that legitimately change between runs (free space, swap and time-sync status) are
+// left out and re-checked at provision (plan 05 section 17).
 func planDigest(results []discovery.Result) (string, error) {
 	type entry struct {
 		Name       string   `json:"name"`
@@ -238,6 +242,10 @@ func planDigest(results []discovery.Result) (string, error) {
 		OSID       any      `json:"os_id"`
 		OSVersion  any      `json:"os_version_id"`
 		Roles      any      `json:"roles"`
+		Kernel     any      `json:"kernel"`
+		MachineID  string   `json:"machine_id"`
+		InstallUID string   `json:"install_uid"`
+		Platforms  []string `json:"platforms"`
 	}
 	var es []entry
 	for _, r := range results {
@@ -254,6 +262,8 @@ func planDigest(results []discovery.Result) (string, error) {
 			HostKeys: fps, CPUs: get(n, "hardware", "cpu_count"), Memory: get(n, "hardware", "memory_bytes"),
 			Disks: get(n, "hardware", "disks"), Virt: get(n, "hardware", "virtualization"), Arch: get(n, "hardware", "architecture"),
 			OSID: get(n, "os", "id"), OSVersion: get(n, "os", "version_id"), Roles: n["roles"],
+			Kernel: get(n, "os", "kernel"), MachineID: r.Identity.MachineID, InstallUID: r.Identity.InstallUID,
+			Platforms: append([]string{}, r.Identity.Platforms...),
 		})
 	}
 	sort.Slice(es, func(i, j int) bool { return es[i].Name < es[j].Name })

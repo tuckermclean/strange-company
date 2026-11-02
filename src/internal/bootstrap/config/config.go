@@ -466,6 +466,10 @@ func (n *norm) nodes() []any {
 			n.bad("EXISTING_NODES entry %q has no host", ent)
 			continue
 		}
+		if strings.HasPrefix(host, "-") {
+			n.bad("EXISTING_NODES entry %q has a host starting with '-': ssh would read it as an option", ent)
+			continue
+		}
 		if byName[nm] != nil {
 			n.bad("EXISTING_NODES entry %q repeats node %s: duplicate node names are not allowed", ent, nm)
 			continue

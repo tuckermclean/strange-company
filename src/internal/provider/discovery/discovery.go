@@ -61,6 +61,17 @@ type Finding struct {
 type Result struct {
 	Node     map[string]any
 	Findings []Finding
+	// Identity is what tells the machine apart from another one answering on the same address; it is not part of the
+	// ProviderOutput node (it carries no schema field) and feeds the plan digest.
+	Identity Identity
+}
+
+// Identity is the identifying facts of a discovered node: its machine id, the install marker it carries and the
+// container platforms found on it.
+type Identity struct {
+	MachineID  string
+	InstallUID string
+	Platforms  []string
 }
 
 // Script returns the embedded discovery script (POSIX sh, read from stdin by `sh -s`): it prints one JSON document
@@ -132,11 +143,11 @@ type facts struct {
 	} `json:"lsblk"`
 	Findmnt *struct {
 		Filesystems []struct {
-			Target string  `json:"target"`
-			Source string  `json:"source"`
-			FSType string  `json:"fstype"`
-			Size   flexInt `json:"size"`
-			Avail  flexInt `json:"avail"`
+			Target string   `json:"target"`
+			Source string   `json:"source"`
+			FSType string   `json:"fstype"`
+			Size   *flexInt `json:"size"`
+			Avail  *flexInt `json:"avail"`
 		} `json:"filesystems"`
 	} `json:"findmnt"`
 	OSRelease string   `json:"os_release"`
@@ -339,7 +350,8 @@ func Evaluate(in []Input, c Context) ([]Result, error) {
 		}
 		sv := e.node["substrate_validation"].(map[string]any)
 		sv["findings"] = fs
-		out[i] = Result{Node: e.node, Findings: append([]Finding(nil), e.findings...)}
+		out[i] = Result{Node: e.node, Findings: append([]Finding(nil), e.findings...),
+			Identity: Identity{MachineID: e.machineID, InstallUID: strings.TrimSpace(e.f.InstallUID), Platforms: append([]string(nil), e.f.Platforms...)}}
 	}
 	return out, nil
 }
@@ -382,7 +394,8 @@ func crossChecks(evs []*eval) {
 	}
 	var comparable []*eval
 	for _, e := range evs {
-		if e.meetsLower {
+		// a node whose disk class is unknown is reported by DISK_CLASS_UNVERIFIED, not compared
+		if e.meetsLower && e.diskClass != "unknown" {
 			comparable = append(comparable, e)
 		}
 	}
@@ -619,12 +632,19 @@ func (e *eval) check(prof *profile, c Context) {
 	var avail int64
 	if f.Findmnt != nil && len(f.Findmnt.Filesystems) > 0 {
 		fs := f.Findmnt.Filesystems[0]
-		fsSource, fsTarget, fsType, avail = fs.Source, fs.Target, fs.FSType, int64(fs.Avail)
+		fsSource, fsTarget, fsType = fs.Source, fs.Target, fs.FSType
+		sizeKnown := fs.Size != nil && fs.Avail != nil
+		if sizeKnown {
+			avail = int64(*fs.Avail)
+		} else {
+			e.add("DISCOVERY_TOOL_MISSING", sevFail, "findmnt on %s reported no size or free space for %s: the free space cannot be discovered (findmnt must support -o SIZE,AVAIL)", n.Name, fsTarget)
+		}
 		if fsType != "ext4" && fsType != "xfs" {
 			e.add("NODE_FS_UNSUPPORTED", sevFail, "%s keeps /var/lib/rancher on a %q filesystem; ext4 or xfs is required", n.Name, fsType)
 		}
 		need := prof.storageSize
 		switch {
+		case !sizeKnown:
 		case avail*10 < need*8:
 			e.add("NODE_DISK_FREE_LOW", sevFail, "%s has %d bytes free on %s; %d are required", n.Name, avail, fsTarget, need*8/10)
 		case avail < need:
@@ -693,9 +713,9 @@ func (e *eval) check(prof *profile, c Context) {
 		e.add("NODE_BELOW_MINIMUM", sevFail, "%s (%d CPUs, %d bytes memory, %d bytes %s disk) is below the lower bound of profile %s", n.Name, e.cpu, e.memory, e.diskSize, e.diskClass, prof.name)
 	} else if e.diskClass != "unknown" {
 		if !e.meetsMinimum {
-			e.add("NODE_CONSTRAINED_CAPACITY", sevWarn, "%s meets only the constrained lower bound of profile %s: no capacity guarantee (ADR-0020)", n.Name, prof.name)
+			e.add("NODE_CONSTRAINED", sevWarn, "%s meets only the constrained lower bound of profile %s: no capacity guarantee (ADR-0020)", n.Name, prof.name)
 		} else if !e.meetsPref {
-			e.add("NODE_BELOW_PREFERRED", sevWarn, "%s meets the minimum of profile %s but not the preferred shape", n.Name, prof.name)
+			e.add("BELOW_PREFERRED_DISK", sevWarn, "%s meets the minimum of profile %s but not the preferred shape", n.Name, prof.name)
 		}
 	}
 

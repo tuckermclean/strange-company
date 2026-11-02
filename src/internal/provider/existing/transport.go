@@ -51,13 +51,25 @@ type SSHTransport struct {
 	Timeout time.Duration
 }
 
-var retryDelays = []time.Duration{5 * time.Second, 15 * time.Second, 30 * time.Second}
+// retryDelays are the waits between the three attempts (plan 05 section 16).
+var retryDelays = []time.Duration{5 * time.Second, 15 * time.Second}
+
+// checkHost refuses a host that ssh or ssh-keyscan would read as an option (-oProxyCommand=... runs a command).
+func checkHost(host string) error {
+	if host == "" || strings.HasPrefix(host, "-") {
+		return fmt.Errorf("the host %q is not a valid ssh host (it is empty or starts with '-')", host)
+	}
+	return nil
+}
 
 // HostKeys runs ssh-keyscan once for ed25519, ecdsa and rsa keys.
 func (t SSHTransport) HostKeys(ctx context.Context, n discovery.Node) ([]string, error) {
+	if err := checkHost(n.Host); err != nil {
+		return nil, err
+	}
 	var keys []string
 	err := t.retry(ctx, func(ctx context.Context) error {
-		cmd := exec.CommandContext(ctx, "ssh-keyscan", "-T", "10", "-p", strconv.Itoa(n.Port), "-t", "ed25519,ecdsa,rsa", n.Host)
+		cmd := exec.CommandContext(ctx, "ssh-keyscan", "-T", "10", "-p", strconv.Itoa(n.Port), "-t", "ed25519,ecdsa,rsa", "--", n.Host)
 		var out, errb bytes.Buffer
 		cmd.Stdout, cmd.Stderr = &out, &errb
 		if err := cmd.Run(); err != nil {
@@ -80,6 +92,9 @@ func (t SSHTransport) HostKeys(ctx context.Context, n discovery.Node) ([]string,
 // Facts runs the discovery script as sc-admin (set by configure's admin transition) and, if that user does not exist
 // yet, as the EXISTING_NODES user, with StrictHostKeyChecking=yes against the captured keys.
 func (t SSHTransport) Facts(ctx context.Context, n discovery.Node, hostKeys []string) ([]byte, error) {
+	if err := checkHost(n.Host); err != nil {
+		return nil, err
+	}
 	dir, err := os.MkdirTemp(t.TempDir, "known-hosts-")
 	if err != nil {
 		return nil, err
@@ -116,7 +131,7 @@ func (t SSHTransport) Facts(ctx context.Context, n discovery.Node, hostKeys []st
 			if t.KeyPath != "" {
 				args = append(args, "-i", t.KeyPath, "-o", "IdentitiesOnly=yes")
 			}
-			args = append(args, u+"@"+n.Host, "sh -s")
+			args = append(args, "--", u+"@"+n.Host, "sh -s")
 			cmd := exec.CommandContext(tctx, "ssh", args...)
 			cmd.Stdin = bytes.NewReader(discovery.Script())
 			var stdout, stderr bytes.Buffer
@@ -145,7 +160,7 @@ func (t SSHTransport) timeout() time.Duration {
 	return 60 * time.Second
 }
 
-// retry tries f up to four times; connection failures right after a reboot are transient (plan 05 section 16). A
+// retry tries f up to three times; connection failures right after a reboot are transient (plan 05 section 16). A
 // permission failure is permanent and returned at once.
 func (t SSHTransport) retry(ctx context.Context, f func(context.Context) error) error {
 	clk := t.Clock
@@ -154,7 +169,7 @@ func (t SSHTransport) retry(ctx context.Context, f func(context.Context) error) 
 	}
 	err := f(ctx)
 	for _, d := range retryDelays {
-		if err == nil || ctx.Err() != nil || strings.Contains(err.Error(), "Permission denied") {
+		if err == nil || ctx.Err() != nil || strings.Contains(err.Error(), "Permission denied") || strings.Contains(err.Error(), "Host key verification failed") {
 			return err
 		}
 		if serr := clk.Sleep(ctx, d); serr != nil {
