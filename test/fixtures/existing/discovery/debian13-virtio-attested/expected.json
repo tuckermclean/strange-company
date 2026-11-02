@@ -1,0 +1,68 @@
+{
+  "node": {
+    "name": "node-01",
+    "provider_id": "existing:node-01",
+    "machine_class": "existing",
+    "roles": [
+      "server"
+    ],
+    "addresses": {
+      "public_ipv4": "203.0.113.44",
+      "public_ipv6": null,
+      "internal_ip": "203.0.113.44",
+      "external_ip": null
+    },
+    "ssh": {
+      "host": "203.0.113.44",
+      "port": 22,
+      "user": "debian",
+      "admin_user": null,
+      "host_key_fingerprints": [
+        "SHA256:hyAu4i12UkIdT1YURPCnDb3Rudbt+QZOzNs7gzZcMvA",
+        "SHA256:q7CG5kCTQ7GZyj202FofBXSjFiAjVphdP7y6MWP3d1A",
+        "SHA256:tPuHHnlUrkR4RyUbuLBFc4Farmzw6lyr6S3Ls6hcuXc"
+      ]
+    },
+    "hardware": {
+      "cpu_count": 4,
+      "memory_bytes": 12533264384,
+      "disks": [
+        {
+          "size_bytes": 214748364800,
+          "class": "ssd",
+          "class_source": "operator-attested",
+          "role": "root"
+        }
+      ],
+      "virtualization": "kvm",
+      "architecture": "amd64"
+    },
+    "os": {
+      "id": "debian",
+      "version_id": "13",
+      "pretty_name": "Debian GNU/Linux 13 (trixie)",
+      "kernel": "6.12.48+deb13-cloud-amd64"
+    },
+    "location": {
+      "region": "existing",
+      "failure_domain": "existing"
+    },
+    "state": "running",
+    "substrate_validation": {
+      "profile": "self-hosting-minimum",
+      "meets_minimum": true,
+      "meets_preferred": false
+    }
+  },
+  "findings": [
+    {
+      "code": "DISK_CLASS_ATTESTED",
+      "severity": "warn"
+    }
+  ],
+  "exact": true,
+  "absent": [
+    "DISK_CLASS_UNVERIFIED",
+    "DISK_CLASS_OVERRIDE_CONFLICT"
+  ]
+}

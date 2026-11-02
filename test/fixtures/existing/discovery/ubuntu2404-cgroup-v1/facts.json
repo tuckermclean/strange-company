@@ -1,0 +1,164 @@
+{
+  "script_version": 1,
+  "nproc": 8,
+  "cpu_model": "AMD EPYC 7452 32-Core Processor",
+  "meminfo": "MemTotal:       32779632 kB\nMemFree:        16389816 kB\nMemAvailable:   16390816 kB\nBuffers:           41212 kB\nCached:          2013440 kB\nSwapTotal:             0 kB\nSwapFree:              0 kB\n",
+  "lsblk": {
+    "blockdevices": [
+      {
+        "name": "sda",
+        "kname": "sda",
+        "pkname": null,
+        "size": 500107862016,
+        "rota": false,
+        "type": "disk",
+        "tran": "sata",
+        "model": "Samsung SSD 870 EVO 500GB",
+        "mountpoints": [
+          null
+        ],
+        "children": [
+          {
+            "name": "sda1",
+            "kname": "sda1",
+            "pkname": "sda",
+            "size": 536870912,
+            "rota": false,
+            "type": "part",
+            "tran": null,
+            "model": null,
+            "mountpoints": [
+              "/boot/efi"
+            ]
+          },
+          {
+            "name": "sda2",
+            "kname": "sda2",
+            "pkname": "sda",
+            "size": 499034120192,
+            "rota": false,
+            "type": "part",
+            "tran": null,
+            "model": null,
+            "mountpoints": [
+              "/"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "findmnt": {
+    "filesystems": [
+      {
+        "target": "/",
+        "source": "/dev/sda2",
+        "fstype": "ext4",
+        "size": "497960378368",
+        "avail": "401234567890"
+      }
+    ]
+  },
+  "os_release": "PRETTY_NAME=\"Ubuntu 24.04.3 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"24.04\"\nVERSION=\"24.04.3 LTS (Noble Numbat)\"\nVERSION_CODENAME=noble\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nUBUNTU_CODENAME=noble\n",
+  "kernel": "6.8.0-45-generic",
+  "arch": "x86_64",
+  "virt": "none",
+  "cgroup_fs": "tmpfs",
+  "apparmor": "Y",
+  "wireguard": true,
+  "ntp_synchronized": "yes",
+  "swap": "",
+  "ip_addr": [
+    {
+      "ifindex": 1,
+      "ifname": "lo",
+      "flags": [
+        "LOOPBACK",
+        "UP",
+        "LOWER_UP"
+      ],
+      "mtu": 65536,
+      "qdisc": "noqueue",
+      "operstate": "UNKNOWN",
+      "group": "default",
+      "txqlen": 1000,
+      "link_type": "loopback",
+      "address": "00:00:00:00:00:00",
+      "broadcast": "00:00:00:00:00:00",
+      "addr_info": [
+        {
+          "family": "inet",
+          "local": "127.0.0.1",
+          "prefixlen": 8,
+          "scope": "host",
+          "label": "lo",
+          "valid_life_time": 4294967295,
+          "preferred_life_time": 4294967295
+        },
+        {
+          "family": "inet6",
+          "local": "::1",
+          "prefixlen": 128,
+          "scope": "host",
+          "noprefixroute": true,
+          "valid_life_time": 4294967295,
+          "preferred_life_time": 4294967295
+        }
+      ]
+    },
+    {
+      "ifindex": 2,
+      "ifname": "enp3s0",
+      "flags": [
+        "BROADCAST",
+        "MULTICAST",
+        "UP",
+        "LOWER_UP"
+      ],
+      "mtu": 1500,
+      "qdisc": "fq_codel",
+      "operstate": "UP",
+      "group": "default",
+      "txqlen": 1000,
+      "link_type": "ether",
+      "address": "52:54:00:12:34:02",
+      "broadcast": "ff:ff:ff:ff:ff:ff",
+      "addr_info": [
+        {
+          "family": "inet",
+          "local": "203.0.113.70",
+          "prefixlen": 26,
+          "scope": "global",
+          "label": "enp3s0",
+          "valid_life_time": 4294967295,
+          "preferred_life_time": 4294967295
+        },
+        {
+          "family": "inet6",
+          "local": "fe80::5054:ff:fe12:3470",
+          "prefixlen": 64,
+          "scope": "link",
+          "valid_life_time": 4294967295,
+          "preferred_life_time": 4294967295
+        }
+      ]
+    }
+  ],
+  "ip_route_get": [
+    {
+      "dst": "1.1.1.1",
+      "gateway": "203.0.113.65",
+      "dev": "enp3s0",
+      "prefsrc": "203.0.113.70",
+      "flags": [],
+      "uid": 1000,
+      "cache": []
+    }
+  ],
+  "ss": "tcp   LISTEN 0      128          0.0.0.0:22         0.0.0.0:*\ntcp   LISTEN 0      128             [::]:22            [::]:*\nudp   UNCONN 0      0          127.0.0.54:53         0.0.0.0:*\nudp   UNCONN 0      0       127.0.0.53%lo:53         0.0.0.0:*\n",
+  "platforms": [],
+  "install_uid": "",
+  "sudo_ok": true,
+  "machine_id": "2c26b46b68ffc68ff99b453c1d304134",
+  "missing_tools": []
+}

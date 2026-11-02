@@ -1,0 +1,5 @@
+{"nodes": [
+  {"name": "node-01", "internalIp": "10.77.0.11", "diskClassOverride": "ssd", "hostKeyFingerprint": "SHA256:ZYXWVUTSRQPONMLKJIHGFEDCBAzyxwvutsrqponmlkj", "ssh": {"host": "192.0.2.11", "port": 2201, "user": "debian"}},
+  {"name": "node-02", "diskClassOverride": "nvme", "ssh": {"host": "192.0.2.12", "port": 22, "user": "debian"}},
+  {"name": "node-03", "internalIp": "10.77.0.13", "hostKeyFingerprint": "SHA256:abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ", "ssh": {"host": "192.0.2.13", "port": 65535, "user": "ops"}}
+]}

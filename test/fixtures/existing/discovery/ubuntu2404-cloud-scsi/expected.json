@@ -1,0 +1,63 @@
+{
+  "node": {
+    "name": "node-01",
+    "provider_id": "existing:node-01",
+    "machine_class": "existing",
+    "roles": [
+      "server"
+    ],
+    "addresses": {
+      "public_ipv4": null,
+      "public_ipv6": null,
+      "internal_ip": "10.77.0.11",
+      "external_ip": null
+    },
+    "ssh": {
+      "host": "127.0.0.1",
+      "port": 2201,
+      "user": "ubuntu",
+      "admin_user": null,
+      "host_key_fingerprints": [
+        "SHA256:R4EiNzCTOOCZe4dSgo2n6ZtGKbxRmrcvYyoKgPqC/BY",
+        "SHA256:ip9UyE2S7yqTvtTD6fZCzMND2DW1x555jWp95g9V974",
+        "SHA256:9i71e4PJfFy6S4iIxfY0r1tXejSlMEAcds6LT6gnLsU"
+      ]
+    },
+    "hardware": {
+      "cpu_count": 4,
+      "memory_bytes": 16766238720,
+      "disks": [
+        {
+          "size_bytes": 128849018880,
+          "class": "ssd",
+          "class_source": "discovered",
+          "role": "root"
+        }
+      ],
+      "virtualization": "kvm",
+      "architecture": "amd64"
+    },
+    "os": {
+      "id": "ubuntu",
+      "version_id": "24.04",
+      "pretty_name": "Ubuntu 24.04.3 LTS",
+      "kernel": "6.8.0-87-generic"
+    },
+    "location": {
+      "region": "existing",
+      "failure_domain": "existing"
+    },
+    "state": "running",
+    "substrate_validation": {
+      "profile": "self-hosting-minimum",
+      "meets_minimum": true,
+      "meets_preferred": false
+    }
+  },
+  "findings": [],
+  "exact": true,
+  "absent": [
+    "DISK_CLASS_UNVERIFIED",
+    "DISK_CLASS_ATTESTED"
+  ]
+}

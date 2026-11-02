@@ -1,0 +1,23 @@
+{
+  "node": {
+    "name": "node-01",
+    "state": "running",
+    "os": {
+      "id": "debian"
+    }
+  },
+  "findings": [
+    {
+      "code": "NODE_HAS_FOREIGN_PLATFORM",
+      "severity": "fail"
+    },
+    {
+      "code": "NODE_PORT_CONFLICT",
+      "severity": "fail"
+    }
+  ],
+  "exact": true,
+  "absent": [
+    "NODE_BELONGS_TO_OTHER_INSTALL"
+  ]
+}

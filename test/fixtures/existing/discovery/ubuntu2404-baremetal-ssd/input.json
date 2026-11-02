@@ -1,0 +1,8 @@
+{
+  "node": {
+    "name": "node-01",
+    "host": "198.51.100.7",
+    "port": 2222,
+    "user": "ubuntu"
+  }
+}
