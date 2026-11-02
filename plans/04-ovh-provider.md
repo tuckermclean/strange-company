@@ -213,6 +213,7 @@ The OVH 2025 VPS range has no 16 GiB class (verify at S-6): after VPS-2 (6 vCore
 GET    /auth/time  /me  /me/*
 GET    /order/catalog/*          POST /order/cart  POST /order/cart/*  GET /order/cart/*  DELETE /order/cart/*
 GET    /me/order  /me/order/*    POST /me/order/*/payWithRegisteredPaymentMean
+GET    /vps                      (service list, read by the orphan scan §14.4; OVH wildcards do not match the bare path; CD-74)
 GET/PUT/POST/DELETE  /vps/*      POST /vps/*/terminate  POST /vps/*/confirmTermination
 GET/POST/PUT/DELETE  /cloud/project/<OVH_CLOUD_PROJECT_ID>/*        (public-cloud only)
 ```
