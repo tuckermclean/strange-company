@@ -19,6 +19,10 @@ run_id=e2e-$$
 runbase=${SC_LAB_RUN_BASE:-/tmp/sc-lab}
 secrets=$(mktemp -d) || exit 1
 chmod 700 "$secrets"
+# sc-bootstrap's black-start directory (SC_BLACKSTART_DIR, runtime-only, plan 50 section 9.2) holds the recovery bundle and
+# identity: private, removed in the trap, never copied to $out.
+blackstart=$secrets/blackstart
+mkdir -m 700 "$blackstart" || exit 1
 started=
 
 say() { printf 'e2e-lab: %s\n' "$*"; }
@@ -74,7 +78,7 @@ for d in .bootstrap/runs/*/; do
 done >"$before"
 
 # The typed <cluster> token confirms the existing-nodes plan; the storage confirmation is the cluster name as well.
-printf '%s\n' "$cluster" | env SC_TEST_MODE=1 SC_LAB_S3_CA_FILE="$SC_LAB_S3_CA_FILE" SC_LAB_S3_INCLUSTER_ENDPOINT="$SC_LAB_S3_INCLUSTER_ENDPOINT" SC_TEST_STOP_AFTER="$LAB_STOP_AFTER" SC_RECOVERY_PASSPHRASE_FILE="$secrets/passphrase" \
+printf '%s\n' "$cluster" | env SC_TEST_MODE=1 SC_BLACKSTART_DIR="$blackstart" SC_LAB_S3_CA_FILE="$SC_LAB_S3_CA_FILE" SC_LAB_S3_INCLUSTER_ENDPOINT="$SC_LAB_S3_INCLUSTER_ENDPOINT" SC_TEST_STOP_AFTER="$LAB_STOP_AFTER" SC_RECOVERY_PASSPHRASE_FILE="$secrets/passphrase" \
 	SC_CONFIRM_STORAGE="$cluster" sc-bootstrap --env-file "$envfile" run >"$out/bootstrap.log" 2>&1
 brc=$?
 cat "$out/bootstrap.log"
