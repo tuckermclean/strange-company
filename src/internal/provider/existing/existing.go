@@ -10,10 +10,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"go.yaml.in/yaml/v3"
 
 	"strange.company/sc/internal/provider"
 	"strange.company/sc/internal/provider/discovery"
@@ -342,6 +345,10 @@ func (p *Provider) OutputDocument(cluster string, now time.Time, maxMonthlyCost,
 	source := "tofu"
 	if attested {
 		source = "operator-supplied"
+		if p.labProfile() {
+			// The lab generates the host keys and injects them through cloud-init (plan 05 section 14.6).
+			source = "cloud-init"
+		}
 	}
 	if currency == "" {
 		currency = "EUR"
@@ -359,6 +366,26 @@ func (p *Provider) OutputDocument(cluster string, now time.Time, maxMonthlyCost,
 		"tofu": nil, "warnings": []any{},
 	}
 	return json.MarshalIndent(doc, "", "  ")
+}
+
+// labProfile reports whether the effective profile carries the label strange.company/lab: "true".
+func (p *Provider) labProfile() bool {
+	if p.cfg.ProfileFile == "" {
+		return false
+	}
+	raw, err := os.ReadFile(p.cfg.ProfileFile)
+	if err != nil {
+		return false
+	}
+	var doc struct {
+		Metadata struct {
+			Labels map[string]string `yaml:"labels"`
+		} `yaml:"metadata"`
+	}
+	if yaml.Unmarshal(raw, &doc) != nil {
+		return false
+	}
+	return doc.Metadata.Labels["strange.company/lab"] == "true"
 }
 
 // KnownHosts renders the pinned host keys of the latest plan in known_hosts format ([host]:port keytype key).

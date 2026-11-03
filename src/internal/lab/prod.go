@@ -220,11 +220,11 @@ func makeSeed(ctx context.Context, s SeedFiles) error {
 	return err
 }
 
-// startS3 starts `weed server -s3` detached on port 9000 and returns once the port answers. The run-local TLS CA
-// of plan 05 section 14.6 is not generated yet, so the endpoint is plain HTTP.
+// startS3 starts `weed server -s3` detached on port 9000 over TLS with a run-local CA (PrepareS3, plan 05 section
+// 14.6) and returns once the port answers.
 func startS3(ctx context.Context, runDir string) (S3Info, error) {
-	data := filepath.Join(runDir, "s3")
-	if err := os.MkdirAll(data, 0o755); err != nil {
+	prep, err := PrepareS3(runDir)
+	if err != nil {
 		return S3Info{}, err
 	}
 	logf, err := os.Create(filepath.Join(runDir, "s3.log"))
@@ -232,7 +232,7 @@ func startS3(ctx context.Context, runDir string) (S3Info, error) {
 		return S3Info{}, err
 	}
 	defer logf.Close()
-	cmd := exec.Command("weed", append([]string{"server"}, S3EmulatorArgs(data)...)...)
+	cmd := exec.Command("weed", append([]string{"server"}, prep.Args...)...)
 	cmd.Stdout, cmd.Stderr = logf, logf
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
@@ -244,7 +244,9 @@ func startS3(ctx context.Context, runDir string) (S3Info, error) {
 	for i := 0; i < 120; i++ {
 		if c, err := net.DialTimeout("tcp", "127.0.0.1:9000", time.Second); err == nil {
 			c.Close()
-			return S3Info{Endpoint: "http://127.0.0.1:9000", PID: pid}, nil
+			info := prep.Info
+			info.PID = pid
+			return info, nil
 		}
 		if err := clk.Sleep(ctx, 500*time.Millisecond); err != nil {
 			return S3Info{}, err

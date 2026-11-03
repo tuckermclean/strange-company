@@ -498,10 +498,13 @@ func bootstrapEnv(o UpOptions, nodes int, nodeLines, overrides []string, k Keys,
 	}
 	if k.PrivateKeyPath != "" {
 		w("SSH_PRIVATE_KEY_PATH=%s", k.PrivateKeyPath)
+		w("SSH_PUBLIC_KEY_PATH=%s.pub", k.PrivateKeyPath)
 	}
 	w("INGRESS_MODE=direct")
 	if s3.Endpoint != "" {
 		w("S3_ENDPOINT=%s", s3.Endpoint)
+		// The emulator listens on loopback (placement check PF-28, plan 36): the toolbox-side address is the private CIDR.
+		w("S3_PRIVATE_CIDR=127.0.0.1/32")
 		scheme, hostport, _ := strings.Cut(s3.Endpoint, "://")
 		_, p, _ := strings.Cut(hostport, ":")
 		w("SC_LAB_S3_INCLUSTER_ENDPOINT=%s://10.0.2.2:%s", scheme, p)
@@ -511,6 +514,20 @@ func bootstrapEnv(o UpOptions, nodes int, nodeLines, overrides []string, k Keys,
 	}
 	w("S3_REGION=us-east-1")
 	w("S3_FORCE_PATH_STYLE=true")
+	// Fixed fakes (plan 05 section 14.6/14.7): the lab never calls Cloudflare, GitHub, a notification transport or a model
+	// API (test mode with a lab-labeled substrate skips those checks); the s3-emulator accepts any credentials.
+	w("S3_ACCESS_KEY_ID=lab-access-key")
+	w("S3_SECRET_ACCESS_KEY=lab-secret-key-not-a-secret")
+	w("CLOUDFLARE_ACCOUNT_ID=00000000000000000000000000000000")
+	w("CLOUDFLARE_API_TOKEN=lab-fake-cloudflare-api-token")
+	w("CLOUDFLARE_ACME_TOKEN=lab-fake-cloudflare-acme-token")
+	w("GITHUB_MIRROR_REPO=lab-example/lab-mirror")
+	w("GITHUB_MIRROR_TOKEN=lab-fake-github-mirror-token")
+	w("GITHUB_PROBE_TOKEN=lab-fake-github-probe-token")
+	w("GITHUB_MIRROR_READ_TOKEN=lab-fake-github-read-token")
+	w("NOTIFY_TRANSPORT=webhook")
+	w("NOTIFY_WEBHOOK_URL=https://notify.lab.example.net/hook")
+	w("ANTHROPIC_API_KEY=lab-fake-anthropic-key")
 	return b.String()
 }
 

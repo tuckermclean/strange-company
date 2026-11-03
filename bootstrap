@@ -2,13 +2,13 @@
 # Strange Company wrapper (plan 02 sections 7.1, 14.2 to 14.6).
 #   ./bootstrap [--engine docker|podman] [--toolbox-build] [--env-file PATH] [global flags] [<command> [args...]]
 #   (global flags: --from-phase P --retry-phase P --non-interactive --profile P --log-format json|text -v --confirm-plan|storage|budget|backstops|install V; a bare ./bootstrap is run)
-#   ./bootstrap exec  [--image toolbox|ci] [--network bridge|host|none] -- <cmd> [args...]
+#   ./bootstrap exec  [--image toolbox|ci] [--kvm] [--network bridge|host|none] -- <cmd> [args...]
 #   ./bootstrap shell [--image toolbox|ci] [--network bridge|host|none]
 #   ./bootstrap build [--no-cache] [--platform P] [-f FILE] --target toolbox|ci       (what `make toolbox` calls)
 #   ./bootstrap run|plan|preflight|status|verify|expand|destroy|recover|report|rotate|state|unlock|version [args...]
 # Every command except `build` runs in the toolbox image (the default) with the repository, the black-start directory and
 # the env-file inputs mounted; the verbs are handed unchanged to sc-bootstrap by the image's entrypoint.
-# Not here (plan 50, later nodes): the kube tunnel, --unlock, --kvm and the recovery capsule.
+# Not here (plan 50, later nodes): the kube tunnel, --unlock and the recovery capsule.
 set -eu
 
 die() { # code message exit-code
@@ -117,6 +117,7 @@ esac
 
 image=
 network=${SC_TOOLBOX_NETWORK:-bridge}
+kvm=0
 nocache=
 platform=
 cfile=toolbox/Containerfile
@@ -155,6 +156,10 @@ while { [ "$command" = exec ] || [ "$command" = shell ]; } && [ $# -gt 0 ]; do
 		image=${1#--image=}
 		shift
 		;;
+	--kvm)
+		kvm=1
+		shift
+		;;
 	--network)
 		[ $# -ge 2 ] || usage "--network needs a value"
 		network=$2
@@ -176,6 +181,10 @@ case $image in toolbox | ci) ;; "") usage "build needs --target toolbox|ci" ;; *
 case $network in bridge | host | none) ;; *) usage "--network must be bridge, host or none" ;; esac
 if [ "$command" = exec ]; then
 	[ $# -gt 0 ] || usage "exec needs a command after --"
+fi
+kvm_dev=${SC_KVM_DEVICE:-/dev/kvm}
+if [ "$kvm" = 1 ] && [ ! -e "$kvm_dev" ]; then
+	die WRAPPER_NO_KVM "--kvm needs the host device $kvm_dev (set SC_KVM_DEVICE to another path); no container was started" 2
 fi
 case $cfile in /* | *..*) usage "-f must be a repository-relative path" ;; esac
 
@@ -496,6 +505,7 @@ set -- "$@" run --rm -i
 [ -z "$tty" ] || set -- "$@" "$tty"
 # shellcheck disable=SC2086 # user_flags is a fixed, space-separated flag list
 set -- "$@" $user_flags --cap-drop ALL --security-opt no-new-privileges
+[ "$kvm" != 1 ] || set -- "$@" --device "$kvm_dev"
 [ "$selinux" != 1 ] || set -- "$@" --security-opt label=disable
 set -- "$@" \
 	--network "$network" --hostname sc-toolbox --name "sc-toolbox-$$" \
