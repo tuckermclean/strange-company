@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -96,12 +97,13 @@ type Env struct {
 	// ProcName returns the command name (/proc/<pid>/comm) of a pid; Down kills only qemu and weed.
 	ProcName func(pid int) (string, error)
 
-	// SC-STUB(F09 05-AC-6) Alive reports whether pid still exists; Down waits for killed pids to exit (nil: no wait).
+	// Alive reports whether pid still exists; Down waits for killed pids to exit (nil: no wait).
 	Alive func(pid int) bool
-	// SC-STUB(F09 05-AC-6) KillHard sends SIGKILL to pids that survive Kill (SIGTERM) past the deadline.
+	// KillHard sends SIGKILL to pids that survive Kill (SIGTERM) past the deadline.
 	KillHard func(pid int) error
-	// SC-STUB(F09 05-AC-6) Clock measures the Down deadline.
+	// Clock measures the Down deadline.
 	Clock clock.Clock
+
 	Stdout io.Writer
 	Stderr io.Writer
 }
@@ -553,32 +555,93 @@ func readPIDs(runDir string) map[string]int {
 }
 
 // ownedProc reports whether pid is a qemu or weed process; without a ProcName seam or on a lookup error it is not.
-func ownedProc(env Env, pid int) bool {
+// A lookup error is logged with the pid, unless the process is already gone.
+func ownedProc(env Env, name string, pid int) bool {
 	if env.ProcName == nil {
 		return false
 	}
 	comm, err := env.ProcName(pid)
 	if err != nil {
+		if env.Alive == nil || env.Alive(pid) {
+			fmt.Fprintf(env.errw(), "sc-lab: skipping %s (pid %d): cannot read its process name: %v\n", name, pid, err)
+		}
 		return false
 	}
 	comm = strings.TrimSpace(comm)
 	return strings.HasPrefix(comm, "qemu-system") || comm == "weed"
 }
 
-// Down kills the run's processes and removes its directories. It is idempotent.
+const (
+	downPollEvery = 250 * time.Millisecond
+	downTermWait  = 30 * time.Second // SIGTERM grace before SIGKILL
+	downKillWait  = 10 * time.Second // wait after SIGKILL before giving up
+)
+
+// waitGone polls Alive for pids until none remain or d passes on the injected clock; it returns the survivors.
+func waitGone(env Env, pids map[int]string, d time.Duration) map[int]string {
+	clk := env.Clock
+	if clk == nil {
+		clk = clock.Real{}
+	}
+	var waited time.Duration
+	for {
+		alive := map[int]string{}
+		for pid, name := range pids {
+			if env.Alive(pid) {
+				alive[pid] = name
+			}
+		}
+		if len(alive) == 0 || waited >= d {
+			return alive
+		}
+		if err := clk.Sleep(context.Background(), downPollEvery); err != nil {
+			return alive
+		}
+		waited += downPollEvery
+		pids = alive
+	}
+}
+
+func pidList(m map[int]string) string {
+	var parts []string
+	for pid, name := range m {
+		parts = append(parts, fmt.Sprintf("%s (pid %d)", name, pid))
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ", ")
+}
+
+// Down kills the run's processes, waits for them to exit (SIGTERM, then SIGKILL after a bounded grace) and
+// removes its directories. It is idempotent. If a process remains, the run directory is kept so a rerun can retry.
 func Down(env Env, runID string) error {
 	if !validID(runID) {
 		return errf("LAB_USAGE", runIDUsage)
 	}
 	runDir := filepath.Join(env.RunBase, runID)
+	killed := map[int]string{}
 	if env.Kill != nil {
 		for name, pid := range readPIDs(runDir) {
-			if !ownedProc(env, pid) {
+			if !ownedProc(env, name, pid) {
 				continue
 			}
+			killed[pid] = name
 			if err := env.Kill(pid); err != nil {
 				fmt.Fprintf(env.errw(), "sc-lab: kill %s (pid %d): %v\n", name, pid, err)
 			}
+		}
+	}
+	if env.Alive != nil && len(killed) > 0 {
+		left := waitGone(env, killed, downTermWait)
+		if len(left) > 0 && env.KillHard != nil {
+			for pid, name := range left {
+				if err := env.KillHard(pid); err != nil {
+					fmt.Fprintf(env.errw(), "sc-lab: SIGKILL %s (pid %d): %v\n", name, pid, err)
+				}
+			}
+			left = waitGone(env, left, downKillWait)
+		}
+		if len(left) > 0 {
+			return errf("LAB_DOWN", "processes still running: %s; run directory kept, rerun sc-lab down", pidList(left))
 		}
 	}
 	for _, d := range []string{runDir, filepath.Join(env.RuntimeDir, runID)} {

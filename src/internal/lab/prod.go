@@ -44,6 +44,9 @@ func ProductionEnv(root string, stdout, stderr io.Writer) Env {
 		MakeSeed:    makeSeed,
 		StartS3:     startS3,
 		Kill:        killProc,
+		KillHard:    killHard,
+		Alive:       alive,
+		Clock:       clock.Real{},
 		ProcName:    procName,
 		PortOpen:    func(p int) bool { return sshBanner(p) == nil },
 		Stdout:      stdout,
@@ -256,8 +259,29 @@ func startS3(ctx context.Context, runDir string) (S3Info, error) {
 	return S3Info{}, errors.New("the s3-emulator did not answer on 127.0.0.1:9000 (see s3.log)")
 }
 
-func killProc(pid int) error {
-	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+func killProc(pid int) error { return signalProc(pid, syscall.SIGTERM) }
+
+// killHard sends SIGKILL.
+func killHard(pid int) error { return signalProc(pid, syscall.SIGKILL) }
+
+// alive reports whether pid exists and is not a zombie (a zombie qemu that nobody reaps has already exited).
+func alive(pid int) bool {
+	if err := syscall.Kill(pid, 0); err != nil && !errors.Is(err, syscall.EPERM) {
+		return false
+	}
+	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return false
+	}
+	// /proc/<pid>/stat is "pid (comm) S ..."; comm may contain spaces and parentheses, so cut at the last ')'.
+	if i := strings.LastIndexByte(string(b), ')'); i >= 0 && len(b) > i+2 {
+		return b[i+2] != 'Z' && b[i+2] != 'X'
+	}
+	return true
+}
+
+func signalProc(pid int, sig syscall.Signal) error {
+	if err := syscall.Kill(pid, sig); err != nil && !errors.Is(err, syscall.ESRCH) {
 		return err
 	}
 	return nil
