@@ -8,6 +8,7 @@
 #   ./bootstrap run|plan|preflight|status|verify|expand|destroy|recover|report|rotate|state|unlock|version [args...]
 # Every command except `build` runs in the toolbox image (the default) with the repository, the black-start directory and
 # the env-file inputs mounted; the verbs are handed unchanged to sc-bootstrap by the image's entrypoint.
+# SC_KVM_DEVICE (plain host path, default /dev/kvm) is a test-only knob for the --kvm device.
 # Not here (plan 50, later nodes): the kube tunnel, --unlock and the recovery capsule.
 set -eu
 
@@ -183,7 +184,12 @@ if [ "$command" = exec ]; then
 	[ $# -gt 0 ] || usage "exec needs a command after --"
 fi
 kvm_dev=${SC_KVM_DEVICE:-/dev/kvm}
+if [ "$kvm" = 1 ]; then
+	{ [ "$command" = exec ] && [ "$image" = ci ]; } || usage "--kvm is for \`exec --image ci\` only"
+	case $kvm_dev in *:*) usage "SC_KVM_DEVICE must be a plain host path (no host:container form): $kvm_dev" ;; esac
+fi
 if [ "$kvm" = 1 ] && [ ! -e "$kvm_dev" ]; then
+	# WRAPPER_NO_KVM is invented here (plan 02 7.1 names no code for a missing device).
 	die WRAPPER_NO_KVM "--kvm needs the host device $kvm_dev (set SC_KVM_DEVICE to another path); no container was started" 2
 fi
 case $cfile in /* | *..*) usage "-f must be a repository-relative path" ;; esac
@@ -505,7 +511,15 @@ set -- "$@" run --rm -i
 [ -z "$tty" ] || set -- "$@" "$tty"
 # shellcheck disable=SC2086 # user_flags is a fixed, space-separated flag list
 set -- "$@" $user_flags --cap-drop ALL --security-opt no-new-privileges
-[ "$kvm" != 1 ] || set -- "$@" --device "$kvm_dev"
+if [ "$kvm" = 1 ]; then
+	set -- "$@" --device "$kvm_dev"
+	# The device's group lets the unprivileged container user open it; rootless Podman cannot map the host gid.
+	if [ "$mode" = podman-rootless ]; then
+		set -- "$@" --group-add keep-groups
+	else
+		set -- "$@" --group-add "$(stat -c %g "$kvm_dev" 2>/dev/null || stat -f %g "$kvm_dev")"
+	fi
+fi
 [ "$selinux" != 1 ] || set -- "$@" --security-opt label=disable
 set -- "$@" \
 	--network "$network" --hostname sc-toolbox --name "sc-toolbox-$$" \
