@@ -1,0 +1,12 @@
+# Lab VM shapes, network and SSH ports (plan 05 section 14.6, ADR-0105). Read by sc-lab.
+apiVersion: strange.company/v1alpha1
+kind: LabSpec
+metadata:
+  name: lab
+spec:
+  internalNetwork: 10.77.0.0/24
+  sshPortBase: 2200
+  substrates:
+    lab-small: {nodes: 1, vcpu: 2, memory: 4Gi, disk: 20Gi, diskDevice: virtio-blk}
+    lab-ha: {nodes: 3, vcpu: 2, memory: 4Gi, disk: 20Gi, diskDevice: scsi-hd-ssd}
+    lab-seed: {nodes: 1, vcpu: 4, memory: 8Gi, disk: 40Gi, diskDevice: virtio-blk}

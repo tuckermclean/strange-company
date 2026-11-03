@@ -1,0 +1,20 @@
+# Lab VM cloud images (plan 05 section 14.6, ADR-0105). URLs name a dated build directory, never latest/current.
+# Debian publishes SHA512SUMS (sha512 copied from it, sha256 computed from the same verified download);
+# Ubuntu publishes SHA256SUMS (sha256 copied from it). sc-lab verifies every listed checksum before any VM starts.
+apiVersion: strange.company/v1alpha1
+kind: LabImageLock
+metadata:
+  name: lab-images
+spec:
+  images:
+    debian-13:
+      serial: "20261026-2643"
+      amd64:
+        url: https://cloud.debian.org/images/cloud/trixie/20261026-2643/debian-13-genericcloud-amd64-20261026-2643.qcow2
+        sha256: dd7f5e92d879a983d757fc6acd8c5df0294abd9ba57137b29f8c863bb74a6904
+        sha512: 3ace18e33bdd036edb49d1f79342bd01d2ab980e35194edb0b410435cd543538d286a0bd13bbb0835f7862306e3d385ce2f6a70d8ecf0bd961111166adbc1b8e
+    ubuntu-24.04:
+      serial: "20261017"
+      amd64:
+        url: https://cloud-images.ubuntu.com/releases/24.04/release-20261017/ubuntu-24.04-server-cloudimg-amd64.img
+        sha256: 04e8f2461a16a44e78a370284471f29616cdd9baf1893df25807b71f985b6c94
