@@ -84,6 +84,24 @@ func pf03(repo, name, wantKind string, paid bool) *toolbox.PFRow {
 	return nil
 }
 
+// labTestMode is the one source of truth for CD-76 (a): test mode, a lab-labeled substrate and an unpaid provider. The
+// preflight command and the install pipeline's preflight phase both ask it.
+func labTestMode(inv cli.Invocation, env map[string]string) bool {
+	if env["SC_TEST_MODE"] != "1" {
+		return false
+	}
+	repo := env["SC_REPO_ROOT"]
+	if repo == "" {
+		repo = "."
+	}
+	name := commandProfile(inv, env)
+	if !config.ValidProfileName(name) {
+		return false
+	}
+	info, err := readProfile(repo, name)
+	return err == nil && info.Lab && !commandPaid(repo, inv, env)
+}
+
 // commandProfile is the profile a command line names: --profile, else PROFILE of the env file, else the default.
 func commandProfile(inv cli.Invocation, env map[string]string) string {
 	if inv.Profile != "" {

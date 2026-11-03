@@ -119,6 +119,9 @@ func Run(args []string, env map[string]string, stdout, stderr io.Writer, deps De
 	if err != nil {
 		return cli.Run(args, env, stdout, stderr, deps.CLI)
 	}
+	if deps.CLI.LabSkip == nil {
+		deps.CLI.LabSkip = func() bool { return labTestMode(inv, env) }
+	}
 	if code, handled := profileCommand(args, inv, env, stdout, stderr, deps); handled {
 		return code
 	}

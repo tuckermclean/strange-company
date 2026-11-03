@@ -259,6 +259,9 @@ type Deps struct {
 	// ReadOnly makes the preflight write nothing to the work tree: the provider-backstop record is not persisted
 	// and no confirmation is handed to Record (`plan` never changes the repository).
 	ReadOnly bool
+	// LabSkip reports a lab-labeled substrate with an unpaid provider in test mode (CD-76 a): PF-15..PF-20, PF-26 and
+	// PF-29 then report `skip (lab)`. The install layer, which reads the profile, supplies it; nil means never.
+	LabSkip func() bool
 }
 
 const usageText = "usage: sc-bootstrap [global flags] [<command> [args]]  (global flags: --env-file F --profile P --non-interactive " +
