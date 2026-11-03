@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -17,17 +18,17 @@ import (
 )
 
 // This file holds the compute part of the recover pipeline (plan 50 sections 7.1 and 14.9, plan 03 section 20.1,
-// DR-12): recover.fence-nodes moves the compute nodes whose provider API does not answer out of managed state, then
+// DR-12): recover.fence moves the compute nodes whose provider API does not answer out of managed state, then
 // plan.compute-plan and plan.confirm plan and confirm replacements under new names in the configured region. The
 // restore steps of plan 45 are not implemented here: the pipeline ends after plan.confirm.
 
 const (
-	stepFenceNodes = "recover.fence-nodes"
+	stepFenceNodes = "recover.fence"
 
 	// nodeProbeTimeout is how long one node's provider API gets to answer before the node counts as unreachable.
 	nodeProbeTimeout = 2 * time.Minute
 
-	procFenceNodes = "procedures/provider-outage.md#fence-nodes"
+	procFenceNodes = "procedures/provider-outage.md#steps"
 )
 
 // fencedNode is one entry of the journal's facts.fenced_nodes (contracts/bootstrap-journal.schema.yaml).
@@ -67,25 +68,60 @@ func (s *sess) fencedFacts() []fencedNode {
 }
 
 // unreachable probes every node of the state, each with its own timeout, and returns those that do not answer.
-func (s *sess) unreachable(ctx context.Context, r provider.Recoverer) ([]provider.StateNode, error) {
+func (s *sess) unreachable(ctx context.Context, r provider.Recoverer) ([]provider.StateNode, []fencedNode, error) {
 	nodes, err := r.StateNodes(ctx)
 	if err != nil {
-		return nil, wrapProviderErr(err)
+		return nil, nil, wrapProviderErr(err)
 	}
 	var bad []provider.StateNode
+	badAddr := map[string]bool{}
+	live := map[string]bool{}
 	for _, n := range nodes {
 		pctx, cancel := context.WithTimeout(ctx, nodeProbeTimeout)
 		perr := r.Probe(pctx, n)
 		cancel()
 		if ctx.Err() != nil {
-			return nil, ctx.Err()
+			return nil, nil, ctx.Err()
 		}
+		live[n.Address] = true
 		if perr != nil {
+			if !provider.IsUnavailable(perr) && !errors.Is(perr, context.DeadlineExceeded) {
+				return nil, nil, wrapProviderErr(perr)
+			}
+			badAddr[n.Address] = true
 			s.eng.Log("warn", "node-unreachable", "the provider API does not answer for a node", map[string]any{"node": n.Name, "error": perr.Error()})
 			bad = append(bad, n)
 		}
 	}
-	return bad, nil
+	// A fenced fact whose node is still managed and answers again is stale (a Fence that failed after the checkpoint).
+	var stale []fencedNode
+	for _, f := range s.fencedFacts() {
+		if live[f.Address] && !badAddr[f.Address] {
+			stale = append(stale, f)
+		}
+	}
+	return bad, stale, nil
+}
+
+// dropStale removes the stale entries from facts.fenced_nodes so the facts never list a live managed node.
+func (s *sess) dropStale(ctx context.Context, stale []fencedNode) error {
+	if len(stale) == 0 {
+		return nil
+	}
+	gone := map[string]bool{}
+	for _, f := range stale {
+		gone[f.Address] = true
+	}
+	kept := []fencedNode{}
+	for _, f := range s.fencedFacts() {
+		if !gone[f.Address] {
+			kept = append(kept, f)
+		}
+	}
+	if err := s.eng.SetFact("fenced_nodes", kept); err != nil {
+		return err
+	}
+	return s.eng.Checkpoint(ctx)
 }
 
 func (s *sess) stepFenceNodes() engine.Unit {
@@ -95,9 +131,16 @@ func (s *sess) stepFenceNodes() engine.Unit {
 			if err != nil {
 				return engine.Check{}, err
 			}
-			bad, err := s.unreachable(ctx, r)
+			bad, stale, err := s.unreachable(ctx, r)
 			if err != nil {
-				return engine.Check{}, err
+				if ctx.Err() != nil {
+					return engine.Check{}, err
+				}
+				// The run repeats the probe and returns the error as the step's own (with its code).
+				return notDone("the nodes cannot be probed: " + err.Error()), nil
+			}
+			if len(stale) > 0 {
+				return notDone(fmt.Sprintf("%d fenced fact(s) name a node that is managed and answers", len(stale))), nil
 			}
 			if len(bad) == 0 {
 				return done("every node of the state answers"), nil
@@ -112,8 +155,11 @@ func (s *sess) runFenceNodes(ctx context.Context) ([]engine.OutputRef, error) {
 	if err != nil {
 		return nil, err
 	}
-	bad, err := s.unreachable(ctx, r)
+	bad, stale, err := s.unreachable(ctx, r)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.dropStale(ctx, stale); err != nil {
 		return nil, err
 	}
 	if len(bad) == 0 {
@@ -151,7 +197,7 @@ func (s *sess) runFenceNodes(ctx context.Context) ([]engine.OutputRef, error) {
 			return nil, fail("FENCE_CONFIRMATION_MISMATCH", 5, procFenceNodes, "the typed confirmation does not match 'fence-nodes %s'", want)
 		}
 		method = "interactive"
-	} else if strings.TrimSpace(given) != want {
+	} else if given != want {
 		return nil, fail("FENCE_CONFIRMATION_MISMATCH", 5, procFenceNodes,
 			"the confirmed text %q is not %q; nothing was fenced", given, want)
 	}
@@ -188,7 +234,7 @@ func (s *sess) runFenceNodes(ctx context.Context) ([]engine.OutputRef, error) {
 	return nil, nil
 }
 
-// recoverPipeline is the compute part of the recover pipeline: preflight, then recover.fence-nodes, plan.compute-plan
+// recoverPipeline is the compute part of the recover pipeline: preflight, then recover.fence, plan.compute-plan
 // and plan.confirm. --scope state-only fences and plans no compute (plan 50 section 14.9).
 func (s *sess) recoverPipeline() engine.Pipeline {
 	pre := &phase{unit: unit{name: "preflight", timeout: 10 * time.Minute, inputs: map[string]string{"step": "preflight"}, run: s.runPreflight}}

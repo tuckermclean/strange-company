@@ -140,6 +140,16 @@ type StateNode struct {
 	Address string
 }
 
+// CodeNodeUnavailable is the error code of a provider API that says a node is unavailable; Probe returns it (and only
+// it) for a node that counts as unreachable.
+const CodeNodeUnavailable = "NODE_UNAVAILABLE"
+
+// IsUnavailable reports whether err is the provider's unavailable error.
+func IsUnavailable(err error) bool {
+	var pe *Error
+	return errors.As(err, &pe) && pe.Code == CodeNodeUnavailable
+}
+
 // Recoverer is the optional capability of a provider the recover pipeline needs (plan 03 section 20.1, DR-12): to find
 // the nodes whose API does not answer, move them out of managed state and plan replacements.
 type Recoverer interface {

@@ -375,11 +375,16 @@ func (g Guard) evaluate(planJSON []byte, e Expect, rec *RecoverMode) Verdict {
 				continue
 			}
 			val, known := lookup(rc.Change.After, rc.Change.AfterUnknown, chk.attr.Path)
-			if rec != nil && chk.code == CodeRegionMismatch && known && has(rec.Fenced, rc.Address) {
-				continue // DR-12: a fenced resource may still sit in the old region of the plan
+			fencedWrite := rec != nil && chk.code == CodeRegionMismatch && has(rec.Fenced, rc.Address) &&
+				(has(rc.Change.Actions, "create") || has(rc.Change.Actions, "update"))
+			if rec != nil && chk.code == CodeRegionMismatch && known && has(rec.Fenced, rc.Address) && !fencedWrite {
+				continue // DR-12: a fenced resource that stays as it is may still sit in the old region of the plan
 			}
 			if !known || val != chk.attr.Want {
 				return fail(chk.code, rc.Address, "%s is %q, want %q", chk.attr.Path, val, chk.attr.Want)
+			}
+			if fencedWrite {
+				return fail(CodeActionForbidden, rc.Address, "%s is a fenced (retired) name; recover mode never creates or updates it again", rc.Address)
 			}
 		}
 	}

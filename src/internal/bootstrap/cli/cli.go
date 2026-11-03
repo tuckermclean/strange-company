@@ -35,6 +35,7 @@ type Invocation struct {
 var globalValue = map[string]bool{
 	"env-file": true, "profile": true, "log-format": true, "confirm-plan": true, "confirm-storage": true,
 	"confirm-budget": true, "confirm-backstops": true, "confirm-install": true,
+	"confirm-fence-nodes": true,
 }
 
 // Parse parses sc-bootstrap arguments against the plan 50 section 7.1 command tree without running anything.
@@ -261,7 +262,7 @@ type Deps struct {
 }
 
 const usageText = "usage: sc-bootstrap [global flags] [<command> [args]]  (global flags: --env-file F --profile P --non-interactive " +
-	"--log-format text|json -v --confirm-plan|storage|budget|backstops|install V)"
+	"--log-format text|json -v --confirm-plan|storage|budget|backstops|install|fence-nodes V)"
 
 // Run executes one sc-bootstrap command line and returns the plan 50 section 7.2 exit code.
 func Run(args []string, env map[string]string, stdout, stderr io.Writer, deps Deps) int {

@@ -295,7 +295,7 @@ func (p *Provider) Probe(_ context.Context, n provider.StateNode) error {
 	}
 	for _, x := range st.Nodes {
 		if x.Name == n.Name && sc.unavailable(x.Region) {
-			return provider.NewError("NODE_UNAVAILABLE", fmt.Sprintf("the fake API reports node %s (region %s) unavailable", x.Name, x.Region), false)
+			return provider.NewError(provider.CodeNodeUnavailable, fmt.Sprintf("the fake API reports node %s (region %s) unavailable", x.Name, x.Region), false)
 		}
 	}
 	return nil
@@ -303,6 +303,13 @@ func (p *Provider) Probe(_ context.Context, n provider.StateNode) error {
 
 // Fence removes the node from the fake's state and retires its name.
 func (p *Provider) Fence(_ context.Context, n provider.StateNode) error {
+	sc, err := p.scenario()
+	if err != nil {
+		return err
+	}
+	if sc.Fence.Fail {
+		return provider.NewError("FENCE_FAILED", fmt.Sprintf("the fake provider failed to fence node %s (scenario fence.fail)", n.Name), true)
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	st, err := p.loadState()
@@ -546,6 +553,10 @@ type scenarioDoc struct {
 		Configured  string   `yaml:"configured"`
 		Unavailable []string `yaml:"unavailable"`
 	} `yaml:"regions"`
+	// Fence.Fail makes Fence return an error and leave the state untouched.
+	Fence struct {
+		Fail bool `yaml:"fail"`
+	} `yaml:"fence"`
 	// Paid makes Capabilities().Paid true; MachineClass is the catalogue productId such a fake orders.
 	Paid         bool   `yaml:"paid"`
 	MachineClass string `yaml:"machineClass"`
