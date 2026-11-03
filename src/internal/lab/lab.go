@@ -522,6 +522,9 @@ func bootstrapEnv(o UpOptions, nodes int, nodeLines, overrides []string, k Keys,
 	}
 	w("S3_REGION=us-east-1")
 	w("S3_FORCE_PATH_STYLE=true")
+	// The lab has one S3 emulator in shared credential mode, so its state is genuinely unprotected; plan 06 BOOT-3
+	// requires the explicit opt-in.
+	w("S3_ALLOW_UNPROTECTED_STATE=true")
 	// Fixed fakes (plan 05 section 14.6/14.7): the lab never calls Cloudflare, GitHub, a notification transport or a model
 	// API (test mode with a lab-labeled substrate skips those checks); the s3-emulator accepts any credentials.
 	w("S3_ACCESS_KEY_ID=lab-access-key")
