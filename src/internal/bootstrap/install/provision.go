@@ -112,7 +112,11 @@ func (s *sess) planFootprint(p *provider.ProviderPlan) string {
 	if !caps.Paid {
 		title = "FOOTPRINT (0 paid resources)"
 	}
-	fmt.Fprintf(&sb, "%s - cluster %s (%s)\n", title, s.cluster, caps.Name)
+	if r := p.Region; r != "" {
+		fmt.Fprintf(&sb, "%s - cluster %s (%s, region %s)\n", title, s.cluster, caps.Name, r)
+	} else {
+		fmt.Fprintf(&sb, "%s - cluster %s (%s)\n", title, s.cluster, caps.Name)
+	}
 	for _, n := range p.Nodes {
 		verb := "TAKE OVER"
 		if caps.CreatesNodes {
@@ -162,7 +166,7 @@ func (s *sess) stepComputePlan() engine.Unit {
 		// Recomputed on every run until provision consumed it (plan 50 section 14.3 step 10); from state provisioned on
 		// the recorded confirmation stands for the plan, so a rerun neither recomputes it nor hashes a missing plan.
 		check: func(context.Context) (engine.Check, error) {
-			if stateAtLeastProvisioned(s.eng.InstallationState()) {
+			if stateAtLeastProvisioned(s.eng.InstallationState()) && !s.recovering {
 				return done("provision consumed the plan"), nil
 			}
 			return notDone("the plan is computed on every run until provision"), nil
@@ -175,7 +179,17 @@ func (s *sess) stepComputePlan() engine.Unit {
 			if err := prov.Validate(provider.Config{Cluster: s.cluster, ExpectedNodeCount: s.expectedNodes()}); err != nil {
 				return nil, &engine.Error{Code: "PROVIDER_CONFIG_INVALID", Message: err.Error(), Exit: 2}
 			}
-			plan, err := prov.Plan(ctx, s.desired())
+			var plan *provider.ProviderPlan
+			if s.recovering {
+				// Recover plans replacements for the fenced nodes; the guard excuses only those from the region rule.
+				rec, rerr := s.recoverer()
+				if rerr != nil {
+					return nil, rerr
+				}
+				plan, err = rec.PlanRecover(ctx, s.desired(), s.fencedAddresses())
+			} else {
+				plan, err = prov.Plan(ctx, s.desired())
+			}
 			if err != nil {
 				return nil, wrapProviderErr(err)
 			}
@@ -201,7 +215,7 @@ func (s *sess) planDigest() string {
 func (s *sess) stepPlanConfirm() engine.Unit {
 	return &unit{name: stepPlanConfirm, timeout: 30 * time.Minute, inputsFn: func() any { return map[string]any{"plan": s.planDigest()} },
 		check: func(context.Context) (engine.Check, error) {
-			if stateAtLeastProvisioned(s.eng.InstallationState()) {
+			if stateAtLeastProvisioned(s.eng.InstallationState()) && !s.recovering {
 				return done("provision consumed the confirmation of the plan"), nil
 			}
 			if s.plan != nil && s.eng.Confirmed(s.planKind(), s.plan.Digest) {

@@ -250,7 +250,9 @@ func (g Guard) hasPaid() bool {
 }
 
 // Evaluate applies rules 1 to 9 in order to a plan JSON document; the first failure stops evaluation.
-func (g Guard) Evaluate(planJSON []byte, e Expect) Verdict {
+func (g Guard) Evaluate(planJSON []byte, e Expect) Verdict { return g.evaluate(planJSON, e, nil) }
+
+func (g Guard) evaluate(planJSON []byte, e Expect, rec *RecoverMode) Verdict {
 	p, err := parsePlan(planJSON)
 	if err != nil {
 		return fail(CodePlanFormatUnsupported, "format_version", "plan is not valid JSON: %v", err)
@@ -294,6 +296,13 @@ func (g Guard) Evaluate(planJSON []byte, e Expect) Verdict {
 		r, ok := g.byTy[rc.Type]
 		if !ok {
 			return fail(CodeUnexpectedResource, rc.Address, "resource type %q is not allowed", rc.Type)
+		}
+		isReplace := len(rc.Change.Actions) == 2 && has(rc.Change.Actions, "delete") && has(rc.Change.Actions, "create")
+		if rec != nil && isReplace {
+			return fail(CodeReplaceForbidden, rc.Address, "replace of %s is forbidden in recover mode", rc.Type)
+		}
+		if rec != nil && has(rc.Change.Actions, "delete") {
+			return fail(CodeActionForbidden, rc.Address, "recover mode forbids deleting %s", rc.Type)
 		}
 		if r.isPaid() && forbidReplace && len(rc.Change.Actions) == 2 && has(rc.Change.Actions, "delete") && has(rc.Change.Actions, "create") {
 			return fail(CodeReplaceForbidden, rc.Address, "replace of paid resource %s is forbidden", rc.Type)
@@ -366,6 +375,9 @@ func (g Guard) Evaluate(planJSON []byte, e Expect) Verdict {
 				continue
 			}
 			val, known := lookup(rc.Change.After, rc.Change.AfterUnknown, chk.attr.Path)
+			if rec != nil && chk.code == CodeRegionMismatch && known && has(rec.Fenced, rc.Address) {
+				continue // DR-12: a fenced resource may still sit in the old region of the plan
+			}
 			if !known || val != chk.attr.Want {
 				return fail(chk.code, rc.Address, "%s is %q, want %q", chk.attr.Path, val, chk.attr.Want)
 			}
@@ -708,14 +720,12 @@ func rejectAliasesAndMerges(n *yaml.Node) error {
 
 // RecoverMode is the recover-pipeline context of the guard (plan 03 section 20.1, DR-12): Fenced are the plan addresses
 // recorded in the journal's facts.fenced_nodes.
-// SC-STUB(F09 03-AC-12)
 type RecoverMode struct {
 	Fenced []string
 }
 
 // EvaluateRecover is Evaluate in recover mode: rule 6 accepts a resource outside the configured region only when its
 // address is fenced; replace and delete stay forbidden.
-// SC-STUB(F09 03-AC-12)
 func (g Guard) EvaluateRecover(planJSON []byte, e Expect, r RecoverMode) Verdict {
-	return Verdict{}
+	return g.evaluate(planJSON, e, &r)
 }

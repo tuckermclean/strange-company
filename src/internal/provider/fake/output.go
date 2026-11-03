@@ -52,6 +52,18 @@ func (p *Provider) OutputDocument(cluster string, now time.Time, maxMonthlyCost,
 	if err != nil {
 		return nil, err
 	}
+	regions := map[string]string{}
+	if sn, err := p.loadState(); err == nil {
+		for _, n := range sn.Nodes {
+			regions[n.Name] = n.Region
+		}
+	}
+	nodeRegion := func(name string) string {
+		if r := regions[name]; r != "" {
+			return r
+		}
+		return defaultRegion
+	}
 	p.mu.Lock()
 	profileFile, catalogueFile := p.profileFile, p.catalogueFile
 	p.mu.Unlock()
@@ -88,7 +100,7 @@ func (p *Provider) OutputDocument(cluster string, now time.Time, maxMonthlyCost,
 			"hardware": map[string]any{"cpu_count": c.CPU, "memory_bytes": c.Memory, "virtualization": "kvm", "architecture": "amd64",
 				"disks": []any{map[string]any{"name": "sda", "size_bytes": c.Disk, "class": c.DiskClass, "class_source": "provider-catalog", "role": "root"}}},
 			"os":                   map[string]any{"id": "debian", "version_id": "13", "pretty_name": "Debian GNU/Linux 13 (fake)", "kernel": "6.12.0"},
-			"location":             map[string]any{"region": "fake-1", "failure_domain": "fake-1"},
+			"location":             map[string]any{"region": nodeRegion(n.Name), "failure_domain": nodeRegion(n.Name)},
 			"state":                "running",
 			"substrate_validation": sv,
 		})
@@ -115,7 +127,7 @@ func (p *Provider) OutputDocument(cluster string, now time.Time, maxMonthlyCost,
 		"provider": map[string]any{"name": "fake", "implementation_version": ImplementationVersion, "product_line": "fake",
 			"capabilities": map[string]any{"provisions_compute": true, "paid": sc.Paid, "reversible_within_hours": !sc.Paid,
 				"supports_expand": true, "supports_destroy_compute": true, "host_key_source": "tofu"}},
-		"region": map[string]any{"provider_region": "fake-1"},
+		"region": map[string]any{"provider_region": sc.configuredRegion()},
 		"nodes":  nodes,
 		"cost_estimate": map[string]any{"currency": est.Currency, "monthly_total": est.MonthlyTotal, "committed_minimum": est.CommittedMinimum,
 			"max_monthly_cost": maxMonthlyCost, "within_limit": est.Complete && price.WithinLimit(est.MonthlyTotal, maxMonthlyCost),

@@ -123,7 +123,7 @@ func Run(args []string, env map[string]string, stdout, stderr io.Writer, deps De
 		return code
 	}
 	switch inv.Command[0] {
-	case "plan", "run", "status", "abandon-identity", "unlock":
+	case "plan", "run", "status", "abandon-identity", "unlock", "recover":
 	case "state":
 		if len(inv.Command) < 2 || (inv.Command[1] != "status" && inv.Command[1] != "restore" && inv.Command[1] != "verify") {
 			return cli.Run(args, env, stdout, stderr, deps.CLI)
@@ -154,6 +154,8 @@ func Run(args []string, env map[string]string, stdout, stderr io.Writer, deps De
 		return s.cmdAbandon(ctx)
 	case "unlock":
 		return s.cmdUnlock(ctx)
+	case "recover":
+		return s.cmdRecover(ctx)
 	}
 	return s.cmdRun(ctx)
 }
