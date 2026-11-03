@@ -210,3 +210,14 @@ func TestDown_Idempotent_05AC7(t *testing.T) {
 		}
 	}
 }
+
+// 05-AC-6: the lab has one S3 emulator, so its state is unprotected and the generated env must opt in explicitly (06-AC-13).
+func TestUp_BootstrapEnvOptsIntoUnprotectedState_05AC6(t *testing.T) {
+	r := newRig(t, debianSHA256(sha256hex(debianBytes)))
+	r.env.GenKeys = fakeKeys
+	upOK(t, r, "lab-small", "debian-13", "t1")
+	m := envMap(t, r, "t1")
+	if m["S3_ALLOW_UNPROTECTED_STATE"] != "true" {
+		t.Errorf("S3_ALLOW_UNPROTECTED_STATE = %q, want true", m["S3_ALLOW_UNPROTECTED_STATE"])
+	}
+}
