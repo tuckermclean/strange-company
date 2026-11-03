@@ -96,6 +96,12 @@ type Env struct {
 	// ProcName returns the command name (/proc/<pid>/comm) of a pid; Down kills only qemu and weed.
 	ProcName func(pid int) (string, error)
 
+	// SC-STUB(F09 05-AC-6) Alive reports whether pid still exists; Down waits for killed pids to exit (nil: no wait).
+	Alive func(pid int) bool
+	// SC-STUB(F09 05-AC-6) KillHard sends SIGKILL to pids that survive Kill (SIGTERM) past the deadline.
+	KillHard func(pid int) error
+	// SC-STUB(F09 05-AC-6) Clock measures the Down deadline.
+	Clock clock.Clock
 	Stdout io.Writer
 	Stderr io.Writer
 }
