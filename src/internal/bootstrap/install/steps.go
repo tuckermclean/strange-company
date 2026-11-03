@@ -90,7 +90,14 @@ func (s *sess) runPreflight(context.Context) ([]engine.OutputRef, error) {
 		}
 	}
 	code := cli.RunPreflight(s.inv, s.env, s.out, s.errw, deps)
-	paid := s.prov != nil && s.prov.Capabilities().Paid
+	// Fail closed like the preflight command: before the provider is built (an unbuilt provider is refused later as
+	// PROVIDER_NOT_IMPLEMENTED) every provider except the fake and the existing one counts as paid.
+	var paid bool
+	if s.prov != nil {
+		paid = s.prov.Capabilities().Paid
+	} else {
+		paid = commandPaid(s.repo, s.inv, s.env)
+	}
 	if row := pf03(s.repo, s.profileName(), kindSubstrate, paid); row != nil {
 		s.printf("%s\n", toolbox.FormatRow(*row))
 		if code == 0 {

@@ -67,6 +67,7 @@ func readProfile(repo, name string) (profileInfo, error) {
 // closed. It returns the failing row (nil on a pass).
 func pf03(repo, name, wantKind string, paid bool) *toolbox.PFRow {
 	if !config.ValidProfileName(name) {
+		// PROFILE_INVALID is invented: plan 03 section 9.1 names no code for a profile that is not a name.
 		return &toolbox.PFRow{ID: "PF-03", Status: "fail", Code: "PROFILE_INVALID", Msg: fmt.Sprintf("profile %q is not a profile name (a name, not a path)", name)}
 	}
 	info, err := readProfile(repo, name)

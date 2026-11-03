@@ -137,47 +137,59 @@ func ParseMoney(s string) (*big.Rat, bool) {
 }
 
 var (
-	reCommitment = regexp.MustCompile(`^P(?:T?[0-9]+[HDMY])+$`)
-	reCommitPart = regexp.MustCompile(`(T?)([0-9]+)([HDMY])`)
+	reCommitDate = regexp.MustCompile(`^(?:([0-9]+)Y)?(?:([0-9]+)M)?(?:([0-9]+)D)?$`)
+	reCommitTime = regexp.MustCompile(`^(?:([0-9]+)H)?(?:([0-9]+)M)?(?:([0-9]+)S)?$`)
 )
 
-// commitmentMonths reads an ISO-8601 commitment of the schema pattern ^P(T?[0-9]+[HDMY])+$ as months: Y is 12, M is
-// 1, D is 24 hours and H is one hour, an hour being 1/730 of a month (HoursPerMonth). After a T an M is minutes. An
-// empty or unparseable period counts as one month.
-func commitmentMonths(p string) *big.Rat {
-	one := big.NewRat(1, 1)
-	if !reCommitment.MatchString(p) {
-		return one
+// commitmentMonths reads an ISO-8601 commitment as months. The period splits once at the T into a date part (Y is 12
+// months, M one month, D 24 hours) and a time part (H one hour, M a minute, S a second), an hour being 1/730 of a
+// month (HoursPerMonth). A second T, a unit in the wrong part, an empty period or any other text does not parse (ok
+// false): the caller treats the estimate as incomplete rather than assume a commitment. A period of zero counts as one month.
+func commitmentMonths(p string) (months *big.Rat, ok bool) {
+	rest, found := strings.CutPrefix(p, "P")
+	if !found || rest == "" || rest == "T" {
+		return nil, false
+	}
+	date, tm, _ := strings.Cut(rest, "T")
+	dm := reCommitDate.FindStringSubmatch(date)
+	tmm := reCommitTime.FindStringSubmatch(tm)
+	if dm == nil || tmm == nil || strings.Contains(tm, "T") {
+		return nil, false
 	}
 	total := new(big.Rat)
-	for _, m := range reCommitPart.FindAllStringSubmatch(p, -1) {
-		n, ok := new(big.Int).SetString(m[2], 10)
+	add := func(digits string, num, den int64) bool {
+		if digits == "" {
+			return true
+		}
+		n, ok := new(big.Int).SetString(digits, 10)
 		if !ok {
-			return one
+			return false
 		}
 		v := new(big.Rat).SetInt(n)
-		switch {
-		case m[3] == "Y":
-			v.Mul(v, big.NewRat(12, 1))
-		case m[3] == "M" && m[1] == "":
-		case m[3] == "M":
-			v.Quo(v, big.NewRat(60*HoursPerMonth, 1))
-		case m[3] == "D":
-			v.Mul(v, big.NewRat(24, HoursPerMonth))
-		case m[3] == "H":
-			v.Quo(v, big.NewRat(HoursPerMonth, 1))
+		total.Add(total, v.Mul(v, big.NewRat(num, den)))
+		return true
+	}
+	parts := []struct {
+		digits   string
+		num, den int64
+	}{
+		{dm[1], 12, 1}, {dm[2], 1, 1}, {dm[3], 24, HoursPerMonth},
+		{tmm[1], 1, HoursPerMonth}, {tmm[2], 1, 60 * HoursPerMonth}, {tmm[3], 1, 3600 * HoursPerMonth},
+	}
+	for _, q := range parts {
+		if !add(q.digits, q.num, q.den) {
+			return nil, false
 		}
-		total.Add(total, v)
 	}
 	if total.Sign() == 0 {
-		return one
+		return big.NewRat(1, 1), true
 	}
-	return total
+	return total, true
 }
 
 // Compute prices count nodes of productID: monthly_total = count x unitMonthly (hourly x 730 for hourly-billed products),
 // committed_minimum = count x unitMonthly x commitment months + count x setup fee. An unknown product or an
-// unparseable price makes the estimate incomplete.
+// unparseable price or commitment makes the estimate incomplete.
 func (c *Catalog) Compute(productID string, count int) Estimate {
 	est := Estimate{Currency: c.Currency, MonthlyTotal: "0", CommittedMinimum: "0", CatalogVersion: c.Version, Items: []Item{}}
 	e, ok := c.Entry(productID)
@@ -191,7 +203,11 @@ func (c *Catalog) Compute(productID string, count int) Estimate {
 	}
 	n := new(big.Rat).SetInt64(int64(count))
 	total := new(big.Rat).Mul(n, unit)
-	committed := new(big.Rat).Mul(total, commitmentMonths(e.Commitment))
+	months, ok := commitmentMonths(e.Commitment)
+	if !ok {
+		return est
+	}
+	committed := new(big.Rat).Mul(total, months)
 	committed.Add(committed, new(big.Rat).Mul(n, setup))
 	est.MonthlyTotal, est.CommittedMinimum, est.Complete = Money(total), Money(committed), true
 	est.Items = []Item{{ResourceType: e.ResourceType, ProductID: e.ProductID, Count: count, UnitMonthly: Money(unit),
