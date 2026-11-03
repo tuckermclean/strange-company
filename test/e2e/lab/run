@@ -61,6 +61,13 @@ cluster=$(sed -n 's/^CLUSTER_NAME=//p' "$envfile")
 [ -n "$cluster" ] || die "the generated bootstrap.env has no CLUSTER_NAME"
 printf '%s\n' "lab ${run_id} $(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n') recovery passphrase" >"$secrets/passphrase"
 
+# The run directories that exist before this run: a reused local checkout may hold stale runs, and only the one
+# sc-bootstrap creates now is asserted.
+before=$secrets/runs-before
+for d in .bootstrap/runs/*/; do
+	[ -d "$d" ] && printf '%s\n' "$d"
+done >"$before"
+
 # The typed <cluster> token confirms the existing-nodes plan; the storage confirmation is the cluster name as well.
 printf '%s\n' "$cluster" | env SC_TEST_MODE=1 SC_TEST_STOP_AFTER="$LAB_STOP_AFTER" SC_RECOVERY_PASSPHRASE_FILE="$secrets/passphrase" \
 	SC_CONFIRM_STORAGE="$cluster" sc-bootstrap --env-file "$envfile" run >"$out/bootstrap.log" 2>&1
@@ -69,10 +76,15 @@ cat "$out/bootstrap.log"
 [ "$brc" -eq 0 ] || die "sc-bootstrap run exited $brc"
 
 po=
-for f in .bootstrap/runs/*/provider-output.json; do
-	[ -f "$f" ] && po=$f
+n=0
+for d in .bootstrap/runs/*/; do
+	[ -d "$d" ] || continue
+	grep -Fxq -- "$d" "$before" && continue
+	n=$((n + 1))
+	[ -f "${d}provider-output.json" ] && po=${d}provider-output.json
 done
-[ -n "$po" ] || die "no provider-output.json under .bootstrap/runs"
+[ "$n" -le 1 ] || die "sc-bootstrap created $n run directories under .bootstrap/runs, expected one"
+[ -n "$po" ] || die "no provider-output.json in the run directory this sc-bootstrap run created under .bootstrap/runs"
 cp "$po" "$out/provider-output.json"
 jq -e '.provider.capabilities.host_key_source == "cloud-init"' "$po" >/dev/null || die "host_key_source is not cloud-init"
 jq -e '.nodes[0].addresses.internal_ip == "10.77.0.11"' "$po" >/dev/null || die "nodes[0].addresses.internal_ip is not 10.77.0.11"
