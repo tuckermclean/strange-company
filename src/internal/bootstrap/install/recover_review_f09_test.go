@@ -138,13 +138,13 @@ func TestRecoverFencing_StepIsNamedRecoverFence_03AC12(t *testing.T) {
 	code, out := i.recoverRun(clusterName+" 1", stopAfter("recover.fence"))
 	requireExit(t, code, 0, out)
 	j := pvRead(t, i)
-	if s, ok := j.step("recover.fence"); !ok || s.Status != "done" {
-		t.Errorf("03-AC-12: journal step recover.fence = %+v (found %v), want done", s, ok)
+	if s, ok := j.stepIn("recover", "recover.fence"); !ok || s.Status != "succeeded" {
+		t.Errorf("03-AC-12: journal step recover.fence = %+v (found %v), want succeeded", s, ok)
 	}
-	if _, ok := j.step("recover.fence-nodes"); ok {
+	if _, ok := j.stepIn("recover", "recover.fence-nodes"); ok {
 		t.Errorf("03-AC-12: journal still has the step recover.fence-nodes")
 	}
-	if _, ok := j.step("plan.compute-plan"); ok {
+	if _, ok := j.stepIn("recover", "plan.compute-plan"); ok {
 		t.Errorf("03-AC-12: the run did not stop after recover.fence")
 	}
 }

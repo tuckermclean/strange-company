@@ -110,6 +110,23 @@ func (j pvJournal) step(name string) (jStep, bool) {
 	return jStep{}, false
 }
 
+// stepIn finds a step in the named pipeline entry (for example "recover"), where step only reads "install".
+func (j pvJournal) stepIn(pipeline, name string) (jStep, bool) {
+	for _, p := range j.Pipelines {
+		if p.Pipeline != pipeline {
+			continue
+		}
+		for _, ph := range p.Phases {
+			for _, s := range ph.Steps {
+				if s.Name == name {
+					return s, true
+				}
+			}
+		}
+	}
+	return jStep{}, false
+}
+
 func (j pvJournal) confirmation(kinds ...string) (jConfirm, bool) {
 	for _, c := range j.Confirmations {
 		for _, k := range kinds {
