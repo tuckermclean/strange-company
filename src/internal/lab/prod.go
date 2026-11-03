@@ -19,11 +19,11 @@ import (
 	"strange.company/sc/internal/clock"
 )
 
-// sshWaitPolls polls of sshWaitEvery bound the SSH wait of one VM to 180 seconds (plan 05 section 14.6).
-const (
-	sshWaitPolls = 180
-	sshWaitEvery = time.Second
-)
+// sshWaitEvery is the SSH poll interval; the 180 s bound is the context deadline Up gives each VM.
+const sshWaitEvery = time.Second
+
+// fetchTimeout bounds one image download.
+const fetchTimeout = 30 * time.Minute
 
 // ProductionEnv is the Env of the real sc-lab binary: /dev/kvm, an HTTP fetcher, qemu-system-x86_64, ssh-keygen,
 // qemu-img, cloud-localds and a detached SeaweedFS s3-emulator.
@@ -44,6 +44,7 @@ func ProductionEnv(root string, stdout, stderr io.Writer) Env {
 		MakeSeed:    makeSeed,
 		StartS3:     startS3,
 		Kill:        killProc,
+		ProcName:    procName,
 		PortOpen:    func(p int) bool { return sshBanner(p) == nil },
 		Stdout:      stdout,
 		Stderr:      stderr,
@@ -53,11 +54,26 @@ func ProductionEnv(root string, stdout, stderr io.Writer) Env {
 type httpFetcher struct{}
 
 func (httpFetcher) Fetch(ctx context.Context, url, dst string) error {
+	if !strings.HasPrefix(url, "https://") {
+		return fmt.Errorf("refusing non-https image URL %q", url)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	client := &http.Client{
+		Timeout: fetchTimeout,
+		CheckRedirect: func(r *http.Request, via []*http.Request) error {
+			if r.URL.Scheme != "https" {
+				return fmt.Errorf("refusing redirect to non-https %s", r.URL)
+			}
+			if len(via) >= 10 {
+				return errors.New("too many redirects")
+			}
+			return nil
+		},
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -95,34 +111,30 @@ func sshBanner(port int) error {
 		return err
 	}
 	defer c.Close()
-	res := make(chan error, 1)
-	go func() {
-		line, err := bufio.NewReader(c).ReadString('\n')
-		if err == nil && !strings.HasPrefix(line, "SSH-") {
-			err = errors.New("no SSH banner")
-		}
-		res <- err
-	}()
-	select {
-	case err := <-res:
+	if err := c.SetReadDeadline(clock.Real{}.Now().Add(2 * time.Second)); err != nil {
 		return err
-	case <-time.After(2 * time.Second):
-		return errors.New("no SSH banner within 2 s")
 	}
+	line, err := bufio.NewReader(c).ReadString('\n')
+	if err != nil {
+		return err
+	}
+	if !strings.HasPrefix(line, "SSH-") {
+		return errors.New("no SSH banner")
+	}
+	return nil
 }
 
 func waitSSH(ctx context.Context, port int) error {
 	clk := clock.Real{}
 	var last error
-	for i := 0; i < sshWaitPolls; i++ {
+	for {
 		if last = sshBanner(port); last == nil {
 			return nil
 		}
 		if err := clk.Sleep(ctx, sshWaitEvery); err != nil {
-			return err
+			return fmt.Errorf("SSH on 127.0.0.1:%d did not answer within 180 s: %v", port, last)
 		}
 	}
-	return fmt.Errorf("SSH on 127.0.0.1:%d did not answer within 180 s: %v", port, last)
 }
 
 func freeBytes(path string) (uint64, error) {
@@ -220,8 +232,7 @@ func startS3(ctx context.Context, runDir string) (S3Info, error) {
 		return S3Info{}, err
 	}
 	defer logf.Close()
-	cmd := exec.Command("weed", "server", "-s3", "-ip=0.0.0.0", "-dir="+data, "-s3.port=9000",
-		"-master.volumeSizeLimitMB=64", "-volume.max=16")
+	cmd := exec.Command("weed", append([]string{"server"}, S3EmulatorArgs(data)...)...)
 	cmd.Stdout, cmd.Stderr = logf, logf
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
@@ -248,4 +259,13 @@ func killProc(pid int) error {
 		return err
 	}
 	return nil
+}
+
+// procName reads the command name of a pid from /proc/<pid>/comm.
+func procName(pid int) (string, error) {
+	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/comm")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(b)), nil
 }

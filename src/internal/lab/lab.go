@@ -15,10 +15,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"go.yaml.in/yaml/v3"
+
+	"strange.company/sc/internal/clock"
 )
 
 const (
@@ -88,7 +92,8 @@ type Env struct {
 	StartS3     func(ctx context.Context, runDir string) (S3Info, error)
 	Kill        func(pid int) error
 	PortOpen    func(port int) bool // status: SSH forward reachable
-	// SC-STUB(F09 05-AC-7) ProcName returns the command name (/proc/<pid>/comm) of a pid; Down kills only qemu and weed.
+
+	// ProcName returns the command name (/proc/<pid>/comm) of a pid; Down kills only qemu and weed.
 	ProcName func(pid int) (string, error)
 
 	Stdout io.Writer
@@ -169,17 +174,15 @@ func (e Env) errw() io.Writer {
 	return e.Stderr
 }
 
-var validID = func(s string) bool {
-	if s == "" || len(s) > 40 {
-		return false
-	}
-	for _, r := range s {
-		if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-') {
-			return false
-		}
-	}
-	return true
-}
+// reRunID keeps lab-<id> a valid CLUSTER_NAME (2-31 characters, no edge dashes).
+var reRunID = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,26}[a-z0-9])?$`)
+
+var validID = reRunID.MatchString
+
+const runIDUsage = "--run-id must be 1-28 characters of a-z, 0-9 and '-', not starting or ending with '-'"
+
+// sshWaitTimeout bounds the SSH wait of one VM (plan 05 section 14.6).
+const sshWaitTimeout = 180 * time.Second
 
 // checkKVM opens the KVM device; there is no TCG fallback.
 func checkKVM(path string) error {
@@ -235,7 +238,12 @@ func ensureImage(ctx context.Context, env Env, url, s256, s512 string) (string, 
 	if err := os.MkdirAll(env.CacheDir, 0o755); err != nil {
 		return "", errf("LAB_CONFIG", "%v", err)
 	}
-	dst := filepath.Join(env.CacheDir, filepath.Base(url))
+	if s256 == "" && s512 == "" {
+		return "", errf("LAB_IMAGE_CHECKSUM_MISMATCH", "the lock entry for %s has neither sha256 nor sha512; refusing an unverifiable image", url)
+	}
+	// The cache path carries a digest of the pinned checksums, so a lock bump that keeps the basename re-fetches.
+	key := sha256.Sum256([]byte(s256 + "\n" + s512))
+	dst := filepath.Join(env.CacheDir, hex.EncodeToString(key[:6])+"-"+filepath.Base(url))
 	if _, err := os.Stat(dst); err == nil {
 		if err := verifyFile(dst, s256, s512); err != nil {
 			return "", fmt.Errorf("%w (cached file %s; delete it to fetch again)", err, dst)
@@ -261,7 +269,7 @@ func ensureImage(ctx context.Context, env Env, url, s256, s512 string) (string, 
 // Up is `sc-lab up`: KVM check, runner check (lab-seed), image fetch and checksum, then launch.
 func Up(ctx context.Context, env Env, opts UpOptions) error {
 	if !validID(opts.RunID) {
-		return errf("LAB_USAGE", "--run-id must be 1-40 characters of a-z, 0-9 and '-'")
+		return errf("LAB_USAGE", runIDUsage)
 	}
 	var spec labSpec
 	if err := loadYAML(filepath.Join(env.Root, "infra", "lab", "lab.yaml"), &spec); err != nil {
@@ -297,7 +305,7 @@ func Up(ctx context.Context, env Env, opts UpOptions) error {
 	fmt.Fprintln(env.out(), "sc-lab: kvm ok")
 
 	runDir := filepath.Join(env.RunBase, opts.RunID)
-	if err := os.MkdirAll(runDir, 0o755); err != nil {
+	if err := os.MkdirAll(runDir, 0o700); err != nil {
 		return errf("LAB_CONFIG", "%v", err)
 	}
 	if opts.Substrate == "lab-seed" {
@@ -388,7 +396,10 @@ func Up(ctx context.Context, env Env, opts UpOptions) error {
 	}
 	if env.WaitSSH != nil {
 		for n := range vms {
-			if err := env.WaitSSH(ctx, spec.Spec.SSHPortBase+n+1); err != nil {
+			wctx, cancel := context.WithDeadline(ctx, clock.Real{}.Now().Add(sshWaitTimeout))
+			err := env.WaitSSH(wctx, spec.Spec.SSHPortBase+n+1)
+			cancel()
+			if err != nil {
 				return errf("LAB_SSH_TIMEOUT", "%s: %v", vms[n].Name, err)
 			}
 		}
@@ -518,14 +529,30 @@ func readPIDs(runDir string) map[string]int {
 	return m
 }
 
+// ownedProc reports whether pid is a qemu or weed process; without a ProcName seam or on a lookup error it is not.
+func ownedProc(env Env, pid int) bool {
+	if env.ProcName == nil {
+		return false
+	}
+	comm, err := env.ProcName(pid)
+	if err != nil {
+		return false
+	}
+	comm = strings.TrimSpace(comm)
+	return strings.HasPrefix(comm, "qemu-system") || comm == "weed"
+}
+
 // Down kills the run's processes and removes its directories. It is idempotent.
 func Down(env Env, runID string) error {
 	if !validID(runID) {
-		return errf("LAB_USAGE", "--run-id must be 1-40 characters of a-z, 0-9 and '-'")
+		return errf("LAB_USAGE", runIDUsage)
 	}
 	runDir := filepath.Join(env.RunBase, runID)
 	if env.Kill != nil {
 		for name, pid := range readPIDs(runDir) {
+			if !ownedProc(env, pid) {
+				continue
+			}
 			if err := env.Kill(pid); err != nil {
 				fmt.Fprintf(env.errw(), "sc-lab: kill %s (pid %d): %v\n", name, pid, err)
 			}
@@ -542,7 +569,7 @@ func Down(env Env, runID string) error {
 // EnvFile returns the generated bootstrap.env of a run.
 func EnvFile(env Env, runID string) ([]byte, error) {
 	if !validID(runID) {
-		return nil, errf("LAB_USAGE", "--run-id must be 1-40 characters of a-z, 0-9 and '-'")
+		return nil, errf("LAB_USAGE", runIDUsage)
 	}
 	b, err := os.ReadFile(filepath.Join(env.RuntimeDir, runID, "bootstrap.env"))
 	if err != nil {
