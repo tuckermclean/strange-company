@@ -59,6 +59,11 @@ sc-lab env --run-id "$run_id" >"$envfile" || die "sc-lab env failed"
 chmod 600 "$envfile"
 cluster=$(sed -n 's/^CLUSTER_NAME=//p' "$envfile")
 [ -n "$cluster" ] || die "the generated bootstrap.env has no CLUSTER_NAME"
+# The lab S3 CA and in-cluster endpoint are runtime-only (plan 50 section 9.2): sc-bootstrap reads them from its process
+# environment, not from the env file, so they are exported from the generated file here.
+SC_LAB_S3_CA_FILE=$(sed -n 's/^SC_LAB_S3_CA_FILE=//p' "$envfile")
+SC_LAB_S3_INCLUSTER_ENDPOINT=$(sed -n 's/^SC_LAB_S3_INCLUSTER_ENDPOINT=//p' "$envfile")
+export SC_LAB_S3_CA_FILE SC_LAB_S3_INCLUSTER_ENDPOINT
 printf '%s\n' "lab ${run_id} $(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n') recovery passphrase" >"$secrets/passphrase"
 
 # The run directories that exist before this run: a reused local checkout may hold stale runs, and only the one
@@ -69,7 +74,7 @@ for d in .bootstrap/runs/*/; do
 done >"$before"
 
 # The typed <cluster> token confirms the existing-nodes plan; the storage confirmation is the cluster name as well.
-printf '%s\n' "$cluster" | env SC_TEST_MODE=1 SC_TEST_STOP_AFTER="$LAB_STOP_AFTER" SC_RECOVERY_PASSPHRASE_FILE="$secrets/passphrase" \
+printf '%s\n' "$cluster" | env SC_TEST_MODE=1 SC_LAB_S3_CA_FILE="$SC_LAB_S3_CA_FILE" SC_LAB_S3_INCLUSTER_ENDPOINT="$SC_LAB_S3_INCLUSTER_ENDPOINT" SC_TEST_STOP_AFTER="$LAB_STOP_AFTER" SC_RECOVERY_PASSPHRASE_FILE="$secrets/passphrase" \
 	SC_CONFIRM_STORAGE="$cluster" sc-bootstrap --env-file "$envfile" run >"$out/bootstrap.log" 2>&1
 brc=$?
 cat "$out/bootstrap.log"
