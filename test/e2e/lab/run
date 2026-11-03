@@ -1,0 +1,81 @@
+#!/bin/sh
+# Tier-E harness of `make e2e-lab` (plan 05 section 14.6, 05-AC-6, 05-AC-8): inside the ci container started with
+#   ./bootstrap exec --image ci --kvm --network host -- make e2e-lab LAB_SUBSTRATE=lab-small LAB_OS=debian-13 LAB_STOP_AFTER=provision
+# it runs `sc-lab up`, then the in-image sc-bootstrap directly with the generated bootstrap.env (SC_TEST_MODE=1,
+# SC_TEST_STOP_AFTER=$LAB_STOP_AFTER), asserts provider-output.json, and always runs `sc-lab down` in a trap, after which
+# no qemu-system process may remain.
+# Variables: LAB_SUBSTRATE (lab-small), LAB_OS (debian-13), LAB_STOP_AFTER (provision), LAB_OUT (out/e2e-lab, relative to
+# the repository root; the artifacts the workflow uploads: provider-output.json, up.log, bootstrap.log, *.console, s3.log),
+# SC_REPO_ROOT (the repository root; set by ./bootstrap exec), SC_LAB_RUN_BASE (/tmp/sc-lab, where sc-lab keeps run files).
+set -u
+LAB_SUBSTRATE=${LAB_SUBSTRATE:-lab-small}
+LAB_OS=${LAB_OS:-debian-13}
+LAB_STOP_AFTER=${LAB_STOP_AFTER:-provision}
+root=${SC_REPO_ROOT:-$(cd "$(dirname "$0")/../../.." && pwd -P)}
+cd "$root" || exit 1
+out=${LAB_OUT:-out/e2e-lab}
+mkdir -p "$out" || exit 1
+run_id=e2e-$$
+runbase=${SC_LAB_RUN_BASE:-/tmp/sc-lab}
+secrets=$(mktemp -d) || exit 1
+chmod 700 "$secrets"
+started=
+
+say() { printf 'e2e-lab: %s\n' "$*"; }
+die() { printf 'e2e-lab: FAIL: %s\n' "$*" >&2; exit 1; }
+
+cleanup() {
+	st=$?
+	trap - EXIT INT TERM
+	for f in "$runbase/$run_id"/*.console "$runbase/$run_id"/s3.log; do
+		[ -f "$f" ] && cp "$f" "$out/" 2>/dev/null
+	done
+	if [ -n "$started" ]; then
+		sc-lab down --run-id "$run_id" || { printf 'e2e-lab: FAIL: sc-lab down failed\n' >&2; st=1; }
+	fi
+	rm -rf "$secrets"
+	left=$(pgrep -c qemu-system || true)
+	if [ "${left:-0}" != 0 ]; then
+		printf 'e2e-lab: FAIL: %s qemu-system process(es) left after sc-lab down\n' "$left" >&2
+		st=1
+	fi
+	exit "$st"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+started=1
+sc-lab up --substrate "$LAB_SUBSTRATE" --os "$LAB_OS" --run-id "$run_id" >"$out/up.log" 2>&1 || {
+	cat "$out/up.log"
+	die "sc-lab up failed"
+}
+cat "$out/up.log"
+grep -q '^sc-lab: kvm ok$' "$out/up.log" || die "sc-lab up did not report 'sc-lab: kvm ok' (KVM is mandatory, there is no TCG fallback)"
+say "sc-lab: kvm ok"
+
+envfile=$secrets/bootstrap.env
+sc-lab env --run-id "$run_id" >"$envfile" || die "sc-lab env failed"
+chmod 600 "$envfile"
+cluster=$(sed -n 's/^CLUSTER_NAME=//p' "$envfile")
+[ -n "$cluster" ] || die "the generated bootstrap.env has no CLUSTER_NAME"
+printf '%s\n' "lab ${run_id} $(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n') recovery passphrase" >"$secrets/passphrase"
+
+# The typed <cluster> token confirms the existing-nodes plan; the storage confirmation is the cluster name as well.
+printf '%s\n' "$cluster" | env SC_TEST_MODE=1 SC_TEST_STOP_AFTER="$LAB_STOP_AFTER" SC_RECOVERY_PASSPHRASE_FILE="$secrets/passphrase" \
+	SC_CONFIRM_STORAGE="$cluster" sc-bootstrap --env-file "$envfile" run >"$out/bootstrap.log" 2>&1
+brc=$?
+cat "$out/bootstrap.log"
+[ "$brc" -eq 0 ] || die "sc-bootstrap run exited $brc"
+
+po=
+for f in .bootstrap/runs/*/provider-output.json; do
+	[ -f "$f" ] && po=$f
+done
+[ -n "$po" ] || die "no provider-output.json under .bootstrap/runs"
+cp "$po" "$out/provider-output.json"
+jq -e '.provider.capabilities.host_key_source == "cloud-init"' "$po" >/dev/null || die "host_key_source is not cloud-init"
+jq -e '.nodes[0].addresses.internal_ip == "10.77.0.11"' "$po" >/dev/null || die "nodes[0].addresses.internal_ip is not 10.77.0.11"
+jq -e '.nodes[0].ssh.port == 2201' "$po" >/dev/null || die "nodes[0].ssh.port is not 2201"
+say "provider-output.json: host_key_source cloud-init, internal_ip 10.77.0.11, ssh.port 2201"
+exit 0
