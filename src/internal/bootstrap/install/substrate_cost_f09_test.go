@@ -160,6 +160,7 @@ func s5Cost(t testing.TB, po map[string]any) (monthly, currency string, complete
 // the 0.92 tolerance of the constrained lower bound: substrate validation fails the provision phase with
 // NODE_BELOW_MINIMUM, exit 3 (plan 03 section 15, plan 05 section 15).
 func TestSubstrateTolerance_NodeBelowToleranceFailsProvision_03AC8(t *testing.T) {
+	t.Parallel()
 	for _, scenario := range []string{"capacity-below-minimum", "capacity-small-disk"} {
 		t.Run(scenario, func(t *testing.T) {
 			t.Parallel()

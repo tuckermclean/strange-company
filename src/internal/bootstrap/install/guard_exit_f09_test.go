@@ -12,8 +12,10 @@ import (
 // failure of the guard machinery (the embedded guard does not parse, the digest cannot be computed) judged nothing; it
 // is a failed phase (exit 1), not a refusal. The test is in package install because wrapProviderErr is unexported.
 func TestWrapProviderErr_InternalGuardErrorsAreNotExit4_03AC5(t *testing.T) {
+	t.Parallel()
 	for _, code := range []string{"GUARD_INVALID", "GUARD_DIGEST_FAILED"} {
 		t.Run(code, func(t *testing.T) {
+			t.Parallel()
 			err := wrapProviderErr(provider.NewError(code, "internal", false))
 			var ee *engine.Error
 			if !errors.As(err, &ee) {
@@ -31,6 +33,7 @@ func TestWrapProviderErr_InternalGuardErrorsAreNotExit4_03AC5(t *testing.T) {
 
 // 03-AC-5: the guard's verdict codes stay exit 4.
 func TestWrapProviderErr_GuardVerdictsStayExit4_03AC5(t *testing.T) {
+	t.Parallel()
 	for _, code := range []string{"GUARD_UNEXPECTED_RESOURCE", "GUARD_ACTION_FORBIDDEN", "GUARD_REPLACE_FORBIDDEN", "GUARD_COUNT_EXCEEDED", "GUARD_PRODUCT_MISMATCH", "GUARD_PROVIDER_FORBIDDEN"} {
 		var ee *engine.Error
 		if !errors.As(wrapProviderErr(provider.NewError(code, "refused", false)), &ee) || ee.Exit != 4 {
