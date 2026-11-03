@@ -88,6 +88,8 @@ type Env struct {
 	StartS3     func(ctx context.Context, runDir string) (S3Info, error)
 	Kill        func(pid int) error
 	PortOpen    func(port int) bool // status: SSH forward reachable
+	// SC-STUB(F09 05-AC-7) ProcName returns the command name (/proc/<pid>/comm) of a pid; Down kills only qemu and weed.
+	ProcName func(pid int) (string, error)
 
 	Stdout io.Writer
 	Stderr io.Writer
