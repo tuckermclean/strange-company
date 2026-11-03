@@ -517,7 +517,10 @@ if [ "$kvm" = 1 ]; then
 	if [ "$mode" = podman-rootless ]; then
 		set -- "$@" --group-add keep-groups
 	else
-		set -- "$@" --group-add "$(stat -c %g "$kvm_dev" 2>/dev/null || stat -f %g "$kvm_dev")"
+		kvm_gid=$(stat -c %g "$kvm_dev" 2>/dev/null || stat -f %g "$kvm_dev")
+		# A root-owned device would hand the container user the root group; fail closed (WRAPPER_NO_KVM is invented here).
+		[ "$kvm_gid" != 0 ] || die WRAPPER_NO_KVM "--kvm device $kvm_dev belongs to group root (gid 0); refusing to add the root group to the container, fix the device group; no container was started" 2
+		set -- "$@" --group-add "$kvm_gid"
 	fi
 fi
 [ "$selinux" != 1 ] || set -- "$@" --security-opt label=disable
