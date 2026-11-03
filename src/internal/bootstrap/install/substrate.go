@@ -11,6 +11,7 @@ import (
 	"strange.company/sc/internal/bootstrap/cli"
 	"strange.company/sc/internal/bootstrap/config"
 	"strange.company/sc/internal/provider"
+	"strange.company/sc/internal/provider/fake"
 	"strange.company/sc/internal/provider/price"
 	"strange.company/sc/internal/toolbox"
 )
@@ -65,6 +66,9 @@ func readProfile(repo, name string) (profileInfo, error) {
 // ClusterProfile) and, when the provider is paid, refuses a lab substrate. A profile file that cannot be read fails
 // closed. It returns the failing row (nil on a pass).
 func pf03(repo, name, wantKind string, paid bool) *toolbox.PFRow {
+	if !config.ValidProfileName(name) {
+		return &toolbox.PFRow{ID: "PF-03", Status: "fail", Code: "PROFILE_INVALID", Msg: fmt.Sprintf("profile %q is not a profile name (a name, not a path)", name)}
+	}
 	info, err := readProfile(repo, name)
 	if err != nil {
 		return &toolbox.PFRow{ID: "PF-03", Status: "fail", Code: "PROFILE_UNREADABLE", Msg: err.Error() + " (a profile that cannot be judged is not assumed fine; see procedures/bootstrap-preflight-failure.md#profile)"}
@@ -85,6 +89,27 @@ func commandProfile(inv cli.Invocation, env map[string]string) string {
 	if inv.Profile != "" {
 		return inv.Profile
 	}
+	if v := envFileVars(inv, env)["PROFILE"]; v != "" {
+		return v
+	}
+	return defaultProfile
+}
+
+// commandPaid reports whether the provider the env file names costs money. The fake asks its scenario; the existing
+// provider is free; every other provider is paid (fail closed).
+func commandPaid(repo string, inv cli.Invocation, env map[string]string) bool {
+	switch name := envFileVars(inv, env)["PROVIDER"]; name {
+	case "", "existing":
+		return false
+	case "fake":
+		p, err := fake.New(env, filepath.Join(repo, ".bootstrap", "fake-provider"))
+		return err == nil && p.Capabilities().Paid
+	default:
+		return true
+	}
+}
+
+func envFileVars(inv cli.Invocation, env map[string]string) map[string]string {
 	path := inv.EnvFile
 	if path == "" {
 		in := env["SC_INPUT_DIR"]
@@ -94,11 +119,11 @@ func commandProfile(inv cli.Invocation, env map[string]string) string {
 		path = filepath.Join(in, "bootstrap.env")
 	}
 	if b, err := os.ReadFile(path); err == nil {
-		if vars, err := config.ParseEnv(b); err == nil && vars["PROFILE"] != "" {
-			return vars["PROFILE"]
+		if vars, err := config.ParseEnv(b); err == nil {
+			return vars
 		}
 	}
-	return defaultProfile
+	return nil
 }
 
 // profileCommand runs PF-03 for the commands that do not enter the install pipeline. `expand` needs a ClusterProfile and
@@ -117,14 +142,13 @@ func profileCommand(args []string, inv cli.Invocation, env map[string]string, st
 		}
 	case "preflight":
 		code := cli.Run(args, env, stdout, stderr, deps.CLI)
-		if code != 0 {
-			return code, true
-		}
-		if row := pf03(repo, commandProfile(inv, env), kindSubstrate, false); row != nil {
+		if row := pf03(repo, commandProfile(inv, env), kindSubstrate, commandPaid(repo, inv, env)); row != nil {
 			fmt.Fprintln(stdout, toolbox.FormatRow(*row))
-			return 3, true
+			if code == 0 {
+				code = 3
+			}
 		}
-		return 0, true
+		return code, true
 	}
 	return 0, false
 }
@@ -167,6 +191,9 @@ func (s *sess) costCheck(plan *provider.ProviderPlan) error {
 	cat, err := price.Load(path)
 	if err == nil {
 		err = rerr
+	}
+	if err == nil && cat.Provider != caps.Name {
+		err = fmt.Errorf("%s is the catalogue of provider %q, not %q", filepath.ToSlash(rel), cat.Provider, caps.Name)
 	}
 	if err != nil {
 		return fail("COST_INCOMPLETE", 4, procGuardrail, "the plan cannot be priced: %v", err)

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/big"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -125,28 +126,53 @@ func Money(r *big.Rat) string {
 	return s
 }
 
-// ParseMoney parses a decimal string.
+var reMoney = regexp.MustCompile(`^(0|[1-9][0-9]{0,6})(\.[0-9]{1,4})?$`)
+
+// ParseMoney parses a decimal string of exactly the schema money pattern ^(0|[1-9][0-9]{0,6})(\.[0-9]{1,4})?$.
 func ParseMoney(s string) (*big.Rat, bool) {
-	s = strings.TrimSpace(s)
-	if s == "" || strings.ContainsAny(s, "eE/+-") {
+	if !reMoney.MatchString(s) {
 		return nil, false
 	}
 	return new(big.Rat).SetString(s)
 }
 
-// commitmentMonths reads the months of an ISO-8601 commitment (P1M, P12M, P1Y); other periods count as one month.
-func commitmentMonths(p string) int64 {
-	var n int64
-	var unit byte
-	if _, err := fmt.Sscanf(p, "P%d%c", &n, &unit); err == nil && n > 0 {
-		switch unit {
-		case 'M':
-			return n
-		case 'Y':
-			return 12 * n
-		}
+var (
+	reCommitment = regexp.MustCompile(`^P(?:T?[0-9]+[HDMY])+$`)
+	reCommitPart = regexp.MustCompile(`(T?)([0-9]+)([HDMY])`)
+)
+
+// commitmentMonths reads an ISO-8601 commitment of the schema pattern ^P(T?[0-9]+[HDMY])+$ as months: Y is 12, M is
+// 1, D is 24 hours and H is one hour, an hour being 1/730 of a month (HoursPerMonth). After a T an M is minutes. An
+// empty or unparseable period counts as one month.
+func commitmentMonths(p string) *big.Rat {
+	one := big.NewRat(1, 1)
+	if !reCommitment.MatchString(p) {
+		return one
 	}
-	return 1
+	total := new(big.Rat)
+	for _, m := range reCommitPart.FindAllStringSubmatch(p, -1) {
+		n, ok := new(big.Int).SetString(m[2], 10)
+		if !ok {
+			return one
+		}
+		v := new(big.Rat).SetInt(n)
+		switch {
+		case m[3] == "Y":
+			v.Mul(v, big.NewRat(12, 1))
+		case m[3] == "M" && m[1] == "":
+		case m[3] == "M":
+			v.Quo(v, big.NewRat(60*HoursPerMonth, 1))
+		case m[3] == "D":
+			v.Mul(v, big.NewRat(24, HoursPerMonth))
+		case m[3] == "H":
+			v.Quo(v, big.NewRat(HoursPerMonth, 1))
+		}
+		total.Add(total, v)
+	}
+	if total.Sign() == 0 {
+		return one
+	}
+	return total
 }
 
 // Compute prices count nodes of productID: monthly_total = count x unitMonthly (hourly x 730 for hourly-billed products),
@@ -165,7 +191,7 @@ func (c *Catalog) Compute(productID string, count int) Estimate {
 	}
 	n := new(big.Rat).SetInt64(int64(count))
 	total := new(big.Rat).Mul(n, unit)
-	committed := new(big.Rat).Mul(total, new(big.Rat).SetInt64(commitmentMonths(e.Commitment)))
+	committed := new(big.Rat).Mul(total, commitmentMonths(e.Commitment))
 	committed.Add(committed, new(big.Rat).Mul(n, setup))
 	est.MonthlyTotal, est.CommittedMinimum, est.Complete = Money(total), Money(committed), true
 	est.Items = []Item{{ResourceType: e.ResourceType, ProductID: e.ProductID, Count: count, UnitMonthly: Money(unit),

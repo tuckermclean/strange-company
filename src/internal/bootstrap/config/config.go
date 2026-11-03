@@ -188,6 +188,9 @@ func (n *norm) optSecret(k, class string) map[string]any {
 	return secretRef(k, class)
 }
 
+// ValidProfileName reports whether name is a profile name (a name, never a path).
+func ValidProfileName(name string) bool { return reProfile.MatchString(name) }
+
 var (
 	reClusterName = regexp.MustCompile(`^[a-z][a-z0-9-]{1,30}[a-z0-9]$`)
 	reDomain      = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$`)
