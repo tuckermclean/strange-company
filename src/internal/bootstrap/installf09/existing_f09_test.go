@@ -1,4 +1,4 @@
-package install_test
+package installf09_test
 
 import (
 	"bytes"
