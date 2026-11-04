@@ -14,7 +14,9 @@ import (
 // per test; no Setenv, Chdir or shared files), so the list is empty. A test
 // that must use t.Setenv, process-global state, a fixed port, os.Args, the
 // real clock or a re-exec'd helper process belongs here, with its reason.
-var serialTests = map[string]string{}
+var serialTests = map[string]string{
+	"TestSopsEncrypt_IgnoresWorkingDirSopsYaml_F09_05AC6": "changes the process working directory (t.Chdir) to hold a .sops.yaml",
+}
 
 // TestInstallF09Tests_AreParallel keeps the slow install tests parallel (the
 // package would otherwise exceed the go test timeout). Operator-approved
