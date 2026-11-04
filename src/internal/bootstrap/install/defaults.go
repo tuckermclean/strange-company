@@ -51,12 +51,14 @@ func (a *s3Account) Bucket(name string) tofustate.Store                { return 
 
 // SopsEncrypt is the production Deps.Encrypt: it runs the sops binary with the recipients given explicitly. A
 // Kubernetes Secret manifest keeps its metadata readable (only data and stringData are encrypted), as the
-// creation rules of .sops.yaml say; an off-cluster map is encrypted whole.
+// creation rules of .sops.yaml say; an off-cluster map is encrypted whole. The recipients and the encrypted_regex are
+// all explicit, so sops runs with an empty config (--config /dev/null): otherwise it searches upward from the working
+// directory for a .sops.yaml and fails with "no matching creation rules" because no rule matches /dev/stdin.
 func SopsEncrypt(plain []byte, recipients []string) ([]byte, error) {
 	if len(recipients) == 0 {
 		return nil, errors.New("sops: no recipients")
 	}
-	args := []string{"--encrypt", "--age", strings.Join(recipients, ","), "--input-type", "yaml", "--output-type", "yaml"}
+	args := []string{"--config", "/dev/null", "--encrypt", "--age", strings.Join(recipients, ","), "--input-type", "yaml", "--output-type", "yaml"}
 	if bytes.HasPrefix(plain, []byte("apiVersion:")) {
 		args = append(args, "--encrypted-regex", "^(data|stringData)$")
 	}
