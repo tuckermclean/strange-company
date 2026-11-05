@@ -66,6 +66,7 @@ type S3Info struct {
 	Endpoint string // toolbox-side endpoint
 	CAFile   string // optional run-local CA
 	PID      int
+	FrontPID int // the TLS front in front of the emulator (s3-front.pid); 0 when there is none
 }
 
 // SeedFiles are the NoCloud inputs of one VM.
@@ -420,6 +421,9 @@ func Up(ctx context.Context, env Env, opts UpOptions) error {
 		if s3.PID > 0 {
 			_ = os.WriteFile(filepath.Join(runDir, "s3.pid"), []byte(strconv.Itoa(s3.PID)+"\n"), 0o644)
 		}
+		if s3.FrontPID > 0 {
+			_ = os.WriteFile(filepath.Join(runDir, "s3-front.pid"), []byte(strconv.Itoa(s3.FrontPID)+"\n"), 0o644)
+		}
 	}
 	envFile := filepath.Join(rtDir, "bootstrap.env")
 	body := bootstrapEnv(opts, sub.Nodes, nodeLines, overrides, keys, s3)
@@ -557,7 +561,7 @@ func readPIDs(runDir string) map[string]int {
 	return m
 }
 
-// ownedProc reports whether pid is a qemu or weed process; without a ProcName seam or on a lookup error it is not.
+// ownedProc reports whether pid is a qemu, weed or sc-lab (the S3 front) process; without a ProcName seam or on a lookup error it is not.
 // A lookup error is logged with the pid, unless the process is already gone.
 func ownedProc(env Env, name string, pid int) bool {
 	if env.ProcName == nil {
@@ -571,7 +575,7 @@ func ownedProc(env Env, name string, pid int) bool {
 		return false
 	}
 	comm = strings.TrimSpace(comm)
-	return strings.HasPrefix(comm, "qemu-system") || comm == "weed"
+	return strings.HasPrefix(comm, "qemu-system") || comm == "weed" || comm == "sc-lab"
 }
 
 const (
@@ -747,6 +751,10 @@ func Run(ctx context.Context, args []string, env Env) int {
 		_, _ = env.out().Write(b)
 	case "status":
 		if err := Status(env); err != nil {
+			return fail(err)
+		}
+	case "s3-front": // hidden: started by startS3, never by an operator
+		if err := RunS3Front(ctx, kv["listen"], kv["upstream"], kv["cert"], kv["key"]); err != nil {
 			return fail(err)
 		}
 	case "down":

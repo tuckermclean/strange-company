@@ -223,40 +223,102 @@ func makeSeed(ctx context.Context, s SeedFiles) error {
 	return err
 }
 
-// startS3 starts `weed server -s3` detached on port 9000 over TLS with a run-local CA (PrepareS3, plan 05 section
-// 14.6) and returns once the port answers.
+// startS3 starts the lab S3 (plan 05 section 14.6): `weed server -s3` detached on an internal 127.0.0.1 port over plain
+// HTTP, and in front of it, detached, `sc-lab s3-front` on 127.0.0.1:9000 over TLS with the run-local certificate
+// (PrepareS3). The front answers the bucket ?publicAccessBlock API that SeaweedFS lacks (it returns 501) and proxies the
+// rest. It returns once both ports answer.
 func startS3(ctx context.Context, runDir string) (S3Info, error) {
 	prep, err := PrepareS3(runDir)
 	if err != nil {
 		return S3Info{}, err
 	}
-	logf, err := os.Create(filepath.Join(runDir, "s3.log"))
+	self, err := os.Executable()
 	if err != nil {
 		return S3Info{}, err
 	}
-	defer logf.Close()
-	cmd := exec.Command("weed", append([]string{"server"}, prep.Args...)...)
-	cmd.Stdout, cmd.Stderr = logf, logf
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	if err := cmd.Start(); err != nil {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
 		return S3Info{}, err
 	}
-	pid := cmd.Process.Pid
-	_ = cmd.Process.Release()
-	clk := clock.Real{}
-	for i := 0; i < 120; i++ {
-		if c, err := net.DialTimeout("tcp", "127.0.0.1:9000", time.Second); err == nil {
-			c.Close()
-			info := prep.Info
-			info.PID = pid
-			return info, nil
-		}
-		if err := clk.Sleep(ctx, 500*time.Millisecond); err != nil {
-			return S3Info{}, err
+	upstream := ln.Addr().String()
+	_, upPort, _ := net.SplitHostPort(upstream)
+	_ = ln.Close()
+
+	weedLog, err := os.Create(filepath.Join(runDir, "s3.log"))
+	if err != nil {
+		return S3Info{}, err
+	}
+	defer weedLog.Close()
+	wcmd := exec.Command("weed", append([]string{"server"}, weedPlainArgs(prep.Args, upPort)...)...)
+	wcmd.Stdout, wcmd.Stderr = weedLog, weedLog
+	wcmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := wcmd.Start(); err != nil {
+		return S3Info{}, err
+	}
+	pid := wcmd.Process.Pid
+	_ = wcmd.Process.Release()
+
+	frontLog, err := os.Create(filepath.Join(runDir, "s3-front.log"))
+	if err != nil {
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+		return S3Info{}, err
+	}
+	defer frontLog.Close()
+	fcmd := exec.Command(self, "s3-front", "--listen", "127.0.0.1:9000", "--upstream", "http://"+upstream,
+		"--cert", prep.CertFile, "--key", prep.KeyFile)
+	fcmd.Stdout, fcmd.Stderr = frontLog, frontLog
+	fcmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := fcmd.Start(); err != nil {
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+		return S3Info{}, err
+	}
+	frontPID := fcmd.Process.Pid
+	_ = fcmd.Process.Release()
+
+	fail := func(err error) (S3Info, error) {
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+		_ = syscall.Kill(frontPID, syscall.SIGKILL)
+		return S3Info{}, err
+	}
+	for _, addr := range []string{upstream, "127.0.0.1:9000"} {
+		if err := waitPort(ctx, addr); err != nil {
+			return fail(fmt.Errorf("the s3-emulator did not answer on %s (see s3.log, s3-front.log): %w", addr, err))
 		}
 	}
-	_ = syscall.Kill(pid, syscall.SIGKILL)
-	return S3Info{}, errors.New("the s3-emulator did not answer on 127.0.0.1:9000 (see s3.log)")
+	info := prep.Info
+	info.PID, info.FrontPID = pid, frontPID
+	return info, nil
+}
+
+// weedPlainArgs turns the TLS arguments of PrepareS3 into the internal plain-HTTP ones: the certificate flags go (the
+// front terminates TLS) and the S3 port becomes port.
+func weedPlainArgs(args []string, port string) []string {
+	out := make([]string, 0, len(args))
+	for _, a := range args {
+		switch {
+		case strings.HasPrefix(a, "-s3.cert.file="), strings.HasPrefix(a, "-s3.key.file="):
+		case strings.HasPrefix(a, "-s3.port="):
+			out = append(out, "-s3.port="+port)
+		default:
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// waitPort polls addr for up to a minute.
+func waitPort(ctx context.Context, addr string) error {
+	clk := clock.Real{}
+	for i := 0; i < 120; i++ {
+		if c, err := net.DialTimeout("tcp", addr, time.Second); err == nil {
+			c.Close()
+			return nil
+		}
+		if err := clk.Sleep(ctx, 500*time.Millisecond); err != nil {
+			return err
+		}
+	}
+	return errors.New("timeout")
 }
 
 func killProc(pid int) error { return signalProc(pid, syscall.SIGTERM) }
