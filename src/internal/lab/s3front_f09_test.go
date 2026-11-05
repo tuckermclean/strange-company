@@ -67,7 +67,7 @@ func do(t *testing.T, method, url, body string, hdr map[string]string) (*http.Re
 	for k, v := range hdr {
 		req.Header.Set(k, v)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := (&http.Client{}).Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
