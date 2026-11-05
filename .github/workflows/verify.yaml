@@ -137,8 +137,14 @@ jobs:
           ./bootstrap exec --image ci -- make gitops-cache
           ./bootstrap exec --image ci -- sh -c 'cd src && go mod download && go mod tidy -diff >/dev/null'
 
+      # Plan 52 section 8.1 (CD-77): PRs and dispatched runs test without -race; pushes to main keep it, and so does
+      # the OCL's verify-e2e (every main push, daily, tags).
       - name: make verify (offline)
-        run: ./bootstrap exec --image ci --network none -- make verify
+        env:
+          RACE: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && 'on' || 'off' }}
+        run: |
+          if [ "$RACE" = off ]; then set -- GO_TEST_RACE=; else set --; fi
+          ./bootstrap exec --image ci --network none -- make verify "$@"
 
       # 52-AC-10: out/contracts/junit.xml is uploaded on every PR run. make verify stops at the first failing
       # target, so when it failed before reaching `contracts`, run that target alone. The job has already failed;
