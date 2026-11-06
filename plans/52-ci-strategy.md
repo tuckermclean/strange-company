@@ -154,7 +154,7 @@ CI results are not durable state owned here. They live in GitHub check runs (int
 | RED/GREEN verification (`verify.yaml`, plan 20) | n/a (no Runner) | — | — | — | — | — | — | — |
 | L6, L7 | — | — | — | — | — | — | — | operator |
 
-**Race detector in Phase 1 (CD-77, §12 lever 3).** On GH, `verify` runs `make verify GO_TEST_RACE=` (no `-race`) on PRs and `workflow_dispatch`, and with `-race` on pushes to `main`. The OCL's `verify-e2e` keeps `-race` and runs on every `main` push, the daily schedule and tags, so every `main` revision is still tested under the race detector. Reason: under `-race` the scrypt-heavy bootstrap packages ran 8–11× slower (per-test coverage run of 2026-11-05) and `verify` took about 31 min, over the §12 budget.
+**Race detector in Phase 1 (CD-77, §12 lever 3).** On GH, `verify` runs `make verify` with `GO_TEST_RACE` empty in the environment (no `-race`; a make command-line variable would leak into nested makes through `MAKEFLAGS`) on PRs and `workflow_dispatch`, and with `-race` on pushes to `main`. The OCL's `verify-e2e` keeps `-race` and runs on every `main` push, the daily schedule and tags, so every `main` revision is still tested under the race detector. Reason: under `-race` the scrypt-heavy bootstrap packages ran 8–11× slower (per-test coverage run of 2026-11-05) and `verify` took about 31 min, over the §12 budget.
 
 RED/GREEN verification pipelines are Runner-triggered (`manual` event, plan 20 §14.5) from C04 on. They run the base revision's `.strange-company/validation.yaml` command (plan 22) and are independent of this matrix.
 

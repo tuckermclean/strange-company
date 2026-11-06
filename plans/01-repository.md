@@ -309,7 +309,7 @@ Execution model (§8.1): every target runs inside the pinned `ci` image (plan 02
 | `licenses-check` | V | every third-party Go module linked into a `src/cmd/*` binary has a licence allowed by `security/license-policy.yaml` (plan 23 §14.11, CD-42); writes `out/licenses/report.json` | 23 |
 | `secrets-lint` | V | `contracts/secret-classes.yaml` invariants (plan 35) | 35 |
 | `contracts` | V | F02 (§8.3): meta-schema validation, examples pass, `x-invalid-examples` fail, `x-defs-examples`, `$id` naming, OpenAPI 3.1 validation | 01 |
-| `test` | V | `go test ./...` with `-race` on amd64 (an empty `GO_TEST_RACE=` on the make command line turns it off; interim CI does that on PRs and dispatched runs, plan 52 §8.1, CD-77); variables `GO_TEST_PKGS` (default `./...`), `GO_TEST_RUN`, `JUNIT=out/test/junit.xml` (always written). This is the command `.strange-company/validation.yaml` names for RED/GREEN (plan 22) | 01 |
+| `test` | V | `go test ./...` with `-race` on amd64 (`GO_TEST_RACE` set in the environment, even to the empty string, overrides that default; interim CI empties it on PRs and dispatched runs, plan 52 §8.1, CD-77); variables `GO_TEST_PKGS` (default `./...`), `GO_TEST_RUN`, `JUNIT=out/test/junit.xml` (always written). This is the command `.strange-company/validation.yaml` names for RED/GREEN (plan 22) | 01 |
 | `test-integration` | E | Go tests tagged `integration` that start containers (SeaweedFS `s3-emulator` per ADR-0205/CD-12, Postgres) | 01 |
 | `build` | V | builds every `src/cmd/*` binary into `out/bin/<os>_<arch>/` | 01 |
 | `images` | E | builds internal images from `images/*` (no push; plan 23 owns push) | 23 |
