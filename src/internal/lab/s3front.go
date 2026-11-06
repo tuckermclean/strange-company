@@ -93,6 +93,9 @@ func RunS3Front(ctx context.Context, listen, upstream, certFile, keyFile string)
 	if err != nil || u.Host == "" {
 		return fmt.Errorf("bad --upstream %q", upstream)
 	}
+	if err := requireLoopback(listen); err != nil {
+		return err
+	}
 	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
 		return err
@@ -112,6 +115,18 @@ func RunS3Front(ctx context.Context, listen, upstream, certFile, keyFile string)
 	}()
 	if err := srv.ServeTLS(ln, "", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
+	}
+	return nil
+}
+
+// requireLoopback refuses a listen address whose host is not a literal loopback IP (an empty host, a name or a wildcard).
+func requireLoopback(listen string) error {
+	host, _, err := net.SplitHostPort(listen)
+	if err != nil {
+		return fmt.Errorf("bad --listen %q: %w", listen, err)
+	}
+	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
+		return fmt.Errorf("--listen %q is not a loopback address", listen)
 	}
 	return nil
 }

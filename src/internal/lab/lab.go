@@ -564,7 +564,7 @@ func readPIDs(runDir string) map[string]int {
 // ownedProc reports whether pid is a qemu, weed or sc-lab (the S3 front) process; without a ProcName seam or on a lookup error it is not.
 // A lookup error is logged with the pid, unless the process is already gone.
 func ownedProc(env Env, name string, pid int) bool {
-	if env.ProcName == nil {
+	if env.ProcName == nil || pid == os.Getpid() {
 		return false
 	}
 	comm, err := env.ProcName(pid)
@@ -575,7 +575,13 @@ func ownedProc(env Env, name string, pid int) bool {
 		return false
 	}
 	comm = strings.TrimSpace(comm)
-	return strings.HasPrefix(comm, "qemu-system") || comm == "weed" || comm == "sc-lab"
+	switch name {
+	case "s3-front":
+		return comm == "sc-lab"
+	case "s3":
+		return comm == "weed"
+	}
+	return strings.HasPrefix(comm, "qemu-system")
 }
 
 const (

@@ -236,20 +236,14 @@ func startS3(ctx context.Context, runDir string) (S3Info, error) {
 	if err != nil {
 		return S3Info{}, err
 	}
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return S3Info{}, err
-	}
-	upstream := ln.Addr().String()
-	_, upPort, _ := net.SplitHostPort(upstream)
-	_ = ln.Close()
+	upstream := net.JoinHostPort("127.0.0.1", s3InternalPort)
 
 	weedLog, err := os.Create(filepath.Join(runDir, "s3.log"))
 	if err != nil {
 		return S3Info{}, err
 	}
 	defer weedLog.Close()
-	wcmd := exec.Command("weed", append([]string{"server"}, weedPlainArgs(prep.Args, upPort)...)...)
+	wcmd := exec.Command("weed", append([]string{"server"}, weedPlainArgs(prep.Args, s3InternalPort)...)...)
 	wcmd.Stdout, wcmd.Stderr = weedLog, weedLog
 	wcmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := wcmd.Start(); err != nil {
@@ -290,6 +284,13 @@ func startS3(ctx context.Context, runDir string) (S3Info, error) {
 	return info, nil
 }
 
+// The internal plain-HTTP S3 pair (weed's own default S3 port and its conventional +10000 gRPC port); the TLS front owns 9000.
+// weed derives the gRPC port as s3.port+10000 when it is not given, which is invalid above 55535, so it is always explicit.
+const (
+	s3InternalPort     = "8333"
+	s3InternalGRPCPort = "18333"
+)
+
 // weedPlainArgs turns the TLS arguments of PrepareS3 into the internal plain-HTTP ones: the certificate flags go (the
 // front terminates TLS) and the S3 port becomes port.
 func weedPlainArgs(args []string, port string) []string {
@@ -298,7 +299,7 @@ func weedPlainArgs(args []string, port string) []string {
 		switch {
 		case strings.HasPrefix(a, "-s3.cert.file="), strings.HasPrefix(a, "-s3.key.file="):
 		case strings.HasPrefix(a, "-s3.port="):
-			out = append(out, "-s3.port="+port)
+			out = append(out, "-s3.port="+port, "-s3.port.grpc="+s3InternalGRPCPort)
 		default:
 			out = append(out, a)
 		}
