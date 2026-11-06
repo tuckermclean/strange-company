@@ -61,8 +61,8 @@ func scalar(s string) string {
 	return strings.TrimSpace(s)
 }
 
-// LocksCheck evaluates the version-lock rules of plan 01 section 6.3 on the tree under root.
-func LocksCheck(root string) (Result, error) {
+// locksCheck evaluates the version-lock rules of plan 01 section 6.3 checks 1-3 on the tree under root.
+func locksCheck(root string) (Result, error) {
 	var r Result
 	files, err := listFiles(root)
 	if err != nil {

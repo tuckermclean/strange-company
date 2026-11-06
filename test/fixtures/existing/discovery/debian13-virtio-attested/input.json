@@ -1,0 +1,9 @@
+{
+  "node": {
+    "name": "node-01",
+    "host": "203.0.113.44",
+    "port": 22,
+    "user": "debian",
+    "disk_class_override": "ssd"
+  }
+}

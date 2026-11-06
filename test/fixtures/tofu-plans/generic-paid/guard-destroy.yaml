@@ -1,0 +1,14 @@
+apiVersion: strange.company/v1alpha1
+kind: TofuPlanGuard
+metadata:
+  name: generic-paid-destroy
+spec:
+  rootModule: infra/tofu/compute/generic-paid
+  allowedProviders:
+    - registry.opentofu.org/example/paid
+  forbidReplace: true
+  resources:
+    - type: test_server
+      paid: true
+      allowedActions: [delete]
+      maxCount: expectedNodeCount

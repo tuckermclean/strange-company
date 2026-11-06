@@ -188,7 +188,16 @@ func runPreflight(inv Invocation, env map[string]string, stdout, stderr io.Write
 		deps.ProbeModelKey = policyProbe(env, filepath.Join(repoRoot(env), "policy", "model-routing.yaml"))
 	}
 	pc := &pfCtx{inv: inv, env: env, vars: vars, doc: doc, deps: deps, repo: repoRoot(env), cluster: str(dig(doc, "spec", "cluster", "name"))}
-	rows = append(rows, pc.pf19(), pc.pf26(), pc.pf28(), pc.pf29(), pc.pf30())
+	if deps.LabSkip != nil && deps.LabSkip() {
+		// CD-76 (a), plan 50 section 9.2: a lab substrate in test mode cannot judge the model, budget and backstop rows.
+		skip := func(id string) row {
+			return row{PFRow: toolbox.PFRow{ID: id, Status: "skip", Msg: "not evaluated on a lab substrate in test mode (lab)"}}
+		}
+		rows = append(rows, skip("PF-15"), skip("PF-16"), skip("PF-17"), skip("PF-18"), skip("PF-19"), skip("PF-20"),
+			skip("PF-26"), pc.pf28(), skip("PF-29"), pc.pf30())
+	} else {
+		rows = append(rows, pc.pf19(), pc.pf26(), pc.pf28(), pc.pf29(), pc.pf30())
+	}
 
 	exit := 0
 	for _, r := range rows {

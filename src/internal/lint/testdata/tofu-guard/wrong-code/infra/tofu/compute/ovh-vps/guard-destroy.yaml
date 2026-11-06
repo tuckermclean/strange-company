@@ -1,0 +1,14 @@
+apiVersion: strange.company/v1alpha1
+kind: TofuPlanGuard
+metadata:
+  name: ovh-vps-destroy
+spec:
+  rootModule: infra/tofu/compute/ovh-vps
+  allowedProviders:
+    - registry.opentofu.org/ovh/ovh
+  forbidReplace: true
+  resources:
+    - type: ovh_vps
+      paid: true
+      allowedActions: [delete]
+      maxCount: expectedNodeCount

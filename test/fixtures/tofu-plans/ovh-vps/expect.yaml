@@ -1,0 +1,23 @@
+# Table-test expectations for the guard fixtures in this directory (04-AC-2; read by the sc-lint tofu-validate
+# rule tofu-guard-fixtures and by TestOVHGuardFixtures_Table_04AC2). The attribute paths are the provider-declared
+# region and SSH-key paths of plan 03 section 14.4 rule 6, written as the guard's dotted paths with [n] indexes.
+module: infra/tofu/compute/ovh-vps
+productCode: vps-2025-model2
+region:
+  type: ovh_vps
+  path: 'plan[0].configuration[?label=="vps_datacenter"].value'
+  want: GRA
+sshKey:
+  type: ovh_vps
+  path: "public_ssh_key"
+  want: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleOnlyNotARealKeyxxxxxxxxxxxxxxxxxx sc-prod"
+cases:
+  - {file: valid-create.json, nodes: 1, want: pass}
+  - {file: valid-expand.json, nodes: 3, want: pass}
+  - {file: product-mismatch.json, nodes: 1, want: GUARD_PRODUCT_MISMATCH}
+  - {file: region-mismatch.json, nodes: 1, want: GUARD_REGION_MISMATCH}
+  - {file: ssh-key-mismatch.json, nodes: 1, want: GUARD_SSH_KEY_MISMATCH}
+  - {file: replace.json, nodes: 1, want: GUARD_REPLACE_FORBIDDEN}
+  - {file: extra-resource-type.json, nodes: 1, want: GUARD_UNEXPECTED_RESOURCE}
+  - {file: destroy-valid.json, nodes: 1, destroy: true, want: pass}
+  - {file: destroy-stray-create.json, nodes: 1, destroy: true, want: GUARD_ACTION_FORBIDDEN}

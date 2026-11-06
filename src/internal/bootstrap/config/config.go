@@ -188,6 +188,9 @@ func (n *norm) optSecret(k, class string) map[string]any {
 	return secretRef(k, class)
 }
 
+// ValidProfileName reports whether name is a profile name (a name, never a path).
+func ValidProfileName(name string) bool { return reProfile.MatchString(name) }
+
 var (
 	reClusterName = regexp.MustCompile(`^[a-z][a-z0-9-]{1,30}[a-z0-9]$`)
 	reDomain      = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$`)
@@ -464,6 +467,14 @@ func (n *norm) nodes() []any {
 		}
 		if host == "" {
 			n.bad("EXISTING_NODES entry %q has no host", ent)
+			continue
+		}
+		if strings.HasPrefix(host, "-") {
+			n.bad("EXISTING_NODES entry %q has a host starting with '-': ssh would read it as an option", ent)
+			continue
+		}
+		if byName[nm] != nil {
+			n.bad("EXISTING_NODES entry %q repeats node %s: duplicate node names are not allowed", ent, nm)
 			continue
 		}
 		nd := map[string]any{"name": nm, "ssh": map[string]any{"host": host, "port": port, "user": user}}

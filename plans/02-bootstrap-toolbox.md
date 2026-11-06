@@ -137,7 +137,7 @@ spec:
   aptPackages:
     runtime: [bash, ca-certificates, curl, git, openssh-client, python3, python3-venv, tini, libnss-wrapper,
               less, vim-tiny, procps, iproute2, dnsutils, netcat-openbsd, openssl, unzip, xz-utils]
-    ci: [make, shellcheck, gcc, libc6-dev, qemu-system-x86, qemu-system-arm, qemu-utils, cloud-image-utils, genisoimage, docker-cli]
+    ci: [make, shellcheck, gcc, libc6-dev, strace, qemu-system-x86, qemu-system-arm, qemu-utils, cloud-image-utils, genisoimage, docker-cli]   # strace: plan 05 script-safety test (CD-75)
   tools:
     - name: opentofu
       set: runtime

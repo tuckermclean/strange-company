@@ -1,0 +1,33 @@
+# Lab substrate (plan 03 section 9.1, plan 05 section 14.6): labeled strange.company/lab: "true", so it is refused for
+# any paid provider (LAB_SUBSTRATE_PAID_REFUSED). Sized like the sc-lab VMs of infra/lab/lab.yaml.
+apiVersion: strange.company/v1alpha1
+kind: BootstrapSubstrate
+metadata:
+  name: lab-ha
+  labels:
+    strange.company/lab: "true"
+spec:
+  nodes:
+    count: 3
+    minimumSupportedPerNode:
+      cpu: 2
+      memory: 4Gi
+      storage:
+        size: 20Gi
+        class: ssd
+  kubernetes:
+    distribution: k3s
+    servers: 3
+    datastore: embedded-etcd
+  execution:
+    maximumConcurrentAgents: 0
+    maximumConcurrentCIPipelines: 0
+  storage:
+    cnpg:
+      instances: 3
+      storageClass: local
+    longhorn:
+      enabled: true
+      replicas: 2
+    objectStorage:
+      required: true

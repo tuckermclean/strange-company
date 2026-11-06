@@ -132,11 +132,14 @@ resource "ovh_cloud_project_instance" "node" {
   service_name   = var.cloud_project_id
   region         = var.region
   name           = "sc-${var.cluster}-${each.key}"
-  flavor         = { flavor_id = var.flavor_id }   # flavor of MACHINE_CLASS (verify attribute shape)
-  boot_from      = { image_id = var.image_id }
-  ssh_key_create = { name = "sc-${var.cluster}", public_key = var.ssh_public_key }   # (verify)
+  flavor { flavor_id = var.flavor_id }   # flavor of MACHINE_CLASS; nested blocks at ovh/ovh v2.22.0 (CD-72)
+  boot_from { image_id = var.image_id }
+  ssh_key_create {
+    name       = "sc-${var.cluster}-${each.key}"   # one key per node (CD-73)
+    public_key = var.ssh_public_key
+  }
   billing_period = "hourly"
-  network        = { public = true }
+  network { public = true }
 }
 ```
 
@@ -147,9 +150,9 @@ Resource names and argument shapes above are taken from the provider documentati
 | Module | `resources[].type` | `paid` | `allowedActions` | `maxCount` | `priceProductFrom` |
 |---|---|---|---|---|---|
 | `ovh-vps` | `ovh_vps` | true | `[no-op, read, create, update]` | `expectedNodeCount` | `plan[0].plan_code` |
-| `ovh-public-cloud` | `ovh_cloud_project_instance` | true | `[no-op, read, create, update]` | `expectedNodeCount` | `flavor.flavor_id` (verify path) |
+| `ovh-public-cloud` | `ovh_cloud_project_instance` | true | `[no-op, read, create, update]` | `expectedNodeCount` | `flavor[0].flavor_id` (CD-72) |
 
-  `allowedProviders: [registry.opentofu.org/ovh/ovh]`, `forbidReplace: true`. Destroy guards allow only `delete` on the same single type. Region rule paths: `plan[0].configuration[?label=="vps_datacenter"].value` and `region`; SSH rule paths: `public_ssh_key` and `ssh_key_create.public_key` (provider-declared, plan 03 §14.4 rule 6). `update` is allowed because OVH may report drift on display attributes; an `update` that changes `plan_code`, datacenter or SSH key fails rules 5–6.
+  `allowedProviders: [registry.opentofu.org/ovh/ovh]`, `forbidReplace: true`. Destroy guards allow only `delete` on the same single type. Region rule paths: `plan[0].configuration[?label=="vps_datacenter"].value` and `region`; SSH rule paths: `public_ssh_key` and `ssh_key_create[0].public_key` (provider-declared, plan 03 §14.4 rule 6). `update` is allowed because OVH may report drift on display attributes; an `update` that changes `plan_code`, datacenter or SSH key fails rules 5–6.
 
 ## 9. Configuration
 
@@ -210,6 +213,7 @@ The OVH 2025 VPS range has no 16 GiB class (verify at S-6): after VPS-2 (6 vCore
 GET    /auth/time  /me  /me/*
 GET    /order/catalog/*          POST /order/cart  POST /order/cart/*  GET /order/cart/*  DELETE /order/cart/*
 GET    /me/order  /me/order/*    POST /me/order/*/payWithRegisteredPaymentMean
+GET    /vps                      (service list, read by the orphan scan §14.4; OVH wildcards do not match the bare path; CD-74)
 GET/PUT/POST/DELETE  /vps/*      POST /vps/*/terminate  POST /vps/*/confirmTermination
 GET/POST/PUT/DELETE  /cloud/project/<OVH_CLOUD_PROJECT_ID>/*        (public-cloud only)
 ```
@@ -346,7 +350,7 @@ Runs in `preflight`, `plan.compute-plan`, `plan.confirm`, `provision` (plan 50 �
 ## 22. Testing strategy
 
 - **Unit:** OVH request signing (known-answer vectors from OVH documentation), catalogue parser against the recorded fixture (S-6), orphan scan (fixtures: delivered orphan, pending order, foreign VPS with a non-matching name, none), credential-scope evaluation, normalization mapping (fixture `GET /vps/{sn}` + `ips` responses → ProviderOutput validated against `provider.schema.yaml`).
-- **Guard fixtures** (`test/fixtures/tofu-plans/ovh-vps/`, `…/ovh-public-cloud/`): valid create ×1, ×3 expand; wrong plan code; wrong datacenter; wrong SSH key; replace; extra resource type (`ovh_domain_zone_record`); destroy-mode with a create. Recorded once from real plans via `make tofu-fixtures` (tier O, `SC-CI-OVH-READONLY`), committed, reviewed.
+- **Guard fixtures** (`test/fixtures/tofu-plans/ovh-vps/`, `…/ovh-public-cloud/`): valid create ×1, ×3 expand; wrong plan code; wrong datacenter; wrong SSH key; replace; extra resource type (`ovh_domain_zone_record`); destroy-mode with a create. Recorded once from real plans via `make tofu-fixtures` (tier O, `SC-CI-OVH-READONLY`), committed, reviewed. Until the project has that credential, F09 derives them (offline `tofu plan` with dummy credentials, or the provider schema), and the `GET /vps/{sn}` + `ips` unit fixtures from OVH's published API schema, each with a `source:` note; they are re-recorded before GATE-P02 (CD-71).
 - **Plan-only CI (tier O, nightly on protected refs):** `tofu plan` against the real provider with the read-only credential and a scratch cluster name; asserts guard verdict `pass` and digest stability; never applies.
 - **Real (P02 / P12):** spike S; the fresh-VPS E2E (plan 50 `e2e-fresh-vps`) ends with destroy (plan 49).
 
@@ -359,7 +363,7 @@ Runs in `preflight`, `plan.compute-plan`, `plan.confirm`, `provision` (plan 50 �
 - **04-AC-3** Normalization: the recorded OVH API fixtures produce a `ProviderOutput` that validates against `provider.schema.yaml` with `internal_ip == public_ipv4`, `capabilities.reversible_within_hours == false` for `vps`, and no field containing an OVH-specific key outside `provider_id`, `machine_class`, `region.provider_region`, `labels` (`jq` path scan).
 - **04-AC-4** Orphan-scan unit suite: a delivered orphan yields `ORPHAN_PAID_RESOURCE`, a pending order yields `ORPHAN_PENDING_ORDER`, a foreign VPS (`displayName` not matching) yields nothing.
 - **04-AC-5** Credential scope: a fixture credential with rule `{method: POST, path: /*}` fails PF-07 with `OVH_CREDENTIAL_TOO_BROAD`; the §10 rule set passes.
-- **04-AC-6** `make tofu-validate`: every variable in `infra/tofu/compute/ovh-*/` whose name matches `(?i)(secret|password|token|key)` is `sensitive` and `ephemeral` (or absent because credentials come only from provider env vars), and `do_not_send_password = true` is present for `ovh_vps` (static HCL check).
+- **04-AC-6** `make tofu-validate`: every variable in `infra/tofu/compute/ovh-*/` whose name matches `(?i)(secret|password|token|key)`, and is not a public-key name `(?i)(^|_)(public|pub)(_ssh)?_key$`, is `sensitive` and `ephemeral` (or absent because credentials come only from provider env vars; CD-72), and `do_not_send_password = true` is present for `ovh_vps` (static HCL check).
 
 ### GATE-P02 (co-owned with plans 03, 05; applies when the reference install uses `PROVIDER=ovh`)
 
@@ -387,3 +391,4 @@ Runs in `preflight`, `plan.compute-plan`, `plan.confirm`, `provision` (plan 50 �
 | OQ-04-3 | Does destroying `ovh_vps` terminate immediately or at the end of the billing period, and does it need an e-mailed token? (also plan 49 OQ-49-1) | no | S-3; plan 49 `blocked` path covers the token case. | 04 / 49 |
 | OQ-04-4 | Should object storage default to OVH Object Storage in a different region, or another provider? | no | Plan 14 decides; this plan only warns on same-region (§9.1). | 14 |
 | OQ-04-5 | (Resolved by the operator, CD-24) Default class stays VPS-2; VPS-3 is the documented upgrade path (§9.2.1). | no | — | — |
+| OQ-04-6 | OVH's `ovh_cloud_project_instance` takes `flavor_id` as a UUID, while the catalogue `planCode` is the flavor name (`b3-16`). How does the product rule compare them (`Preflight` resolves name to id per region and passes the id as the expected product, or the guard reads a name attribute)? F09's derived fixtures use `b3-16` literally (CD-71, CD-72). | no (fallback (b) only) | Spike S-6 decides; fixtures re-recorded before GATE-P02. | 04 |

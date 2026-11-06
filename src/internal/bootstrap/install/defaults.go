@@ -19,6 +19,8 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"strange.company/sc/internal/clock"
+	"strange.company/sc/internal/provider/discovery"
+	"strange.company/sc/internal/provider/existing"
 	"strange.company/sc/internal/provider/fake"
 	"strange.company/sc/internal/s3client"
 	"strange.company/sc/internal/tofustate"
@@ -49,12 +51,14 @@ func (a *s3Account) Bucket(name string) tofustate.Store                { return 
 
 // SopsEncrypt is the production Deps.Encrypt: it runs the sops binary with the recipients given explicitly. A
 // Kubernetes Secret manifest keeps its metadata readable (only data and stringData are encrypted), as the
-// creation rules of .sops.yaml say; an off-cluster map is encrypted whole.
+// creation rules of .sops.yaml say; an off-cluster map is encrypted whole. The recipients and the encrypted_regex are
+// all explicit, so sops runs with an empty config (--config /dev/null): otherwise it searches upward from the working
+// directory for a .sops.yaml and fails with "no matching creation rules" because no rule matches /dev/stdin.
 func SopsEncrypt(plain []byte, recipients []string) ([]byte, error) {
 	if len(recipients) == 0 {
 		return nil, errors.New("sops: no recipients")
 	}
-	args := []string{"--encrypt", "--age", strings.Join(recipients, ","), "--input-type", "yaml", "--output-type", "yaml"}
+	args := []string{"--config", "/dev/null", "--encrypt", "--age", strings.Join(recipients, ","), "--input-type", "yaml", "--output-type", "yaml"}
 	if bytes.HasPrefix(plain, []byte("apiVersion:")) {
 		args = append(args, "--encrypted-regex", "^(data|stringData)$")
 	}
@@ -516,6 +520,59 @@ func (s *sess) startFakeProvider() error {
 	if err != nil {
 		return err
 	}
+	p.Configure(profilePath(s.repo, s.profileName()), filepath.Join(s.repo, "infra", "catalog", "prices", "fake.yaml"))
 	s.prov = p
+	return nil
+}
+
+// startExistingProvider binds the existing-nodes provider (plan 05) to the EXISTING_NODES list and the effective profile
+// of <repo>/infra/profiles. Discovery goes over SSH; in test mode SC_EXISTING_DISCOVERY_DIR=<dir> replaces the transport
+// with recorded <node>.facts.json and <node>.hostkeys files (plan 05 section 14.7).
+func (s *sess) startExistingProvider() error {
+	profile := str(dig(s.doc, "spec", "cluster", "profile"))
+	if profile == "" {
+		return errors.New("the configuration names no profile")
+	}
+	var nodes []discovery.Node
+	list, _ := dig(s.doc, "spec", "provider", "existing", "nodes").([]any)
+	for _, e := range list {
+		port, err := strconv.Atoi(fmt.Sprint(dig(e, "ssh", "port")))
+		if err != nil {
+			port = 22
+		}
+		nodes = append(nodes, discovery.Node{
+			Name: str(dig(e, "name")), Host: str(dig(e, "ssh", "host")), Port: port, User: str(dig(e, "ssh", "user")),
+			InternalIP: str(dig(e, "internalIp")), DiskClassOverride: str(dig(e, "diskClassOverride")),
+			HostKeyFingerprint: str(dig(e, "hostKeyFingerprint")),
+		})
+	}
+	key := s.merged["SSH_PRIVATE_KEY_PATH"]
+	if f := str(dig(s.doc, "spec", "ssh", "privateKey", "file")); f != "" {
+		if _, err := os.Stat(f); err == nil {
+			key = f
+		}
+	}
+	if dig(s.doc, "spec", "ssh", "useAgent") == true {
+		key = ""
+	}
+	if err := os.MkdirAll(s.boot, 0o700); err != nil {
+		return err
+	}
+	var tr existing.Transport = existing.SSHTransport{KeyPath: key, TempDir: s.boot, Clock: s.clk}
+	if dir := s.env["SC_EXISTING_DISCOVERY_DIR"]; dir != "" {
+		if s.env["SC_TEST_MODE"] != "1" {
+			return errors.New("SC_EXISTING_DISCOVERY_DIR needs SC_TEST_MODE=1")
+		}
+		tr = existing.DirTransport{Dir: dir}
+	}
+	s.prov = existing.New(existing.Config{
+		Nodes: nodes, ProfileFile: filepath.Join(s.repo, "infra", "profiles", profile+".yaml"), Transport: tr,
+		InstallUID: func() string {
+			if s.eng == nil {
+				return ""
+			}
+			return s.eng.InstallUID()
+		},
+	})
 	return nil
 }

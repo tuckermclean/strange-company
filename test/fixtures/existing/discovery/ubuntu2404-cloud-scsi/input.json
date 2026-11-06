@@ -1,0 +1,9 @@
+{
+  "node": {
+    "name": "node-01",
+    "host": "127.0.0.1",
+    "port": 2201,
+    "user": "ubuntu",
+    "internal_ip": "10.77.0.11"
+  }
+}

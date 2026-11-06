@@ -1,0 +1,111 @@
+{
+ "GET /me/order": [
+  9001002
+ ],
+ "GET /me/order/9001002": {
+  "date": "2026-11-01T10:00:00+01:00",
+  "expirationDate": "2026-11-15T10:00:00+01:00",
+  "orderId": 9001002,
+  "password": "invented-9001002",
+  "pdfUrl": "https://www.ovh.com/cgi-bin/order/facture.pdf?reference=INVENTED9001002&passwd=invented",
+  "priceWithTax": {
+   "currencyCode": "EUR",
+   "priceInUcents": 1199000000,
+   "text": "11.99 EUR",
+   "value": 11.99
+  },
+  "priceWithoutTax": {
+   "currencyCode": "EUR",
+   "priceInUcents": 999000000,
+   "text": "9.99 EUR",
+   "value": 9.99
+  },
+  "tax": {
+   "currencyCode": "EUR",
+   "priceInUcents": 200000000,
+   "text": "2.00 EUR",
+   "value": 2.0
+  },
+  "url": "https://www.ovh.com/cgi-bin/order/displayOrder.cgi?orderId=9001002&orderPassword=invented"
+ },
+ "GET /me/order/9001002/details": [
+  1
+ ],
+ "GET /me/order/9001002/details/1": {
+  "cancelled": false,
+  "description": "VPS 2",
+  "detailType": "CREATION",
+  "domain": "vps-4b5c6d7e.vps.ovh.net",
+  "orderDetailId": 1,
+  "quantity": "1",
+  "totalPrice": {
+   "currencyCode": "EUR",
+   "priceInUcents": 999000000,
+   "text": "9.99 EUR",
+   "value": 9.99
+  },
+  "unitPrice": {
+   "currencyCode": "EUR",
+   "priceInUcents": 999000000,
+   "text": "9.99 EUR",
+   "value": 9.99
+  }
+ },
+ "GET /me/order/9001002/details/1/extension": {
+  "order": {
+   "action": "installation",
+   "configurations": [
+    {
+     "label": "vps_datacenter",
+     "value": "GRA"
+    },
+    {
+     "label": "vps_os",
+     "value": "Debian 13"
+    }
+   ],
+   "plan": {
+    "code": "vps-2025-model2",
+    "duration": "P1M",
+    "pricingMode": "default",
+    "product": {
+     "name": "vps-2025-model2"
+    },
+    "quantity": 1
+   },
+   "type": "plan"
+  }
+ },
+ "GET /me/order/9001002/status": "delivered",
+ "GET /vps": [
+  "vps-4b5c6d7e.vps.ovh.net"
+ ],
+ "GET /vps/vps-4b5c6d7e.vps.ovh.net": {
+  "cluster": "",
+  "displayName": "vps-4b5c6d7e",
+  "keymap": "us",
+  "lockStatus": {"locked": false},
+  "memoryLimit": 12288,
+  "model": {
+   "disk": 100,
+   "memory": 12288,
+   "availableOptions": [],
+   "datacenter": [],
+   "diskLocationType": "local",
+   "maximumAdditionnalIp": 16,
+   "name": "vps-2025-model2",
+   "offer": "VPS vps-2025-model2",
+   "vcore": 6,
+   "version": "2025v1"
+  },
+  "monitoringIpBlocks": [],
+  "name": "vps-4b5c6d7e.vps.ovh.net",
+  "netbootMode": "local",
+  "offerType": "ssd",
+  "slaMonitoring": true,
+  "state": "running",
+  "vcore": 6,
+  "zone": "Region OpenStack: os-gra1",
+  "zoneType": "region"
+ }
+}

@@ -1,0 +1,323 @@
+{
+  "format_version": "1.2",
+  "terraform_version": "1.13.1",
+  "variables": {
+    "cloud_project_id": {
+      "value": "0123456789abcdef0123456789abcdef"
+    },
+    "cluster": {
+      "value": "prod"
+    },
+    "flavor_id": {
+      "value": "b3-16"
+    },
+    "image_id": {
+      "value": "img-debian-13-example"
+    },
+    "node_names": {
+      "value": [
+        "node-01"
+      ]
+    },
+    "region": {
+      "value": "GRA11"
+    },
+    "ssh_login_pub": {
+      "value": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleOnlyNotARealKeyxxxxxxxxxxxxxxxxxx sc-prod"
+    }
+  },
+  "planned_values": {
+    "root_module": {
+      "resources": [
+        {
+          "address": "ovh_cloud_project_instance.node[\"node-01\"]",
+          "mode": "managed",
+          "type": "ovh_cloud_project_instance",
+          "name": "node",
+          "index": "node-01",
+          "provider_name": "registry.opentofu.org/ovh/ovh",
+          "schema_version": 0,
+          "values": {
+            "auto_backup": [],
+            "billing_period": "hourly",
+            "boot_from": [
+              {
+                "image_id": "img-debian-13-example",
+                "volume_id": ""
+              }
+            ],
+            "bulk": null,
+            "flavor": [
+              {
+                "flavor_id": "b3-16"
+              }
+            ],
+            "group": [],
+            "name": "sc-prod-node-01",
+            "network": [
+              {
+                "private": [],
+                "public": true
+              }
+            ],
+            "region": "GRA11",
+            "service_name": "0123456789abcdef0123456789abcdef",
+            "ssh_key": [],
+            "ssh_key_create": [
+              {
+                "name": "sc-prod-node-01",
+                "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleOnlyNotARealKeyxxxxxxxxxxxxxxxxxx sc-prod"
+              }
+            ],
+            "timeouts": null,
+            "user_data": null
+          },
+          "sensitive_values": {
+            "addresses": [],
+            "attached_volumes": [],
+            "auto_backup": [],
+            "boot_from": [
+              {}
+            ],
+            "flavor": [
+              {}
+            ],
+            "group": [],
+            "network": [
+              {
+                "private": []
+              }
+            ],
+            "ssh_key": [],
+            "ssh_key_create": [
+              {}
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "resource_changes": [
+    {
+      "address": "ovh_cloud_project_instance.node[\"node-01\"]",
+      "mode": "managed",
+      "type": "ovh_cloud_project_instance",
+      "name": "node",
+      "index": "node-01",
+      "provider_name": "registry.opentofu.org/ovh/ovh",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "before": null,
+        "after": {
+          "auto_backup": [],
+          "billing_period": "hourly",
+          "boot_from": [
+            {
+              "image_id": "img-debian-13-example",
+              "volume_id": ""
+            }
+          ],
+          "bulk": null,
+          "flavor": [
+            {
+              "flavor_id": "b3-16"
+            }
+          ],
+          "group": [],
+          "name": "sc-prod-node-01",
+          "network": [
+            {
+              "private": [],
+              "public": true
+            }
+          ],
+          "region": "GRA11",
+          "service_name": "0123456789abcdef0123456789abcdef",
+          "ssh_key": [],
+          "ssh_key_create": [
+            {
+              "name": "sc-prod-node-01",
+              "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleOnlyNotARealKeyxxxxxxxxxxxxxxxxxx sc-prod"
+            }
+          ],
+          "timeouts": null,
+          "user_data": null
+        },
+        "after_unknown": {
+          "addresses": true,
+          "attached_volumes": true,
+          "auto_backup": [],
+          "availability_zone": true,
+          "boot_from": [
+            {}
+          ],
+          "flavor": [
+            {}
+          ],
+          "flavor_id": true,
+          "flavor_name": true,
+          "group": [],
+          "id": true,
+          "image_id": true,
+          "network": [
+            {
+              "private": []
+            }
+          ],
+          "ssh_key": [],
+          "ssh_key_create": [
+            {}
+          ],
+          "status": true,
+          "task_state": true
+        },
+        "before_sensitive": false,
+        "after_sensitive": {
+          "addresses": [],
+          "attached_volumes": [],
+          "auto_backup": [],
+          "boot_from": [
+            {}
+          ],
+          "flavor": [
+            {}
+          ],
+          "group": [],
+          "network": [
+            {
+              "private": []
+            }
+          ],
+          "ssh_key": [],
+          "ssh_key_create": [
+            {}
+          ]
+        }
+      }
+    }
+  ],
+  "configuration": {
+    "provider_config": {
+      "ovh": {
+        "name": "ovh",
+        "full_name": "registry.opentofu.org/ovh/ovh",
+        "version_constraint": "2.22.0"
+      }
+    },
+    "root_module": {
+      "resources": [
+        {
+          "address": "ovh_cloud_project_instance.node",
+          "mode": "managed",
+          "type": "ovh_cloud_project_instance",
+          "name": "node",
+          "provider_config_key": "ovh",
+          "expressions": {
+            "billing_period": {
+              "constant_value": "hourly"
+            },
+            "boot_from": [
+              {
+                "image_id": {
+                  "references": [
+                    "var.image_id"
+                  ]
+                }
+              }
+            ],
+            "flavor": [
+              {
+                "flavor_id": {
+                  "references": [
+                    "var.flavor_id"
+                  ]
+                }
+              }
+            ],
+            "name": {
+              "references": [
+                "var.cluster",
+                "each.key"
+              ]
+            },
+            "network": [
+              {
+                "public": {
+                  "constant_value": true
+                }
+              }
+            ],
+            "region": {
+              "references": [
+                "var.region"
+              ]
+            },
+            "service_name": {
+              "references": [
+                "var.cloud_project_id"
+              ]
+            },
+            "ssh_key_create": [
+              {
+                "name": {
+                  "references": [
+                    "var.cluster",
+                    "each.key"
+                  ]
+                },
+                "public_key": {
+                  "references": [
+                    "var.ssh_login_pub"
+                  ]
+                }
+              }
+            ]
+          },
+          "schema_version": 0,
+          "for_each_expression": {
+            "references": [
+              "var.node_names"
+            ]
+          }
+        }
+      ],
+      "variables": {
+        "cloud_project_id": {
+          "type": "string",
+          "required": true
+        },
+        "cluster": {
+          "type": "string",
+          "required": true
+        },
+        "flavor_id": {
+          "type": "string",
+          "required": true
+        },
+        "image_id": {
+          "type": "string",
+          "required": true
+        },
+        "node_names": {
+          "type": [
+            "list",
+            "string"
+          ],
+          "required": true
+        },
+        "region": {
+          "type": "string",
+          "required": true
+        },
+        "ssh_login_pub": {
+          "type": "string",
+          "required": true
+        }
+      }
+    }
+  },
+  "timestamp": "2026-11-01T01:24:28Z",
+  "errored": false
+}

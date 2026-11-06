@@ -1,0 +1,19 @@
+apiVersion: strange.company/v1alpha1
+kind: TofuPlanGuard
+metadata:
+  name: generic-paid
+spec:
+  rootModule: infra/tofu/compute/generic-paid
+  allowedProviders:
+    - registry.opentofu.org/example/paid
+  forbidReplace: true
+  resources:
+    - type: test_server
+      paid: true
+      allowedActions: [no-op, read, create, update]
+      maxCount: expectedNodeCount
+      priceProductFrom: plan[0].plan_code
+    - type: test_ssh_key
+      paid: false
+      allowedActions: [no-op, read, create, update]
+      maxCount: 1

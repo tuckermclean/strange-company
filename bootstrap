@@ -2,13 +2,14 @@
 # Strange Company wrapper (plan 02 sections 7.1, 14.2 to 14.6).
 #   ./bootstrap [--engine docker|podman] [--toolbox-build] [--env-file PATH] [global flags] [<command> [args...]]
 #   (global flags: --from-phase P --retry-phase P --non-interactive --profile P --log-format json|text -v --confirm-plan|storage|budget|backstops|install V; a bare ./bootstrap is run)
-#   ./bootstrap exec  [--image toolbox|ci] [--network bridge|host|none] -- <cmd> [args...]
+#   ./bootstrap exec  [--image toolbox|ci] [--kvm] [--network bridge|host|none] -- <cmd> [args...]
 #   ./bootstrap shell [--image toolbox|ci] [--network bridge|host|none]
 #   ./bootstrap build [--no-cache] [--platform P] [-f FILE] --target toolbox|ci       (what `make toolbox` calls)
 #   ./bootstrap run|plan|preflight|status|verify|expand|destroy|recover|report|rotate|state|unlock|version [args...]
 # Every command except `build` runs in the toolbox image (the default) with the repository, the black-start directory and
 # the env-file inputs mounted; the verbs are handed unchanged to sc-bootstrap by the image's entrypoint.
-# Not here (plan 50, later nodes): the kube tunnel, --unlock, --kvm and the recovery capsule.
+# SC_KVM_DEVICE (plain host path, default /dev/kvm) is a test-only knob for the --kvm device.
+# Not here (plan 50, later nodes): the kube tunnel, --unlock and the recovery capsule.
 set -eu
 
 die() { # code message exit-code
@@ -117,6 +118,7 @@ esac
 
 image=
 network=${SC_TOOLBOX_NETWORK:-bridge}
+kvm=0
 nocache=
 platform=
 cfile=toolbox/Containerfile
@@ -155,6 +157,10 @@ while { [ "$command" = exec ] || [ "$command" = shell ]; } && [ $# -gt 0 ]; do
 		image=${1#--image=}
 		shift
 		;;
+	--kvm)
+		kvm=1
+		shift
+		;;
 	--network)
 		[ $# -ge 2 ] || usage "--network needs a value"
 		network=$2
@@ -176,6 +182,15 @@ case $image in toolbox | ci) ;; "") usage "build needs --target toolbox|ci" ;; *
 case $network in bridge | host | none) ;; *) usage "--network must be bridge, host or none" ;; esac
 if [ "$command" = exec ]; then
 	[ $# -gt 0 ] || usage "exec needs a command after --"
+fi
+kvm_dev=${SC_KVM_DEVICE:-/dev/kvm}
+if [ "$kvm" = 1 ]; then
+	{ [ "$command" = exec ] && [ "$image" = ci ]; } || usage "--kvm is for \`exec --image ci\` only"
+	case $kvm_dev in *:*) usage "SC_KVM_DEVICE must be a plain host path (no host:container form): $kvm_dev" ;; esac
+fi
+if [ "$kvm" = 1 ] && [ ! -e "$kvm_dev" ]; then
+	# WRAPPER_NO_KVM is invented here (plan 02 7.1 names no code for a missing device).
+	die WRAPPER_NO_KVM "--kvm needs the host device $kvm_dev (set SC_KVM_DEVICE to another path); no container was started" 2
 fi
 case $cfile in /* | *..*) usage "-f must be a repository-relative path" ;; esac
 
@@ -279,7 +294,7 @@ $pp:/run/sc-input/passphrase:ro"
 		rt_env="$rt_env
 SC_RECOVERY_PASSPHRASE_FILE=/run/sc-input/passphrase"
 	fi
-	for v in SC_TEST_MODE SC_TEST_CRASH_AT SC_TEST_STOP_AFTER SC_CONFIRM_PLAN SC_CONFIRM_STORAGE SC_CONFIRM_BUDGET \
+	for v in SC_TEST_MODE SC_TEST_CRASH_AT SC_TEST_STOP_AFTER SC_CONFIRM_PLAN SC_CONFIRM_STORAGE SC_CONFIRM_BUDGET SC_CONFIRM_FENCE_NODES \
 		SC_VERIFY_MEMORY_WINDOW SC_VERIFY_SETTLE SC_VERIFY_RECONCILE_TIMEOUT SC_ACCEPT_STALE_PRICES SC_LAB_S3_INCLUSTER_ENDPOINT; do
 		eval "val=\${$v:-}"
 		no_newline "$v" "$val"
@@ -496,6 +511,18 @@ set -- "$@" run --rm -i
 [ -z "$tty" ] || set -- "$@" "$tty"
 # shellcheck disable=SC2086 # user_flags is a fixed, space-separated flag list
 set -- "$@" $user_flags --cap-drop ALL --security-opt no-new-privileges
+if [ "$kvm" = 1 ]; then
+	set -- "$@" --device "$kvm_dev"
+	# The device's group lets the unprivileged container user open it; rootless Podman cannot map the host gid.
+	if [ "$mode" = podman-rootless ]; then
+		set -- "$@" --group-add keep-groups
+	else
+		kvm_gid=$(stat -c %g "$kvm_dev" 2>/dev/null || stat -f %g "$kvm_dev")
+		# A root-owned device would hand the container user the root group; fail closed (WRAPPER_NO_KVM is invented here).
+		[ "$kvm_gid" != 0 ] || die WRAPPER_NO_KVM "--kvm device $kvm_dev belongs to group root (gid 0); refusing to add the root group to the container, fix the device group; no container was started" 2
+		set -- "$@" --group-add "$kvm_gid"
+	fi
+fi
 [ "$selinux" != 1 ] || set -- "$@" --security-opt label=disable
 set -- "$@" \
 	--network "$network" --hostname sc-toolbox --name "sc-toolbox-$$" \

@@ -1,0 +1,7 @@
+# Fake provider scenario "orphan" (plan 03 section 22, F09 03-AC-7). Copied to <.bootstrap/fake-provider>/scenario.yaml.
+# orphan.crashAfterOrder: Apply accepts the order (the create counter is bumped, the fake records an order), then the
+# run dies before the node is recorded in the inventory/state. Apply returns an error (the in-process stand-in for the
+# crash); OrphanScan on the next run lists the unrecorded order, so provision exits 4 ORPHAN_PAID_RESOURCE and never
+# orders again.
+orphan:
+  crashAfterOrder: true

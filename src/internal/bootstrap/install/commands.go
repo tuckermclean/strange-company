@@ -154,7 +154,19 @@ func (s *sess) cmdStatus(ctx context.Context) int {
 }
 
 // cmdRun runs the install pipeline.
-func (s *sess) cmdRun(ctx context.Context) int {
+func (s *sess) cmdRun(ctx context.Context) int { return s.runPipeline(ctx, "run") }
+
+// cmdRecover runs the compute part of the recover pipeline over the install journal (plan 50 section 14.9).
+func (s *sess) cmdRecover(ctx context.Context) int {
+	if sc := s.inv.Flags["scope"]; sc != "" && sc != "full" && sc != "state-only" {
+		s.errorf("sc-bootstrap: --scope %s: must be full or state-only\n", sc)
+		return 2
+	}
+	s.recovering = true
+	return s.runPipeline(ctx, "recover")
+}
+
+func (s *sess) runPipeline(ctx context.Context, command string) int {
 	if err := s.load(); err != nil {
 		return s.configFailure(err)
 	}
@@ -165,8 +177,14 @@ func (s *sess) cmdRun(ctx context.Context) int {
 			return 2
 		}
 	}
+	if str(dig(s.doc, "spec", "provider", "name")) == "existing" {
+		if err := s.startExistingProvider(); err != nil {
+			s.errorf("PROVIDER_CONFIG_INVALID: %v\n", err)
+			return 2
+		}
+	}
 	s.tryAttach(ctx)
-	cfg := s.engineConfig("run")
+	cfg := s.engineConfig(command)
 	cfg.AtEnd = func() {
 		s.eng.Log("info", "prompts", "prompts answered in this run", map[string]any{"count": s.prompts})
 	}
@@ -177,13 +195,21 @@ func (s *sess) cmdRun(ctx context.Context) int {
 	}
 	s.eng = eng
 	opts := engine.Options{FromPhase: s.inv.Flags["from-phase"], RetryPhase: s.inv.Flags["retry-phase"]}
-	res := eng.Execute(ctx, s.pipeline(), opts)
+	pl := s.pipeline()
+	if s.recovering {
+		pl = s.recoverPipeline()
+	}
+	res := eng.Execute(ctx, pl, opts)
 	if res.Exit != 0 {
 		s.errorf("%s: %s\n", res.Code, res.Message)
 		return res.Exit
 	}
 	for _, d := range res.Drift {
 		s.errorf("warning: phase %s drifted from the configuration its output was made for\n", d)
+	}
+	if s.recovering {
+		s.printf("Recover pipeline finished through the compute plan (installation state %s); the restore steps are plan 45.\n", eng.InstallationState())
+		return 0
 	}
 	s.printf("Install pipeline finished (installation state %s).\n", eng.InstallationState())
 	return 0

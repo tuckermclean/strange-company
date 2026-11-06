@@ -35,6 +35,7 @@ type Invocation struct {
 var globalValue = map[string]bool{
 	"env-file": true, "profile": true, "log-format": true, "confirm-plan": true, "confirm-storage": true,
 	"confirm-budget": true, "confirm-backstops": true, "confirm-install": true,
+	"confirm-fence-nodes": true,
 }
 
 // Parse parses sc-bootstrap arguments against the plan 50 section 7.1 command tree without running anything.
@@ -258,10 +259,13 @@ type Deps struct {
 	// ReadOnly makes the preflight write nothing to the work tree: the provider-backstop record is not persisted
 	// and no confirmation is handed to Record (`plan` never changes the repository).
 	ReadOnly bool
+	// LabSkip reports a lab-labeled substrate with an unpaid provider in test mode (CD-76 a): PF-15..PF-20, PF-26 and
+	// PF-29 then report `skip (lab)`. The install layer, which reads the profile, supplies it; nil means never.
+	LabSkip func() bool
 }
 
 const usageText = "usage: sc-bootstrap [global flags] [<command> [args]]  (global flags: --env-file F --profile P --non-interactive " +
-	"--log-format text|json -v --confirm-plan|storage|budget|backstops|install V)"
+	"--log-format text|json -v --confirm-plan|storage|budget|backstops|install|fence-nodes V)"
 
 // Run executes one sc-bootstrap command line and returns the plan 50 section 7.2 exit code.
 func Run(args []string, env map[string]string, stdout, stderr io.Writer, deps Deps) int {

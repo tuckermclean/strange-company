@@ -1,0 +1,54 @@
+apiVersion: strange.company/v1alpha1
+kind: BootstrapSubstrate
+
+metadata:
+  name: self-hosting-minimum
+
+spec:
+  nodes:
+    count: 1
+
+    minimumSupportedPerNode:
+      cpu: 4
+      memory: 12Gi
+
+      storage:
+        size: 100Gi
+        class: ssd
+
+    constrainedLowerBoundPerNode:
+      cpu: 4
+      memory: 8Gi
+
+      storage:
+        size: 100Gi
+        class: ssd
+
+    preferredPerNode:
+      cpu: 4
+      memory: 12Gi
+
+      storage:
+        size: 200Gi
+        class: nvme
+
+  kubernetes:
+    distribution: k3s
+    servers: 1
+    datastore: embedded-etcd
+
+  execution:
+    maximumConcurrentAgents: 1
+    maximumConcurrentCIPipelines: 1
+
+  storage:
+    cnpg:
+      instances: 1
+      storageClass: local
+
+    longhorn:
+      enabled: true
+      replicas: 1
+
+    objectStorage:
+      required: true

@@ -42,6 +42,15 @@ type Desired struct {
 type Node struct {
 	Name       string
 	InternalIP string
+	// SSHHost, SSHPort and SSHUser are the SSH endpoint of a node the provider did not create (existing nodes); empty
+	// for providers that create their nodes.
+	SSHHost string
+	SSHPort int
+	SSHUser string
+	// HostKeys are the SHA256 fingerprints of the node's SSH host keys (trust on first use or attested).
+	HostKeys []string
+	// Summary is a one-line description of the discovered machine for the confirmation footprint.
+	Summary string
 }
 
 // ProviderPlan is what Plan returns and Apply executes exactly.
@@ -50,6 +59,10 @@ type ProviderPlan struct {
 	Nodes  []Node
 	// MonthlyCost is the catalogue estimate in the config currency (empty for providers without a price).
 	MonthlyCost string
+	// MachineClass is the catalogue productId the plan orders (empty for providers that order nothing from a catalogue).
+	MachineClass string
+	// Region is the region the plan creates nodes in, when the plan names it for the footprint (the recover plan).
+	Region string
 }
 
 // ProviderOutput is the inventory (contracts/provider.schema.yaml, reduced).
@@ -117,4 +130,37 @@ type Provider interface {
 	Expand(ctx context.Context, targetCount int) (*ProviderPlan, error)
 	// DestroyCompute produces a destroy-mode plan of the compute module only.
 	DestroyCompute(ctx context.Context) (*ProviderPlan, error)
+}
+
+// StateNode is a compute node a provider holds in its managed state.
+type StateNode struct {
+	Name       string
+	ProviderID string
+	// Address is the plan address of the node (for example `fake_node.node["node-01"]`).
+	Address string
+}
+
+// CodeNodeUnavailable is the error code of a provider API that says a node is unavailable; Probe returns it (and only
+// it) for a node that counts as unreachable.
+const CodeNodeUnavailable = "NODE_UNAVAILABLE"
+
+// IsUnavailable reports whether err is the provider's unavailable error.
+func IsUnavailable(err error) bool {
+	var pe *Error
+	return errors.As(err, &pe) && pe.Code == CodeNodeUnavailable
+}
+
+// Recoverer is the optional capability of a provider the recover pipeline needs (plan 03 section 20.1, DR-12): to find
+// the nodes whose API does not answer, move them out of managed state and plan replacements.
+type Recoverer interface {
+	// StateNodes lists the compute nodes of the managed state.
+	StateNodes(ctx context.Context) ([]StateNode, error)
+	// Probe asks the provider API for the node; an error means it does not answer (unreachable).
+	Probe(ctx context.Context, n StateNode) error
+	// Fence moves the node out of managed state (OpenTofu providers: `tofu state rm <address>`) and never reuses its name.
+	Fence(ctx context.Context, n StateNode) error
+	// PlanRecover is Plan for the recover pipeline: it keeps the nodes still in state, creates the missing ones under
+	// new names in the configured region and judges the plan in guard recover mode with fenced, the plan addresses of
+	// the fenced nodes.
+	PlanRecover(ctx context.Context, d Desired, fenced []string) (*ProviderPlan, error)
 }

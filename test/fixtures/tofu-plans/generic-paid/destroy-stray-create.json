@@ -1,0 +1,80 @@
+{
+  "format_version": "1.2",
+  "terraform_version": "1.13.1",
+  "planned_values": {
+    "root_module": {}
+  },
+  "resource_changes": [
+    {
+      "address": "test_server.node[0]",
+      "mode": "managed",
+      "type": "test_server",
+      "name": "node",
+      "index": 0,
+      "provider_name": "registry.opentofu.org/example/paid",
+      "change": {
+        "actions": [
+          "delete"
+        ],
+        "before": {
+          "name": "sc-prod-node-01",
+          "region": "REG-1",
+          "ssh_key_name": "sc-prod-key",
+          "plan": [
+            {
+              "plan_code": "plan-small"
+            }
+          ],
+          "root_password": "example-not-a-secret"
+        },
+        "after": null,
+        "after_unknown": {
+          "id": true
+        },
+        "before_sensitive": false,
+        "after_sensitive": false
+      }
+    },
+    {
+      "address": "test_server.node[1]",
+      "mode": "managed",
+      "type": "test_server",
+      "name": "node",
+      "index": 1,
+      "provider_name": "registry.opentofu.org/example/paid",
+      "change": {
+        "actions": [
+          "create"
+        ],
+        "before": null,
+        "after": {
+          "name": "sc-prod-node-02",
+          "region": "REG-1",
+          "ssh_key_name": "sc-prod-key",
+          "plan": [
+            {
+              "plan_code": "plan-small"
+            }
+          ],
+          "root_password": "example-not-a-secret"
+        },
+        "after_unknown": {
+          "id": true
+        },
+        "before_sensitive": false,
+        "after_sensitive": {
+          "root_password": true
+        }
+      }
+    }
+  ],
+  "configuration": {
+    "provider_config": {
+      "test": {
+        "name": "test",
+        "full_name": "registry.opentofu.org/example/paid"
+      }
+    },
+    "root_module": {}
+  }
+}

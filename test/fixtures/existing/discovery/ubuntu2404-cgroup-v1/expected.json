@@ -1,0 +1,17 @@
+{
+  "node": {
+    "name": "node-01",
+    "state": "running",
+    "os": {
+      "id": "ubuntu"
+    }
+  },
+  "findings": [
+    {
+      "code": "NODE_CGROUP_V1",
+      "severity": "fail"
+    }
+  ],
+  "exact": true,
+  "absent": []
+}

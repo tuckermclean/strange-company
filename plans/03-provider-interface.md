@@ -140,7 +140,7 @@ The effective profile is written to `cluster-vars` (plan 18 key names) and recor
 
 Consumes `SC-INFRA-PROVIDER` (environment of the OpenTofu or provider subprocess only; never in state, logs or `ProviderOutput`) and `SC-SSH-OPERATOR` (public key injected into nodes; private key used for discovery). Introduces no new secret class. For CI plan-only tests, plan 04 introduces `SC-CI-OVH-READONLY`.
 
-**State hygiene:** compute modules must not put secrets into resource attributes. In particular OVH must not email or return root passwords (plan 04: `do_not_send_password = true` (verify)), and no provider credential may appear in variables persisted to state. `make tofu-validate` fails if a root module declares a `variable` with a name matching `(?i)(secret|password|token|key)` without `sensitive = true` and `ephemeral = true` (ephemeral variables exist in the baseline OpenTofu v1.13.1, `plans/compatibility-baseline.yaml`; verify).
+**State hygiene:** compute modules must not put secrets into resource attributes. In particular OVH must not email or return root passwords (plan 04: `do_not_send_password = true` (verify)), and no provider credential may appear in variables persisted to state. `make tofu-validate` fails if a root module declares a `variable` with a name matching `(?i)(secret|password|token|key)` without `sensitive = true` and `ephemeral = true` (ephemeral variables exist in the baseline OpenTofu v1.13.1, `plans/compatibility-baseline.yaml`; verified at F09). Names that are a public key, `(?i)(^|_)(public|pub)(_ssh)?_key$` (for example `ssh_public_key`), are exempt: a public SSH key is not a secret, and OpenTofu 1.13.1 rejects an ephemeral value in a normal resource argument such as `ovh_vps.public_ssh_key` (CD-72, narrowed by CD-73).
 
 ## 11. Storage
 
@@ -199,14 +199,14 @@ Nodes at or above the lower bound but below the supported minimum (8–12 GiB me
 Input: `tofu show -json <planfile>`. The rules are evaluated in order, and the first failure stops evaluation:
 
 1. `format_version` is a version the guard was tested with (allowlist in code; unknown major version → `GUARD_PLAN_FORMAT_UNSUPPORTED`).
-2. Every entry in `configuration.provider_config` and every `resource_changes[].provider_name` is in `allowedProviders`.
+2. Every entry in `configuration.provider_config` and every `resource_changes[].provider_name` is in `allowedProviders`. Otherwise `GUARD_PROVIDER_FORBIDDEN` (CD-72).
 3. For each `resource_changes[]` entry with `mode = "managed"`:
    - `type` must appear in `resources[]`, otherwise `GUARD_UNEXPECTED_RESOURCE`.
+   - `["delete","create"]` or `["create","delete"]` (replace) on a `paid: true` type fails when `forbidReplace` is true (`GUARD_REPLACE_FORBIDDEN`). This check runs before the action check, because a normal-mode guard never allows `delete` and the replace code would otherwise be unreachable (CD-72).
    - Every action in `change.actions` must be in `allowedActions`, otherwise `GUARD_ACTION_FORBIDDEN`.
-   - `["delete","create"]` or `["create","delete"]` (replace) on a `paid: true` type fails when `forbidReplace` is true (`GUARD_REPLACE_FORBIDDEN`).
 4. Count rule: per type, (instances in prior state minus deletes plus creates) ≤ `maxCount` (`expectedNodeCount` resolves to config). Otherwise `GUARD_COUNT_EXCEEDED`.
 5. Product rule: for paid types with `priceProductFrom`, the planned attribute value (for example `plan[0].plan_code`) must equal the catalogue `planCode` of `MACHINE_CLASS`. Otherwise `GUARD_PRODUCT_MISMATCH`. An unknown value (computed at apply) fails closed.
-6. Region and SSH rules: provider-specific attribute paths, declared by the provider package, must equal config (`GUARD_REGION_MISMATCH`, `GUARD_SSH_KEY_MISMATCH`).
+6. Region and SSH rules: provider-specific attribute paths, declared by the provider package, must equal config (`GUARD_REGION_MISMATCH`, `GUARD_SSH_KEY_MISMATCH`). A guard with a paid type whose provider declares no region or SSH path, or declares a type that is not a paid type of the guard, fails `GUARD_RULE_UNDECLARED` (CD-73).
 7. `mode = "data"` reads are allowed. Data sources cannot create resources.
 8. **Storage module rule** (`infra/tofu/storage/guard.yaml`): `allowedActions` excludes `delete`. Together with `prevent_destroy` (plan 06), a bucket can never be planned for deletion by sc-bootstrap.
 9. **Destroy mode** (`guard-destroy.yaml`, plan 49): only `delete` on the compute types is allowed, and the plan must contain **no** create or update. Any resource outside the compute module is impossible by construction, because only the compute root module is planned.
@@ -258,7 +258,7 @@ The confirmation input must match exactly (case-sensitive, no surrounding whites
 | Product not offered in region | PF-08 (live catalogue) | nothing created | exit 3 with alternatives from catalogue | bootstrap-preflight-failure.md#product |
 | Catalogue stale | §14.5 | nothing created | exit 4 unless accepted | bootstrap-preflight-failure.md#guardrail |
 | Price over limit / unknown | §14.6 | nothing created | exit 4 | bootstrap-preflight-failure.md#guardrail |
-| Plan contains unexpected type / action / count / product | §14.4 | nothing created | exit 4, offending changes listed | bootstrap-preflight-failure.md#guardrail |
+| Plan contains unexpected provider / type / action / count / product, or a provider declares no region/SSH rule (`GUARD_RULE_UNDECLARED`) | §14.4 | nothing created | exit 4, offending changes listed | bootstrap-preflight-failure.md#guardrail |
 | Planfile changed after confirmation | digest recompute | nothing created | `PLAN_DIGEST_MISMATCH` exit 4 | rerun |
 | Plan stale at apply | OpenTofu | nothing created | retryable fail; re-plan/re-confirm next run | bootstrap-resume.md#provision |
 | Orphan paid resource from a previous crash | OrphanScan | apply blocked | exit 4, list | bootstrap-resume.md#provision |

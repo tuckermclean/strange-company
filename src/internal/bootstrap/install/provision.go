@@ -63,9 +63,28 @@ func (s *sess) providerOrFail() (provider.Provider, error) {
 func wrapProviderErr(err error) error {
 	var pe *provider.Error
 	if errors.As(err, &pe) {
-		return &engine.Error{Code: pe.Code, Message: pe.Message, Retryable: pe.Retryable()}
+		e := &engine.Error{Code: pe.Code, Message: pe.Message, Retryable: pe.Retryable()}
+		switch {
+		case pe.Code == "GUARD_INVALID" || pe.Code == "GUARD_DIGEST_FAILED":
+			e.Exit = 1 // the guard machinery failed and judged nothing: a failed phase, not a refusal
+		case strings.HasPrefix(pe.Code, "GUARD_"):
+			e.Exit = 4 // a guard refusal is a plan the operator must not apply (plan 03 section 14.4)
+		case substrateCode(pe.Code):
+			e.Exit = 3 // a node that cannot take the installation fails the preflight family (plan 05 section 15)
+		}
+		return e
 	}
 	return err
+}
+
+// substrateCode reports the codes of plan 05 sections 14.4 and 14.5 (node validation, host keys, reachability).
+func substrateCode(code string) bool {
+	for _, p := range []string{"NODE_", "EXISTING_", "DISK_CLASS_", "HOST_KEY_", "DISCOVERY_"} {
+		if strings.HasPrefix(code, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // planKind is the confirmation kind of the plan: a provider that creates nodes is confirmed as a paid footprint, one
@@ -93,13 +112,31 @@ func (s *sess) planFootprint(p *provider.ProviderPlan) string {
 	if !caps.Paid {
 		title = "FOOTPRINT (0 paid resources)"
 	}
-	fmt.Fprintf(&sb, "%s - cluster %s (%s)\n", title, s.cluster, caps.Name)
+	if r := p.Region; r != "" {
+		fmt.Fprintf(&sb, "%s - cluster %s (%s, region %s)\n", title, s.cluster, caps.Name, r)
+	} else {
+		fmt.Fprintf(&sb, "%s - cluster %s (%s)\n", title, s.cluster, caps.Name)
+	}
 	for _, n := range p.Nodes {
 		verb := "TAKE OVER"
 		if caps.CreatesNodes {
 			verb = "CREATE"
 		}
 		fmt.Fprintf(&sb, "  %s  %s  %s\n", verb, n.Name, n.InternalIP)
+		if n.SSHHost != "" {
+			fmt.Fprintf(&sb, "      ssh %s@%s:%d  %s\n", n.SSHUser, n.SSHHost, n.SSHPort, n.Summary)
+			for _, fp := range n.HostKeys {
+				fmt.Fprintf(&sb, "      host key %s\n", fp)
+			}
+		}
+	}
+	if !caps.CreatesNodes {
+		for _, n := range p.Nodes {
+			if n.SSHHost != "" {
+				fmt.Fprintf(&sb, "  WARNING: configure will take over these hosts (k3s, firewall, sysctls)\n")
+				break
+			}
+		}
 	}
 	if p.MonthlyCost != "" {
 		fmt.Fprintf(&sb, "  Monthly total: %s\n", p.MonthlyCost)
@@ -129,7 +166,7 @@ func (s *sess) stepComputePlan() engine.Unit {
 		// Recomputed on every run until provision consumed it (plan 50 section 14.3 step 10); from state provisioned on
 		// the recorded confirmation stands for the plan, so a rerun neither recomputes it nor hashes a missing plan.
 		check: func(context.Context) (engine.Check, error) {
-			if stateAtLeastProvisioned(s.eng.InstallationState()) {
+			if stateAtLeastProvisioned(s.eng.InstallationState()) && !s.recovering {
 				return done("provision consumed the plan"), nil
 			}
 			return notDone("the plan is computed on every run until provision"), nil
@@ -142,9 +179,22 @@ func (s *sess) stepComputePlan() engine.Unit {
 			if err := prov.Validate(provider.Config{Cluster: s.cluster, ExpectedNodeCount: s.expectedNodes()}); err != nil {
 				return nil, &engine.Error{Code: "PROVIDER_CONFIG_INVALID", Message: err.Error(), Exit: 2}
 			}
-			plan, err := prov.Plan(ctx, s.desired())
+			var plan *provider.ProviderPlan
+			if s.recovering {
+				// Recover plans replacements for the fenced nodes; the guard excuses only those from the region rule.
+				rec, rerr := s.recoverer()
+				if rerr != nil {
+					return nil, rerr
+				}
+				plan, err = rec.PlanRecover(ctx, s.desired(), s.fencedAddresses())
+			} else {
+				plan, err = prov.Plan(ctx, s.desired())
+			}
 			if err != nil {
 				return nil, wrapProviderErr(err)
+			}
+			if err := s.costCheck(plan); err != nil {
+				return nil, err
 			}
 			s.plan = plan
 			return nil, nil
@@ -165,7 +215,7 @@ func (s *sess) planDigest() string {
 func (s *sess) stepPlanConfirm() engine.Unit {
 	return &unit{name: stepPlanConfirm, timeout: 30 * time.Minute, inputsFn: func() any { return map[string]any{"plan": s.planDigest()} },
 		check: func(context.Context) (engine.Check, error) {
-			if stateAtLeastProvisioned(s.eng.InstallationState()) {
+			if stateAtLeastProvisioned(s.eng.InstallationState()) && !s.recovering {
 				return done("provision consumed the confirmation of the plan"), nil
 			}
 			if s.plan != nil && s.eng.Confirmed(s.planKind(), s.plan.Digest) {
@@ -295,11 +345,43 @@ func (s *sess) runProvision(ctx context.Context) ([]engine.OutputRef, error) {
 		}
 		resolvers = disc.Resolvers
 	}
+	if err := s.writeProviderOutput(prov); err != nil {
+		return nil, err
+	}
 	sha, err := s.commitNodeInventory(ctx, inv, resolvers)
 	if err != nil {
 		return nil, err
 	}
 	return []engine.OutputRef{{Kind: "git-commit", Ref: sha}}, nil
+}
+
+// outputDocumenter is implemented by providers that render the ProviderOutput document (contracts/provider.schema.yaml).
+type outputDocumenter interface {
+	OutputDocument(cluster string, now time.Time, maxMonthlyCost, currency string) ([]byte, error)
+}
+
+// knownHoster is implemented by providers that pin the host keys of nodes they did not create.
+type knownHoster interface{ KnownHosts() []byte }
+
+// writeProviderOutput writes .bootstrap/runs/<run>/provider-output.json (once per run, from provision) and, for nodes
+// whose host keys were captured, the pinned .bootstrap/known_hosts (plan 05 section 14.4).
+func (s *sess) writeProviderOutput(prov provider.Provider) error {
+	if d, ok := prov.(outputDocumenter); ok {
+		doc, err := d.OutputDocument(s.cluster, s.clk.Now(), str(dig(s.doc, "spec", "provider", "maxMonthlyCost", "amount")),
+			str(dig(s.doc, "spec", "provider", "maxMonthlyCost", "currency")))
+		if err != nil {
+			return wrapProviderErr(err)
+		}
+		if err := writeAtomic(filepath.Join(s.boot, "runs", s.eng.RunID(), "provider-output.json"), append(doc, '\n')); err != nil {
+			return fail("PROVIDER_OUTPUT_WRITE_FAILED", 1, procResume, "provider-output.json cannot be written: %v", err)
+		}
+	}
+	if k, ok := prov.(knownHoster); ok {
+		if err := writeAtomic(filepath.Join(s.boot, "known_hosts"), k.KnownHosts()); err != nil {
+			return fail("KNOWN_HOSTS_WRITE_FAILED", 1, procResume, ".bootstrap/known_hosts cannot be written: %v", err)
+		}
+	}
+	return nil
 }
 
 // nodeVars are the cluster-vars keys provision owns: SC_NODE_IP_1..5 (slot 1 is node-01's internal IP, unused slots
@@ -347,7 +429,11 @@ func (s *sess) commitNodeInventory(ctx context.Context, inv *provider.ProviderOu
 	nodes := make([]map[string]any, 0, len(inv.Nodes))
 	names := make([]string, 0, len(inv.Nodes))
 	for _, n := range inv.Nodes {
-		nodes = append(nodes, map[string]any{"name": n.Name, "internal_ip": n.InternalIP})
+		entry := map[string]any{"name": n.Name, "internal_ip": n.InternalIP}
+		if n.SSHHost != "" {
+			entry["ssh"] = map[string]any{"host": n.SSHHost, "port": n.SSHPort, "user": n.SSHUser, "host_key_fingerprints": n.HostKeys}
+		}
+		nodes = append(nodes, entry)
 		names = append(names, n.Name)
 	}
 	invDoc, err := yaml.Marshal(map[string]any{

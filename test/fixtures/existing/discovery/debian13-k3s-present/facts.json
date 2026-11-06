@@ -1,0 +1,167 @@
+{
+  "script_version": 1,
+  "nproc": 8,
+  "cpu_model": "AMD EPYC 7452 32-Core Processor",
+  "meminfo": "MemTotal:       32779632 kB\nMemFree:        16389816 kB\nMemAvailable:   16390816 kB\nBuffers:           41212 kB\nCached:          2013440 kB\nSwapTotal:             0 kB\nSwapFree:              0 kB\n",
+  "lsblk": {
+    "blockdevices": [
+      {
+        "name": "nvme0n1",
+        "kname": "nvme0n1",
+        "pkname": null,
+        "size": 512110190592,
+        "rota": false,
+        "type": "disk",
+        "tran": "nvme",
+        "model": "SAMSUNG MZQL21T9HCJR-00A07",
+        "mountpoints": [
+          null
+        ],
+        "children": [
+          {
+            "name": "nvme0n1p1",
+            "kname": "nvme0n1p1",
+            "pkname": "nvme0n1",
+            "size": 536870912,
+            "rota": false,
+            "type": "part",
+            "tran": null,
+            "model": null,
+            "mountpoints": [
+              "/boot/efi"
+            ]
+          },
+          {
+            "name": "nvme0n1p2",
+            "kname": "nvme0n1p2",
+            "pkname": "nvme0n1",
+            "size": 511036448768,
+            "rota": false,
+            "type": "part",
+            "tran": null,
+            "model": null,
+            "mountpoints": [
+              "/"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "findmnt": {
+    "filesystems": [
+      {
+        "target": "/",
+        "source": "/dev/nvme0n1p2",
+        "fstype": "ext4",
+        "size": 509962706944,
+        "avail": 401234567890
+      }
+    ]
+  },
+  "os_release": "PRETTY_NAME=\"Debian GNU/Linux 13 (trixie)\"\nNAME=\"Debian GNU/Linux\"\nVERSION_ID=\"13\"\nVERSION=\"13 (trixie)\"\nVERSION_CODENAME=trixie\nDEBIAN_VERSION_FULL=13.1\nID=debian\nHOME_URL=\"https://www.debian.org/\"\nSUPPORT_URL=\"https://www.debian.org/support\"\nBUG_REPORT_URL=\"https://bugs.debian.org/\"\n",
+  "kernel": "6.12.48+deb13-amd64",
+  "arch": "x86_64",
+  "virt": "none",
+  "cgroup_fs": "cgroup2fs",
+  "apparmor": "Y",
+  "wireguard": true,
+  "ntp_synchronized": "yes",
+  "swap": "",
+  "ip_addr": [
+    {
+      "ifindex": 1,
+      "ifname": "lo",
+      "flags": [
+        "LOOPBACK",
+        "UP",
+        "LOWER_UP"
+      ],
+      "mtu": 65536,
+      "qdisc": "noqueue",
+      "operstate": "UNKNOWN",
+      "group": "default",
+      "txqlen": 1000,
+      "link_type": "loopback",
+      "address": "00:00:00:00:00:00",
+      "broadcast": "00:00:00:00:00:00",
+      "addr_info": [
+        {
+          "family": "inet",
+          "local": "127.0.0.1",
+          "prefixlen": 8,
+          "scope": "host",
+          "label": "lo",
+          "valid_life_time": 4294967295,
+          "preferred_life_time": 4294967295
+        },
+        {
+          "family": "inet6",
+          "local": "::1",
+          "prefixlen": 128,
+          "scope": "host",
+          "noprefixroute": true,
+          "valid_life_time": 4294967295,
+          "preferred_life_time": 4294967295
+        }
+      ]
+    },
+    {
+      "ifindex": 2,
+      "ifname": "eno1",
+      "flags": [
+        "BROADCAST",
+        "MULTICAST",
+        "UP",
+        "LOWER_UP"
+      ],
+      "mtu": 1500,
+      "qdisc": "fq_codel",
+      "operstate": "UP",
+      "group": "default",
+      "txqlen": 1000,
+      "link_type": "ether",
+      "address": "52:54:00:12:34:02",
+      "broadcast": "ff:ff:ff:ff:ff:ff",
+      "addr_info": [
+        {
+          "family": "inet",
+          "local": "203.0.113.60",
+          "prefixlen": 26,
+          "scope": "global",
+          "label": "eno1",
+          "valid_life_time": 4294967295,
+          "preferred_life_time": 4294967295
+        },
+        {
+          "family": "inet6",
+          "local": "fe80::5054:ff:fe12:3460",
+          "prefixlen": 64,
+          "scope": "link",
+          "valid_life_time": 4294967295,
+          "preferred_life_time": 4294967295
+        }
+      ]
+    }
+  ],
+  "ip_route_get": [
+    {
+      "dst": "1.1.1.1",
+      "gateway": "203.0.113.1",
+      "dev": "eno1",
+      "prefsrc": "203.0.113.60",
+      "flags": [],
+      "uid": 1000,
+      "cache": []
+    }
+  ],
+  "ss": "tcp   LISTEN 0      128          0.0.0.0:22         0.0.0.0:*\ntcp   LISTEN 0      128             [::]:22            [::]:*\nudp   UNCONN 0      0          127.0.0.54:53         0.0.0.0:*\nudp   UNCONN 0      0       127.0.0.53%lo:53         0.0.0.0:*\ntcp   LISTEN 0      4096               *:6443               *:*\ntcp   LISTEN 0      4096               *:10250              *:*\ntcp   LISTEN 0      4096       127.0.0.1:2379         0.0.0.0:*\n",
+  "platforms": [
+    "k3s",
+    "kubelet"
+  ],
+  "install_uid": "",
+  "sudo_ok": true,
+  "machine_id": "5e884898da28047151d0e56f8dc62927",
+  "missing_tools": []
+}

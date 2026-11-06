@@ -97,6 +97,10 @@ type sess struct {
 	// reachable and no remote journal can exist (before plan.storage-apply).
 	bucketAbsent bool
 
+	// recovering is set while the recover pipeline runs: plan.compute-plan and plan.confirm then work from an
+	// installation that is already provisioned.
+	recovering bool
+
 	// tofuGen and tofuPrev are the generation and fallback passphrase of the last tofuPassphrase call.
 	tofuGen  int
 	tofuPrev string

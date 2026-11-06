@@ -1,0 +1,10 @@
+# Fake provider scenario "recover-region-outage" (plan 03 section 20.1, F09 03-AC-12). Copied to
+# <.bootstrap/fake-provider>/scenario.yaml after node-01 was created by an install without a scenario.
+# The fake records the region of every node it creates in its state; without regions.configured that is the default
+# region fake-1 (the provider_region of the provider.schema.yaml fake example).
+# regions.configured: replacement nodes are created here (the PROVIDER_REGION of a real provider).
+# regions.unavailable: every node recorded in one of these regions answers Inventory with an error (the fake API says
+# `unavailable`); recover fences it out of state.
+regions:
+  configured: fake-2
+  unavailable: [fake-1]

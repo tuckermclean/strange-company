@@ -29,6 +29,11 @@ func TofuValidate(root string) (Result, error) {
 	var res Result
 	res.ran(ruleTofuPreventDestroy)
 	res.ran(ruleTofuGuardNoDelete)
+	res.ran(ruleGuardFixtures)
+	res.ran(ruleOVHSecretVars)
+	res.ran(ruleOVHNoPassword)
+	checkGuardFixtures(&res, root)
+	checkOVHModules(&res, root)
 	base := filepath.Join(root, filepath.FromSlash(tofuDir))
 	if st, err := os.Stat(base); err != nil || !st.IsDir() {
 		return res, nil

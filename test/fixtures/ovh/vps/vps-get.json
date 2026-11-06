@@ -1,0 +1,35 @@
+{
+  "cluster": "",
+  "displayName": "sc-prod-node-01",
+  "iam": {
+    "displayName": "sc-prod-node-01",
+    "id": "5d2a7b3e-1f64-4c58-9a10-3e6b0c2d7f91",
+    "state": "OK",
+    "tags": {},
+    "urn": "urn:v1:eu:resource:vps:vps-0a1b2c3d.vps.ovh.net"
+  },
+  "keymap": "us",
+  "lockStatus": {"locked": false},
+  "memoryLimit": 12288,
+  "model": {
+    "availableOptions": ["automatedBackup", "snapshot"],
+    "datacenter": ["GRA", "SBG", "WAW"],
+    "disk": 100,
+    "diskLocationType": "local",
+    "maximumAdditionnalIp": 16,
+    "memory": 12288,
+    "name": "vps-2025-model2",
+    "offer": "VPS vps-2025-model2",
+    "vcore": 6,
+    "version": "2025v1"
+  },
+  "monitoringIpBlocks": [],
+  "name": "vps-0a1b2c3d.vps.ovh.net",
+  "netbootMode": "local",
+  "offerType": "ssd",
+  "slaMonitoring": true,
+  "state": "running",
+  "vcore": 6,
+  "zone": "Region OpenStack: os-gra1",
+  "zoneType": "region"
+}

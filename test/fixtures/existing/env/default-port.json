@@ -1,0 +1,1 @@
+{"nodes": [{"name": "node-01", "ssh": {"host": "192.0.2.10", "port": 22, "user": "debian"}}]}

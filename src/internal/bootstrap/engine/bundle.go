@@ -218,3 +218,39 @@ func (e *Engine) Checkpoint(ctx context.Context) error {
 	}
 	return nil
 }
+
+// Fact returns the journal's facts.<key> value raw (nil when absent).
+func (e *Engine) Fact(key string) json.RawMessage {
+	if e.jr == nil || len(e.jr.Facts) == 0 {
+		return nil
+	}
+	var m map[string]json.RawMessage
+	if json.Unmarshal(e.jr.Facts, &m) != nil {
+		return nil
+	}
+	return m[key]
+}
+
+// SetFact sets the journal's facts.<key> to v and keeps every other fact; the next journal save persists it.
+func (e *Engine) SetFact(key string, v any) error {
+	if e.jr == nil {
+		return errors.New("engine: no journal is loaded")
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	m := map[string]json.RawMessage{}
+	if len(e.jr.Facts) > 0 {
+		if err := json.Unmarshal(e.jr.Facts, &m); err != nil {
+			return err
+		}
+	}
+	m[key] = b
+	out, err := json.Marshal(m)
+	if err != nil {
+		return err
+	}
+	e.jr.Facts = json.RawMessage(out)
+	return nil
+}
