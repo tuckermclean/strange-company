@@ -142,9 +142,14 @@ jobs:
       - name: make verify (offline)
         env:
           RACE: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && 'on' || 'off' }}
+        # The switch goes through the environment inside the container: a make command-line variable would be
+        # forwarded to nested makes through MAKEFLAGS (01-AC-5's re-exec check runs one).
         run: |
-          if [ "$RACE" = off ]; then set -- GO_TEST_RACE=; else set --; fi
-          ./bootstrap exec --image ci --network none -- make verify "$@"
+          if [ "$RACE" = off ]; then
+            ./bootstrap exec --image ci --network none -- env GO_TEST_RACE= make verify
+          else
+            ./bootstrap exec --image ci --network none -- make verify
+          fi
 
       # 52-AC-10: out/contracts/junit.xml is uploaded on every PR run. make verify stops at the first failing
       # target, so when it failed before reaching `contracts`, run that target alone. The job has already failed;
