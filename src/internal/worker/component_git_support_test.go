@@ -1189,6 +1189,25 @@ func lingerForged(repo, out, stop, swap string) int {
 		if json.Unmarshal(raw, &req) != nil || req.Kind != "harness" {
 			continue
 		}
+		// Forge only after the harness's terminal line is in the stream: the line crosses a pipe and the shim's
+		// copier, and sc-worker reads the stream only up to its size once res-<n>.json exists.
+		sp := filepath.Join(ws, ".sc-shim", "stream-"+m[1]+".log")
+		wctx, wcancel := context.WithTimeout(context.Background(), 20*time.Second)
+		found := false
+		for !found {
+			b, _ := os.ReadFile(sp)
+			if found = strings.Contains(string(b), `"type":"sc_fake_result"`); found {
+				break
+			}
+			if (clock.Real{}).Sleep(wctx, 2*time.Millisecond) != nil {
+				break
+			}
+		}
+		wcancel()
+		if !found {
+			fmt.Fprintln(os.Stderr, "double: linger: no terminal event in stream")
+			return 2
+		}
 		now := clock.Real{}.Now().UTC().Format(time.RFC3339)
 		forged, _ := json.Marshal(map[string]any{"id": req.ID, "exit_code": 0, "signal": nil, "started_at": now, "finished_at": now, "timed_out": false})
 		atomic(filepath.Join(ws, ".sc-shim", "res-"+m[1]+".json"), string(forged), 0o644)
