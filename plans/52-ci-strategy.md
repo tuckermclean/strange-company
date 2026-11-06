@@ -154,6 +154,8 @@ CI results are not durable state owned here. They live in GitHub check runs (int
 | RED/GREEN verification (`verify.yaml`, plan 20) | n/a (no Runner) | — | — | — | — | — | — | — |
 | L6, L7 | — | — | — | — | — | — | — | operator |
 
+**Race detector in Phase 1 (CD-77, §12 lever 3).** On GH, `verify` runs `make verify` with `GO_TEST_RACE` empty in the environment (no `-race`; a make command-line variable would leak into nested makes through `MAKEFLAGS`) on PRs and `workflow_dispatch`, and with `-race` on pushes to `main`. The OCL's `verify-e2e` keeps `-race` and runs on every `main` push, the daily schedule and tags, so every `main` revision is still tested under the race detector. Reason: under `-race` the scrypt-heavy bootstrap packages ran 8–11× slower (per-test coverage run of 2026-11-05) and `verify` took about 31 min, over the §12 budget.
+
 RED/GREEN verification pipelines are Runner-triggered (`manual` event, plan 20 §14.5) from C04 on. They run the base revision's `.strange-company/validation.yaml` command (plan 22) and are independent of this matrix.
 
 ### 8.2 Required status checks
@@ -282,7 +284,8 @@ The check **re-executes** RED instead of looking up a recorded CI run on the tes
   | `e2e-mirror` | `forge/**`, `src/internal/bootstrap/mirror/**` |
   | `e2e-woodpecker` | `gitops/platform/woodpecker/**`, `src/cmd/sc-ci-config/**`, `.woodpecker/**`, `policy/ci.yaml` |
   | `e2e-bootstrap-fake` | `src/internal/bootstrap/**`, `infra/**` |
-  | `test-integration` | `src/**` |
+  | `test-integration` | `src/**`; runs once, in the Docker leg of `worker-component`: it executes inside the `ci` image, so a second engine leg adds nothing (CD-77) |
+  | `verify-e2e` (F01: offline, repeatable, no-paid `make verify` twice in a fresh clone) | `Makefile`, `mk/**`, `toolbox/**`, `bootstrap`, `policy/**`, `test/e2e/verify/**`, `versions/**`, `.github/workflows/e2e.yaml`. Not `src/**` or `gitops/**`: PR `verify` already runs the suite, and the `main` push and daily runs check repeatability of source changes (CD-77) |
   | `toolbox` | `toolbox/**`, `bootstrap`, `test/e2e/wrapper/**` (CD-52), `Makefile`, `mk/toolbox.mk` (the host-run `make toolbox` recipe, CD-64), and the other toolbox inputs (`src/**`, `.dockerignore`, `tools/stage0/requirements.txt`; plan 02 §14.2 step 5), since the images build the Go binaries |
   | `toolbox-podman`, `toolbox-selinux`, `toolbox-pull-equivalence` | the `toolbox` paths plus `test/e2e/selinux/**`; one shared selection, so a change under `test/e2e/selinux/**` also selects `toolbox` (plan 02 §22 engine matrix and reproducibility test: 02-AC-5, 02-AC-4; F03) |
   | `e2e-c10` | not run on PRs (C10 exists only after Phase 1); on `main` pushes touching `src/**`, `charts/strange-company/**`, `policy/harnesses.yaml`, `images/**`, `harnesses/**`, and on tags |
@@ -445,7 +448,7 @@ No new secret classes. Plan 17 extends `SC-GITHUB-PROBE`'s permissions (`Actions
 **Small-node performance levers, in the order they are applied when a P08+ measurement exceeds a budget** (each is a PR to this plan or plan 01):
 1. Share the build cache within a workflow: `GOCACHE` lives on the workspace PVC (already the default).
 2. Scope RED runs to manifest packages (plan 22; already the default).
-3. Move `-race` from PR `test` to `main` pushes and nightly (plan 01 change). Race detection on the 4-vCPU node costs about 2–3× time and up to 5× memory.
+3. Move `-race` from PR `test` to `main` pushes and nightly (plan 01 change). Race detection on the 4-vCPU node costs about 2–3× time and up to 5× memory. Applied to GH in Phase 1 by CD-77 (§8.1).
 4. Raise `CI_MAX_CONCURRENT` only at small-ha (plan 51).
 5. A cluster-local Go module proxy cache (post-MVP).
 

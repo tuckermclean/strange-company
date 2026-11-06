@@ -1,11 +1,12 @@
 # Tier V test target (plan 01 section 7.1): go test -json, raw stream in out/test/test.json, JUnit always
 # written to $(JUNIT); the exit status is go test's.
+# GO_TEST_RACE set (even empty) in the environment overrides the default; interim CI empties it on PRs (plan 52 section 8.1, CD-77).
 export GOCACHE ?= $(CURDIR)/.cache/go/build
 export GOMODCACHE ?= $(CURDIR)/.cache/go/mod
 GO_TEST_PKGS ?= ./...
 GO_TEST_RUN ?=
 JUNIT ?= out/test/junit.xml
-GO_TEST_RACE := $(if $(filter amd64,$(shell go env GOARCH)),-race,)
+GO_TEST_RACE ?= $(if $(filter amd64,$(shell go env GOARCH)),-race,)
 # Package paths may be written relative to the repository root (./src/...); go test runs inside src/.
 GO_TEST_PKGS_REL := $(patsubst ./src/%,./%,$(GO_TEST_PKGS))
 GO_TEST_RUN_ARGS := $(if $(GO_TEST_RUN),-run "$(GO_TEST_RUN)",)

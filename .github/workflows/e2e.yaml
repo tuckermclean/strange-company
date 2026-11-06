@@ -81,8 +81,9 @@ jobs:
               <<<"$changed"; then
               toolbox=true
             fi
-            if grep -q -e '^Makefile$' -e '^mk/' -e '^src/' -e '^toolbox/' -e '^bootstrap$' -e '^policy/' \
-              -e '^test/e2e/verify/' -e '^versions/' -e '^gitops/' -e '^\.github/workflows/e2e\.yaml$' <<<"$changed"; then
+            # Not src/** or gitops/**: PR verify runs the suite; main pushes and the daily run check repeatability (CD-77).
+            if grep -q -e '^Makefile$' -e '^mk/' -e '^toolbox/' -e '^bootstrap$' -e '^policy/' \
+              -e '^test/e2e/verify/' -e '^versions/' -e '^\.github/workflows/e2e\.yaml$' <<<"$changed"; then
               verify_e2e=true
             fi
             # Plan 52 section 8.4 e2e-k3d paths, plus the toolbox image it runs (02-AC-12).
@@ -363,6 +364,8 @@ jobs:
       # 06-AC-1 (and the library legs of 06-AC-2/-3/-4/-8): the conformance suite C1-C8 and the encrypted-state checks
       # against the SeaweedFS emulator and the real tofu, both inside the ci image.
       - name: State library against the S3 emulator
+        # It runs inside the ci image whatever the engine, so one leg is enough (plan 52 section 8.4, CD-77).
+        if: matrix.engine == 'docker'
         run: make test-integration
 
   # 50-AC-4, 50-AC-9, 50-AC-19 (F08 S8b2): the SIGKILL crash matrix, status --json per journal and the new-machine
