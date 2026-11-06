@@ -1290,6 +1290,10 @@ type testShim struct {
 	// S6a review 2: extra fields of the result of request n only.
 	resExtraByN map[string]map[string]any
 
+	// streamDelay holds back every streamed line containing sc_fake_result by this long (test-only knob that
+	// widens the pipe-to-file copier window).
+	streamDelay time.Duration
+
 	mu      sync.Mutex
 	handled map[string]bool
 	reqs    []shimRequest
@@ -1342,6 +1346,8 @@ type lineWriter struct {
 	w      io.Writer
 	prefix string
 	buf    []byte
+	// delay holds back a line containing sc_fake_result before it is appended.
+	delay time.Duration
 }
 
 func (l *lineWriter) Write(p []byte) (int, error) {
@@ -1350,6 +1356,9 @@ func (l *lineWriter) Write(p []byte) (int, error) {
 		i := bytes.IndexByte(l.buf, '\n')
 		if i < 0 {
 			break
+		}
+		if l.delay > 0 && bytes.Contains(l.buf[:i], []byte("sc_fake_result")) {
+			_ = clock.Real{}.Sleep(context.Background(), l.delay)
 		}
 		l.mu.Lock()
 		fmt.Fprintf(l.w, "%s%s\n", l.prefix, l.buf[:i])
@@ -1418,7 +1427,7 @@ func (s *testShim) exec(ctx context.Context, dir, n string) {
 		return
 	}
 	var smu sync.Mutex
-	so := &lineWriter{mu: &smu, w: stream}
+	so := &lineWriter{mu: &smu, w: stream, delay: s.streamDelay}
 	se := &lineWriter{mu: &smu, w: stream, prefix: "[stderr] "}
 	cmd.Stdout, cmd.Stderr = so, se
 	started := clock.Real{}.Now().UTC().Format(time.RFC3339)
@@ -1464,6 +1473,8 @@ type gitSpec struct {
 	// S4: run the production shim (worker.Shim) as a separate process instead of the test-owned goroutine, and/or
 	// give sc-worker the real clock (the packet deadline must then be in the real future).
 	realShim, realClock bool
+	// streamDelay: see testShim.streamDelay.
+	streamDelay time.Duration
 	// N3: SC_WORKSPACE as given to sc-worker, when it must differ from the cleaned workspace path.
 	scWorkspace func(workspace string) string
 	// S6a: the stub Gateway answers request n (1-based) for the given model with a status and an x-sc-error-code
@@ -1584,7 +1595,7 @@ func runGit(t *testing.T, sp gitSpec) *gitRun {
 		gr.startRealShim(t, exe, dirs, gw.URL, mode, sp.ops, extra)
 	} else {
 		gr.shim = &testShim{ws: dirs["workspace"], hsecrets: dirs["harness-secrets"], home: dirs["home"], tmp: dirs["tmp"],
-			gatewayURL: gw.URL, mode: mode, ops: sp.ops, extraEnv: extra, resExtra: sp.shimResExtra, resExtraByN: sp.shimResExtraByN}
+			gatewayURL: gw.URL, mode: mode, ops: sp.ops, extraEnv: extra, resExtra: sp.shimResExtra, resExtraByN: sp.shimResExtraByN, streamDelay: sp.streamDelay}
 		shimCtx, cancel := context.WithCancel(context.Background())
 		gr.cancelShim = cancel
 		gr.shimDone = make(chan struct{})
